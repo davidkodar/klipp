@@ -1,0 +1,8 @@
+[package]
+name = "klipp-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+klipp-core = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "klipp-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-media = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-color = { workspace = true }
+wgpu = { workspace = true }
+libmpv2 = { workspace = true }
+crossbeam-channel = { workspace = true }
+tracing = { workspace = true }
