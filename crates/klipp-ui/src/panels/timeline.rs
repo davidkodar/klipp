@@ -39,24 +39,24 @@ impl TimelinePanel {
         let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
         let _alloc = ui.allocate_rect(panel_rect, egui::Sense::hover());
 
-        let painter = ui.painter_at(panel_rect);
+        let bg_painter = ui.painter_at(panel_rect);
 
         // Background
-        painter.rect_filled(panel_rect, 0.0, egui::Color32::from_rgb(25, 25, 30));
+        bg_painter.rect_filled(panel_rect, 0.0, egui::Color32::from_rgb(25, 25, 30));
 
         // Track header area
         let header_rect = egui::Rect::from_min_size(
             panel_rect.min,
             egui::vec2(TRACK_HEADER_WIDTH, available.y),
         );
-        painter.rect_filled(header_rect, 0.0, egui::Color32::from_rgb(22, 22, 26));
+        bg_painter.rect_filled(header_rect, 0.0, egui::Color32::from_rgb(22, 22, 26));
 
         // Track label
         let track_label_pos = egui::pos2(
             header_rect.left() + 8.0,
             header_rect.top() + RULER_HEIGHT + TRACK_HEIGHT / 2.0,
         );
-        painter.text(
+        bg_painter.text(
             track_label_pos,
             egui::Align2::LEFT_CENTER,
             "Video 1",
@@ -64,11 +64,13 @@ impl TimelinePanel {
             egui::Color32::from_rgb(140, 140, 150),
         );
 
-        // Timeline content area (right of header)
+        // Timeline content area (right of header) — clipped so nothing bleeds
+        // past the track header into the left edge
         let content_rect = egui::Rect::from_min_max(
             egui::pos2(panel_rect.left() + TRACK_HEADER_WIDTH, panel_rect.top()),
             panel_rect.max,
         );
+        let painter = bg_painter.with_clip_rect(content_rect);
 
         // Time ruler
         let ruler_rect = egui::Rect::from_min_size(

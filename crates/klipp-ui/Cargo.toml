@@ -14,3 +14,4 @@ eframe = { workspace = true }
 wgpu = { workspace = true }
 crossbeam-channel = { workspace = true }
 tracing = { workspace = true }
+rfd = "0.15"

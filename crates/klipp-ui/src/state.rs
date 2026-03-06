@@ -26,6 +26,8 @@ pub struct AppState {
     pub timeline_scroll_x: f32,
 
     pub selected_clip: Option<ClipId>,
+
+    pub pending_media_path: Option<PathBuf>,
 }
 
 impl Default for AppState {
@@ -41,6 +43,7 @@ impl Default for AppState {
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
             selected_clip: None,
+            pending_media_path: None,
         }
     }
 }

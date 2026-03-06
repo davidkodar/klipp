@@ -8,7 +8,7 @@ klipp-core = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-color = { workspace = true }
-wgpu = { workspace = true }
 libmpv2 = { workspace = true }
 crossbeam-channel = { workspace = true }
 tracing = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
