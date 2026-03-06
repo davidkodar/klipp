@@ -1,0 +1,111 @@
+[workspace]
+members = [
+    "crates/klipp-core",
+    "crates/klipp-project",
+    "crates/klipp-timeline",
+    "crates/klipp-media",
+    "crates/klipp-audio",
+    "crates/klipp-color",
+    "crates/klipp-engine",
+    "crates/klipp-plugin",
+    "crates/klipp-export",
+    "crates/klipp-ui",
+    "crates/klipp-app",
+]
+resolver = "2"
+
+# ─── Shared dependency versions across all crates ───────────────────────────
+[workspace.dependencies]
+
+# Core async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization (project format)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Parallel processing
+rayon = "1"
+
+# UUID for clip/track/node IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Math / linear algebra (for transforms, matrices)
+glam = { version = "0.27", features = ["serde"] }
+
+# UI
+egui = "0.29"
+eframe = { version = "0.29", features = ["wgpu"] }
+egui_extras = "0.29"
+
+# GPU
+wgpu = "22"
+
+# Video decode
+libmpv2 = "2"
+
+# Audio
+cpal = "0.15"
+dasp = { version = "0.11", features = ["all"] }
+symphonia = { version = "0.5", features = ["all"] }
+
+# FFmpeg (export / thumbnails)
+ffmpeg-next = "7"
+
+# OpenColorIO (color management)
+# Note: requires system libOpenColorIO - bindings via C FFI
+opencolorio = { version = "0.2", optional = true }
+
+# Whisper (speech to text / captions)
+whisper-rs = "0.11"
+
+# Filesystem / paths
+walkdir = "2"
+dirs = "5"
+
+# Channels / messaging between threads
+crossbeam-channel = "0.5"
+flume = "0.11"
+
+# Internal crates
+klipp-core    = { path = "crates/klipp-core" }
+klipp-project = { path = "crates/klipp-project" }
+klipp-timeline = { path = "crates/klipp-timeline" }
+klipp-media   = { path = "crates/klipp-media" }
+klipp-audio   = { path = "crates/klipp-audio" }
+klipp-color   = { path = "crates/klipp-color" }
+klipp-engine  = { path = "crates/klipp-engine" }
+klipp-plugin  = { path = "crates/klipp-plugin" }
+klipp-export  = { path = "crates/klipp-export" }
+klipp-ui      = { path = "crates/klipp-ui" }
+
+# ─── Workspace-wide profile settings ────────────────────────────────────────
+[profile.dev]
+opt-level = 1          # Minimal optimization — faster compile, still debuggable
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3          # But optimize all dependencies fully even in dev
+
+[profile.release]
+opt-level = 3
+lto = "thin"           # Link-time optimization for smaller/faster binary
+codegen-units = 1      # Single codegen unit for best optimization
+strip = true           # Strip debug symbols from release binary
+panic = "abort"        # Smaller binary, no unwinding overhead
+
+[profile.profiling]
+inherits = "release"
+debug = true           # Keep debug info for profiling with perf/tracy
+strip = false
