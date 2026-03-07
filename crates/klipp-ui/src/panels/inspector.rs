@@ -123,6 +123,30 @@ impl InspectorPanel {
                         ui.end_row();
                     });
 
+                // Filmstrip
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Filmstrip")
+                        .strong()
+                        .size(12.0),
+                );
+                ui.separator();
+                ui.add_space(4.0);
+
+                let filmstrip_count = state
+                    .filmstrip_textures
+                    .get(&clip.media_id)
+                    .map(|f| f.len())
+                    .unwrap_or(0);
+                if filmstrip_count > 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(100, 200, 120),
+                        format!("{} frames", filmstrip_count),
+                    );
+                } else {
+                    ui.label("Generating...");
+                }
+
                 // Proxy status
                 ui.add_space(8.0);
                 ui.label(

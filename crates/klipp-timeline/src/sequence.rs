@@ -110,14 +110,14 @@ impl Track {
             .clips
             .last()
             .map(|c| c.timeline_out)
-            .unwrap_or(Timecode::zero());
-        // Rescale duration to match timeline_in's rate for consistent arithmetic
-        let duration_rescaled = if timeline_in.rate != source_duration.rate && timeline_in != Timecode::zero() {
-            source_duration.rescale_to(timeline_in.rate)
+            .unwrap_or(Timecode { value: 0, rate: source_duration.rate });
+        // Rescale to source rate for frame-accurate timeline arithmetic
+        let timeline_in = if timeline_in.rate != source_duration.rate {
+            timeline_in.rescale_to(source_duration.rate)
         } else {
-            source_duration
+            timeline_in
         };
-        let timeline_out = timeline_in + duration_rescaled;
+        let timeline_out = timeline_in + source_duration;
         let clip_id = ClipId::new();
         self.clips.push(Clip {
             id: clip_id,

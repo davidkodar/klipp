@@ -4,4 +4,4 @@ mod thumbnail;
 
 pub use item::MediaItem;
 pub use pool::MediaPool;
-pub use thumbnail::{ThumbnailCache, ThumbnailEntry};
+pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};

@@ -23,6 +23,7 @@ pub struct AppState {
     pub upper_timeline_split: f32,
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
+    pub playhead_follow: PlayheadFollow,
 
     // Selection
     pub selected_clip: Option<ClipId>,
@@ -35,6 +36,8 @@ pub struct AppState {
     // Thumbnails
     pub thumbnail_cache: ThumbnailCache,
     pub thumbnail_textures: std::collections::HashMap<MediaId, egui::TextureHandle>,
+    /// Filmstrip textures: media_id → Vec of (time_secs, texture_handle)
+    pub filmstrip_textures: std::collections::HashMap<MediaId, Vec<(f64, egui::TextureHandle)>>,
 
     // Export
     pub show_export_dialog: bool,
@@ -77,6 +80,65 @@ pub struct AppState {
 
     // Phase 4: Media pool drag-and-drop
     pub dragging_media: Option<MediaId>,
+
+    // Phase 5: Performance overlay
+    pub show_perf_overlay: bool,
+    pub perf_fps: f64,
+    pub perf_frame_count: u64,
+    pub perf_dropped_frames: u64,
+    pub perf_memory_mb: f64,
+    pub perf_cpu_percent: f64,
+    pub perf_hw_decode: bool,
+    pub perf_last_update: std::time::Instant,
+    pub perf_frame_times: Vec<f64>,
+    pub perf_prev_cpu_ticks: u64,
+    pub perf_prev_wall_time: std::time::Instant,
+
+    // Filmstrip generation progress
+    pub filmstrip_generating: bool,
+    pub filmstrip_generate_start: std::time::Instant,
+
+    // Smooth playhead interpolation
+    /// Last engine-reported playhead and the wall time it was received
+    pub playhead_anchor: Timecode,
+    pub playhead_anchor_wall: std::time::Instant,
+    pub playhead_speed: f64,
+    /// High-precision playhead for smooth display (not quantized to frame rate)
+    pub playhead_smooth_secs: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayheadFollow {
+    /// No auto-scroll
+    Off,
+    /// Jump one page when playhead reaches edge
+    Page,
+    /// Continuously scroll to keep playhead visible
+    Smooth,
+}
+
+impl Default for PlayheadFollow {
+    fn default() -> Self {
+        Self::Page
+    }
+}
+
+impl PlayheadFollow {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Page => "Page",
+            Self::Smooth => "Smooth",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Off => Self::Page,
+            Self::Page => Self::Smooth,
+            Self::Smooth => Self::Off,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,12 +171,14 @@ impl Default for AppState {
             upper_timeline_split: 0.65,
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
+            playhead_follow: PlayheadFollow::default(),
             selected_clip: None,
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_textures: std::collections::HashMap::new(),
+            filmstrip_textures: std::collections::HashMap::new(),
             show_export_dialog: false,
             export_in_progress: false,
             export_progress: 0.0,
@@ -137,6 +201,23 @@ impl Default for AppState {
             fullscreen_overlay_visible: false,
             fullscreen_overlay_timer: 0.0,
             dragging_media: None,
+            show_perf_overlay: false,
+            perf_fps: 0.0,
+            perf_frame_count: 0,
+            perf_dropped_frames: 0,
+            perf_memory_mb: 0.0,
+            perf_cpu_percent: 0.0,
+            perf_hw_decode: false,
+            perf_last_update: std::time::Instant::now(),
+            perf_frame_times: Vec::with_capacity(120),
+            perf_prev_cpu_ticks: 0,
+            perf_prev_wall_time: std::time::Instant::now(),
+            filmstrip_generating: false,
+            filmstrip_generate_start: std::time::Instant::now(),
+            playhead_anchor: Timecode::zero(),
+            playhead_anchor_wall: std::time::Instant::now(),
+            playhead_speed: 1.0,
+            playhead_smooth_secs: 0.0,
         }
     }
 }

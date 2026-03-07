@@ -119,7 +119,17 @@ impl TransportBar {
                     state.editing_timecode = false;
                 }
             } else {
-                let playhead_str = state.playhead.to_timecode_string();
+                // Use smooth float for display — shows HH:MM:SS.mmm
+                let playhead_str = {
+                    let s = state.playhead_smooth_secs;
+                    let sign = if s < 0.0 { "-" } else { "" };
+                    let s = s.abs();
+                    let hh = (s / 3600.0) as u32;
+                    let mm = ((s % 3600.0) / 60.0) as u32;
+                    let ss = (s % 60.0) as u32;
+                    let ms = ((s % 1.0) * 1000.0) as u32;
+                    format!("{sign}{hh:02}:{mm:02}:{ss:02}.{ms:03}")
+                };
                 let tc_response = ui.add(
                     egui::Label::new(
                         egui::RichText::new(&playhead_str)

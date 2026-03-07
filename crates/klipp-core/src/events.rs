@@ -252,4 +252,7 @@ pub enum AppEvent {
 
     // Thumbnails
     ThumbnailReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
+
+    // Performance stats
+    EngineStats { dropped_frames: u64, hw_decode: bool },
 }

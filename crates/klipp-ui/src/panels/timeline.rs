@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::state::{AppState, PlayheadFollow};
 use klipp_core::{AppCommand, ClipId, RationalTime, Timecode, Tool};
 use klipp_engine::PlaybackState;
 use klipp_timeline::TrackKind;
@@ -10,6 +10,7 @@ const AUDIO_TRACK_HEIGHT: f32 = 40.0;
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
+const STATUS_BAR_HEIGHT: f32 = 18.0;
 
 const CLIP_COLORS: &[(u8, u8, u8)] = &[
     (50, 90, 160),   // blue
@@ -38,6 +39,9 @@ pub struct TimelinePanel {
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
     press_origin: Option<egui::Pos2>,
+    /// Filmstrip stats for status bar: (visible_unique, total)
+    filmstrip_visible: usize,
+    filmstrip_total: usize,
 }
 
 struct DragState {
@@ -87,8 +91,17 @@ impl TimelinePanel {
             }
         }
 
-        let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
-        let _alloc = ui.allocate_rect(panel_rect, egui::Sense::hover());
+        let full_rect = egui::Rect::from_min_size(ui.cursor().min, available);
+        ui.advance_cursor_after_rect(full_rect);
+
+        let status_rect = egui::Rect::from_min_max(
+            egui::pos2(full_rect.left(), full_rect.bottom() - STATUS_BAR_HEIGHT),
+            full_rect.max,
+        );
+        let panel_rect = egui::Rect::from_min_max(
+            full_rect.min,
+            egui::pos2(full_rect.right(), status_rect.top()),
+        );
 
         let bg_painter = ui.painter_at(panel_rect);
 
@@ -375,10 +388,36 @@ impl TimelinePanel {
             state.dragging_media = None;
         }
 
-        // Playhead line
+        // Playhead line + follow mode
         let seq_dur = state.sequence_duration();
         if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
-            let playhead_secs = state.playhead.to_secs_f64() as f32;
+            let playhead_secs = state.playhead_smooth_secs as f32;
+            let view_width = content_rect.width();
+
+            // Auto-scroll based on follow mode
+            match state.playhead_follow {
+                PlayheadFollow::Page => {
+                    let playhead_x_abs = playhead_secs * state.timeline_zoom;
+                    let view_end = state.timeline_scroll_x + view_width;
+                    if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
+                        // Jump one page so playhead is at ~10% from left
+                        state.timeline_scroll_x =
+                            (playhead_x_abs - view_width * 0.1).max(0.0);
+                    }
+                }
+                PlayheadFollow::Smooth => {
+                    if state.playback == PlaybackState::Playing {
+                        // Keep playhead at ~25% from left edge during playback
+                        let target_scroll =
+                            (playhead_secs * state.timeline_zoom - view_width * 0.25).max(0.0);
+                        // Smooth lerp to avoid jarring jumps
+                        state.timeline_scroll_x +=
+                            (target_scroll - state.timeline_scroll_x) * 0.15;
+                    }
+                }
+                PlayheadFollow::Off => {}
+            }
+
             let playhead_x =
                 content_rect.left() + playhead_secs * state.timeline_zoom - state.timeline_scroll_x;
 
@@ -405,6 +444,58 @@ impl TimelinePanel {
                 );
             }
         }
+
+        // --- Status bar ---
+        let status_painter = ui.painter_at(status_rect);
+        status_painter.rect_filled(status_rect, 0.0, egui::Color32::from_rgb(18, 18, 22));
+        status_painter.line_segment(
+            [status_rect.left_top(), status_rect.right_top()],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 48, 56)),
+        );
+
+        let dim = egui::Color32::from_rgb(100, 100, 110);
+        let bright = egui::Color32::from_rgb(170, 170, 180);
+        let font = egui::FontId::proportional(9.5);
+        let sep = "  \u{2022}  "; // bullet separator
+        let cy = status_rect.center().y;
+
+        // Left side: clip count + selected clip info
+        let total_clips: usize = state.sequence.tracks.iter().map(|t| t.clips.len()).sum();
+        let mut left_text = format!("{} clip{}", total_clips, if total_clips != 1 { "s" } else { "" });
+
+        if let Some(clip_id) = state.selected_clip {
+            if let Some(clip) = state.sequence.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
+                if let Some(media) = state.media_pool.get(&clip.media_id) {
+                    left_text += &format!("{sep}{}", media.filename);
+                }
+                let dur = clip.duration().to_timecode_string();
+                left_text += &format!("{sep}{dur}");
+            }
+        }
+
+        status_painter.text(
+            egui::pos2(status_rect.left() + 8.0, cy),
+            egui::Align2::LEFT_CENTER,
+            left_text,
+            font.clone(),
+            bright,
+        );
+
+        // Right side: filmstrip + zoom
+        let mut right_text = format!("Zoom: {:.0} px/s", state.timeline_zoom);
+        if self.filmstrip_total > 0 {
+            right_text = format!(
+                "Filmstrip: {}/{}{sep}{}",
+                self.filmstrip_visible, self.filmstrip_total, right_text
+            );
+        }
+        status_painter.text(
+            egui::pos2(status_rect.right() - 8.0, cy),
+            egui::Align2::RIGHT_CENTER,
+            right_text,
+            font,
+            dim,
+        );
 
         cmds
     }
@@ -479,23 +570,148 @@ impl TimelinePanel {
                 (base_color, bright_color, 1.0)
             };
 
-            // Draw thumbnail background for video clips
+            // Draw thumbnail/filmstrip background for video clips
             if track_kind == TrackKind::Video {
-                if let Some(tex) = state.thumbnail_textures.get(&clip.media_id) {
-                    painter.image(
-                        tex.id(),
-                        clip_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                    let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];
-                    painter.rect_filled(
-                        clip_rect,
-                        3.0,
-                        egui::Color32::from_rgba_premultiplied(r, g, b, 102),
-                    );
-                } else {
-                    painter.rect_filled(clip_rect, 3.0, fill);
+                let mut drew_filmstrip = false;
+                if let Some(filmstrip) = state.filmstrip_textures.get(&clip.media_id) {
+                    if !filmstrip.is_empty() {
+                        drew_filmstrip = true;
+                        let clip_in_secs = clip.source_in.to_secs_f64();
+                        let clip_out_secs = clip.source_out.to_secs_f64();
+                        let (_, first_tex) = &filmstrip[0];
+                        let frame_w = first_tex.size()[0] as f32;
+                        let frame_h = first_tex.size()[1] as f32;
+                        let frame_aspect = frame_w / frame_h.max(1.0);
+                        let tile_h = clip_rect.height();
+                        let tile_w = tile_h * frame_aspect;
+
+                        let clip_painter = ui.painter().with_clip_rect(clip_rect);
+
+                        // Only draw tiles that are actually visible in the viewport
+                        let num_tiles = ((clip_rect.width() / tile_w).ceil() as usize).max(1);
+                        let view_left = content_rect.left();
+                        let view_right = content_rect.right();
+
+                        // Compute first/last visible tile indices
+                        let first_visible = if clip_rect.left() >= view_left {
+                            0
+                        } else {
+                            ((view_left - clip_rect.left()) / tile_w).floor() as usize
+                        };
+                        let last_visible = if clip_rect.right() <= view_right {
+                            num_tiles
+                        } else {
+                            (((view_right - clip_rect.left()) / tile_w).ceil() as usize).min(num_tiles)
+                        };
+
+                        let sep_w = 1.0_f32;
+                        let mut prev_idx: Option<usize> = None;
+                        let mut visible_count = 0usize;
+
+                        for ti in first_visible..last_visible {
+                            let x0 = clip_rect.left() + ti as f32 * tile_w;
+                            let x1 = if ti == num_tiles - 1 {
+                                clip_rect.right()
+                            } else {
+                                x0 + tile_w
+                            };
+
+                            let tile_center_x = (x0 + x1) * 0.5;
+                            let frac = ((tile_center_x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64;
+                            let source_time = clip_in_secs + frac * (clip_out_secs - clip_in_secs);
+
+                            let idx = match filmstrip.binary_search_by(|f| {
+                                f.0.partial_cmp(&source_time).unwrap_or(std::cmp::Ordering::Equal)
+                            }) {
+                                Ok(i) => i,
+                                Err(i) => {
+                                    if i == 0 { 0 }
+                                    else if i >= filmstrip.len() { filmstrip.len() - 1 }
+                                    else {
+                                        let d_left = (filmstrip[i - 1].0 - source_time).abs();
+                                        let d_right = (filmstrip[i].0 - source_time).abs();
+                                        if d_left <= d_right { i - 1 } else { i }
+                                    }
+                                }
+                            };
+
+                            // Draw separator when frame changes
+                            let draw_sep = prev_idx.map_or(false, |pi| pi != idx);
+                            let img_x0 = if draw_sep { x0 + sep_w } else { x0 };
+                            prev_idx = Some(idx);
+                            visible_count += 1;
+
+                            if draw_sep {
+                                clip_painter.line_segment(
+                                    [egui::pos2(x0, clip_rect.top()), egui::pos2(x0, clip_rect.bottom())],
+                                    egui::Stroke::new(sep_w, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140)),
+                                );
+                            }
+
+                            let (_, ref tex) = filmstrip[idx];
+                            let tile_rect = egui::Rect::from_min_max(
+                                egui::pos2(img_x0, clip_rect.top()),
+                                egui::pos2(x1, clip_rect.bottom()),
+                            );
+                            // Draw dark base behind the frame so dark content is still distinguishable
+                            clip_painter.rect_filled(tile_rect, 0.0, egui::Color32::from_rgb(35, 35, 40));
+                            clip_painter.image(
+                                tex.id(),
+                                tile_rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                            // Subtle bottom gradient to lift dark frames
+                            let grad_h = 4.0;
+                            let grad_rect = egui::Rect::from_min_max(
+                                egui::pos2(img_x0, clip_rect.bottom() - grad_h),
+                                egui::pos2(x1, clip_rect.bottom()),
+                            );
+                            clip_painter.rect_filled(
+                                grad_rect,
+                                0.0,
+                                egui::Color32::from_rgba_premultiplied(60, 60, 70, 80),
+                            );
+                        }
+
+                        self.filmstrip_visible = visible_count;
+                        self.filmstrip_total = filmstrip.len();
+
+                        // Very subtle color tint at top edge only (like Resolve)
+                        let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];
+                        let tint_h = 3.0;
+                        let tint_rect = egui::Rect::from_min_max(
+                            clip_rect.left_top(),
+                            egui::pos2(clip_rect.right(), clip_rect.top() + tint_h),
+                        );
+                        painter.rect_filled(
+                            tint_rect,
+                            0.0,
+                            egui::Color32::from_rgba_premultiplied(r, g, b, 180),
+                        );
+                    }
+                }
+                if !drew_filmstrip {
+                    // Fallback: single thumbnail or solid color
+                    if let Some(tex) = state.thumbnail_textures.get(&clip.media_id) {
+                        painter.image(
+                            tex.id(),
+                            clip_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                        let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];
+                        painter.rect_filled(
+                            clip_rect,
+                            3.0,
+                            egui::Color32::from_rgba_premultiplied(r, g, b, 102),
+                        );
+                    } else {
+                        painter.rect_filled(clip_rect, 3.0, fill);
+                    }
                 }
             } else {
                 painter.rect_filled(clip_rect, 3.0, fill);
@@ -724,11 +940,15 @@ impl TimelinePanel {
         // Click handling
         if track_response.clicked() {
             if let Some(pos) = track_response.interact_pointer_pos {
+                // Always move playhead to click position (standard NLE behavior)
+                let x_in_content = pos.x - content_rect.left() + scroll;
+                let click_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                let click_tc = RationalTime::from_secs_f64(click_secs, fps.rate());
+                cmds.push(AppCommand::SeekTo(click_tc));
+
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     if state.active_tool == Tool::Blade {
-                        let x_in_content = pos.x - content_rect.left() + scroll;
-                        let cut_secs = x_in_content as f64 / zoom as f64;
-                        let cut_tc = RationalTime::from_secs_f64(cut_secs, fps.rate());
+                        let cut_tc = RationalTime::from_secs_f64(click_secs, fps.rate());
                         cmds.push(AppCommand::BladeClip {
                             track_index: track_idx,
                             clip_id: hit_clip.id,
@@ -1213,7 +1433,8 @@ impl TimelinePanel {
             let dur_secs = state.sequence_duration().to_secs_f64() as f32;
             if dur_secs > 0.0 {
                 let content_width = ruler_rect.width() - 20.0;
-                state.timeline_zoom = (content_width / dur_secs).clamp(10.0, 500.0);
+                // Allow zoom down to 0.1 px/sec for long clips (e.g. 12 min movie)
+                state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 500.0);
                 state.timeline_scroll_x = 0.0;
             }
         }
@@ -1373,6 +1594,27 @@ impl TimelinePanel {
         if ripple_resp.clicked() {
             cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
         }
+
+        // Follow playhead toggle (cycles Off → Page → Smooth)
+        let follow_w = 50.0;
+        let follow_rect = egui::Rect::from_min_size(
+            egui::pos2(x + (btn_w + 2.0) * 2.0, y_offset + 2.0),
+            egui::vec2(follow_w, btn_h),
+        );
+        let follow_resp = ui.interact(follow_rect, ui.id().with("follow_toggle"), egui::Sense::click());
+        let follow_col = if state.playhead_follow != PlayheadFollow::Off {
+            egui::Color32::from_rgb(60, 120, 180)
+        } else {
+            egui::Color32::from_rgb(40, 40, 48)
+        };
+        painter.rect_filled(follow_rect, 2.0, follow_col);
+        let follow_label = format!("Follow: {}", state.playhead_follow.label());
+        painter.text(follow_rect.center(), egui::Align2::CENTER_CENTER, follow_label,
+            egui::FontId::proportional(7.0), egui::Color32::WHITE);
+        if follow_resp.clicked() {
+            state.playhead_follow = state.playhead_follow.next();
+        }
+        follow_resp.on_hover_text("Playhead follow mode: Off / Page / Smooth");
     }
 
     fn draw_in_out_markers(
@@ -1483,12 +1725,24 @@ impl TimelinePanel {
                         let tc = RationalTime::from_secs_f64(t as f64, rate);
                         tc.to_timecode_string()
                     } else {
-                        let total_secs = t as i64;
-                        let hh = total_secs / 3600;
-                        let mm = (total_secs / 60) % 60;
-                        let ss = total_secs % 60;
+                        let total_ms = (t * 1000.0) as i64;
+                        let hh = total_ms / 3_600_000;
+                        let mm = (total_ms / 60_000) % 60;
+                        let ss = (total_ms / 1_000) % 60;
+                        let ms = total_ms % 1000;
                         if hh > 0 {
-                            format!("{hh}:{mm:02}:{ss:02}")
+                            format!("{hh}:{mm:02}:{ss:02}.{ms:03}")
+                        } else if major_interval <= 1.0 {
+                            // Show ms when interval is 1s or less
+                            format!("{mm}:{ss:02}.{ms:03}")
+                        } else if major_interval <= 5.0 {
+                            // Show tenths at 2-5s intervals
+                            let tenths = ms / 100;
+                            if tenths > 0 {
+                                format!("{mm}:{ss:02}.{tenths}")
+                            } else {
+                                format!("{mm}:{ss:02}")
+                            }
                         } else {
                             format!("{mm}:{ss:02}")
                         }

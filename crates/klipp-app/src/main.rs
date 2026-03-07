@@ -7,6 +7,11 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
+    // VAAPI on NVIDIA requires this before any ffmpeg calls
+    unsafe { std::env::set_var("LIBVA_DRIVER_NAME", "nvidia") };
+
+    ffmpeg_next::init().expect("Failed to initialize ffmpeg");
+
     // Log to klipp-debug.log, truncated on each launch
     let log_file = std::fs::File::create("klipp-debug.log")
         .expect("Failed to create klipp-debug.log");

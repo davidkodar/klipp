@@ -8,7 +8,11 @@ klipp-core = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-color = { workspace = true }
-libmpv2 = { workspace = true }
+ffmpeg-next = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
+ringbuf = { workspace = true }
+bytemuck = { workspace = true }
 crossbeam-channel = { workspace = true }
 tracing = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }

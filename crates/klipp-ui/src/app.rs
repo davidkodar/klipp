@@ -23,6 +23,11 @@ struct ThumbnailResult {
     height: u32,
 }
 
+struct FilmstripResult {
+    media_id: MediaId,
+    frames: Vec<klipp_media::FilmstripFrame>,
+}
+
 pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
@@ -37,6 +42,8 @@ pub struct KlippApp {
     timeline: TimelinePanel,
     thumb_tx: Sender<ThumbnailResult>,
     thumb_rx: Receiver<ThumbnailResult>,
+    filmstrip_tx: Sender<FilmstripResult>,
+    filmstrip_rx: Receiver<FilmstripResult>,
     export_child: Option<std::process::Child>,
     export_event_tx: Sender<AppEvent>,
     export_event_rx: Receiver<AppEvent>,
@@ -61,6 +68,7 @@ impl KlippApp {
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     ) -> Self {
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
+        let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
         let (export_event_tx, export_event_rx) = crossbeam_channel::unbounded();
         let mut visuals = egui::Visuals::dark();
         visuals.window_fill = egui::Color32::from_rgb(8, 8, 13);
@@ -88,6 +96,8 @@ impl KlippApp {
             timeline: TimelinePanel::default(),
             thumb_tx,
             thumb_rx,
+            filmstrip_tx,
+            filmstrip_rx,
             export_child: None,
             export_event_tx,
             export_event_rx,
@@ -102,11 +112,77 @@ impl KlippApp {
         }
     }
 
+    fn update_perf_stats(&mut self, ctx: &egui::Context) {
+        let dt = ctx.input(|i| i.unstable_dt) as f64;
+
+        // Track frame times for FPS calculation
+        self.state.perf_frame_times.push(dt);
+        if self.state.perf_frame_times.len() > 120 {
+            self.state.perf_frame_times.remove(0);
+        }
+
+        // Update stats every 250ms
+        let now = std::time::Instant::now();
+        if now.duration_since(self.state.perf_last_update).as_millis() >= 250 {
+            self.state.perf_last_update = now;
+
+            // FPS from average frame time
+            if !self.state.perf_frame_times.is_empty() {
+                let avg_dt: f64 = self.state.perf_frame_times.iter().sum::<f64>()
+                    / self.state.perf_frame_times.len() as f64;
+                self.state.perf_fps = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
+            }
+
+            // Memory from /proc/self/statm (Linux)
+            if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+                if let Some(rss_pages) = statm.split_whitespace().nth(1) {
+                    if let Ok(pages) = rss_pages.parse::<u64>() {
+                        self.state.perf_memory_mb = (pages * 4096) as f64 / (1024.0 * 1024.0);
+                    }
+                }
+            }
+
+            // CPU usage from /proc/self/stat (Linux)
+            // Fields 14+15 = utime+stime in clock ticks (typically 100 Hz)
+            if let Ok(stat) = std::fs::read_to_string("/proc/self/stat") {
+                // Parse past the comm field (which may contain spaces/parens)
+                if let Some(close_paren) = stat.rfind(')') {
+                    let fields_after: Vec<&str> = stat[close_paren + 2..].split_whitespace().collect();
+                    // fields_after[11] = utime (field 14), fields_after[12] = stime (field 15)
+                    if fields_after.len() > 12 {
+                        let utime: u64 = fields_after[11].parse().unwrap_or(0);
+                        let stime: u64 = fields_after[12].parse().unwrap_or(0);
+                        let total_ticks = utime + stime;
+
+                        let wall_elapsed = self.state.perf_prev_wall_time.elapsed().as_secs_f64();
+                        if wall_elapsed > 0.01 && self.state.perf_prev_cpu_ticks > 0 {
+                            let tick_delta = total_ticks - self.state.perf_prev_cpu_ticks;
+                            let cpu_secs = tick_delta as f64 / 100.0; // 100 = CLK_TCK
+                            let instant = (cpu_secs / wall_elapsed) * 100.0;
+                            // Exponential moving average (α=0.15) for smooth readout like DAW meters
+                            let alpha = 0.15;
+                            self.state.perf_cpu_percent =
+                                self.state.perf_cpu_percent * (1.0 - alpha) + instant * alpha;
+                        }
+                        self.state.perf_prev_cpu_ticks = total_ticks;
+                        self.state.perf_prev_wall_time = now;
+                    }
+                }
+            }
+        }
+
+        // Frame count increments on each FrameReady event (tracked in drain_events)
+        // HW decode is set when we get a VAAPI log — for now just read from frame_buffer existence
+        // We'll set hw_decode from engine events if available
+    }
+
     fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 AppEvent::PlaybackStarted => {
                     self.state.playback = PlaybackState::Playing;
+                    self.state.playhead_anchor = self.state.playhead;
+                    self.state.playhead_anchor_wall = std::time::Instant::now();
                 }
                 AppEvent::PlaybackPaused => {
                     self.state.playback = PlaybackState::Paused;
@@ -115,7 +191,17 @@ impl KlippApp {
                     self.state.playback = PlaybackState::Stopped;
                 }
                 AppEvent::PlayheadMoved(tc) => {
-                    self.state.playhead = tc;
+                    if self.state.playback == PlaybackState::Playing {
+                        // During playback: only update anchor, don't touch playhead
+                        self.state.playhead_anchor = tc;
+                        self.state.playhead_anchor_wall = std::time::Instant::now();
+                    } else {
+                        // When not playing: set playhead directly
+                        self.state.playhead = tc;
+                        self.state.playhead_smooth_secs = tc.to_secs_f64();
+                        self.state.playhead_anchor = tc;
+                        self.state.playhead_anchor_wall = std::time::Instant::now();
+                    }
                 }
                 AppEvent::MediaLoaded {
                     media_id,
@@ -170,8 +256,11 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
 
-                    // Start thumbnail generation
-                    self.spawn_thumbnail(media_id, path, duration);
+                    // Start thumbnail + filmstrip generation
+                    self.spawn_thumbnail(media_id, path.clone(), duration);
+                    self.spawn_filmstrip(media_id, path, duration);
+                    self.state.filmstrip_generating = true;
+                    self.state.filmstrip_generate_start = std::time::Instant::now();
 
                     // Auto-generate proxy
                     self.spawn_proxy_generation(media_id);
@@ -182,6 +271,7 @@ impl KlippApp {
                 }
                 AppEvent::FrameReady => {
                     self.upload_frame_to_egui(ctx);
+                    self.state.perf_frame_count += 1;
                     ctx.request_repaint();
                 }
                 AppEvent::ClipAppended { .. }
@@ -199,6 +289,10 @@ impl KlippApp {
                 }
                 AppEvent::ThumbnailReady { .. } => {
                     // Thumbnails come through thumb_rx channel instead
+                }
+                AppEvent::EngineStats { dropped_frames, hw_decode } => {
+                    self.state.perf_dropped_frames = dropped_frames;
+                    self.state.perf_hw_decode = hw_decode;
                 }
                 AppEvent::SourceFrameReady
                 | AppEvent::SourceMediaLoaded { .. }
@@ -236,6 +330,40 @@ impl KlippApp {
                 }
             }
         });
+    }
+
+    fn spawn_filmstrip(
+        &mut self,
+        media_id: MediaId,
+        path: PathBuf,
+        duration: Timecode,
+    ) {
+        let tx = self.filmstrip_tx.clone();
+        let duration_secs = duration.to_secs_f64();
+        // Generate one filmstrip frame per second, capped at 500 frames
+        let interval = (duration_secs / 500.0).max(1.0);
+        std::thread::Builder::new()
+            .name("klipp-filmstrip".into())
+            .spawn(move || {
+                match klipp_engine::generate_filmstrip(&path, duration_secs, interval, 48) {
+                    Ok(raw_frames) => {
+                        let frames: Vec<klipp_media::FilmstripFrame> = raw_frames
+                            .into_iter()
+                            .map(|(time, rgba, w, h)| klipp_media::FilmstripFrame {
+                                time_secs: time,
+                                rgba,
+                                width: w,
+                                height: h,
+                            })
+                            .collect();
+                        let _ = tx.send(FilmstripResult { media_id, frames });
+                    }
+                    Err(e) => {
+                        tracing::warn!("Filmstrip generation failed for {:?}: {}", media_id, e);
+                    }
+                }
+            })
+            .ok();
     }
 
     fn spawn_proxy_generation(&mut self, media_id: MediaId) {
@@ -295,6 +423,18 @@ impl KlippApp {
                 result.width,
                 result.height,
             );
+        }
+        while let Ok(result) = self.filmstrip_rx.try_recv() {
+            tracing::info!(
+                "Filmstrip ready for {:?}: {} frames",
+                result.media_id,
+                result.frames.len()
+            );
+            self.state.thumbnail_cache.set_filmstrip(
+                result.media_id,
+                result.frames,
+            );
+            self.state.filmstrip_generating = false;
         }
     }
 
@@ -513,6 +653,9 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetSpeed(speed) => {
+                    // Re-anchor interpolation at current position with new speed
+                    self.state.playhead_anchor = self.state.playhead;
+                    self.state.playhead_anchor_wall = std::time::Instant::now();
                     self.state.playback_speed = *speed;
                 }
                 AppCommand::SelectClip(id) => {
@@ -823,6 +966,7 @@ impl KlippApp {
         self.state.playhead = Timecode::zero();
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
         self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
         self.sync_sequence_to_engine();
     }
 
@@ -1240,6 +1384,10 @@ impl KlippApp {
             if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl {
                 cmds.push(AppCommand::ToggleFullscreen);
             }
+            // P — Toggle performance overlay
+            if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
+                self.state.show_perf_overlay = !self.state.show_perf_overlay;
+            }
             // I/O — In/Out markers (context-dependent on viewer mode)
             if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {
                 if i.modifiers.shift {
@@ -1273,11 +1421,34 @@ impl KlippApp {
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Smooth playhead interpolation BEFORE draining events
+        if self.state.playback == PlaybackState::Playing {
+            let wall_elapsed = self.state.playhead_anchor_wall.elapsed().as_secs_f64();
+            let anchor_secs = self.state.playhead_anchor.to_secs_f64();
+            let speed = self.state.playback_speed;
+            let interpolated_secs = anchor_secs + wall_elapsed * speed;
+            let dur_secs = self.state.sequence_duration().to_secs_f64();
+            let clamped = interpolated_secs.clamp(0.0, dur_secs);
+
+            self.state.playhead_smooth_secs = clamped;
+            self.state.playhead = Timecode::from_secs_f64(clamped, self.state.fps.rate());
+        }
+
         // 1. Drain events from engine
         self.drain_events(ctx);
         self.drain_thumbnails();
         self.drain_export_events();
         self.upload_frame_to_egui(ctx);
+
+        // Continuous repaint during playback (must be AFTER drain_events so Playing state is set)
+        if self.state.playback == PlaybackState::Playing {
+            ctx.request_repaint();
+        }
+
+        // Update performance stats
+        if self.state.show_perf_overlay {
+            self.update_perf_stats(ctx);
+        }
 
         // Update thumbnails: convert ready thumbnails to textures
         self.update_thumbnail_textures(ctx);
@@ -1468,7 +1639,37 @@ impl eframe::App for KlippApp {
             self.state.fullscreen_changed = false;
         }
 
-        // 12. Update window title
+        // 12. Filmstrip generation toast
+        if self.state.filmstrip_generating {
+            let elapsed = self.state.filmstrip_generate_start.elapsed().as_secs_f64();
+            egui::Area::new(egui::Id::new("filmstrip_toast"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(egui::Color32::from_rgb(35, 35, 42))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 85)))
+                        .rounding(6.0)
+                        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Generating filmstrip frames... ({:.1}s)",
+                                        elapsed
+                                    ))
+                                    .color(egui::Color32::from_rgb(200, 200, 210))
+                                    .size(12.0),
+                                );
+                            });
+                        });
+                });
+            ctx.request_repaint();
+        }
+
+        // 13. Update window title
         self.update_window_title(ctx);
 
         if has_quit {
@@ -1899,34 +2100,70 @@ impl KlippApp {
     }
 
     fn update_thumbnail_textures(&mut self, ctx: &egui::Context) {
-        // Check for any ready thumbnails that don't have textures yet
         let media_ids: Vec<MediaId> = self.state.media_pool.all().map(|m| m.id).collect();
         for media_id in media_ids {
-            if self.state.thumbnail_textures.contains_key(&media_id) {
-                continue;
+            // Upload single thumbnail if not yet done
+            if !self.state.thumbnail_textures.contains_key(&media_id) {
+                if let Some(ThumbnailEntry::Ready { rgba, width, height }) =
+                    self.state.thumbnail_cache.get(&media_id)
+                {
+                    let w = *width as usize;
+                    let h = *height as usize;
+                    if rgba.len() == w * h * 4 {
+                        let pixels: Vec<egui::Color32> = rgba
+                            .chunks_exact(4)
+                            .map(|p| {
+                                egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                            })
+                            .collect();
+                        let image = egui::ColorImage {
+                            size: [w, h],
+                            pixels,
+                        };
+                        let tex = ctx.load_texture(
+                            format!("thumb-{}", media_id),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.state.thumbnail_textures.insert(media_id, tex);
+                    }
+                }
             }
-            if let Some(ThumbnailEntry::Ready { rgba, width, height }) =
-                self.state.thumbnail_cache.get(&media_id)
-            {
-                let w = *width as usize;
-                let h = *height as usize;
-                if rgba.len() == w * h * 4 {
-                    let pixels: Vec<egui::Color32> = rgba
-                        .chunks_exact(4)
-                        .map(|p| {
-                            egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
-                        })
-                        .collect();
-                    let image = egui::ColorImage {
-                        size: [w, h],
-                        pixels,
-                    };
-                    let tex = ctx.load_texture(
-                        format!("thumb-{}", media_id),
-                        image,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.state.thumbnail_textures.insert(media_id, tex);
+
+            // Upload filmstrip textures if not yet done (independent of thumbnail)
+            if !self.state.filmstrip_textures.contains_key(&media_id) {
+                if let Some(frames) = self.state.thumbnail_cache.filmstrip(&media_id) {
+                    if !frames.is_empty() {
+                        let textures: Vec<(f64, egui::TextureHandle)> = frames
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, frame)| {
+                                let w = frame.width as usize;
+                                let h = frame.height as usize;
+                                if frame.rgba.len() != w * h * 4 {
+                                    return None;
+                                }
+                                let pixels: Vec<egui::Color32> = frame
+                                    .rgba
+                                    .chunks_exact(4)
+                                    .map(|p| {
+                                        egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                                    })
+                                    .collect();
+                                let image = egui::ColorImage {
+                                    size: [w, h],
+                                    pixels,
+                                };
+                                let tex = ctx.load_texture(
+                                    format!("filmstrip-{}-{}", media_id, i),
+                                    image,
+                                    egui::TextureOptions::LINEAR,
+                                );
+                                Some((frame.time_secs, tex))
+                            })
+                            .collect();
+                        self.state.filmstrip_textures.insert(media_id, textures);
+                    }
                 }
             }
         }

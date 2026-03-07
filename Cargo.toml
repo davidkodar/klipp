@@ -52,16 +52,22 @@ egui_extras = "0.29"
 # GPU
 wgpu = "22"
 
-# Video decode
-libmpv2 = "5"
-
 # Audio
 cpal = "0.15"
 dasp = { version = "0.11", features = ["all"] }
 symphonia = { version = "0.5", features = ["all"] }
 
-# FFmpeg (export / thumbnails)
-ffmpeg-next = "7"
+# FFmpeg (decode + export)
+ffmpeg-next = "8"
+
+# Audio resampling
+rubato = "0.15"
+
+# Lock-free ring buffer
+ringbuf = "0.4"
+
+# Safe transmute for GPU buffer data
+bytemuck = "1.14"
 
 # OpenColorIO (color management)
 # Note: requires system libOpenColorIO - bindings via C FFI

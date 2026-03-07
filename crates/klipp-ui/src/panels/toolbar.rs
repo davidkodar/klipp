@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::state::{AppState, PlayheadFollow};
 use klipp_core::{AppCommand, Tool};
 
 pub struct ToolbarPanel;
@@ -169,6 +169,45 @@ impl ToolbarPanel {
                     let proxy_label = if state.use_proxies { "\u{2713} Use Proxies" } else { "  Use Proxies" };
                     if ui.button(proxy_label).clicked() {
                         cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Settings", |ui| {
+                    // --- Timeline section ---
+                    ui.label(egui::RichText::new("Timeline").strong().size(11.0));
+
+                    let snap_label = if state.snap_enabled { "\u{2713} Snap to Clips" } else { "  Snap to Clips" };
+                    if ui.button(snap_label).clicked() {
+                        cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled));
+                        ui.close_menu();
+                    }
+
+                    let ripple_label = if state.ripple_enabled { "\u{2713} Ripple Edit" } else { "  Ripple Edit" };
+                    if ui.button(ripple_label).clicked() {
+                        cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    // --- Playhead follow ---
+                    ui.label(egui::RichText::new("Playhead Follow").strong().size(11.0));
+                    for mode in &[PlayheadFollow::Off, PlayheadFollow::Page, PlayheadFollow::Smooth] {
+                        let check = if state.playhead_follow == *mode { "\u{2713} " } else { "  " };
+                        if ui.button(format!("{}{}", check, mode.label())).clicked() {
+                            state.playhead_follow = *mode;
+                            ui.close_menu();
+                        }
+                    }
+
+                    ui.separator();
+
+                    // --- Performance ---
+                    ui.label(egui::RichText::new("Debug").strong().size(11.0));
+                    let perf_label = if state.show_perf_overlay { "\u{2713} Performance Overlay" } else { "  Performance Overlay" };
+                    if ui.button(perf_label).clicked() {
+                        state.show_perf_overlay = !state.show_perf_overlay;
                         ui.close_menu();
                     }
                 });

@@ -162,6 +162,9 @@ impl ViewerPanel {
         state: &AppState,
         _cmds: &mut Vec<AppCommand>,
     ) {
+        // Update perf FPS from egui's frame time
+        let _dt = ui.input(|i| i.unstable_dt);
+
         let available = ui.available_size();
 
         let current_media = state
@@ -278,6 +281,80 @@ impl ViewerPanel {
             );
             ui.painter()
                 .galley(res_pos, res_galley, egui::Color32::WHITE);
+        }
+
+        // Performance overlay (toggle with P key or via menu)
+        if state.show_perf_overlay {
+            self.draw_perf_overlay(ui, state, image_rect);
+        }
+    }
+
+    fn draw_perf_overlay(
+        &self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        image_rect: egui::Rect,
+    ) {
+        let font = egui::FontId::monospace(11.0);
+        let line_h = 15.0;
+        let pad = 6.0;
+
+        let hw_label = if state.perf_hw_decode { "VAAPI" } else { "SW" };
+        let playback_label = match state.playback {
+            PlaybackState::Playing => "PLAY",
+            PlaybackState::Paused => "PAUSE",
+            PlaybackState::Stopped => "STOP",
+            PlaybackState::Idle => "IDLE",
+        };
+
+        let lines = [
+            format!("UI FPS: {:.0}", state.perf_fps),
+            format!("Decode: {hw_label}"),
+            format!("State:  {playback_label}"),
+            format!("Frames: {}", state.perf_frame_count),
+            format!("Drops:  {}", state.perf_dropped_frames),
+            format!("CPU:    {:.0}%", state.perf_cpu_percent),
+            format!("Mem:    {:.0} MB", state.perf_memory_mb),
+        ];
+
+        let max_w = lines
+            .iter()
+            .map(|l| {
+                ui.painter()
+                    .layout_no_wrap(l.clone(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .fold(0.0f32, f32::max);
+
+        let box_w = max_w + pad * 2.0;
+        let box_h = lines.len() as f32 * line_h + pad * 2.0;
+        let box_pos = egui::pos2(image_rect.left() + 4.0, image_rect.top() + 4.0);
+        let box_rect = egui::Rect::from_min_size(box_pos, egui::vec2(box_w, box_h));
+
+        ui.painter().rect_filled(
+            box_rect,
+            4.0,
+            egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
+        );
+
+        for (i, line) in lines.iter().enumerate() {
+            let color = if i == 4 && state.perf_dropped_frames > 0 {
+                egui::Color32::from_rgb(255, 100, 100) // red drops
+            } else if i == 1 && state.perf_hw_decode {
+                egui::Color32::from_rgb(100, 255, 100) // green VAAPI
+            } else if i == 5 && state.perf_cpu_percent > 80.0 {
+                egui::Color32::from_rgb(255, 180, 80) // orange high CPU
+            } else {
+                egui::Color32::from_rgb(220, 220, 230)
+            };
+            ui.painter().text(
+                egui::pos2(box_pos.x + pad, box_pos.y + pad + i as f32 * line_h),
+                egui::Align2::LEFT_TOP,
+                line,
+                font.clone(),
+                color,
+            );
         }
     }
 
