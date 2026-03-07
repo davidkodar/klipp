@@ -1,3 +1,4 @@
+use crate::history::EditCommand;
 use crate::panels::inspector::InspectorPanel;
 use crate::panels::timeline::TimelinePanel;
 use crate::panels::toolbar::ToolbarPanel;
@@ -5,7 +6,10 @@ use crate::panels::transport::TransportBar;
 use crate::panels::viewer::ViewerPanel;
 use crate::state::{AppState, UnsavedAction};
 use crossbeam_channel::{Receiver, Sender};
-use klipp_core::{AppCommand, AppEvent, MediaId, Timecode};
+use klipp_core::{
+    AppCommand, AppEvent, ExportAudioCodec, ExportFormat, ExportSettings,
+    ExportVideoCodec, MediaId, Timecode,
+};
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::Sequence;
@@ -33,6 +37,16 @@ pub struct KlippApp {
     timeline: TimelinePanel,
     thumb_tx: Sender<ThumbnailResult>,
     thumb_rx: Receiver<ThumbnailResult>,
+    export_child: Option<std::process::Child>,
+    export_event_tx: Sender<AppEvent>,
+    export_event_rx: Receiver<AppEvent>,
+    // Export dialog state
+    export_output_path: String,
+    export_format: ExportFormat,
+    export_video_codec: ExportVideoCodec,
+    export_crf: u32,
+    export_audio_codec: ExportAudioCodec,
+    export_audio_bitrate: u32,
 }
 
 impl KlippApp {
@@ -45,6 +59,7 @@ impl KlippApp {
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     ) -> Self {
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
+        let (export_event_tx, export_event_rx) = crossbeam_channel::unbounded();
         let mut visuals = egui::Visuals::dark();
         visuals.window_fill = egui::Color32::from_rgb(8, 8, 13);
         visuals.panel_fill = egui::Color32::from_rgb(28, 28, 32);
@@ -71,6 +86,15 @@ impl KlippApp {
             timeline: TimelinePanel::default(),
             thumb_tx,
             thumb_rx,
+            export_child: None,
+            export_event_tx,
+            export_event_rx,
+            export_output_path: String::new(),
+            export_format: ExportFormat::Mp4,
+            export_video_codec: ExportVideoCodec::H264,
+            export_crf: 23,
+            export_audio_codec: ExportAudioCodec::Aac,
+            export_audio_bitrate: 128,
         }
     }
 
@@ -139,7 +163,7 @@ impl KlippApp {
                     }
 
                     // Start thumbnail generation
-                    self.spawn_thumbnail(media_id, path, duration, fps);
+                    self.spawn_thumbnail(media_id, path, duration);
                 }
                 AppEvent::MediaLoadFailed { media_id: _, error } => {
                     self.state.pending_media_path = None;
@@ -157,6 +181,11 @@ impl KlippApp {
                 AppEvent::ProjectSaved { .. }
                 | AppEvent::ProjectLoaded { .. }
                 | AppEvent::ProjectError { .. } => {}
+                AppEvent::ExportProgress { .. }
+                | AppEvent::ExportComplete { .. }
+                | AppEvent::ExportError { .. } => {
+                    // Export events come through export_event_rx channel
+                }
                 AppEvent::ThumbnailReady { .. } => {
                     // Thumbnails come through thumb_rx channel instead
                 }
@@ -169,11 +198,10 @@ impl KlippApp {
         media_id: MediaId,
         path: PathBuf,
         duration: Timecode,
-        fps: klipp_core::Fps,
     ) {
         self.state.thumbnail_cache.set_pending(media_id);
         let tx = self.thumb_tx.clone();
-        let duration_secs = duration.to_secs(&fps);
+        let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
         std::thread::spawn(move || {
             match klipp_engine::generate_thumbnail(&path, seek_secs) {
@@ -228,11 +256,16 @@ impl KlippApp {
             pixels,
         };
 
-        self.viewer.video_texture = Some(ctx.load_texture(
-            "klipp-video-frame",
-            image,
-            egui::TextureOptions::LINEAR,
-        ));
+        // Reuse existing texture if possible, otherwise create new
+        if let Some(ref mut tex) = self.viewer.video_texture {
+            tex.set(image, egui::TextureOptions::LINEAR);
+        } else {
+            self.viewer.video_texture = Some(ctx.load_texture(
+                "klipp-video-frame",
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
 
         fb.dirty = false;
     }
@@ -266,12 +299,21 @@ impl KlippApp {
                 AppCommand::AppendClip { media_id } => {
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
+                        let track_index = self.state.sequence.tracks.iter()
+                            .position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .unwrap_or(0);
                         let clip_id = self
                             .state
                             .sequence
                             .video_track_mut()
                             .unwrap()
                             .append_clip(*media_id, duration);
+                        let clip = *self.state.sequence.video_track().unwrap()
+                            .find_clip(clip_id).unwrap();
+                        self.state.history.push(EditCommand::AppendClip {
+                            clip,
+                            track_index,
+                        });
                         self.sync_sequence_to_engine();
                         self.state.selected_clip = Some(clip_id);
                         self.state.dirty = true;
@@ -279,8 +321,25 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::RemoveClip { clip_id } => {
+                    let track_index = self.state.sequence.tracks.iter()
+                        .position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                        .unwrap_or(0);
                     if let Some(track) = self.state.sequence.video_track_mut() {
-                        track.remove_clip(*clip_id);
+                        // Record shifted clips before ripple remove
+                        let pos = track.clips.iter().position(|c| c.id == *clip_id);
+                        if let Some(pos) = pos {
+                            let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                                .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                .collect();
+                            if let Some(removed) = track.ripple_remove(*clip_id) {
+                                self.state.history.push(EditCommand::RippleRemove {
+                                    removed_clip: removed,
+                                    track_index,
+                                    position: pos,
+                                    shifted_clips: shifted,
+                                });
+                            }
+                        }
                         self.sync_sequence_to_engine();
                         if self.state.selected_clip == Some(*clip_id) {
                             self.state.selected_clip = None;
@@ -295,9 +354,18 @@ impl KlippApp {
                 } => {
                     if let Some(track) = self.state.sequence.video_track_mut() {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let old_in = clip.timeline_in;
+                            let old_out = clip.timeline_out;
                             let dur = clip.duration();
                             clip.timeline_in = *new_timeline_in;
                             clip.timeline_out = *new_timeline_in + dur;
+                            self.state.history.push(EditCommand::MoveClip {
+                                clip_id: *clip_id,
+                                old_timeline_in: old_in,
+                                old_timeline_out: old_out,
+                                new_timeline_in: clip.timeline_in,
+                                new_timeline_out: clip.timeline_out,
+                            });
                         }
                         track.sort_clips();
                         self.sync_sequence_to_engine();
@@ -314,6 +382,17 @@ impl KlippApp {
                 } => {
                     if let Some(track) = self.state.sequence.video_track_mut() {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            self.state.history.push(EditCommand::TrimClip {
+                                clip_id: *clip_id,
+                                old_source_in: clip.source_in,
+                                old_source_out: clip.source_out,
+                                old_timeline_in: clip.timeline_in,
+                                old_timeline_out: clip.timeline_out,
+                                new_source_in: *new_source_in,
+                                new_source_out: *new_source_out,
+                                new_timeline_in: *new_timeline_in,
+                                new_timeline_out: *new_timeline_out,
+                            });
                             clip.source_in = *new_source_in;
                             clip.source_out = *new_source_out;
                             clip.timeline_in = *new_timeline_in;
@@ -323,6 +402,33 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
                     continue;
+                }
+                AppCommand::Undo => {
+                    self.apply_undo();
+                    continue;
+                }
+                AppCommand::Redo => {
+                    self.apply_redo();
+                    continue;
+                }
+                AppCommand::SequenceUpdated => {
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::ShowExportDialog => {
+                    self.state.show_export_dialog = true;
+                    continue;
+                }
+                AppCommand::ExportSequence { settings } => {
+                    self.start_export(settings.clone());
+                    continue;
+                }
+                AppCommand::CancelExport => {
+                    self.cancel_export();
+                    continue;
+                }
+                AppCommand::SetSpeed(speed) => {
+                    self.state.playback_speed = *speed;
                 }
                 AppCommand::SelectClip(id) => {
                     self.state.selected_clip = *id;
@@ -386,6 +492,120 @@ impl KlippApp {
         self.sync_sequence_to_engine();
     }
 
+    fn apply_undo(&mut self) {
+        if let Some(cmd) = self.state.history.undo() {
+            self.apply_edit_inverse(&cmd);
+            self.sync_sequence_to_engine();
+            self.state.dirty = true;
+        }
+    }
+
+    fn apply_redo(&mut self) {
+        if let Some(cmd) = self.state.history.redo() {
+            self.apply_edit_forward(&cmd);
+            self.sync_sequence_to_engine();
+            self.state.dirty = true;
+        }
+    }
+
+    fn apply_edit_inverse(&mut self, cmd: &EditCommand) {
+        match cmd {
+            EditCommand::AppendClip { clip, .. } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    track.remove_clip(clip.id);
+                }
+            }
+            EditCommand::RemoveClip { clip, track_index, position } => {
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    let pos = (*position).min(track.clips.len());
+                    track.clips.insert(pos, *clip);
+                }
+            }
+            EditCommand::RippleRemove { removed_clip, track_index, position, shifted_clips } => {
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    // Restore shifted clips to their original positions
+                    for (cid, old_in, old_out) in shifted_clips {
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *cid) {
+                            c.timeline_in = *old_in;
+                            c.timeline_out = *old_out;
+                        }
+                    }
+                    // Re-insert the removed clip
+                    let pos = (*position).min(track.clips.len());
+                    track.clips.insert(pos, *removed_clip);
+                    track.sort_clips();
+                }
+            }
+            EditCommand::MoveClip { clip_id, old_timeline_in, old_timeline_out, .. } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.timeline_in = *old_timeline_in;
+                        clip.timeline_out = *old_timeline_out;
+                    }
+                    track.sort_clips();
+                }
+            }
+            EditCommand::TrimClip {
+                clip_id,
+                old_source_in, old_source_out,
+                old_timeline_in, old_timeline_out, ..
+            } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.source_in = *old_source_in;
+                        clip.source_out = *old_source_out;
+                        clip.timeline_in = *old_timeline_in;
+                        clip.timeline_out = *old_timeline_out;
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_edit_forward(&mut self, cmd: &EditCommand) {
+        match cmd {
+            EditCommand::AppendClip { clip, track_index } => {
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    track.clips.push(*clip);
+                    track.sort_clips();
+                }
+            }
+            EditCommand::RemoveClip { clip, .. } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    track.remove_clip(clip.id);
+                }
+            }
+            EditCommand::RippleRemove { removed_clip, .. } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    track.ripple_remove(removed_clip.id);
+                }
+            }
+            EditCommand::MoveClip { clip_id, new_timeline_in, new_timeline_out, .. } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.timeline_in = *new_timeline_in;
+                        clip.timeline_out = *new_timeline_out;
+                    }
+                    track.sort_clips();
+                }
+            }
+            EditCommand::TrimClip {
+                clip_id,
+                new_source_in, new_source_out,
+                new_timeline_in, new_timeline_out, ..
+            } => {
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.source_in = *new_source_in;
+                        clip.source_out = *new_source_out;
+                        clip.timeline_in = *new_timeline_in;
+                        clip.timeline_out = *new_timeline_out;
+                    }
+                }
+            }
+        }
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) {
         match klipp_project::save_project(path, &self.state.sequence, &self.state.media_pool) {
             Ok(()) => {
@@ -420,10 +640,10 @@ impl KlippApp {
                     .media_pool
                     .all()
                     .filter(|item| !item.offline)
-                    .map(|item| (item.id, item.path.clone(), item.duration, item.fps))
+                    .map(|item| (item.id, item.path.clone(), item.duration))
                     .collect();
-                for (id, path, duration, fps) in thumb_items {
-                    self.spawn_thumbnail(id, path, duration, fps);
+                for (id, path, duration) in thumb_items {
+                    self.spawn_thumbnail(id, path, duration);
                 }
 
                 tracing::info!("Project loaded from {:?}", path);
@@ -550,9 +770,22 @@ impl KlippApp {
                     cmds.push(AppCommand::ImportMedia { path });
                 }
             }
-            // Ctrl+Z — placeholder
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::Z) {
-                tracing::info!("Undo not yet implemented");
+            // Ctrl+E — Export
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::E) {
+                self.state.show_export_dialog = true;
+                if self.export_output_path.is_empty() {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                    self.export_output_path = format!("{home}/output.mp4");
+                }
+            }
+            // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Z) {
+                cmds.push(AppCommand::Undo);
+            }
+            if i.modifiers.ctrl && (i.key_pressed(egui::Key::Y)
+                || (i.modifiers.shift && i.key_pressed(egui::Key::Z)))
+            {
+                cmds.push(AppCommand::Redo);
             }
             // Delete/Backspace — remove selected clip
             if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
@@ -571,6 +804,7 @@ impl eframe::App for KlippApp {
         // 1. Drain events from engine
         self.drain_events(ctx);
         self.drain_thumbnails();
+        self.drain_export_events();
         self.upload_frame_to_egui(ctx);
 
         // Update thumbnails: convert ready thumbnails to textures
@@ -589,6 +823,10 @@ impl eframe::App for KlippApp {
         // 4. Unsaved changes dialog
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
+
+        // 4b. Export dialog
+        let export_cmds = self.show_export_dialog(ctx);
+        all_cmds.extend(export_cmds);
 
         // 5. Toolbar (top)
         egui::TopBottomPanel::top("toolbar")
@@ -663,13 +901,287 @@ impl eframe::App for KlippApp {
             }
         }
 
-        if self.state.playback == PlaybackState::Playing {
+        if self.state.playback == PlaybackState::Playing || self.state.export_in_progress {
             ctx.request_repaint();
         }
     }
 }
 
 impl KlippApp {
+    fn drain_export_events(&mut self) {
+        while let Ok(event) = self.export_event_rx.try_recv() {
+            match event {
+                AppEvent::ExportProgress { percent, .. } => {
+                    self.state.export_progress = percent;
+                }
+                AppEvent::ExportComplete { path } => {
+                    self.state.export_in_progress = false;
+                    self.export_child = None;
+                    tracing::info!("Export complete: {:?}", path);
+                }
+                AppEvent::ExportError { message } => {
+                    self.state.export_in_progress = false;
+                    self.state.export_error = Some(message);
+                    self.export_child = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+
+        // Progress window
+        if self.state.export_in_progress {
+            egui::Window::new("Exporting...")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    let progress = self.state.export_progress / 100.0;
+                    ui.add(egui::ProgressBar::new(progress).show_percentage());
+                    ui.add_space(8.0);
+                    if ui.button("Cancel").clicked() {
+                        cmds.push(AppCommand::CancelExport);
+                    }
+                });
+            return cmds;
+        }
+
+        // Error display
+        if let Some(ref error) = self.state.export_error.clone() {
+            let mut show = true;
+            egui::Window::new("Export Error")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut show)
+                .show(ctx, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), error);
+                    if ui.button("OK").clicked() {
+                        self.state.export_error = None;
+                    }
+                });
+            if !show {
+                self.state.export_error = None;
+            }
+            return cmds;
+        }
+
+        if !self.state.show_export_dialog {
+            return cmds;
+        }
+
+        let mut open = true;
+        egui::Window::new("Export Sequence")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("export_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Output file:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.export_output_path)
+                                .desired_width(300.0));
+                            if ui.button("...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Export to...")
+                                    .save_file()
+                                {
+                                    self.export_output_path = path.to_string_lossy().to_string();
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Format:");
+                        egui::ComboBox::from_id_salt("export_format")
+                            .selected_text(self.export_format.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.export_format, ExportFormat::Mp4, "MP4");
+                                ui.selectable_value(&mut self.export_format, ExportFormat::Mkv, "MKV");
+                                ui.selectable_value(&mut self.export_format, ExportFormat::Mov, "MOV");
+                            });
+                        ui.end_row();
+
+                        ui.label("Video codec:");
+                        egui::ComboBox::from_id_salt("export_vcodec")
+                            .selected_text(self.export_video_codec.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.export_video_codec, ExportVideoCodec::H264, "H.264");
+                                ui.selectable_value(&mut self.export_video_codec, ExportVideoCodec::H265, "H.265");
+                                if self.export_format == ExportFormat::Mov {
+                                    ui.selectable_value(&mut self.export_video_codec, ExportVideoCodec::ProRes, "ProRes");
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("Quality (CRF):");
+                        ui.add(egui::Slider::new(&mut self.export_crf, 0..=51));
+                        ui.end_row();
+
+                        ui.label("Audio codec:");
+                        egui::ComboBox::from_id_salt("export_acodec")
+                            .selected_text(self.export_audio_codec.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.export_audio_codec, ExportAudioCodec::Aac, "AAC");
+                                ui.selectable_value(&mut self.export_audio_codec, ExportAudioCodec::Mp3, "MP3");
+                                ui.selectable_value(&mut self.export_audio_codec, ExportAudioCodec::Flac, "FLAC");
+                                ui.selectable_value(&mut self.export_audio_codec, ExportAudioCodec::Copy, "Copy Source");
+                            });
+                        ui.end_row();
+
+                        ui.label("Audio bitrate:");
+                        egui::ComboBox::from_id_salt("export_abitrate")
+                            .selected_text(format!("{} kbps", self.export_audio_bitrate))
+                            .show_ui(ui, |ui| {
+                                for rate in [128, 192, 256, 320] {
+                                    ui.selectable_value(&mut self.export_audio_bitrate, rate, format!("{rate} kbps"));
+                                }
+                            });
+                        ui.end_row();
+                    });
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.state.show_export_dialog = false;
+                    }
+                    if ui.button("Export").clicked() {
+                        self.state.show_export_dialog = false;
+                        cmds.push(AppCommand::ExportSequence {
+                            settings: ExportSettings {
+                                output_path: PathBuf::from(&self.export_output_path),
+                                format: self.export_format,
+                                video_codec: self.export_video_codec,
+                                resolution: None,
+                                fps: None,
+                                crf: self.export_crf,
+                                audio_codec: self.export_audio_codec,
+                                audio_bitrate_kbps: self.export_audio_bitrate,
+                            },
+                        });
+                    }
+                });
+            });
+
+        if !open {
+            self.state.show_export_dialog = false;
+        }
+
+        cmds
+    }
+
+    fn start_export(&mut self, settings: ExportSettings) {
+        // Check ffmpeg availability
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            self.state.export_error = Some("ffmpeg not found. Install ffmpeg to export.".into());
+            return;
+        }
+
+        // Build concat demuxer file
+        let concat_path = std::env::temp_dir().join("klipp_export_concat.txt");
+        let mut concat_content = String::new();
+        if let Some(track) = self.state.sequence.video_track() {
+            for clip in &track.clips {
+                if let Some(media) = self.state.media_pool.get(&clip.media_id) {
+                    let path_str = media.path.to_string_lossy().replace('\'', "'\\''");
+                    let in_secs = clip.source_in.to_secs_f64();
+                    let out_secs = clip.source_out.to_secs_f64();
+                    concat_content.push_str(&format!(
+                        "file '{}'\ninpoint {:.6}\noutpoint {:.6}\n",
+                        path_str, in_secs, out_secs
+                    ));
+                }
+            }
+        }
+
+        if concat_content.is_empty() {
+            self.state.export_error = Some("No clips to export.".into());
+            return;
+        }
+
+        if let Err(e) = std::fs::write(&concat_path, &concat_content) {
+            self.state.export_error = Some(format!("Failed to write concat file: {e}"));
+            return;
+        }
+
+        let total_duration = self.state.sequence.total_duration().to_secs_f64();
+
+        let mut cmd = std::process::Command::new("ffmpeg");
+        cmd.arg("-y")
+            .arg("-f").arg("concat")
+            .arg("-safe").arg("0")
+            .arg("-i").arg(&concat_path)
+            .arg("-c:v").arg(settings.video_codec.ffmpeg_codec())
+            .arg("-crf").arg(settings.crf.to_string())
+            .arg("-preset").arg("medium");
+
+        for arg in settings.audio_codec.ffmpeg_args(settings.audio_bitrate_kbps) {
+            cmd.arg(arg);
+        }
+
+        cmd.arg("-progress").arg("pipe:1")
+            .arg(&settings.output_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                self.state.export_in_progress = true;
+                self.state.export_progress = 0.0;
+
+                let stdout = child.stdout.take();
+                let tx = self.export_event_tx.clone();
+                let output_path = settings.output_path.clone();
+
+                // Monitor progress in a thread
+                std::thread::spawn(move || {
+                    if let Some(stdout) = stdout {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(stdout);
+                        for line in reader.lines().map_while(Result::ok) {
+                            if let Some(time_str) = line.strip_prefix("out_time_us=") {
+                                if let Ok(us) = time_str.trim().parse::<i64>() {
+                                    let secs = us as f64 / 1_000_000.0;
+                                    let percent = if total_duration > 0.0 {
+                                        (secs / total_duration * 100.0).min(100.0) as f32
+                                    } else {
+                                        0.0
+                                    };
+                                    let _ = tx.send(AppEvent::ExportProgress {
+                                        percent,
+                                        time_secs: secs,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    let _ = tx.send(AppEvent::ExportComplete { path: output_path });
+                });
+
+                self.export_child = Some(child);
+            }
+            Err(e) => {
+                self.state.export_error = Some(format!("Failed to start ffmpeg: {e}"));
+            }
+        }
+    }
+
+    fn cancel_export(&mut self) {
+        if let Some(ref mut child) = self.export_child {
+            let _ = child.kill();
+        }
+        self.export_child = None;
+        self.state.export_in_progress = false;
+        self.state.export_progress = 0.0;
+    }
+
     fn update_thumbnail_textures(&mut self, ctx: &egui::Context) {
         // Check for any ready thumbnails that don't have textures yet
         let media_ids: Vec<MediaId> = self.state.media_pool.all().map(|m| m.id).collect();

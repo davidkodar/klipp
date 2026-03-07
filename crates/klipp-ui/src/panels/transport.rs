@@ -97,9 +97,9 @@ impl TransportBar {
 
             // Timecode display with total duration
             ui.add_space(24.0);
-            let playhead_str = state.playhead.format_hmsf(&state.fps);
+            let playhead_str = state.playhead.to_timecode_string();
             let duration = state.sequence_duration();
-            let duration_str = duration.format_hmsf(&state.fps);
+            let duration_str = duration.to_timecode_string();
 
             ui.label(
                 egui::RichText::new(playhead_str)
@@ -153,6 +153,35 @@ impl TransportBar {
             if i.key_pressed(egui::Key::End) {
                 let dur = state.sequence_duration();
                 cmds.push(AppCommand::SeekTo(dur));
+            }
+            // J — reverse/faster reverse
+            if i.key_pressed(egui::Key::J) {
+                let s = state.playback_speed;
+                let new_speed = if s > 0.0 { -2.0 }
+                    else if s == -2.0 { -4.0 }
+                    else if s == -4.0 { -8.0 }
+                    else { -2.0 };
+                cmds.push(AppCommand::SetSpeed(new_speed));
+                if state.playback != PlaybackState::Playing {
+                    cmds.push(AppCommand::Play);
+                }
+            }
+            // K — pause, reset speed
+            if i.key_pressed(egui::Key::K) {
+                cmds.push(AppCommand::SetSpeed(1.0));
+                cmds.push(AppCommand::Pause);
+            }
+            // L — forward/faster forward
+            if i.key_pressed(egui::Key::L) {
+                let s = state.playback_speed;
+                let new_speed = if s < 0.0 { 2.0 }
+                    else if s == 2.0 { 4.0 }
+                    else if s == 4.0 { 8.0 }
+                    else { 2.0 };
+                cmds.push(AppCommand::SetSpeed(new_speed));
+                if state.playback != PlaybackState::Playing {
+                    cmds.push(AppCommand::Play);
+                }
             }
         });
 

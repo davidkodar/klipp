@@ -4,7 +4,7 @@ use klipp_core::AppCommand;
 pub struct ToolbarPanel;
 
 impl ToolbarPanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, _state: &AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
         ui.horizontal(|ui| {
@@ -77,6 +77,14 @@ impl ToolbarPanel {
                         }
                     }
                     ui.separator();
+                    if ui
+                        .add(egui::Button::new("Export...").shortcut_text("Ctrl+E"))
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::ShowExportDialog);
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Quit").clicked() {
                         cmds.push(AppCommand::Quit);
                         ui.close_menu();
@@ -84,10 +92,33 @@ impl ToolbarPanel {
                 });
 
                 ui.menu_button("Edit", |ui| {
-                    let r = ui.add_enabled(false, egui::Button::new("Undo"));
-                    r.on_disabled_hover_text("(coming soon)");
-                    let r = ui.add_enabled(false, egui::Button::new("Redo"));
-                    r.on_disabled_hover_text("(coming soon)");
+                    let can_undo = state.history.can_undo();
+                    let undo_label = if let Some(desc) = state.history.undo_label() {
+                        format!("Undo {}", desc)
+                    } else {
+                        "Undo".to_string()
+                    };
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new(undo_label).shortcut_text("Ctrl+Z"))
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::Undo);
+                        ui.close_menu();
+                    }
+
+                    let can_redo = state.history.can_redo();
+                    let redo_label = if let Some(desc) = state.history.redo_label() {
+                        format!("Redo {}", desc)
+                    } else {
+                        "Redo".to_string()
+                    };
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new(redo_label).shortcut_text("Ctrl+Y"))
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::Redo);
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("View", |ui| {

@@ -84,7 +84,7 @@ impl ViewerPanel {
         }
 
         // Timecode overlay
-        let tc_text = state.playhead.format_hmsf(&state.fps);
+        let tc_text = state.playhead.to_timecode_string();
         let tc_font = egui::FontId::monospace(13.0);
         let tc_galley =
             ui.painter()

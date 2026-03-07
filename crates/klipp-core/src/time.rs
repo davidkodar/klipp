@@ -20,6 +20,13 @@ impl Fps {
         1.0 / self.as_f64()
     }
 
+    pub fn rate(&self) -> u32 {
+        // For integer fps (den=1), rate is just num.
+        // For fractional fps like 24000/1001, use num as the rate
+        // to preserve frame-accurate timing.
+        self.num
+    }
+
     pub fn ntsc_23976() -> Self {
         Self { num: 24000, den: 1001 }
     }
@@ -37,82 +44,132 @@ impl Fps {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Timecode(pub i64);
+/// A time value stored as an exact rational number: value/rate seconds.
+/// When rate=24 and value=48, that represents exactly 2.0 seconds.
+/// When rate=16 and value=81, that represents 5.0625 seconds.
+/// Times at different rates can be compared and combined via rescaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RationalTime {
+    pub value: i64,
+    pub rate: u32,
+}
 
-impl Timecode {
+impl RationalTime {
     pub fn zero() -> Self {
-        Self(0)
+        Self { value: 0, rate: 1 }
     }
 
-    pub fn from_secs(secs: f64, fps: &Fps) -> Self {
-        Self((secs * fps.as_f64()).round() as i64)
+    pub fn from_frames(frames: i64, rate: u32) -> Self {
+        Self { value: frames, rate }
     }
 
-    pub fn to_secs(&self, fps: &Fps) -> f64 {
-        self.0 as f64 / fps.as_f64()
+    pub fn from_secs_f64(secs: f64, rate: u32) -> Self {
+        Self {
+            value: (secs * rate as f64).round() as i64,
+            rate,
+        }
     }
 
-    pub fn to_hmsf(&self, fps: &Fps) -> (u32, u32, u32, u32) {
-        let total_frames = self.0.unsigned_abs();
-        let fps_round = fps.as_f64().round() as u64;
-        let frames = (total_frames % fps_round) as u32;
-        let total_secs = total_frames / fps_round;
-        let secs = (total_secs % 60) as u32;
-        let mins = ((total_secs / 60) % 60) as u32;
-        let hours = (total_secs / 3600) as u32;
-        (hours, mins, secs, frames)
+    pub fn to_secs_f64(&self) -> f64 {
+        self.value as f64 / self.rate as f64
     }
 
-    pub fn format_hmsf(&self, fps: &Fps) -> String {
-        let (h, m, s, f) = self.to_hmsf(fps);
-        let sign = if self.0 < 0 { "-" } else { "" };
-        format!("{sign}{h:02}:{m:02}:{s:02}:{f:02}")
+    /// Rescale to a different rate, preserving the time value
+    pub fn rescale_to(&self, new_rate: u32) -> Self {
+        if self.rate == new_rate {
+            return *self;
+        }
+        let new_value = (self.value as f64 * new_rate as f64 / self.rate as f64).round() as i64;
+        Self {
+            value: new_value,
+            rate: new_rate,
+        }
+    }
+
+    /// Format as HH:MM:SS:FF at the stored rate
+    pub fn to_timecode_string(&self) -> String {
+        let total_frames = self.value.abs();
+        let rate = self.rate.max(1) as i64;
+        let ff = total_frames % rate;
+        let total_secs = total_frames / rate;
+        let ss = total_secs % 60;
+        let mm = (total_secs / 60) % 60;
+        let hh = total_secs / 3600;
+        let sign = if self.value < 0 { "-" } else { "" };
+        format!("{sign}{hh:02}:{mm:02}:{ss:02}:{ff:02}")
     }
 }
 
-impl Add for Timecode {
+impl Add for RationalTime {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self(self.0 + rhs.0)
+        let rhs_rescaled = rhs.rescale_to(self.rate);
+        Self {
+            value: self.value + rhs_rescaled.value,
+            rate: self.rate,
+        }
     }
 }
 
-impl Sub for Timecode {
+impl Sub for RationalTime {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self(self.0 - rhs.0)
+        let rhs_rescaled = rhs.rescale_to(self.rate);
+        Self {
+            value: self.value - rhs_rescaled.value,
+            rate: self.rate,
+        }
     }
 }
 
-impl AddAssign for Timecode {
+impl AddAssign for RationalTime {
     fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0;
+        let rhs_rescaled = rhs.rescale_to(self.rate);
+        self.value += rhs_rescaled.value;
     }
 }
 
-impl SubAssign for Timecode {
+impl SubAssign for RationalTime {
     fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0;
+        let rhs_rescaled = rhs.rescale_to(self.rate);
+        self.value -= rhs_rescaled.value;
     }
 }
+
+impl PartialOrd for RationalTime {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RationalTime {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Compare by cross-multiplying to avoid floating point
+        let lhs = self.value as i128 * other.rate as i128;
+        let rhs = other.value as i128 * self.rate as i128;
+        lhs.cmp(&rhs)
+    }
+}
+
+/// Type alias for backward compatibility during migration.
+pub type Timecode = RationalTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
-    pub start: Timecode,
-    pub end: Timecode,
+    pub start: RationalTime,
+    pub end: RationalTime,
 }
 
 impl TimeRange {
-    pub fn new(start: Timecode, end: Timecode) -> Self {
+    pub fn new(start: RationalTime, end: RationalTime) -> Self {
         Self { start, end }
     }
 
-    pub fn duration(&self) -> Timecode {
+    pub fn duration(&self) -> RationalTime {
         self.end - self.start
     }
 
-    pub fn contains(&self, t: Timecode) -> bool {
+    pub fn contains(&self, t: RationalTime) -> bool {
         t >= self.start && t < self.end
     }
 
@@ -121,8 +178,16 @@ impl TimeRange {
     }
 
     pub fn intersection(&self, other: &TimeRange) -> Option<TimeRange> {
-        let start = self.start.max(other.start);
-        let end = self.end.min(other.end);
+        let start = if self.start >= other.start {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end <= other.end {
+            self.end
+        } else {
+            other.end
+        };
         if end > start {
             Some(Self::new(start, end))
         } else {

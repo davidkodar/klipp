@@ -36,6 +36,8 @@ pub struct TrackJson {
     pub clips: Vec<ClipJson>,
 }
 
+fn default_rate() -> u32 { 24 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClipJson {
     pub id: String,
@@ -44,6 +46,8 @@ pub struct ClipJson {
     pub timeline_out: i64,
     pub source_in: i64,
     pub source_out: i64,
+    #[serde(default = "default_rate")]
+    pub rate: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,6 +62,8 @@ pub struct MediaItemJson {
     pub path: String,
     pub filename: String,
     pub duration_frames: i64,
+    #[serde(default = "default_rate")]
+    pub duration_rate: u32,
     pub fps: FpsJson,
     pub resolution: ResolutionJson,
     pub video_codec: String,

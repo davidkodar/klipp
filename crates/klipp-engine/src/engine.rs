@@ -1,6 +1,6 @@
 use crate::texture::SharedFrameBuffer;
 use crossbeam_channel::{Receiver, Sender};
-use klipp_core::{AppCommand, AppEvent, Fps, MediaId, Resolution, Timecode};
+use klipp_core::{AppCommand, AppEvent, Fps, MediaId, RationalTime, Resolution, Timecode};
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::path::PathBuf;
@@ -31,6 +31,7 @@ pub struct PlaybackEngine {
     media_pool: Arc<RwLock<MediaPool>>,
     repaint_cb: Box<dyn Fn() + Send>,
     last_frame_time: std::time::Instant,
+    dropped_frames: u64,
 }
 
 impl PlaybackEngine {
@@ -75,6 +76,7 @@ impl PlaybackEngine {
             media_pool,
             repaint_cb,
             last_frame_time: std::time::Instant::now(),
+            dropped_frames: 0,
         })
     }
 
@@ -169,11 +171,17 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetSpeed(speed) => {
+                self.mpv
+                    .set_property("speed", speed)
+                    .unwrap_or_else(|e| error!("mpv set speed: {e}"));
+            }
+
             AppCommand::SeekRelative(frames) => {
                 if self.state != PlaybackState::Idle {
                     let seq_dur = self.sequence_duration();
-                    let new_tc = Timecode(self.playhead.0 + frames);
-                    let clamped = Timecode(new_tc.0.max(0).min(seq_dur.0));
+                    let new_tc = RationalTime { value: self.playhead.value + frames, rate: self.playhead.rate };
+                    let clamped = RationalTime { value: new_tc.value.max(0).min(seq_dur.value), rate: new_tc.rate };
                     self.seek_in_sequence(clamped);
                 }
             }
@@ -191,6 +199,12 @@ impl PlaybackEngine {
             | AppCommand::MoveClip { .. }
             | AppCommand::TrimClip { .. }
             | AppCommand::SelectClip(_)
+            | AppCommand::Undo
+            | AppCommand::Redo
+            | AppCommand::SequenceUpdated
+            | AppCommand::ShowExportDialog
+            | AppCommand::ExportSequence { .. }
+            | AppCommand::CancelExport
             | AppCommand::NewProject
             | AppCommand::SaveProject
             | AppCommand::SaveProjectAs { .. }
@@ -202,11 +216,10 @@ impl PlaybackEngine {
 
     fn handle_play(&mut self) {
         let seq = self.sequence.read().unwrap();
-        let fps = seq.fps;
         let clip_count = seq.video_track().map(|t| t.clips.len()).unwrap_or(0);
         let clip_info = seq.video_track().and_then(|track| {
             track.clips.first().map(|clip| {
-                (clip.media_id, clip.source_in.to_secs(&fps), clip.timeline_in)
+                (clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in)
             })
         });
         drop(seq);
@@ -236,6 +249,7 @@ impl PlaybackEngine {
             .set_property("pause", "no")
             .unwrap_or_else(|e| error!("mpv set pause=no: {e}"));
         self.state = PlaybackState::Playing;
+        self.dropped_frames = 0;
         self.last_frame_time = std::time::Instant::now();
         let _ = self.event_tx.send(AppEvent::PlaybackStarted);
         (self.repaint_cb)();
@@ -254,7 +268,7 @@ impl PlaybackEngine {
             if let Some((idx, clip)) = track.clip_at_timecode(tc) {
                 let media_id = clip.media_id;
                 let source_secs =
-                    clip.source_in.to_secs(&self.fps) + (tc - clip.timeline_in).to_secs(&self.fps);
+                    clip.source_in.to_secs_f64() + (tc - clip.timeline_in).to_secs_f64();
                 let need_load = self.current_clip_index != idx
                     || self.current_file.is_none();
                 drop(seq);
@@ -291,7 +305,7 @@ impl PlaybackEngine {
     }
 
     fn seek_to_timecode(&mut self, tc: Timecode) {
-        let secs = tc.to_secs(&self.fps);
+        let secs = tc.to_secs_f64();
         self.seek_mpv(secs);
         self.playhead = tc;
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
@@ -395,7 +409,7 @@ impl PlaybackEngine {
         let file_size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         self.fps = fps_from_float(container_fps);
-        self.duration = Timecode::from_secs(duration_secs, &self.fps);
+        self.duration = RationalTime::from_secs_f64(duration_secs, self.fps.rate());
         self.playhead = Timecode::zero();
         self.current_file = Some(path.clone());
         self.current_clip_index = 0;
@@ -449,15 +463,15 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap();
         if let Some(track) = seq.video_track() {
             if let Some(clip) = track.clips.get(self.current_clip_index) {
-                let source_in_secs = clip.source_in.to_secs(&self.fps);
+                let source_in_secs = clip.source_in.to_secs_f64();
                 let elapsed_secs = (time_pos - source_in_secs).max(0.0);
-                let elapsed_tc = Timecode::from_secs(elapsed_secs, &self.fps);
+                let elapsed_tc = RationalTime::from_secs_f64(elapsed_secs, self.fps.rate());
                 self.playhead = clip.timeline_in + elapsed_tc;
             } else {
-                self.playhead = Timecode::from_secs(time_pos, &self.fps);
+                self.playhead = RationalTime::from_secs_f64(time_pos, self.fps.rate());
             }
         } else {
-            self.playhead = Timecode::from_secs(time_pos, &self.fps);
+            self.playhead = RationalTime::from_secs_f64(time_pos, self.fps.rate());
         }
         drop(seq);
 
@@ -465,7 +479,12 @@ impl PlaybackEngine {
 
         // Only grab a frame when enough time has elapsed for the next frame
         let frame_duration = Duration::from_secs_f64(self.fps.frame_duration_secs());
-        if self.last_frame_time.elapsed() >= frame_duration {
+        let elapsed = self.last_frame_time.elapsed();
+        if elapsed >= frame_duration {
+            // Detect dropped frames
+            if elapsed >= frame_duration * 2 {
+                self.dropped_frames += 1;
+            }
             self.last_frame_time = std::time::Instant::now();
             self.grab_frame();
         }
@@ -476,13 +495,11 @@ impl PlaybackEngine {
     fn advance_to_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap();
         let next_idx = self.current_clip_index + 1;
-        let media_fps = self.fps;
-
         let next_clip_info = seq.video_track().and_then(|track| {
             track.clips.get(next_idx).map(|clip| {
                 (
                     clip.media_id,
-                    clip.source_in.to_secs(&media_fps),
+                    clip.source_in.to_secs_f64(),
                     clip.timeline_in,
                 )
             })
@@ -537,6 +554,12 @@ impl PlaybackEngine {
         (self.repaint_cb)();
     }
 
+    /// Grab the current video frame via screenshot-to-file.
+    ///
+    /// NOTE: screenshot-raw (which returns pixel data directly without disk I/O)
+    /// is not available because libmpv2 v5 does not wrap mpv_command_node.
+    /// The sys crate also doesn't expose it, so even raw FFI isn't possible.
+    /// Using /dev/shm minimizes the I/O cost of the file-based approach.
     fn grab_frame(&mut self) {
         let width: i64 = self.mpv.get_property("width").unwrap_or(0);
         let height: i64 = self.mpv.get_property("height").unwrap_or(0);

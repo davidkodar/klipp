@@ -4,5 +4,6 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [alias]
 r = "run -p klipp-app"
+rr = "run --release -p klipp-app"
 b = "build -p klipp-app"
 c = "clippy --workspace"

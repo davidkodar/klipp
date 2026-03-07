@@ -32,7 +32,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
             id: MediaId(parse_uuid(&item_json.id)?),
             path,
             filename: item_json.filename.clone(),
-            duration: Timecode(item_json.duration_frames),
+            duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
             fps: Fps::new(item_json.fps.num, item_json.fps.den),
             resolution: Resolution {
                 width: item_json.resolution.width,
@@ -65,14 +65,15 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
                     "Audio" => TrackKind::Audio,
                     _ => TrackKind::Video,
                 },
+                transitions: Vec::new(),
                 clips: t.clips.iter().map(|c| {
                     Clip {
                         id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
                         media_id: MediaId(parse_uuid(&c.media_id).unwrap_or_else(|_| Uuid::new_v4())),
-                        timeline_in: Timecode(c.timeline_in),
-                        timeline_out: Timecode(c.timeline_out),
-                        source_in: Timecode(c.source_in),
-                        source_out: Timecode(c.source_out),
+                        timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
+                        timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
+                        source_in: RationalTime { value: c.source_in, rate: c.rate },
+                        source_out: RationalTime { value: c.source_out, rate: c.rate },
                     }
                 }).collect(),
             }

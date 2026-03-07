@@ -1,4 +1,4 @@
-use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId};
+use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,12 +17,29 @@ impl Sequence {
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
-            tracks: vec![Track {
-                id: TrackId::new(),
-                name: "Video 1".to_string(),
-                kind: TrackKind::Video,
-                clips: Vec::new(),
-            }],
+            tracks: vec![
+                Track {
+                    id: TrackId::new(),
+                    name: "Video 2".to_string(),
+                    kind: TrackKind::Video,
+                    clips: Vec::new(),
+                    transitions: Vec::new(),
+                },
+                Track {
+                    id: TrackId::new(),
+                    name: "Video 1".to_string(),
+                    kind: TrackKind::Video,
+                    clips: Vec::new(),
+                    transitions: Vec::new(),
+                },
+                Track {
+                    id: TrackId::new(),
+                    name: "Audio 1".to_string(),
+                    kind: TrackKind::Audio,
+                    clips: Vec::new(),
+                    transitions: Vec::new(),
+                },
+            ],
         }
     }
 
@@ -35,12 +52,29 @@ impl Sequence {
             .unwrap_or(Timecode::zero())
     }
 
+    /// Returns the primary video track (Video 1).
     pub fn video_track(&self) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.kind == TrackKind::Video)
+        self.tracks.iter().find(|t| t.kind == TrackKind::Video && t.name == "Video 1")
+            .or_else(|| self.tracks.iter().find(|t| t.kind == TrackKind::Video))
     }
 
+    /// Returns the primary video track (Video 1) mutably.
     pub fn video_track_mut(&mut self) -> Option<&mut Track> {
-        self.tracks.iter_mut().find(|t| t.kind == TrackKind::Video)
+        // Find "Video 1" first, fall back to first video track
+        let has_v1 = self.tracks.iter().any(|t| t.kind == TrackKind::Video && t.name == "Video 1");
+        if has_v1 {
+            self.tracks.iter_mut().find(|t| t.kind == TrackKind::Video && t.name == "Video 1")
+        } else {
+            self.tracks.iter_mut().find(|t| t.kind == TrackKind::Video)
+        }
+    }
+
+    pub fn video_track2(&self) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.kind == TrackKind::Video && t.name == "Video 2")
+    }
+
+    pub fn audio_track(&self) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.kind == TrackKind::Audio)
     }
 }
 
@@ -50,6 +84,7 @@ pub struct Track {
     pub name: String,
     pub kind: TrackKind,
     pub clips: Vec<Clip>,
+    pub transitions: Vec<Transition>,
 }
 
 impl Track {
@@ -59,14 +94,20 @@ impl Track {
             .last()
             .map(|c| c.timeline_out)
             .unwrap_or(Timecode::zero());
-        let timeline_out = timeline_in + source_duration;
+        // Rescale duration to match timeline_in's rate for consistent arithmetic
+        let duration_rescaled = if timeline_in.rate != source_duration.rate && timeline_in != Timecode::zero() {
+            source_duration.rescale_to(timeline_in.rate)
+        } else {
+            source_duration
+        };
+        let timeline_out = timeline_in + duration_rescaled;
         let clip_id = ClipId::new();
         self.clips.push(Clip {
             id: clip_id,
             media_id,
             timeline_in,
             timeline_out,
-            source_in: Timecode::zero(),
+            source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
         });
         clip_id
@@ -99,6 +140,32 @@ impl Track {
     pub fn sort_clips(&mut self) {
         self.clips.sort_by_key(|c| c.timeline_in);
     }
+
+    /// Remove clip and shift all downstream clips left by the removed clip's duration.
+    pub fn ripple_remove(&mut self, clip_id: ClipId) -> Option<Clip> {
+        let pos = self.clips.iter().position(|c| c.id == clip_id)?;
+        let clip = self.clips.remove(pos);
+        let gap = clip.timeline_out - clip.timeline_in;
+        for c in &mut self.clips[pos..] {
+            c.timeline_in -= gap;
+            c.timeline_out -= gap;
+        }
+        Some(clip)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Transition {
+    pub id: TransitionId,
+    pub kind: TransitionKind,
+    pub duration: Timecode,
+    pub clip_a_id: ClipId,
+    pub clip_b_id: ClipId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitionKind {
+    CrossDissolve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,10 +186,10 @@ pub struct Clip {
 
 impl Clip {
     pub fn duration(&self) -> Timecode {
-        Timecode(self.timeline_out.0 - self.timeline_in.0)
+        self.timeline_out - self.timeline_in
     }
 
     pub fn source_duration(&self) -> Timecode {
-        Timecode(self.source_out.0 - self.source_in.0)
+        self.source_out - self.source_in
     }
 }

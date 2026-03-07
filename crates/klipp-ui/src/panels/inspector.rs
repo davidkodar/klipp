@@ -26,8 +26,6 @@ impl InspectorPanel {
             let media = clip.and_then(|c| state.media_pool.get(&c.media_id));
 
             if let (Some(clip), Some(media)) = (clip, media) {
-                let fps = state.fps;
-
                 ui.add_space(12.0);
                 ui.label(
                     egui::RichText::new("Clip Info")
@@ -46,7 +44,7 @@ impl InspectorPanel {
                         ui.end_row();
 
                         ui.label("Duration:");
-                        ui.label(media.duration.format_hmsf(&fps));
+                        ui.label(media.duration.to_timecode_string());
                         ui.end_row();
 
                         ui.label("FPS:");
@@ -84,15 +82,15 @@ impl InspectorPanel {
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("In:");
-                        ui.label(clip.timeline_in.format_hmsf(&fps));
+                        ui.label(clip.timeline_in.to_timecode_string());
                         ui.end_row();
 
                         ui.label("Out:");
-                        ui.label(clip.timeline_out.format_hmsf(&fps));
+                        ui.label(clip.timeline_out.to_timecode_string());
                         ui.end_row();
 
                         ui.label("Duration:");
-                        ui.label(clip.duration().format_hmsf(&fps));
+                        ui.label(clip.duration().to_timecode_string());
                         ui.end_row();
                     });
 
@@ -110,11 +108,11 @@ impl InspectorPanel {
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("In:");
-                        ui.label(clip.source_in.format_hmsf(&fps));
+                        ui.label(clip.source_in.to_timecode_string());
                         ui.end_row();
 
                         ui.label("Out:");
-                        ui.label(clip.source_out.format_hmsf(&fps));
+                        ui.label(clip.source_out.to_timecode_string());
                         ui.end_row();
                     });
             } else {

@@ -36,3 +36,4 @@ klipp_id!(TrackId);
 klipp_id!(SequenceId);
 klipp_id!(MediaId);
 klipp_id!(MarkerId);
+klipp_id!(TransitionId);

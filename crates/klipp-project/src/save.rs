@@ -58,10 +58,11 @@ fn sequence_to_json(seq: &Sequence) -> SequenceJson {
                     ClipJson {
                         id: c.id.to_string(),
                         media_id: c.media_id.to_string(),
-                        timeline_in: c.timeline_in.0,
-                        timeline_out: c.timeline_out.0,
-                        source_in: c.source_in.0,
-                        source_out: c.source_out.0,
+                        timeline_in: c.timeline_in.value,
+                        timeline_out: c.timeline_out.value,
+                        source_in: c.source_in.value,
+                        source_out: c.source_out.value,
+                        rate: c.timeline_in.rate,
                     }
                 }).collect(),
             }
@@ -74,7 +75,8 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         id: item.id.to_string(),
         path: item.path.to_string_lossy().to_string(),
         filename: item.filename.clone(),
-        duration_frames: item.duration.0,
+        duration_frames: item.duration.value,
+        duration_rate: item.duration.rate,
         fps: FpsJson { num: item.fps.num, den: item.fps.den },
         resolution: ResolutionJson { width: item.resolution.width, height: item.resolution.height },
         video_codec: item.video_codec.clone(),
