@@ -1,5 +1,5 @@
 use crate::id::{ClipId, MediaId};
-use crate::time::{Fps, Timecode};
+use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use std::path::PathBuf;
 
@@ -110,6 +110,7 @@ pub enum AppCommand {
     SetPlayhead(Timecode),
     SetSpeed(f64),
     AppendClip { media_id: MediaId },
+    AppendClipToTrack { media_id: MediaId, track_index: usize },
     RemoveClip { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
     TrimClip {
@@ -118,6 +119,7 @@ pub enum AppCommand {
         new_source_out: Timecode,
         new_timeline_in: Timecode,
         new_timeline_out: Timecode,
+        ripple: bool,
     },
     SelectClip(Option<ClipId>),
 
@@ -137,8 +139,61 @@ pub enum AppCommand {
     ExportSequence { settings: ExportSettings },
     CancelExport,
 
+    // Compositing
+    SetTrackOpacity { track_index: usize, opacity: f32 },
+    SetTrackVisibility { track_index: usize, visible: bool },
+
+    // Audio mixing
+    SetTrackVolume { track_index: usize, volume: f32 },
+    SetTrackMute { track_index: usize, muted: bool },
+    SetTrackSolo { track_index: usize },
+
+    // Editing
+    BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },
+    CutClip { clip_id: ClipId },
+    CopyClip { clip_id: ClipId },
+    PasteClip,
+
+    // Source monitor
+    LoadSourceMedia { media_id: MediaId },
+    SetSourceInPoint(RationalTime),
+    SetSourceOutPoint(RationalTime),
+    InsertSourceAtPlayhead,
+
+    // Sequence markers
+    SetSequenceInPoint(RationalTime),
+    SetSequenceOutPoint(RationalTime),
+    ClearSequenceInPoint,
+    ClearSequenceOutPoint,
+
+    // Proxy
+    GenerateProxy { media_id: MediaId },
+    SetUseProxies(bool),
+    RelinkMedia { media_id: MediaId, new_path: PathBuf },
+
+    // Snap & Ripple
+    SetSnapEnabled(bool),
+    SetRippleEnabled(bool),
+
+    // UI
+    SetViewerMode(ViewerMode),
+    SetActiveTool(Tool),
+    ToggleFullscreen,
+
     // Application
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerMode {
+    Program,
+    Source,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Select,
+    Blade,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +240,15 @@ pub enum AppEvent {
     ExportProgress { percent: f32, time_secs: f64 },
     ExportComplete { path: PathBuf },
     ExportError { message: String },
+
+    // Source monitor
+    SourceFrameReady,
+    SourceMediaLoaded { media_id: MediaId, duration: Timecode },
+
+    // Proxy
+    ProxyGenerationStarted { media_id: MediaId },
+    ProxyGenerationComplete { media_id: MediaId, path: PathBuf },
+    ProxyGenerationFailed { media_id: MediaId, error: String },
 
     // Thumbnails
     ThumbnailReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },

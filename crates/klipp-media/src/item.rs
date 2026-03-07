@@ -16,4 +16,12 @@ pub struct MediaItem {
     pub file_size_bytes: u64,
     #[serde(default)]
     pub offline: bool,
+    #[serde(default)]
+    pub proxy_path: Option<PathBuf>,
+    #[serde(default)]
+    pub proxy_ready: bool,
+    #[serde(default)]
+    pub default_source_in: Option<Timecode>,
+    #[serde(default)]
+    pub default_source_out: Option<Timecode>,
 }

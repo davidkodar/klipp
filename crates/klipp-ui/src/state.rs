@@ -1,8 +1,8 @@
 use crate::history::CommandHistory;
-use klipp_core::{ClipId, Fps, MediaId, Timecode};
+use klipp_core::{ClipId, Fps, MediaId, Timecode, Tool, ViewerMode};
 use klipp_engine::PlaybackState;
-use klipp_media::{MediaPool, ThumbnailCache};
-use klipp_timeline::Sequence;
+use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
+use klipp_timeline::{Clip, Sequence};
 use std::path::PathBuf;
 
 pub struct AppState {
@@ -41,6 +41,48 @@ pub struct AppState {
     pub export_in_progress: bool,
     pub export_progress: f32,
     pub export_error: Option<String>,
+
+    // Phase 4: Tools & modes
+    pub active_tool: Tool,
+    pub viewer_mode: ViewerMode,
+    pub snap_enabled: bool,
+    pub ripple_enabled: bool,
+    pub fullscreen_viewer: bool,
+    pub fullscreen_changed: bool,
+
+    // Phase 4: Clipboard
+    pub clipboard: Option<ClipboardContent>,
+
+    // Phase 4: Source monitor
+    pub source_media_id: Option<MediaId>,
+    pub source_playhead: Timecode,
+
+    // Phase 4: Proxy
+    pub use_proxies: bool,
+
+    // Phase 4: Relink
+    pub show_relink_dialog: bool,
+    pub offline_media_ids: Vec<MediaId>,
+
+    // Phase 4: About
+    pub show_about_dialog: bool,
+
+    // Phase 4: Timecode input
+    pub editing_timecode: bool,
+    pub timecode_input: String,
+
+    // Phase 4: Fullscreen overlay
+    pub fullscreen_overlay_visible: bool,
+    pub fullscreen_overlay_timer: f64,
+
+    // Phase 4: Media pool drag-and-drop
+    pub dragging_media: Option<MediaId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClipboardContent {
+    pub clips: Vec<(Clip, MediaItem)>,
+    pub source_track_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +119,24 @@ impl Default for AppState {
             export_in_progress: false,
             export_progress: 0.0,
             export_error: None,
+            active_tool: Tool::Select,
+            viewer_mode: ViewerMode::Program,
+            snap_enabled: true,
+            ripple_enabled: true,
+            fullscreen_viewer: false,
+            fullscreen_changed: false,
+            clipboard: None,
+            source_media_id: None,
+            source_playhead: Timecode::zero(),
+            use_proxies: true,
+            show_relink_dialog: false,
+            offline_media_ids: Vec::new(),
+            show_about_dialog: false,
+            editing_timecode: false,
+            timecode_input: String::new(),
+            fullscreen_overlay_visible: false,
+            fullscreen_overlay_timer: 0.0,
+            dragging_media: None,
         }
     }
 }

@@ -50,7 +50,7 @@ fn main() -> Result<()> {
             .with_title("Klipp")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0]),
-        renderer: eframe::Renderer::Wgpu,
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 

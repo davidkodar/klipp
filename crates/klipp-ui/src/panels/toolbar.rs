@@ -1,10 +1,10 @@
 use crate::state::AppState;
-use klipp_core::AppCommand;
+use klipp_core::{AppCommand, Tool};
 
 pub struct ToolbarPanel;
 
 impl ToolbarPanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
         ui.horizontal(|ui| {
@@ -119,26 +119,100 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::Redo);
                         ui.close_menu();
                     }
+
+                    ui.separator();
+
+                    let has_sel = state.selected_clip.is_some();
+                    if ui.add_enabled(has_sel, egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
+                        if let Some(clip_id) = state.selected_clip {
+                            cmds.push(AppCommand::CutClip { clip_id });
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_sel, egui::Button::new("Copy").shortcut_text("Ctrl+C")).clicked() {
+                        if let Some(clip_id) = state.selected_clip {
+                            cmds.push(AppCommand::CopyClip { clip_id });
+                        }
+                        ui.close_menu();
+                    }
+                    let has_clip = state.clipboard.is_some();
+                    if ui.add_enabled(has_clip, egui::Button::new("Paste").shortcut_text("Ctrl+V")).clicked() {
+                        cmds.push(AppCommand::PasteClip);
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() {
+                        let track_index = state.sequence.tracks.iter()
+                            .position(|t| t.name == "Video 1")
+                            .unwrap_or(0);
+                        if let Some(track) = state.sequence.tracks.get(track_index) {
+                            if let Some((_, clip)) = track.clip_at_timecode(state.playhead) {
+                                cmds.push(AppCommand::BladeClip {
+                                    track_index,
+                                    clip_id: clip.id,
+                                    cut_at: state.playhead,
+                                });
+                            }
+                        }
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("View", |ui| {
-                    let r = ui.add_enabled(false, egui::Button::new("Zoom In"));
-                    r.on_disabled_hover_text("(coming soon)");
-                    let r = ui.add_enabled(false, egui::Button::new("Zoom Out"));
-                    r.on_disabled_hover_text("(coming soon)");
+                    if ui.add(egui::Button::new("Full Screen Viewer").shortcut_text("F")).clicked() {
+                        cmds.push(AppCommand::ToggleFullscreen);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    let proxy_label = if state.use_proxies { "\u{2713} Use Proxies" } else { "  Use Proxies" };
+                    if ui.button(proxy_label).clicked() {
+                        cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("Help", |ui| {
-                    let r = ui.add_enabled(false, egui::Button::new("About"));
-                    r.on_disabled_hover_text("(coming soon)");
+                    if ui.button("About Klipp").clicked() {
+                        state.show_about_dialog = true;
+                        ui.close_menu();
+                    }
                 });
             });
+
+            // Tool selector buttons
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            let select_color = if state.active_tool == Tool::Select {
+                egui::Color32::from_rgb(80, 130, 200)
+            } else {
+                egui::Color32::from_rgb(120, 120, 130)
+            };
+            if ui.add(egui::Button::new(
+                egui::RichText::new("\u{2196} Select").color(select_color).size(11.0)
+            ).min_size(egui::vec2(60.0, 24.0))).on_hover_text("Select tool (V)").clicked() {
+                cmds.push(AppCommand::SetActiveTool(Tool::Select));
+            }
+
+            let blade_color = if state.active_tool == Tool::Blade {
+                egui::Color32::from_rgb(80, 130, 200)
+            } else {
+                egui::Color32::from_rgb(120, 120, 130)
+            };
+            if ui.add(egui::Button::new(
+                egui::RichText::new("\u{2702} Blade").color(blade_color).size(11.0)
+            ).min_size(egui::vec2(60.0, 24.0))).on_hover_text("Blade tool (B)").clicked() {
+                cmds.push(AppCommand::SetActiveTool(Tool::Blade));
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 ui.colored_label(
                     egui::Color32::from_rgb(120, 120, 130),
-                    "Klipp v0.1.0-dev",
+                    format!("Klipp v{}-dev", env!("CARGO_PKG_VERSION")),
                 );
             });
         });

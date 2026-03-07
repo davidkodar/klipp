@@ -8,6 +8,10 @@ pub struct Sequence {
     pub fps: Fps,
     pub resolution: Resolution,
     pub tracks: Vec<Track>,
+    #[serde(default)]
+    pub in_point: Option<Timecode>,
+    #[serde(default)]
+    pub out_point: Option<Timecode>,
 }
 
 impl Sequence {
@@ -18,28 +22,12 @@ impl Sequence {
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
             tracks: vec![
-                Track {
-                    id: TrackId::new(),
-                    name: "Video 2".to_string(),
-                    kind: TrackKind::Video,
-                    clips: Vec::new(),
-                    transitions: Vec::new(),
-                },
-                Track {
-                    id: TrackId::new(),
-                    name: "Video 1".to_string(),
-                    kind: TrackKind::Video,
-                    clips: Vec::new(),
-                    transitions: Vec::new(),
-                },
-                Track {
-                    id: TrackId::new(),
-                    name: "Audio 1".to_string(),
-                    kind: TrackKind::Audio,
-                    clips: Vec::new(),
-                    transitions: Vec::new(),
-                },
+                Track::new("Video 2", TrackKind::Video),
+                Track::new("Video 1", TrackKind::Video),
+                Track::new("Audio 1", TrackKind::Audio),
             ],
+            in_point: None,
+            out_point: None,
         }
     }
 
@@ -85,9 +73,38 @@ pub struct Track {
     pub kind: TrackKind,
     pub clips: Vec<Clip>,
     pub transitions: Vec<Transition>,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default = "default_true")]
+    pub visible: bool,
 }
 
+fn default_opacity() -> f32 { 1.0 }
+fn default_volume() -> f32 { 1.0 }
+fn default_true() -> bool { true }
+
 impl Track {
+    pub fn new(name: &str, kind: TrackKind) -> Self {
+        Self {
+            id: TrackId::new(),
+            name: name.to_string(),
+            kind,
+            clips: Vec::new(),
+            transitions: Vec::new(),
+            opacity: 1.0,
+            volume: 1.0,
+            muted: false,
+            solo: false,
+            visible: true,
+        }
+    }
+
     pub fn append_clip(&mut self, media_id: MediaId, source_duration: Timecode) -> ClipId {
         let timeline_in = self
             .clips
@@ -151,6 +168,79 @@ impl Track {
             c.timeline_out -= gap;
         }
         Some(clip)
+    }
+
+    /// Ripple trim left edge: adjust source_in/timeline_in and shift downstream clips.
+    pub fn ripple_trim_left(&mut self, clip_id: ClipId, new_source_in: Timecode, new_timeline_in: Timecode) {
+        let pos = match self.clips.iter().position(|c| c.id == clip_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let old_timeline_in = self.clips[pos].timeline_in;
+        let delta = new_timeline_in - old_timeline_in;
+        self.clips[pos].source_in = new_source_in;
+        self.clips[pos].timeline_in = new_timeline_in;
+        // Shift this clip and all downstream clips by delta
+        for c in &mut self.clips[pos..] {
+            if c.id != clip_id {
+                c.timeline_in += delta;
+                c.timeline_out += delta;
+            }
+        }
+    }
+
+    /// Ripple trim right edge: adjust source_out/timeline_out and shift downstream clips.
+    pub fn ripple_trim_right(&mut self, clip_id: ClipId, new_source_out: Timecode, new_timeline_out: Timecode) {
+        let pos = match self.clips.iter().position(|c| c.id == clip_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let old_timeline_out = self.clips[pos].timeline_out;
+        let delta = new_timeline_out - old_timeline_out;
+        self.clips[pos].source_out = new_source_out;
+        self.clips[pos].timeline_out = new_timeline_out;
+        // Shift all clips after this one by delta
+        for c in &mut self.clips[pos + 1..] {
+            c.timeline_in += delta;
+            c.timeline_out += delta;
+        }
+    }
+
+    /// Split a clip at the given timeline position into two clips.
+    /// Returns (clip_a, clip_b) if successful.
+    pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
+        let pos = self.clips.iter().position(|c| c.id == clip_id)?;
+        let clip = self.clips[pos];
+
+        // Validate cut position
+        let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
+        if cut_at <= clip.timeline_in + one_frame || cut_at >= clip.timeline_out - one_frame {
+            return None;
+        }
+
+        let offset = cut_at - clip.timeline_in;
+        let clip_a = Clip {
+            id: ClipId::new(),
+            media_id: clip.media_id,
+            timeline_in: clip.timeline_in,
+            timeline_out: cut_at,
+            source_in: clip.source_in,
+            source_out: clip.source_in + offset,
+        };
+        let clip_b = Clip {
+            id: ClipId::new(),
+            media_id: clip.media_id,
+            timeline_in: cut_at,
+            timeline_out: clip.timeline_out,
+            source_in: clip.source_in + offset,
+            source_out: clip.source_out,
+        };
+
+        self.clips.remove(pos);
+        self.clips.insert(pos, clip_b);
+        self.clips.insert(pos, clip_a);
+
+        Some((clip_a, clip_b))
     }
 }
 

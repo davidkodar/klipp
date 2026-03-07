@@ -23,6 +23,10 @@ impl MediaPool {
         self.items.get(id)
     }
 
+    pub fn get_mut(&mut self, id: &MediaId) -> Option<&mut MediaItem> {
+        self.items.get_mut(id)
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &MediaItem> {
         self.items.values()
     }

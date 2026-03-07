@@ -14,6 +14,16 @@ pub struct SequenceJson {
     pub fps: FpsJson,
     pub resolution: ResolutionJson,
     pub tracks: Vec<TrackJson>,
+    #[serde(default)]
+    pub in_point: Option<TimecodeJson>,
+    #[serde(default)]
+    pub out_point: Option<TimecodeJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimecodeJson {
+    pub value: i64,
+    pub rate: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,7 +44,21 @@ pub struct TrackJson {
     pub name: String,
     pub kind: String,
     pub clips: Vec<ClipJson>,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default = "default_visible")]
+    pub visible: bool,
 }
+
+fn default_opacity() -> f32 { 1.0 }
+fn default_volume() -> f32 { 1.0 }
+fn default_visible() -> bool { true }
 
 fn default_rate() -> u32 { 24 }
 
@@ -70,4 +94,12 @@ pub struct MediaItemJson {
     pub audio_codec: String,
     pub has_audio: bool,
     pub file_size_bytes: u64,
+    #[serde(default)]
+    pub proxy_path: Option<String>,
+    #[serde(default)]
+    pub proxy_ready: bool,
+    #[serde(default)]
+    pub default_source_in: Option<TimecodeJson>,
+    #[serde(default)]
+    pub default_source_out: Option<TimecodeJson>,
 }

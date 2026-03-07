@@ -36,6 +36,24 @@ pub enum EditCommand {
         new_timeline_in: RationalTime,
         new_timeline_out: RationalTime,
     },
+    BladeClip {
+        track_index: usize,
+        original_clip: Clip,
+        clip_a: Clip,
+        clip_b: Clip,
+        position: usize,
+    },
+    CutClip {
+        clip: Clip,
+        media_item: klipp_media::MediaItem,
+        track_index: usize,
+        position: usize,
+        shifted_clips: Vec<(ClipId, RationalTime, RationalTime)>,
+    },
+    PasteClip {
+        clip: Clip,
+        track_index: usize,
+    },
 }
 
 impl EditCommand {
@@ -45,6 +63,9 @@ impl EditCommand {
             EditCommand::RemoveClip { .. } | EditCommand::RippleRemove { .. } => "Remove Clip",
             EditCommand::MoveClip { .. } => "Move Clip",
             EditCommand::TrimClip { .. } => "Trim Clip",
+            EditCommand::BladeClip { .. } => "Blade Clip",
+            EditCommand::CutClip { .. } => "Cut Clip",
+            EditCommand::PasteClip { .. } => "Paste Clip",
         }
     }
 }

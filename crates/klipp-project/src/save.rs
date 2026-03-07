@@ -40,12 +40,18 @@ pub fn save_project(
     Ok(())
 }
 
+fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
+    TimecodeJson { value: tc.value, rate: tc.rate }
+}
+
 fn sequence_to_json(seq: &Sequence) -> SequenceJson {
     SequenceJson {
         id: seq.id.to_string(),
         name: seq.name.clone(),
         fps: FpsJson { num: seq.fps.num, den: seq.fps.den },
         resolution: ResolutionJson { width: seq.resolution.width, height: seq.resolution.height },
+        in_point: seq.in_point.as_ref().map(timecode_to_json),
+        out_point: seq.out_point.as_ref().map(timecode_to_json),
         tracks: seq.tracks.iter().map(|t| {
             TrackJson {
                 id: t.id.to_string(),
@@ -54,6 +60,11 @@ fn sequence_to_json(seq: &Sequence) -> SequenceJson {
                     TrackKind::Video => "Video".to_string(),
                     TrackKind::Audio => "Audio".to_string(),
                 },
+                opacity: t.opacity,
+                volume: t.volume,
+                muted: t.muted,
+                solo: t.solo,
+                visible: t.visible,
                 clips: t.clips.iter().map(|c| {
                     ClipJson {
                         id: c.id.to_string(),
@@ -83,5 +94,9 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         audio_codec: item.audio_codec.clone(),
         has_audio: item.has_audio,
         file_size_bytes: item.file_size_bytes,
+        proxy_path: item.proxy_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        proxy_ready: item.proxy_ready,
+        default_source_in: item.default_source_in.as_ref().map(timecode_to_json),
+        default_source_out: item.default_source_out.as_ref().map(timecode_to_json),
     }
 }

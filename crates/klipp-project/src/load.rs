@@ -43,6 +43,10 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
             has_audio: item_json.has_audio,
             file_size_bytes: item_json.file_size_bytes,
             offline,
+            proxy_path: item_json.proxy_path.as_ref().map(PathBuf::from),
+            proxy_ready: item_json.proxy_ready,
+            default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+            default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
         };
         media_pool.add(media_item);
     }
@@ -58,26 +62,31 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
             height: seq_json.resolution.height,
         },
         tracks: seq_json.tracks.iter().map(|t| {
-            Track {
-                id: TrackId(parse_uuid(&t.id).unwrap_or_else(|_| Uuid::new_v4())),
-                name: t.name.clone(),
-                kind: match t.kind.as_str() {
-                    "Audio" => TrackKind::Audio,
-                    _ => TrackKind::Video,
-                },
-                transitions: Vec::new(),
-                clips: t.clips.iter().map(|c| {
-                    Clip {
-                        id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
-                        media_id: MediaId(parse_uuid(&c.media_id).unwrap_or_else(|_| Uuid::new_v4())),
-                        timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
-                        timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
-                        source_in: RationalTime { value: c.source_in, rate: c.rate },
-                        source_out: RationalTime { value: c.source_out, rate: c.rate },
-                    }
-                }).collect(),
-            }
+            let kind = match t.kind.as_str() {
+                "Audio" => TrackKind::Audio,
+                _ => TrackKind::Video,
+            };
+            let mut track = Track::new(&t.name, kind);
+            track.id = TrackId(parse_uuid(&t.id).unwrap_or_else(|_| Uuid::new_v4()));
+            track.opacity = t.opacity;
+            track.volume = t.volume;
+            track.muted = t.muted;
+            track.solo = t.solo;
+            track.visible = t.visible;
+            track.clips = t.clips.iter().map(|c| {
+                Clip {
+                    id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
+                    media_id: MediaId(parse_uuid(&c.media_id).unwrap_or_else(|_| Uuid::new_v4())),
+                    timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
+                    timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
+                    source_in: RationalTime { value: c.source_in, rate: c.rate },
+                    source_out: RationalTime { value: c.source_out, rate: c.rate },
+                }
+            }).collect();
+            track
         }).collect(),
+        in_point: seq_json.in_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+        out_point: seq_json.out_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
     };
 
     info!("Project loaded from {:?}", dir);

@@ -11,6 +11,8 @@ impl Default for InspectorPanel {
 
 impl InspectorPanel {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+
         ui.painter().rect_filled(
             ui.available_rect_before_wrap(),
             0.0,
@@ -19,13 +21,12 @@ impl InspectorPanel {
 
         if let Some(clip_id) = state.selected_clip {
             // Find the clip and its media item
-            let clip = state
-                .sequence
-                .video_track()
-                .and_then(|t| t.find_clip(clip_id));
-            let media = clip.and_then(|c| state.media_pool.get(&c.media_id));
+            let clip_info = state.sequence.tracks.iter().enumerate().find_map(|(ti, t)| {
+                t.find_clip(clip_id).map(|c| (ti, c))
+            });
+            let media = clip_info.and_then(|(_, c)| state.media_pool.get(&c.media_id));
 
-            if let (Some(clip), Some(media)) = (clip, media) {
+            if let (Some((track_idx, clip)), Some(media)) = (clip_info, media) {
                 ui.add_space(12.0);
                 ui.label(
                     egui::RichText::new("Clip Info")
@@ -92,6 +93,12 @@ impl InspectorPanel {
                         ui.label("Duration:");
                         ui.label(clip.duration().to_timecode_string());
                         ui.end_row();
+
+                        ui.label("Track:");
+                        if let Some(track) = state.sequence.tracks.get(track_idx) {
+                            ui.label(&track.name);
+                        }
+                        ui.end_row();
                     });
 
                 ui.add_space(8.0);
@@ -115,6 +122,50 @@ impl InspectorPanel {
                         ui.label(clip.source_out.to_timecode_string());
                         ui.end_row();
                     });
+
+                // Proxy status
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Proxy")
+                        .strong()
+                        .size(12.0),
+                );
+                ui.separator();
+                ui.add_space(4.0);
+
+                if media.proxy_ready {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Ready");
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Not generated");
+                        if ui.small_button("Generate Now").clicked() {
+                            cmds.push(AppCommand::GenerateProxy { media_id: media.id });
+                        }
+                    });
+                }
+
+                // Offline warning
+                if media.offline {
+                    ui.add_space(8.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 160, 80),
+                        "\u{26A0} Media Offline",
+                    );
+                    ui.label(format!("Path: {}", media.path.display()));
+                    if ui.small_button("Relink...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Relink media file")
+                            .pick_file()
+                        {
+                            cmds.push(AppCommand::RelinkMedia {
+                                media_id: media.id,
+                                new_path: path,
+                            });
+                        }
+                    }
+                }
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.colored_label(
@@ -132,6 +183,6 @@ impl InspectorPanel {
             });
         }
 
-        Vec::new()
+        cmds
     }
 }

@@ -4,11 +4,11 @@ use crate::panels::timeline::TimelinePanel;
 use crate::panels::toolbar::ToolbarPanel;
 use crate::panels::transport::TransportBar;
 use crate::panels::viewer::ViewerPanel;
-use crate::state::{AppState, UnsavedAction};
+use crate::state::{AppState, ClipboardContent, UnsavedAction};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
     AppCommand, AppEvent, ExportAudioCodec, ExportFormat, ExportSettings,
-    ExportVideoCodec, MediaId, Timecode,
+    ExportVideoCodec, MediaId, Timecode, Tool, ViewerMode,
 };
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 use klipp_media::{MediaItem, ThumbnailEntry};
@@ -48,6 +48,7 @@ pub struct KlippApp {
     export_audio_codec: ExportAudioCodec,
     export_audio_bitrate: u32,
     export_confirm_overwrite: bool,
+    export_marked_range: bool,
 }
 
 impl KlippApp {
@@ -97,6 +98,7 @@ impl KlippApp {
             export_audio_codec: ExportAudioCodec::Aac,
             export_audio_bitrate: 128,
             export_confirm_overwrite: false,
+            export_marked_range: false,
         }
     }
 
@@ -143,6 +145,10 @@ impl KlippApp {
                         has_audio,
                         file_size_bytes,
                         offline: false,
+                        proxy_path: None,
+                        proxy_ready: false,
+                        default_source_in: None,
+                        default_source_out: None,
                     };
 
                     self.state.media_pool.add(media_item);
@@ -166,6 +172,9 @@ impl KlippApp {
 
                     // Start thumbnail generation
                     self.spawn_thumbnail(media_id, path, duration);
+
+                    // Auto-generate proxy
+                    self.spawn_proxy_generation(media_id);
                 }
                 AppEvent::MediaLoadFailed { media_id: _, error } => {
                     self.state.pending_media_path = None;
@@ -190,6 +199,13 @@ impl KlippApp {
                 }
                 AppEvent::ThumbnailReady { .. } => {
                     // Thumbnails come through thumb_rx channel instead
+                }
+                AppEvent::SourceFrameReady
+                | AppEvent::SourceMediaLoaded { .. }
+                | AppEvent::ProxyGenerationStarted { .. }
+                | AppEvent::ProxyGenerationComplete { .. }
+                | AppEvent::ProxyGenerationFailed { .. } => {
+                    // Handled elsewhere or not yet wired
                 }
             }
         }
@@ -217,6 +233,55 @@ impl KlippApp {
                 }
                 Err(e) => {
                     tracing::warn!("Thumbnail generation failed for {:?}: {}", media_id, e);
+                }
+            }
+        });
+    }
+
+    fn spawn_proxy_generation(&mut self, media_id: MediaId) {
+        let item = match self.state.media_pool.get(&media_id) {
+            Some(item) => item.clone(),
+            None => return,
+        };
+        if item.proxy_ready {
+            return;
+        }
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("klipp")
+            .join("proxies");
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let proxy_path = cache_dir.join(format!("{}.mp4", media_id));
+        if proxy_path.exists() {
+            if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                item.proxy_path = Some(proxy_path);
+                item.proxy_ready = true;
+            }
+            return;
+        }
+        let source_path = item.path.clone();
+        let tx = self.export_event_tx.clone();
+        let proxy_out = proxy_path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(AppEvent::ProxyGenerationStarted { media_id });
+            let status = std::process::Command::new("ffmpeg")
+                .arg("-i").arg(&source_path)
+                .arg("-vf").arg("scale=960:-2")
+                .arg("-c:v").arg("libx264").arg("-crf").arg("28").arg("-preset").arg("ultrafast")
+                .arg("-c:a").arg("aac").arg("-b:a").arg("64k")
+                .arg("-y").arg(&proxy_out)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    let _ = tx.send(AppEvent::ProxyGenerationComplete { media_id, path: proxy_out });
+                }
+                Ok(_) => {
+                    let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: "ffmpeg failed".into() });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: e.to_string() });
                 }
             }
         });
@@ -258,16 +323,12 @@ impl KlippApp {
             pixels,
         };
 
-        // Reuse existing texture if possible, otherwise create new
-        if let Some(ref mut tex) = self.viewer.video_texture {
-            tex.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            self.viewer.video_texture = Some(ctx.load_texture(
-                "klipp-video-frame",
-                image,
-                egui::TextureOptions::LINEAR,
-            ));
-        }
+        // Always recreate texture to avoid stale handles after fullscreen transitions
+        self.viewer.video_texture = Some(ctx.load_texture(
+            "klipp-video-frame",
+            image,
+            egui::TextureOptions::LINEAR,
+        ));
 
         fb.dirty = false;
     }
@@ -319,6 +380,23 @@ impl KlippApp {
                         self.sync_sequence_to_engine();
                         self.state.selected_clip = Some(clip_id);
                         self.state.dirty = true;
+                    }
+                    continue;
+                }
+                AppCommand::AppendClipToTrack { media_id, track_index } => {
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        let duration = item.duration;
+                        if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                            let clip_id = track.append_clip(*media_id, duration);
+                            let clip = *track.find_clip(clip_id).unwrap();
+                            self.state.history.push(EditCommand::AppendClip {
+                                clip,
+                                track_index: *track_index,
+                            });
+                            self.sync_sequence_to_engine();
+                            self.state.selected_clip = Some(clip_id);
+                            self.state.dirty = true;
+                        }
                     }
                     continue;
                 }
@@ -381,6 +459,7 @@ impl KlippApp {
                     new_source_out,
                     new_timeline_in,
                     new_timeline_out,
+                    ripple: _,
                 } => {
                     if let Some(track) = self.state.sequence.video_track_mut() {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -438,6 +517,255 @@ impl KlippApp {
                 }
                 AppCommand::SelectClip(id) => {
                     self.state.selected_clip = *id;
+                    continue;
+                }
+                // Phase 4: Track properties
+                AppCommand::SetTrackOpacity { track_index, opacity } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.opacity = opacity.clamp(0.0, 1.0);
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetTrackVisibility { track_index, visible } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.visible = *visible;
+                    }
+                    continue;
+                }
+                AppCommand::SetTrackVolume { track_index, volume } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.volume = volume.clamp(0.0, 1.3);
+                    }
+                    continue;
+                }
+                AppCommand::SetTrackMute { track_index, muted } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.muted = *muted;
+                    }
+                    continue;
+                }
+                AppCommand::SetTrackSolo { track_index } => {
+                    let solo_idx = *track_index;
+                    for (i, track) in self.state.sequence.tracks.iter_mut().enumerate() {
+                        track.solo = i == solo_idx;
+                    }
+                    continue;
+                }
+                // Phase 4: Blade
+                AppCommand::BladeClip { track_index, clip_id, cut_at } => {
+                    let ti = *track_index;
+                    let cid = *clip_id;
+                    let cut = *cut_at;
+                    if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
+                        // Find original clip before blade
+                        let original = track.find_clip(cid).copied();
+                        let position = track.clips.iter().position(|c| c.id == cid);
+                        if let (Some(original), Some(pos)) = (original, position) {
+                            if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
+                                self.state.history.push(EditCommand::BladeClip {
+                                    track_index: ti,
+                                    original_clip: original,
+                                    clip_a,
+                                    clip_b,
+                                    position: pos,
+                                });
+                                self.state.dirty = true;
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Phase 4: Cut/Copy/Paste
+                AppCommand::CutClip { clip_id } => {
+                    let cid = *clip_id;
+                    let track_index = self.state.sequence.tracks.iter()
+                        .position(|t| t.find_clip(cid).is_some())
+                        .unwrap_or(0);
+                    if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
+                        if let Some(clip) = track.find_clip(cid).copied() {
+                            if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
+                                let pos = track.clips.iter().position(|c| c.id == cid).unwrap_or(0);
+                                let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                    .collect();
+                                self.state.clipboard = Some(ClipboardContent {
+                                    clips: vec![(clip, media.clone())],
+                                    source_track_index: track_index,
+                                });
+                                track.ripple_remove(cid);
+                                self.state.history.push(EditCommand::CutClip {
+                                    clip,
+                                    media_item: media,
+                                    track_index,
+                                    position: pos,
+                                    shifted_clips: shifted,
+                                });
+                                if self.state.selected_clip == Some(cid) {
+                                    self.state.selected_clip = None;
+                                }
+                                self.state.dirty = true;
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::CopyClip { clip_id } => {
+                    let cid = *clip_id;
+                    let track_index = self.state.sequence.tracks.iter()
+                        .position(|t| t.find_clip(cid).is_some())
+                        .unwrap_or(0);
+                    if let Some(track) = self.state.sequence.tracks.get(track_index) {
+                        if let Some(clip) = track.find_clip(cid).copied() {
+                            if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
+                                self.state.clipboard = Some(ClipboardContent {
+                                    clips: vec![(clip, media)],
+                                    source_track_index: track_index,
+                                });
+                            }
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::PasteClip => {
+                    if let Some(ref cb) = self.state.clipboard.clone() {
+                        for (clip, _media) in &cb.clips {
+                            let track_index = cb.source_track_index;
+                            if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
+                                let new_id = klipp_core::ClipId::new();
+                                let timeline_in = track.clips.last()
+                                    .map(|c| c.timeline_out)
+                                    .unwrap_or(Timecode::zero());
+                                let dur = clip.duration();
+                                let new_clip = klipp_timeline::Clip {
+                                    id: new_id,
+                                    media_id: clip.media_id,
+                                    timeline_in,
+                                    timeline_out: timeline_in + dur,
+                                    source_in: clip.source_in,
+                                    source_out: clip.source_out,
+                                };
+                                track.clips.push(new_clip);
+                                track.sort_clips();
+                                self.state.history.push(EditCommand::PasteClip {
+                                    clip: new_clip,
+                                    track_index,
+                                });
+                                self.state.selected_clip = Some(new_id);
+                                self.state.dirty = true;
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Phase 4: Sequence markers
+                AppCommand::SetSequenceInPoint(tc) => {
+                    self.state.sequence.in_point = Some(*tc);
+                    continue;
+                }
+                AppCommand::SetSequenceOutPoint(tc) => {
+                    self.state.sequence.out_point = Some(*tc);
+                    continue;
+                }
+                AppCommand::ClearSequenceInPoint => {
+                    self.state.sequence.in_point = None;
+                    continue;
+                }
+                AppCommand::ClearSequenceOutPoint => {
+                    self.state.sequence.out_point = None;
+                    continue;
+                }
+                // Phase 4: Source monitor
+                AppCommand::LoadSourceMedia { media_id } => {
+                    self.state.source_media_id = Some(*media_id);
+                    self.state.source_playhead = Timecode::zero();
+                    self.state.viewer_mode = ViewerMode::Source;
+                    continue;
+                }
+                AppCommand::SetSourceInPoint(tc) => {
+                    if let Some(mid) = self.state.source_media_id {
+                        if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                            item.default_source_in = Some(*tc);
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::SetSourceOutPoint(tc) => {
+                    if let Some(mid) = self.state.source_media_id {
+                        if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                            item.default_source_out = Some(*tc);
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::InsertSourceAtPlayhead => {
+                    if let Some(mid) = self.state.source_media_id {
+                        if let Some(item) = self.state.media_pool.get(&mid).cloned() {
+                            let source_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
+                            let source_out = item.default_source_out.unwrap_or(item.duration);
+                            let dur = source_out - source_in;
+                            if let Some(track) = self.state.sequence.video_track_mut() {
+                                let new_id = klipp_core::ClipId::new();
+                                let timeline_in = self.state.playhead;
+                                let new_clip = klipp_timeline::Clip {
+                                    id: new_id,
+                                    media_id: mid,
+                                    timeline_in,
+                                    timeline_out: timeline_in + dur,
+                                    source_in,
+                                    source_out,
+                                };
+                                track.clips.push(new_clip);
+                                track.sort_clips();
+                                self.state.selected_clip = Some(new_id);
+                                self.state.dirty = true;
+                                self.sync_sequence_to_engine();
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Phase 4: Proxy
+                AppCommand::GenerateProxy { media_id } => {
+                    self.spawn_proxy_generation(*media_id);
+                    continue;
+                }
+                AppCommand::SetUseProxies(enabled) => {
+                    self.state.use_proxies = *enabled;
+                    continue;
+                }
+                AppCommand::RelinkMedia { media_id, new_path } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        item.path = new_path.clone();
+                        item.offline = !new_path.exists();
+                    }
+                    self.state.offline_media_ids.retain(|id| id != media_id);
+                    continue;
+                }
+                // Phase 4: Snap & Ripple toggles
+                AppCommand::SetSnapEnabled(enabled) => {
+                    self.state.snap_enabled = *enabled;
+                    continue;
+                }
+                AppCommand::SetRippleEnabled(enabled) => {
+                    self.state.ripple_enabled = *enabled;
+                    continue;
+                }
+                // Phase 4: UI modes
+                AppCommand::SetViewerMode(mode) => {
+                    self.state.viewer_mode = *mode;
+                    continue;
+                }
+                AppCommand::SetActiveTool(tool) => {
+                    self.state.active_tool = *tool;
+                    continue;
+                }
+                AppCommand::ToggleFullscreen => {
+                    self.state.fullscreen_viewer = !self.state.fullscreen_viewer;
+                    self.state.fullscreen_changed = true;
                     continue;
                 }
                 AppCommand::NewProject => {
@@ -565,6 +893,35 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::BladeClip { track_index, original_clip, clip_a, clip_b, position } => {
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    // Undo: remove clip_a and clip_b, insert original
+                    track.clips.retain(|c| c.id != clip_a.id && c.id != clip_b.id);
+                    let pos = (*position).min(track.clips.len());
+                    track.clips.insert(pos, *original_clip);
+                    track.sort_clips();
+                }
+            }
+            EditCommand::CutClip { clip, track_index, position, shifted_clips, .. } => {
+                // Undo cut = re-insert clip + restore shifted positions
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    for (cid, old_in, old_out) in shifted_clips {
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *cid) {
+                            c.timeline_in = *old_in;
+                            c.timeline_out = *old_out;
+                        }
+                    }
+                    let pos = (*position).min(track.clips.len());
+                    track.clips.insert(pos, *clip);
+                    track.sort_clips();
+                }
+            }
+            EditCommand::PasteClip { clip, track_index } => {
+                // Undo paste = remove the pasted clip
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    track.remove_clip(clip.id);
+                }
+            }
         }
     }
 
@@ -609,6 +966,28 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::BladeClip { track_index, original_clip, clip_a, clip_b, .. } => {
+                // Redo blade: remove original, insert clip_a and clip_b
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    track.remove_clip(original_clip.id);
+                    track.clips.push(*clip_a);
+                    track.clips.push(*clip_b);
+                    track.sort_clips();
+                }
+            }
+            EditCommand::CutClip { clip, .. } => {
+                // Redo cut = ripple remove
+                if let Some(track) = self.state.sequence.video_track_mut() {
+                    track.ripple_remove(clip.id);
+                }
+            }
+            EditCommand::PasteClip { clip, track_index } => {
+                // Redo paste = re-insert
+                if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                    track.clips.push(*clip);
+                    track.sort_clips();
+                }
+            }
         }
     }
 
@@ -639,6 +1018,15 @@ impl KlippApp {
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 self.state.thumbnail_textures.clear();
                 self.sync_sequence_to_engine();
+
+                // Detect offline media
+                self.state.offline_media_ids = self.state.media_pool.all()
+                    .filter(|item| item.offline)
+                    .map(|item| item.id)
+                    .collect();
+                if !self.state.offline_media_ids.is_empty() {
+                    self.state.show_relink_dialog = true;
+                }
 
                 // Trigger thumbnail generation for all media
                 let thumb_items: Vec<_> = self
@@ -737,9 +1125,10 @@ impl KlippApp {
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        if ctx.memory(|m| m.focused().is_some()) {
-            return cmds;
-        }
+        // Only skip single-key shortcuts when a text edit is focused (editing_timecode).
+        // Ctrl+ shortcuts always work. Previously this checked focused().is_some()
+        // which blocked shortcuts whenever ANY widget (including buttons) had focus.
+        let text_editing = self.state.editing_timecode;
 
         ctx.input(|i| {
             // Ctrl+S — Save
@@ -793,10 +1182,87 @@ impl KlippApp {
             {
                 cmds.push(AppCommand::Redo);
             }
+
+            // Skip single-key shortcuts while typing in a text field
+            if text_editing {
+                return;
+            }
+
             // Delete/Backspace — remove selected clip
             if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
+                }
+            }
+            // Ctrl+X — Cut
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::X) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::CutClip { clip_id });
+                }
+            }
+            // Ctrl+C — Copy
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::C) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::CopyClip { clip_id });
+                }
+            }
+            // Ctrl+V — Paste
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
+                cmds.push(AppCommand::PasteClip);
+            }
+            // Ctrl+B — Split at playhead
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
+                // Find clip at playhead on primary video track
+                let track_index = self.state.sequence.tracks.iter()
+                    .position(|t| t.name == "Video 1")
+                    .unwrap_or(0);
+                if let Some(track) = self.state.sequence.tracks.get(track_index) {
+                    if let Some((_, clip)) = track.clip_at_timecode(self.state.playhead) {
+                        cmds.push(AppCommand::BladeClip {
+                            track_index,
+                            clip_id: clip.id,
+                            cut_at: self.state.playhead,
+                        });
+                    }
+                }
+            }
+            // B — Blade tool
+            if !i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
+                tracing::debug!("B key pressed -> Blade tool");
+                cmds.push(AppCommand::SetActiveTool(Tool::Blade));
+            }
+            // V — Select tool
+            if !i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
+                tracing::debug!("V key pressed -> Select tool");
+                cmds.push(AppCommand::SetActiveTool(Tool::Select));
+            }
+            // F — Toggle fullscreen viewer
+            if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl {
+                cmds.push(AppCommand::ToggleFullscreen);
+            }
+            // I/O — In/Out markers (context-dependent on viewer mode)
+            if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {
+                if i.modifiers.shift {
+                    tracing::debug!("Shift+I -> Clear sequence in point");
+                    cmds.push(AppCommand::ClearSequenceInPoint);
+                } else if self.state.viewer_mode == ViewerMode::Source {
+                    tracing::debug!("I key (Source mode) -> Set source in point at {:?}", self.state.source_playhead);
+                    cmds.push(AppCommand::SetSourceInPoint(self.state.source_playhead));
+                } else {
+                    tracing::debug!("I key (Program mode) -> Set sequence in point at {:?}", self.state.playhead);
+                    cmds.push(AppCommand::SetSequenceInPoint(self.state.playhead));
+                }
+            }
+            if i.key_pressed(egui::Key::O) && !i.modifiers.ctrl {
+                if i.modifiers.shift {
+                    tracing::debug!("Shift+O -> Clear sequence out point");
+                    cmds.push(AppCommand::ClearSequenceOutPoint);
+                } else if self.state.viewer_mode == ViewerMode::Source {
+                    tracing::debug!("O key (Source mode) -> Set source out point at {:?}", self.state.source_playhead);
+                    cmds.push(AppCommand::SetSourceOutPoint(self.state.source_playhead));
+                } else {
+                    tracing::debug!("O key (Program mode) -> Set sequence out point at {:?}", self.state.playhead);
+                    cmds.push(AppCommand::SetSequenceOutPoint(self.state.playhead));
                 }
             }
         });
@@ -834,66 +1300,173 @@ impl eframe::App for KlippApp {
         let export_cmds = self.show_export_dialog(ctx);
         all_cmds.extend(export_cmds);
 
-        // 5. Toolbar (top)
-        egui::TopBottomPanel::top("toolbar")
-            .exact_height(40.0)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    ui.available_rect_before_wrap(),
-                    0.0,
-                    egui::Color32::from_rgb(32, 32, 35),
-                );
-                let cmds = self.toolbar.show(ui, &self.state);
+        // Handle fullscreen toggle
+        if self.state.fullscreen_viewer {
+            // Fullscreen viewer: just show the video frame
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let cmds = self.viewer.show_fullscreen(ui, &mut self.state);
                 all_cmds.extend(cmds);
             });
+        } else {
+            // 5. Toolbar (top)
+            egui::TopBottomPanel::top("toolbar")
+                .exact_height(40.0)
+                .show(ctx, |ui| {
+                    ui.painter().rect_filled(
+                        ui.available_rect_before_wrap(),
+                        0.0,
+                        egui::Color32::from_rgb(32, 32, 35),
+                    );
+                    let cmds = self.toolbar.show(ui, &mut self.state);
+                    all_cmds.extend(cmds);
+                });
 
-        // 6. Timeline (bottom-most)
-        let available_height = ctx.available_rect().height();
-        let timeline_height = (available_height * (1.0 - self.state.upper_timeline_split))
-            .max(180.0);
+            // 6. Timeline (bottom-most)
+            let available_height = ctx.available_rect().height();
+            let timeline_height = (available_height * (1.0 - self.state.upper_timeline_split))
+                .max(180.0);
 
-        egui::TopBottomPanel::bottom("timeline")
-            .exact_height(timeline_height)
-            .show(ctx, |ui| {
-                let cmds = self.timeline.show(ui, &mut self.state);
+            egui::TopBottomPanel::bottom("timeline")
+                .exact_height(timeline_height)
+                .show(ctx, |ui| {
+                    let cmds = self.timeline.show(ui, &mut self.state);
+                    all_cmds.extend(cmds);
+                });
+
+            // 7. Transport bar (above timeline)
+            egui::TopBottomPanel::bottom("transport")
+                .exact_height(48.0)
+                .show(ctx, |ui| {
+                    ui.painter().rect_filled(
+                        ui.available_rect_before_wrap(),
+                        0.0,
+                        egui::Color32::from_rgb(28, 28, 32),
+                    );
+                    let cmds = self.transport.show(ui, &mut self.state);
+                    all_cmds.extend(cmds);
+                });
+
+            // 8. Inspector (right side panel)
+            let inspector_width = ctx.available_rect().width()
+                * (1.0 - self.state.viewer_inspector_split);
+            egui::SidePanel::right("inspector")
+                .exact_width(inspector_width)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    let cmds = self.inspector.show(ui, &self.state);
+                    all_cmds.extend(cmds);
+                });
+
+            // 9. Viewer (central panel)
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let cmds = self.viewer.show(ui, &self.state);
                 all_cmds.extend(cmds);
             });
+        }
 
-        // 7. Transport bar (above timeline)
-        egui::TopBottomPanel::bottom("transport")
-            .exact_height(48.0)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    ui.available_rect_before_wrap(),
-                    0.0,
-                    egui::Color32::from_rgb(28, 28, 32),
-                );
-                let cmds = self.transport.show(ui, &self.state);
-                all_cmds.extend(cmds);
-            });
+        // About dialog
+        if self.state.show_about_dialog {
+            let mut open = true;
+            egui::Window::new("About Klipp")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Klipp").strong().size(20.0));
+                        ui.add_space(4.0);
+                        ui.label(format!("Version {}-dev", env!("CARGO_PKG_VERSION")));
+                        ui.label("Free, open-source NLE for Linux");
+                        ui.add_space(8.0);
+                        ui.label("Built with:");
+                        ui.label("Rust \u{00b7} egui \u{00b7} libmpv2");
+                        ui.add_space(8.0);
+                        ui.label("github.com/davidkodar/klipp");
+                        ui.add_space(8.0);
+                        if ui.button("Close").clicked() {
+                            self.state.show_about_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_about_dialog = false;
+            }
+        }
 
-        // 8. Inspector (right side panel)
-        let inspector_width = ctx.available_rect().width()
-            * (1.0 - self.state.viewer_inspector_split);
-        egui::SidePanel::right("inspector")
-            .exact_width(inspector_width)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let cmds = self.inspector.show(ui, &self.state);
-                all_cmds.extend(cmds);
-            });
+        // Relink dialog
+        if self.state.show_relink_dialog {
+            let mut open = true;
+            egui::Window::new("Missing Media")
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("The following files could not be found:");
+                    ui.add_space(8.0);
+                    let offline_ids = self.state.offline_media_ids.clone();
+                    for mid in &offline_ids {
+                        if let Some(item) = self.state.media_pool.get(mid) {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "\u{2717}");
+                                ui.label(&item.filename);
+                                ui.label(item.path.to_string_lossy().to_string());
+                            });
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Skip All").clicked() {
+                            self.state.show_relink_dialog = false;
+                        }
+                        if ui.button("Relink All...").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new()
+                                .set_title("Select folder to search for media")
+                                .pick_folder()
+                            {
+                                let offline = self.state.offline_media_ids.clone();
+                                for mid in &offline {
+                                    if let Some(item) = self.state.media_pool.get(mid) {
+                                        let filename = item.filename.clone();
+                                        // Search recursively for matching filename
+                                        if let Some(found) = find_file_recursive(&dir, &filename) {
+                                            all_cmds.push(AppCommand::RelinkMedia {
+                                                media_id: *mid,
+                                                new_path: found,
+                                            });
+                                        }
+                                    }
+                                }
+                                self.state.show_relink_dialog = false;
+                            }
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_relink_dialog = false;
+            }
+        }
 
-        // 9. Viewer (central panel)
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let cmds = self.viewer.show(ui, &self.state);
-            all_cmds.extend(cmds);
-        });
+        // Ensure continuous repaint during playback (especially in fullscreen)
+        if self.state.playback == PlaybackState::Playing {
+            ctx.request_repaint();
+        }
 
         // 10. Process quit
         let has_quit = all_cmds.iter().any(|c| matches!(c, AppCommand::Quit));
 
         // 11. Send all commands
         self.send_commands(all_cmds);
+
+        // 11b. Handle fullscreen viewport transition (send only once)
+        if self.state.fullscreen_changed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+                self.state.fullscreen_viewer,
+            ));
+            self.state.fullscreen_changed = false;
+        }
 
         // 12. Update window title
         self.update_window_title(ctx);
@@ -929,6 +1502,15 @@ impl KlippApp {
                     self.state.export_in_progress = false;
                     self.state.export_error = Some(message);
                     self.export_child = None;
+                }
+                AppEvent::ProxyGenerationComplete { media_id, path } => {
+                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                        item.proxy_path = Some(path);
+                        item.proxy_ready = true;
+                    }
+                }
+                AppEvent::ProxyGenerationFailed { media_id, error } => {
+                    tracing::warn!("Proxy generation failed for {:?}: {}", media_id, error);
                 }
                 _ => {}
             }
@@ -1053,6 +1635,16 @@ impl KlippApp {
                         ui.end_row();
                     });
 
+                // Export range checkbox
+                if let (Some(in_pt), Some(out_pt)) = (self.state.sequence.in_point, self.state.sequence.out_point) {
+                    let in_str = in_pt.to_timecode_string();
+                    let out_str = out_pt.to_timecode_string();
+                    ui.checkbox(
+                        &mut self.export_marked_range,
+                        format!("Export marked range only (In: {} \u{2192} Out: {})", in_str, out_str),
+                    );
+                }
+
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -1138,43 +1730,22 @@ impl KlippApp {
             return;
         }
 
-        // Build concat demuxer file
-        let concat_path = std::env::temp_dir().join("klipp_export_concat.txt");
-        let mut concat_content = String::new();
-        if let Some(track) = self.state.sequence.video_track() {
-            tracing::info!("Export: Video 1 track has {} clips", track.clips.len());
-            for (i, clip) in track.clips.iter().enumerate() {
-                if let Some(media) = self.state.media_pool.get(&clip.media_id) {
-                    let path_str = media.path.to_string_lossy().replace('\'', "'\\''");
-                    let in_secs = clip.source_in.to_secs_f64();
-                    let out_secs = clip.source_out.to_secs_f64();
-                    tracing::info!(
-                        "Export clip {}: media={}, inpoint={:.6}, outpoint={:.6}",
-                        i, path_str, in_secs, out_secs
-                    );
-                    concat_content.push_str(&format!(
-                        "file '{}'\ninpoint {:.6}\noutpoint {:.6}\n",
-                        path_str, in_secs, out_secs
-                    ));
-                } else {
-                    tracing::warn!("Export clip {}: media_id {:?} not found in pool!", i, clip.media_id);
-                }
+        // Determine export range
+        let export_range = if self.export_marked_range {
+            if let (Some(in_pt), Some(out_pt)) = (self.state.sequence.in_point, self.state.sequence.out_point) {
+                Some((in_pt, out_pt))
+            } else {
+                None
             }
         } else {
-            tracing::warn!("Export: no Video 1 track found!");
-        }
+            None
+        };
 
-        if concat_content.is_empty() {
-            self.state.export_error = Some("No clips to export.".into());
-            return;
-        }
-
-        if let Err(e) = std::fs::write(&concat_path, &concat_content) {
-            self.state.export_error = Some(format!("Failed to write concat file: {e}"));
-            return;
-        }
-
-        let total_duration = self.state.sequence.total_duration().to_secs_f64();
+        let total_duration = if let Some((in_pt, out_pt)) = export_range {
+            (out_pt - in_pt).to_secs_f64()
+        } else {
+            self.state.sequence.total_duration().to_secs_f64()
+        };
         let res = self.state.sequence.resolution;
 
         // Build ffmpeg command: use individual inputs + filter_complex to handle
@@ -1186,10 +1757,29 @@ impl KlippApp {
         let mut clip_entries: Vec<(String, f64, f64)> = Vec::new();
         if let Some(track) = self.state.sequence.video_track() {
             for clip in &track.clips {
+                // Apply range filtering: skip clips outside the marked range
+                if let Some((range_in, range_out)) = export_range {
+                    if clip.timeline_out <= range_in || clip.timeline_in >= range_out {
+                        continue; // clip is entirely outside the range
+                    }
+                }
+
                 if let Some(media) = self.state.media_pool.get(&clip.media_id) {
                     let path_str = media.path.to_string_lossy().to_string();
-                    let in_secs = clip.source_in.to_secs_f64();
-                    let dur_secs = clip.source_out.to_secs_f64() - in_secs;
+
+                    // Trim clip source in/out to fit within export range
+                    let (src_in, src_out) = if let Some((range_in, range_out)) = export_range {
+                        let clip_start = clip.timeline_in.max(range_in);
+                        let clip_end = clip.timeline_out.min(range_out);
+                        let offset_start = clip_start - clip.timeline_in;
+                        let offset_end = clip_end - clip.timeline_in;
+                        (clip.source_in + offset_start, clip.source_in + offset_end)
+                    } else {
+                        (clip.source_in, clip.source_out)
+                    };
+
+                    let in_secs = src_in.to_secs_f64();
+                    let dur_secs = src_out.to_secs_f64() - in_secs;
                     clip_entries.push((path_str, in_secs, dur_secs));
                 }
             }
@@ -1341,6 +1931,15 @@ impl KlippApp {
             }
         }
     }
+}
+
+fn find_file_recursive(dir: &std::path::Path, filename: &str) -> Option<PathBuf> {
+    for entry in walkdir::WalkDir::new(dir).max_depth(5).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_name().to_string_lossy() == filename {
+            return Some(entry.path().to_path_buf());
+        }
+    }
+    None
 }
 
 fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
