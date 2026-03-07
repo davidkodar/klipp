@@ -1,1 +1,3 @@
-// klipp-timeline — timeline data model (read-only in Phase 1)
+mod sequence;
+
+pub use sequence::{Clip, Sequence, Track, TrackKind};

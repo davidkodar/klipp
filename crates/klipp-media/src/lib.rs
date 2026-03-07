@@ -1,1 +1,7 @@
-// klipp-media — media pool (minimal in Phase 1)
+mod item;
+mod pool;
+mod thumbnail;
+
+pub use item::MediaItem;
+pub use pool::MediaPool;
+pub use thumbnail::{ThumbnailCache, ThumbnailEntry};

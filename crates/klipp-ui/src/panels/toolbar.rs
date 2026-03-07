@@ -12,6 +12,35 @@ impl ToolbarPanel {
 
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("New Project").clicked() {
+                        cmds.push(AppCommand::NewProject);
+                        ui.close_menu();
+                    }
+                    if ui.button("Open Project...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Open Project")
+                            .pick_folder()
+                        {
+                            cmds.push(AppCommand::OpenProject { path });
+                        }
+                    }
+                    if ui.button("Import Media...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter(
+                                "Video",
+                                &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts"],
+                            )
+                            .pick_file()
+                        {
+                            let media_id = klipp_core::MediaId::new();
+                            cmds.push(AppCommand::LoadMediaFile {
+                                path,
+                                media_id,
+                            });
+                        }
+                    }
                     if ui.button("Open File...").clicked() {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
@@ -25,6 +54,26 @@ impl ToolbarPanel {
                                 path,
                                 media_id: klipp_core::MediaId::new(),
                             });
+                        }
+                    }
+                    ui.separator();
+                    if ui
+                        .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::SaveProject);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S"))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Save Project As")
+                            .pick_folder()
+                        {
+                            cmds.push(AppCommand::SaveProjectAs { path });
                         }
                     }
                     ui.separator();

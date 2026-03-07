@@ -1758,6 +1758,8 @@ dependencies = [
  "egui",
  "klipp-core",
  "klipp-engine",
+ "klipp-media",
+ "klipp-timeline",
  "klipp-ui",
  "tracing",
  "tracing-subscriber",
@@ -1813,6 +1815,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1827,7 +1830,13 @@ name = "klipp-project"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-media",
+ "klipp-timeline",
  "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1836,6 +1845,8 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -1849,6 +1860,7 @@ dependencies = [
  "klipp-core",
  "klipp-engine",
  "klipp-media",
+ "klipp-project",
  "klipp-timeline",
  "rfd",
  "tracing",

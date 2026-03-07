@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 klipp-core = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }

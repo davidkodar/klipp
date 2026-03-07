@@ -9,6 +9,7 @@ klipp-engine = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
 klipp-audio = { workspace = true }
+klipp-project = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
 wgpu = { workspace = true }

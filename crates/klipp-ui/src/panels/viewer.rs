@@ -15,7 +15,16 @@ impl ViewerPanel {
     ) -> Vec<AppCommand> {
         let available = ui.available_size();
 
-        if state.loaded_media.is_none() || state.playback == PlaybackState::Idle {
+        // Find current clip's media to get resolution
+        let current_media = state
+            .sequence
+            .video_track()
+            .and_then(|t| t.clip_at_timecode(state.playhead))
+            .and_then(|(_, clip)| state.media_pool.get(&clip.media_id));
+
+        let has_content = state.playback != PlaybackState::Idle || current_media.is_some();
+
+        if !has_content {
             let rect = ui.allocate_rect(
                 egui::Rect::from_min_size(ui.cursor().min, available),
                 egui::Sense::hover(),
@@ -35,9 +44,11 @@ impl ViewerPanel {
             return Vec::new();
         }
 
-        let media = state.loaded_media.as_ref().unwrap();
-        let video_w = media.resolution.width as f32;
-        let video_h = media.resolution.height as f32;
+        // Get resolution from current media or first media in pool
+        let (video_w, video_h) = current_media
+            .or_else(|| state.media_pool.all().next())
+            .map(|m| (m.resolution.width as f32, m.resolution.height as f32))
+            .unwrap_or((1920.0, 1080.0));
 
         if video_w == 0.0 || video_h == 0.0 {
             return Vec::new();
@@ -59,12 +70,10 @@ impl ViewerPanel {
             egui::vec2(display_w, display_h),
         );
 
-        // Fill background black
         let bg_resp = ui.allocate_rect(panel_rect, egui::Sense::hover());
         ui.painter()
             .rect_filled(bg_resp.rect, 0.0, egui::Color32::BLACK);
 
-        // Draw the video texture if we have one registered
         if let Some(tex) = &self.video_texture {
             ui.painter().image(
                 tex.id(),
@@ -74,7 +83,7 @@ impl ViewerPanel {
             );
         }
 
-        // Timecode overlay — bottom-left of image rect
+        // Timecode overlay
         let tc_text = state.playhead.format_hmsf(&state.fps);
         let tc_font = egui::FontId::monospace(13.0);
         let tc_galley =
@@ -96,33 +105,35 @@ impl ViewerPanel {
         );
         ui.painter().galley(tc_pos, tc_galley, egui::Color32::WHITE);
 
-        // Resolution overlay — bottom-right
-        let res_text = format!(
-            "{}x{}  {:.3} fps",
-            media.resolution.width,
-            media.resolution.height,
-            state.fps.as_f64()
-        );
-        let res_font = egui::FontId::monospace(13.0);
-        let res_galley =
+        // Resolution overlay
+        if let Some(media) = current_media.or_else(|| state.media_pool.all().next()) {
+            let res_text = format!(
+                "{}x{}  {:.3} fps",
+                media.resolution.width,
+                media.resolution.height,
+                state.fps.as_f64()
+            );
+            let res_font = egui::FontId::monospace(13.0);
+            let res_galley =
+                ui.painter()
+                    .layout_no_wrap(res_text, res_font, egui::Color32::WHITE);
+            let res_size = res_galley.size();
+            let res_pos = egui::pos2(
+                image_rect.right() - res_size.x - 4.0,
+                image_rect.bottom() - res_size.y - 4.0,
+            );
+            let res_bg_rect = egui::Rect::from_min_size(
+                egui::pos2(res_pos.x - 4.0, res_pos.y - 4.0),
+                egui::vec2(res_size.x + 8.0, res_size.y + 8.0),
+            );
+            ui.painter().rect_filled(
+                res_bg_rect,
+                0.0,
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+            );
             ui.painter()
-                .layout_no_wrap(res_text, res_font, egui::Color32::WHITE);
-        let res_size = res_galley.size();
-        let res_pos = egui::pos2(
-            image_rect.right() - res_size.x - 4.0,
-            image_rect.bottom() - res_size.y - 4.0,
-        );
-        let res_bg_rect = egui::Rect::from_min_size(
-            egui::pos2(res_pos.x - 4.0, res_pos.y - 4.0),
-            egui::vec2(res_size.x + 8.0, res_size.y + 8.0),
-        );
-        ui.painter().rect_filled(
-            res_bg_rect,
-            0.0,
-            egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
-        );
-        ui.painter()
-            .galley(res_pos, res_galley, egui::Color32::WHITE);
+                .galley(res_pos, res_galley, egui::Color32::WHITE);
+        }
 
         Vec::new()
     }

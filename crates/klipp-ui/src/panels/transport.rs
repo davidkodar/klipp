@@ -91,16 +91,27 @@ impl TransportBar {
                 .on_hover_text("Go to end")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekTo(state.duration));
+                let dur = state.sequence_duration();
+                cmds.push(AppCommand::SeekTo(dur));
             }
 
-            // Timecode display
+            // Timecode display with total duration
             ui.add_space(24.0);
+            let playhead_str = state.playhead.format_hmsf(&state.fps);
+            let duration = state.sequence_duration();
+            let duration_str = duration.format_hmsf(&state.fps);
+
             ui.label(
-                egui::RichText::new(state.playhead.format_hmsf(&state.fps))
+                egui::RichText::new(playhead_str)
                     .monospace()
                     .size(18.0)
                     .color(egui::Color32::WHITE),
+            );
+            ui.label(
+                egui::RichText::new(format!(" / {}", duration_str))
+                    .monospace()
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(100, 100, 110)),
             );
         });
 
@@ -118,7 +129,6 @@ impl TransportBar {
             return cmds;
         }
 
-        // Only handle shortcuts when no text edit has focus
         if ctx.memory(|m| m.focused().is_some()) {
             return cmds;
         }
@@ -141,7 +151,8 @@ impl TransportBar {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero()));
             }
             if i.key_pressed(egui::Key::End) {
-                cmds.push(AppCommand::SeekTo(state.duration));
+                let dur = state.sequence_duration();
+                cmds.push(AppCommand::SeekTo(dur));
             }
         });
 
