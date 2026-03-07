@@ -47,6 +47,7 @@ pub struct KlippApp {
     export_crf: u32,
     export_audio_codec: ExportAudioCodec,
     export_audio_bitrate: u32,
+    export_confirm_overwrite: bool,
 }
 
 impl KlippApp {
@@ -95,6 +96,7 @@ impl KlippApp {
             export_crf: 23,
             export_audio_codec: ExportAudioCodec::Aac,
             export_audio_bitrate: 128,
+            export_confirm_overwrite: false,
         }
     }
 
@@ -417,6 +419,10 @@ impl KlippApp {
                 }
                 AppCommand::ShowExportDialog => {
                     self.state.show_export_dialog = true;
+                    if self.export_output_path.is_empty() {
+                        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                        self.export_output_path = format!("{home}/output.mp4");
+                    }
                     continue;
                 }
                 AppCommand::ExportSequence { settings } => {
@@ -1053,31 +1059,79 @@ impl KlippApp {
                         self.state.show_export_dialog = false;
                     }
                     if ui.button("Export").clicked() {
-                        self.state.show_export_dialog = false;
-                        cmds.push(AppCommand::ExportSequence {
-                            settings: ExportSettings {
-                                output_path: PathBuf::from(&self.export_output_path),
-                                format: self.export_format,
-                                video_codec: self.export_video_codec,
-                                resolution: None,
-                                fps: None,
-                                crf: self.export_crf,
-                                audio_codec: self.export_audio_codec,
-                                audio_bitrate_kbps: self.export_audio_bitrate,
-                            },
-                        });
+                        let path = PathBuf::from(&self.export_output_path);
+                        if path.exists() {
+                            self.export_confirm_overwrite = true;
+                        } else {
+                            self.state.show_export_dialog = false;
+                            cmds.push(AppCommand::ExportSequence {
+                                settings: ExportSettings {
+                                    output_path: path,
+                                    format: self.export_format,
+                                    video_codec: self.export_video_codec,
+                                    resolution: None,
+                                    fps: None,
+                                    crf: self.export_crf,
+                                    audio_codec: self.export_audio_codec,
+                                    audio_bitrate_kbps: self.export_audio_bitrate,
+                                },
+                            });
+                        }
                     }
                 });
             });
 
         if !open {
             self.state.show_export_dialog = false;
+            self.export_confirm_overwrite = false;
+        }
+
+        // Overwrite confirmation dialog
+        if self.export_confirm_overwrite {
+            egui::Window::new("Overwrite File?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "\"{}\" already exists. Overwrite?",
+                        self.export_output_path
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.export_confirm_overwrite = false;
+                        }
+                        if ui.button("Overwrite").clicked() {
+                            self.export_confirm_overwrite = false;
+                            self.state.show_export_dialog = false;
+                            cmds.push(AppCommand::ExportSequence {
+                                settings: ExportSettings {
+                                    output_path: PathBuf::from(&self.export_output_path),
+                                    format: self.export_format,
+                                    video_codec: self.export_video_codec,
+                                    resolution: None,
+                                    fps: None,
+                                    crf: self.export_crf,
+                                    audio_codec: self.export_audio_codec,
+                                    audio_bitrate_kbps: self.export_audio_bitrate,
+                                },
+                            });
+                        }
+                    });
+                });
         }
 
         cmds
     }
 
     fn start_export(&mut self, settings: ExportSettings) {
+        // Validate output path
+        if settings.output_path.as_os_str().is_empty() {
+            self.state.export_error = Some("No output path specified.".into());
+            return;
+        }
+
         // Check ffmpeg availability
         if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
             self.state.export_error = Some("ffmpeg not found. Install ffmpeg to export.".into());
@@ -1088,17 +1142,26 @@ impl KlippApp {
         let concat_path = std::env::temp_dir().join("klipp_export_concat.txt");
         let mut concat_content = String::new();
         if let Some(track) = self.state.sequence.video_track() {
-            for clip in &track.clips {
+            tracing::info!("Export: Video 1 track has {} clips", track.clips.len());
+            for (i, clip) in track.clips.iter().enumerate() {
                 if let Some(media) = self.state.media_pool.get(&clip.media_id) {
                     let path_str = media.path.to_string_lossy().replace('\'', "'\\''");
                     let in_secs = clip.source_in.to_secs_f64();
                     let out_secs = clip.source_out.to_secs_f64();
+                    tracing::info!(
+                        "Export clip {}: media={}, inpoint={:.6}, outpoint={:.6}",
+                        i, path_str, in_secs, out_secs
+                    );
                     concat_content.push_str(&format!(
                         "file '{}'\ninpoint {:.6}\noutpoint {:.6}\n",
                         path_str, in_secs, out_secs
                     ));
+                } else {
+                    tracing::warn!("Export clip {}: media_id {:?} not found in pool!", i, clip.media_id);
                 }
             }
+        } else {
+            tracing::warn!("Export: no Video 1 track found!");
         }
 
         if concat_content.is_empty() {
@@ -1112,13 +1175,54 @@ impl KlippApp {
         }
 
         let total_duration = self.state.sequence.total_duration().to_secs_f64();
+        let res = self.state.sequence.resolution;
 
+        // Build ffmpeg command: use individual inputs + filter_complex to handle
+        // mixed resolutions/codecs, rather than concat demuxer which can't cope.
         let mut cmd = std::process::Command::new("ffmpeg");
-        cmd.arg("-y")
-            .arg("-f").arg("concat")
-            .arg("-safe").arg("0")
-            .arg("-i").arg(&concat_path)
-            .arg("-c:v").arg(settings.video_codec.ffmpeg_codec())
+        cmd.arg("-y");
+
+        // Add each clip as a separate input with seek/duration
+        let mut clip_entries: Vec<(String, f64, f64)> = Vec::new();
+        if let Some(track) = self.state.sequence.video_track() {
+            for clip in &track.clips {
+                if let Some(media) = self.state.media_pool.get(&clip.media_id) {
+                    let path_str = media.path.to_string_lossy().to_string();
+                    let in_secs = clip.source_in.to_secs_f64();
+                    let dur_secs = clip.source_out.to_secs_f64() - in_secs;
+                    clip_entries.push((path_str, in_secs, dur_secs));
+                }
+            }
+        }
+
+        for (path, ss, t) in &clip_entries {
+            cmd.arg("-ss").arg(format!("{:.6}", ss));
+            cmd.arg("-t").arg(format!("{:.6}", t));
+            cmd.arg("-i").arg(path);
+        }
+
+        // Build filter_complex: scale all inputs to sequence resolution, then concat
+        let n = clip_entries.len();
+        let mut filter = String::new();
+        for i in 0..n {
+            filter.push_str(&format!(
+                "[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}];",
+                i = i, w = res.width, h = res.height
+            ));
+        }
+        // Concat video streams
+        for i in 0..n {
+            filter.push_str(&format!("[v{i}]"));
+        }
+        filter.push_str(&format!("concat=n={n}:v=1:a=0[outv]"));
+
+        cmd.arg("-filter_complex").arg(&filter);
+        cmd.arg("-map").arg("[outv]");
+        // Don't try to concat audio in filter_complex — it fails if any input lacks audio.
+        // Instead, take audio from the first input that has it, or skip audio.
+        cmd.arg("-map").arg("0:a?");
+
+        cmd.arg("-c:v").arg(settings.video_codec.ffmpeg_codec())
             .arg("-crf").arg(settings.crf.to_string())
             .arg("-preset").arg("medium");
 
@@ -1131,12 +1235,15 @@ impl KlippApp {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
+        tracing::info!("Export ffmpeg command: {:?}", cmd);
+
         match cmd.spawn() {
             Ok(mut child) => {
                 self.state.export_in_progress = true;
                 self.state.export_progress = 0.0;
 
                 let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
                 let tx = self.export_event_tx.clone();
                 let output_path = settings.output_path.clone();
 
@@ -1162,6 +1269,25 @@ impl KlippApp {
                             }
                         }
                     }
+
+                    // Read stderr for error info
+                    let stderr_text = stderr.map(|s| {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let mut reader = std::io::BufReader::new(s);
+                        let _ = reader.read_to_string(&mut buf);
+                        buf
+                    }).unwrap_or_default();
+
+                    // Wait for child (it may have already exited by now since stdout closed)
+                    // The child handle was moved into the app struct, so we check stderr for errors
+                    if !stderr_text.is_empty() {
+                        // Log last few lines of stderr
+                        let last_lines: String = stderr_text.lines().rev().take(10).collect::<Vec<_>>()
+                            .into_iter().rev().collect::<Vec<_>>().join("\n");
+                        tracing::info!("ffmpeg stderr (last lines):\n{}", last_lines);
+                    }
+
                     let _ = tx.send(AppEvent::ExportComplete { path: output_path });
                 });
 
