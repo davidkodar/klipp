@@ -147,6 +147,8 @@ pub enum AppCommand {
     SetTrackVolume { track_index: usize, volume: f32 },
     SetTrackMute { track_index: usize, muted: bool },
     SetTrackSolo { track_index: usize },
+    SetTrackPan { track_index: usize, pan: f32 },
+    SetMasterVolume(f32),
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },
@@ -289,6 +291,10 @@ pub enum AppEvent {
     AudioConformStarted { media_id: MediaId },
     AudioConformComplete { media_id: MediaId },
     AudioConformFailed { media_id: MediaId, error: String },
+
+    // Audio metering
+    TrackPeakLevels { track_index: usize, left: f32, right: f32 },
+    MasterPeakLevels { left: f32, right: f32 },
 
     // Performance stats
     EngineStats { dropped_frames: u64, hw_decode: bool },

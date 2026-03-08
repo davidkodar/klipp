@@ -88,6 +88,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 muted: t.muted,
                 solo: t.solo,
                 visible: t.visible,
+                pan: t.pan,
                 clips: t.clips.iter().map(|c| {
                     ClipJson {
                         id: c.id.to_string(),

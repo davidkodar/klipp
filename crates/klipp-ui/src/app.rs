@@ -343,6 +343,10 @@ impl KlippApp {
                 | AppEvent::AudioConformFailed { .. } => {
                     // Audio conform events come through audio_conform_rx channel
                 }
+                AppEvent::TrackPeakLevels { .. }
+                | AppEvent::MasterPeakLevels { .. } => {
+                    // Handled in Phase G (VU metering UI)
+                }
             }
         }
     }

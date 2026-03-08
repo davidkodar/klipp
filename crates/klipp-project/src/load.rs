@@ -76,6 +76,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             track.muted = t.muted;
             track.solo = t.solo;
             track.visible = t.visible;
+            track.pan = t.pan;
             track.clips = t.clips.iter().map(|c| {
                 Clip {
                     id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),

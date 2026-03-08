@@ -61,6 +61,8 @@ pub struct TrackJson {
     pub solo: bool,
     #[serde(default = "default_visible")]
     pub visible: bool,
+    #[serde(default)]
+    pub pan: f32,
 }
 
 fn default_opacity() -> f32 { 1.0 }

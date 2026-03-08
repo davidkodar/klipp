@@ -1974,6 +1974,7 @@ dependencies = [
  "crossbeam-channel",
  "ffmpeg-next",
  "image",
+ "klipp-audio",
  "klipp-color",
  "klipp-core",
  "klipp-media",

@@ -83,6 +83,8 @@ pub struct Track {
     pub solo: bool,
     #[serde(default = "default_true")]
     pub visible: bool,
+    #[serde(default)]
+    pub pan: f32,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -102,6 +104,7 @@ impl Track {
             muted: false,
             solo: false,
             visible: true,
+            pan: 0.0,
         }
     }
 

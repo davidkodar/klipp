@@ -10,6 +10,13 @@ use crate::video_decoder::VideoDecoder;
 /// due to platform internals, but we only ever use it on the engine thread.
 struct SendAudioOutput(#[allow(dead_code)] AudioOutput);
 unsafe impl Send for SendAudioOutput {}
+
+/// One entry per active audio source (one per playing track).
+struct ActiveAudioSource {
+    #[allow(dead_code)]
+    track_index: usize,
+    source: AudioSource,
+}
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{AppCommand, AppEvent, Fps, MediaId, RationalTime, Resolution, Timecode};
 use klipp_media::MediaPool;
@@ -48,8 +55,8 @@ pub struct PlaybackEngine {
     v2_decoder: Option<VideoDecoder>,
     current_clip_v2: Option<usize>,
     v2_frame_cache: Option<crate::types::DecodedFrame>,
-    // Audio — AudioSource wraps either AudioDecoder (ffmpeg) or PcmAudioFeeder (cache)
-    audio_source: Option<AudioSource>,
+    // Audio — one source per active track, single output (pre-mixed)
+    audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
     cpal_sample_rate: u32,
     // Master clock — single source of truth for A/V timing
@@ -119,7 +126,7 @@ impl PlaybackEngine {
             v2_decoder: None,
             current_clip_v2: None,
             v2_frame_cache: None,
-            audio_source: None,
+            audio_sources: Vec::new(),
             audio_output: None,
             cpal_sample_rate,
             master_clock: Arc::new(MasterClock::new()),
@@ -221,8 +228,8 @@ impl PlaybackEngine {
                         aout.0.start_flush();
                     }
                     self.seek_audio_and_wait(source_secs);
-                    if let Some(asrc) = &self.audio_source {
-                        asrc.resume();
+                    for active in &self.audio_sources {
+                        active.source.resume();
                     }
 
                     // Set master clock to current position and resume
@@ -252,8 +259,8 @@ impl PlaybackEngine {
                         dec.pause();
                     }
                     self.master_clock.pause();
-                    if let Some(adec) = &self.audio_source {
-                        adec.pause();
+                    for active in &self.audio_sources {
+                        active.source.pause();
                     }
                     if let Some(aout) = &self.audio_output {
                         aout.0.pause();
@@ -271,8 +278,7 @@ impl PlaybackEngine {
                     self.v2_decoder = None;
                     self.current_clip_v2 = None;
                     self.v2_frame_cache = None;
-                    self.audio_source = None;
-                    self.audio_output = None;
+                    self.stop_all_audio();
                     self.playhead = Timecode::zero();
                     self.state = PlaybackState::Stopped;
                     let _ = self.event_tx.send(AppEvent::PlaybackStopped);
@@ -291,13 +297,11 @@ impl PlaybackEngine {
                 debug!("SetSpeed({speed})");
                 self.master_clock.set_speed(speed);
                 // Mute audio at high speeds (unintelligible above 4x)
-                if let Some(asrc) = &self.audio_source {
+                for active in &self.audio_sources {
                     if speed.abs() > 4.0 {
-                        asrc.muted().store(true, Ordering::Release);
+                        active.source.muted().store(true, Ordering::Release);
                     } else {
-                        // Restore user's mute setting (not forced mute)
-                        // For now, un-mute — proper mute tracking is Phase 5
-                        asrc.muted().store(false, Ordering::Release);
+                        active.source.muted().store(false, Ordering::Release);
                     }
                 }
             }
@@ -425,11 +429,31 @@ impl PlaybackEngine {
 
     fn start_audio(&mut self, media_id: MediaId, path: &std::path::Path, source_secs: f64) {
         // Drop previous audio
-        self.audio_source = None;
-        self.audio_output = None;
-        // Reset generation counter — new audio source starts at gen=0
-        self.expected_audio_generation = 0;
+        self.stop_all_audio();
 
+        // Open a single audio source for the video track's clip (track_index 0)
+        self.open_audio_source(0, media_id, path, source_secs);
+    }
+
+    /// Stop and drop all audio sources and the output.
+    fn stop_all_audio(&mut self) {
+        for active in &mut self.audio_sources {
+            active.source.stop_detached();
+        }
+        self.audio_sources.clear();
+        self.audio_output = None;
+        self.expected_audio_generation = 0;
+    }
+
+    /// Open one audio source for a given track and add it to audio_sources.
+    /// Creates audio_output if not already present.
+    fn open_audio_source(
+        &mut self,
+        track_index: usize,
+        media_id: MediaId,
+        path: &std::path::Path,
+        source_secs: f64,
+    ) {
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
         if let Some(ref pcm) = pcm_path {
@@ -441,15 +465,20 @@ impl PlaybackEngine {
                         }
                         feeder.resume();
 
-                        match AudioOutput::new(consumer) {
-                            Ok(output) => {
-                                self.audio_output = Some(SendAudioOutput(output));
-                            }
-                            Err(e) => {
-                                warn!("Failed to create audio output: {e}");
+                        if self.audio_output.is_none() {
+                            match AudioOutput::new(consumer) {
+                                Ok(output) => {
+                                    self.audio_output = Some(SendAudioOutput(output));
+                                }
+                                Err(e) => {
+                                    warn!("Failed to create audio output: {e}");
+                                }
                             }
                         }
-                        self.audio_source = Some(AudioSource::PcmFeeder(feeder));
+                        self.audio_sources.push(ActiveAudioSource {
+                            track_index,
+                            source: AudioSource::PcmFeeder(feeder),
+                        });
                         return;
                     }
                     Err(e) => {
@@ -467,15 +496,20 @@ impl PlaybackEngine {
                 }
                 adec.resume();
 
-                match AudioOutput::new(consumer) {
-                    Ok(output) => {
-                        self.audio_output = Some(SendAudioOutput(output));
-                    }
-                    Err(e) => {
-                        warn!("Failed to create audio output: {e}");
+                if self.audio_output.is_none() {
+                    match AudioOutput::new(consumer) {
+                        Ok(output) => {
+                            self.audio_output = Some(SendAudioOutput(output));
+                        }
+                        Err(e) => {
+                            warn!("Failed to create audio output: {e}");
+                        }
                     }
                 }
-                self.audio_source = Some(AudioSource::Decoder(adec));
+                self.audio_sources.push(ActiveAudioSource {
+                    track_index,
+                    source: AudioSource::Decoder(adec),
+                });
             }
             Err(e) => {
                 debug!("No audio for this clip: {e}");
@@ -494,31 +528,38 @@ impl PlaybackEngine {
     /// With PCM feeder this is sub-millisecond; the timeout is a safety net
     /// for the AudioDecoder fallback path.
     fn seek_audio_and_wait(&mut self, source_secs: f64) {
-        if let Some(asrc) = &self.audio_source {
-            self.expected_audio_generation += 1;
-            asrc.seek(source_secs);
+        if self.audio_sources.is_empty() {
+            return;
+        }
 
-            // Tell cpal callback to drain stale ring buffer samples
-            if let Some(aout) = &self.audio_output {
-                aout.0.notify_seek();
-            }
+        self.expected_audio_generation += 1;
+        for active in &self.audio_sources {
+            active.source.seek(source_secs);
+        }
 
-            // Wait for audio to confirm seek (generation counter incremented)
-            let deadline = std::time::Instant::now() + Duration::from_millis(50);
-            loop {
-                let gen = asrc.seek_generation().load(Ordering::Acquire);
-                if gen >= self.expected_audio_generation {
-                    break;
-                }
-                if std::time::Instant::now() >= deadline {
-                    debug!(
-                        "audio seek timeout: expected gen={}, got gen={} — proceeding anyway",
-                        self.expected_audio_generation, gen
-                    );
-                    break;
-                }
-                std::thread::sleep(Duration::from_micros(100));
+        // Tell cpal callback to drain stale ring buffer samples
+        if let Some(aout) = &self.audio_output {
+            aout.0.notify_seek();
+        }
+
+        // Wait for all audio sources to confirm seek
+        let deadline = std::time::Instant::now() + Duration::from_millis(50);
+        loop {
+            let all_ready = self.audio_sources.iter().all(|a| {
+                a.source.seek_generation().load(Ordering::Acquire)
+                    >= self.expected_audio_generation
+            });
+            if all_ready {
+                break;
             }
+            if std::time::Instant::now() >= deadline {
+                debug!(
+                    "audio seek timeout: expected gen={} — proceeding anyway",
+                    self.expected_audio_generation
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(100));
         }
     }
 
@@ -796,10 +837,10 @@ impl PlaybackEngine {
                 self.v2_decoder = None;
                 self.current_clip_v2 = None;
                 self.v2_frame_cache = None;
-                if let Some(adec) = &mut self.audio_source {
-                    adec.stop_detached();
+                for active in &mut self.audio_sources {
+                    active.source.stop_detached();
                 }
-                self.audio_source = None;
+                self.audio_sources.clear();
                 self.audio_output = None;
 
                 // Open new video decoder
@@ -908,8 +949,7 @@ impl PlaybackEngine {
         self.v2_decoder = None;
         self.current_clip_v2 = None;
         self.v2_frame_cache = None;
-        self.audio_source = None;
-        self.audio_output = None;
+        self.stop_all_audio();
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
         (self.repaint_cb)();
@@ -937,8 +977,7 @@ impl PlaybackEngine {
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
-                    self.audio_source = None;
-                    self.audio_output = None;
+                    self.stop_all_audio();
                     match VideoDecoder::open(&path) {
                         Ok(dec) => {
                             dec.seek(source_secs);
@@ -983,14 +1022,16 @@ impl PlaybackEngine {
 
             // 5. Resume or pause audio based on playback state
             if self.state == PlaybackState::Playing {
-                if let Some(asrc) = &self.audio_source {
-                    asrc.resume();
+                for active in &self.audio_sources {
+                    active.source.resume();
                 }
                 if let Some(aout) = &self.audio_output {
                     aout.0.resume();
                 }
-            } else if let Some(asrc) = &self.audio_source {
-                asrc.pause();
+            } else {
+                for active in &self.audio_sources {
+                    active.source.pause();
+                }
             }
 
             // 6. Resume master clock if playing
@@ -1005,8 +1046,8 @@ impl PlaybackEngine {
             if self.state != PlaybackState::Playing {
                 self.grab_single_frame_timeout(grab_timeout);
                 // Play scrub chirp (~40ms snippet at the seek position)
-                if let Some(asrc) = &self.audio_source {
-                    asrc.chirp(source_secs, 0.04);
+                if let Some(active) = self.audio_sources.first() {
+                    active.source.chirp(source_secs, 0.04);
                     if let Some(aout) = &self.audio_output {
                         aout.0.start_chirp();
                     }
@@ -1052,8 +1093,8 @@ impl PlaybackEngine {
                     fb.write_frame(rgba, frame.width, frame.height);
                     drop(fb);
                     // Frame step chirp (~20ms)
-                    if let Some(asrc) = &self.audio_source {
-                        asrc.chirp(chirp_pos, 0.02);
+                    if let Some(active) = self.audio_sources.first() {
+                        active.source.chirp(chirp_pos, 0.02);
                         if let Some(aout) = &self.audio_output {
                             aout.0.start_chirp();
                         }
@@ -1096,12 +1137,12 @@ impl PlaybackEngine {
                         fb.write_frame(rgba, frame.width, frame.height);
                         drop(fb);
                         // Frame step chirp (~20ms)
-                        if let Some(asrc) = &self.audio_source {
+                        if let Some(active) = self.audio_sources.first() {
                             if let Some(aout) = &self.audio_output {
                                 aout.0.notify_seek();
                                 aout.0.resume();
                             }
-                            asrc.chirp(chirp_pos, 0.02);
+                            active.source.chirp(chirp_pos, 0.02);
                         }
                         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                         let _ = self.event_tx.send(AppEvent::FrameReady);
