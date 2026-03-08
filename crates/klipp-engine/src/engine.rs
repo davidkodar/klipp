@@ -1,6 +1,7 @@
 use crate::audio_decoder::AudioDecoder;
 use crate::audio_output::AudioOutput;
 use crate::audio_source::AudioSource;
+use crate::mix_thread::MixThread;
 use crate::pcm_reader::PcmAudioFeeder;
 use crate::sync::MasterClock;
 use crate::texture::SharedFrameBuffer;
@@ -55,9 +56,11 @@ pub struct PlaybackEngine {
     v2_decoder: Option<VideoDecoder>,
     current_clip_v2: Option<usize>,
     v2_frame_cache: Option<crate::types::DecodedFrame>,
-    // Audio — one source per active track, single output (pre-mixed)
+    // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
+    mix_thread: Option<MixThread>,
+    mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     cpal_sample_rate: u32,
     // Master clock — single source of truth for A/V timing
     master_clock: Arc<MasterClock>,
@@ -128,6 +131,8 @@ impl PlaybackEngine {
             v2_frame_cache: None,
             audio_sources: Vec::new(),
             audio_output: None,
+            mix_thread: None,
+            mixer: std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0))),
             cpal_sample_rate,
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
@@ -217,24 +222,42 @@ impl PlaybackEngine {
                     // Seek video decoders to current position and flush stale frames
                     if let Some(dec) = &self.v1_decoder {
                         dec.seek(source_secs);
+                        // Drain stale frames from queue immediately —
+                        // the decoder thread will also clear on seek, but we
+                        // clear from here to discard any frames produced between
+                        // our seek command and the decoder processing it.
+                        dec.frame_queue().lock().unwrap().clear();
                         dec.resume();
                     }
                     if let Some(dec) = &self.v2_decoder {
                         dec.resume();
                     }
 
-                    // Flush stale audio, seek to current position
-                    if let Some(aout) = &self.audio_output {
-                        aout.0.start_flush();
-                    }
+                    // Flush stale audio, seek to current position.
+                    // seek_audio_and_wait flushes mix thread staging, seeks sources,
+                    // and bumps seek_gen on audio output to drain stale main buffer.
+                    // Audio sources stay paused — we wait for video first.
                     self.seek_audio_and_wait(source_secs);
+
+                    // Wait for a valid post-seek video frame before starting
+                    // clock+audio. This also gives cpal time to process the
+                    // seek_gen bump (drain stale samples) while we wait.
+                    self.wait_for_valid_frame(source_secs);
+
+                    // Set clock to target position (not running yet)
+                    let source_us = (source_secs * 1_000_000.0) as u64;
+                    self.master_clock.seek(source_us);
+
+                    // Pre-fill audio pipeline: resume audio sources so samples
+                    // flow through staging → mix thread → main ring buffer.
+                    // cpal is still paused, so it accumulates without consuming.
                     for active in &self.audio_sources {
                         active.source.resume();
                     }
+                    std::thread::sleep(Duration::from_millis(20));
 
-                    // Set master clock to current position and resume
-                    let source_us = (source_secs * 1_000_000.0) as u64;
-                    self.master_clock.seek(source_us);
+                    // Start playback: resume audio output + clock together.
+                    // Main ring buffer already has ~20ms of correct samples.
                     if let Some(aout) = &self.audio_output {
                         aout.0.resume();
                     }
@@ -397,12 +420,48 @@ impl PlaybackEngine {
                     }
                 }
 
-                // Open audio decoder + output
+                // Open audio decoder + output (starts producing samples)
                 self.start_audio(media_id, &path, source_secs);
 
-                // Set master clock to source position and start it
+                // Pause audio immediately — don't let it advance while we
+                // wait for the first video frame.
+                for active in &self.audio_sources {
+                    active.source.pause();
+                }
+                if let Some(aout) = &self.audio_output {
+                    aout.0.pause();
+                }
+
+                // Wait for a valid post-seek video frame
+                self.wait_for_valid_frame(source_secs);
+
+                // Clean slate: flush staging, re-seek audio, drain main buffer.
+                if let Some(ref mt) = self.mix_thread {
+                    mt.flush();
+                }
+                for active in &self.audio_sources {
+                    active.source.seek(source_secs);
+                }
+                if let Some(aout) = &self.audio_output {
+                    aout.0.notify_seek();
+                }
+
+                // Set clock to target (not running yet)
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
+
+                // Pre-fill audio pipeline: resume audio sources so samples
+                // flow through staging → mix thread → main ring buffer.
+                // cpal is still paused, so it accumulates without consuming.
+                for active in &self.audio_sources {
+                    active.source.resume();
+                }
+                std::thread::sleep(Duration::from_millis(20));
+
+                // Start playback: resume audio output + clock together.
+                if let Some(aout) = &self.audio_output {
+                    aout.0.resume();
+                }
                 self.master_clock.resume();
 
                 self.clip_source_start = clip_source_in;
@@ -435,18 +494,25 @@ impl PlaybackEngine {
         self.open_audio_source(0, media_id, path, source_secs);
     }
 
-    /// Stop and drop all audio sources and the output.
+    /// Stop and drop all audio sources, mix thread, and the output.
     fn stop_all_audio(&mut self) {
+        // Clear mix thread staging first (stop reading from source ring buffers)
+        if let Some(ref mt) = self.mix_thread {
+            mt.clear_all();
+        }
         for active in &mut self.audio_sources {
             active.source.stop_detached();
         }
         self.audio_sources.clear();
+        // Drop mix thread and audio output
+        self.mix_thread = None;
         self.audio_output = None;
         self.expected_audio_generation = 0;
     }
 
     /// Open one audio source for a given track and add it to audio_sources.
-    /// Creates audio_output if not already present.
+    /// Creates mix thread + audio output if not already present.
+    /// The source's ring buffer consumer is routed through the mix thread.
     fn open_audio_source(
         &mut self,
         track_index: usize,
@@ -465,16 +531,7 @@ impl PlaybackEngine {
                         }
                         feeder.resume();
 
-                        if self.audio_output.is_none() {
-                            match AudioOutput::new(consumer) {
-                                Ok(output) => {
-                                    self.audio_output = Some(SendAudioOutput(output));
-                                }
-                                Err(e) => {
-                                    warn!("Failed to create audio output: {e}");
-                                }
-                            }
-                        }
+                        self.ensure_mix_pipeline(consumer, track_index);
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
                             source: AudioSource::PcmFeeder(feeder),
@@ -496,16 +553,7 @@ impl PlaybackEngine {
                 }
                 adec.resume();
 
-                if self.audio_output.is_none() {
-                    match AudioOutput::new(consumer) {
-                        Ok(output) => {
-                            self.audio_output = Some(SendAudioOutput(output));
-                        }
-                        Err(e) => {
-                            warn!("Failed to create audio output: {e}");
-                        }
-                    }
-                }
+                self.ensure_mix_pipeline(consumer, track_index);
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
                     source: AudioSource::Decoder(adec),
@@ -514,6 +562,34 @@ impl PlaybackEngine {
             Err(e) => {
                 debug!("No audio for this clip: {e}");
             }
+        }
+    }
+
+    /// Ensure the mix thread and audio output exist, then register
+    /// the given staging consumer for a track.
+    fn ensure_mix_pipeline(
+        &mut self,
+        staging_consumer: crate::audio_decoder::AudioConsumer,
+        track_index: usize,
+    ) {
+        // Create mix thread + audio output on first use
+        if self.mix_thread.is_none() {
+            let (mt, main_consumer) =
+                MixThread::new(self.cpal_sample_rate, self.mixer.clone());
+            match AudioOutput::new(main_consumer) {
+                Ok(output) => {
+                    self.audio_output = Some(SendAudioOutput(output));
+                }
+                Err(e) => {
+                    warn!("Failed to create audio output: {e}");
+                }
+            }
+            self.mix_thread = Some(mt);
+        }
+
+        // Register this source's consumer with the mix thread
+        if let Some(ref mt) = self.mix_thread {
+            mt.add_staging(track_index, staging_consumer);
         }
     }
 
@@ -532,12 +608,18 @@ impl PlaybackEngine {
             return;
         }
 
+        // Flush mix thread staging BEFORE telling sources to seek —
+        // prevents stale samples from being mixed into the main buffer.
+        if let Some(ref mt) = self.mix_thread {
+            mt.flush();
+        }
+
         self.expected_audio_generation += 1;
         for active in &self.audio_sources {
             active.source.seek(source_secs);
         }
 
-        // Tell cpal callback to drain stale ring buffer samples
+        // Tell cpal callback to drain stale main ring buffer samples
         if let Some(aout) = &self.audio_output {
             aout.0.notify_seek();
         }
@@ -997,6 +1079,10 @@ impl PlaybackEngine {
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
+                // Clear stale frames from queue — decoder thread will also clear
+                // when it processes the seek, but this prevents stale frames from
+                // being visible between now and then.
+                dec.frame_queue().lock().unwrap().clear();
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
@@ -1197,6 +1283,38 @@ impl PlaybackEngine {
         }
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
+        }
+    }
+
+    /// Wait for a video frame near `target_secs` to appear in the queue.
+    /// Drains any stale frames that are far from the target (>2s away).
+    /// This ensures the clock and audio don't start before video is ready.
+    fn wait_for_valid_frame(&self, target_secs: f64) {
+        let Some(dec) = &self.v1_decoder else { return };
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        loop {
+            {
+                let mut queue = dec.frame_queue().lock().unwrap();
+                // Drain frames that are far from the seek target
+                while let Some(front) = queue.front() {
+                    let pts = front.pts_secs();
+                    if (pts - target_secs).abs() < 2.0 || front.is_eof {
+                        // Frame is close enough to target — good to go
+                        return;
+                    }
+                    // Stale frame from a previous position — discard
+                    debug!(
+                        "wait_for_valid_frame: discarding stale frame pts={:.3}s (target={:.3}s)",
+                        pts, target_secs
+                    );
+                    queue.pop();
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                debug!("wait_for_valid_frame: timed out waiting for frame near {target_secs:.3}s");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 

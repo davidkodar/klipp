@@ -3,6 +3,7 @@ pub mod audio_output;
 pub mod audio_source;
 pub mod composite;
 pub mod engine;
+pub mod mix_thread;
 pub mod pcm_reader;
 pub mod sync;
 pub mod texture;
