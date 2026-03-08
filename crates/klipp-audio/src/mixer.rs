@@ -68,10 +68,10 @@ impl AudioMixer {
                 continue;
             }
 
-            // Equal-power pan law
-            let angle = (settings.pan + 1.0) / 2.0 * std::f32::consts::FRAC_PI_2;
-            let pan_l = angle.cos();
-            let pan_r = angle.sin();
+            // Balance-style pan: center = unity, hard L/R attenuates opposite channel.
+            // pan: -1.0 = hard left, 0.0 = center, 1.0 = hard right
+            let pan_l = if settings.pan <= 0.0 { 1.0 } else { 1.0 - settings.pan };
+            let pan_r = if settings.pan >= 0.0 { 1.0 } else { 1.0 + settings.pan };
 
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
@@ -120,10 +120,9 @@ mod tests {
         // Stereo interleaved: L R L R
         let buf = vec![0.5, -0.3, 0.7, -0.1];
         let out = mixer.mix(&[&buf]);
-        // With center pan (equal power), both L and R get cos(pi/4) = sin(pi/4) ≈ 0.707
-        let g = std::f32::consts::FRAC_PI_4.cos();
-        assert!((out[0] - 0.5 * g).abs() < 0.001);
-        assert!((out[1] - (-0.3) * g).abs() < 0.001);
+        // Center pan = unity gain (balance-style)
+        assert!((out[0] - 0.5).abs() < 0.001);
+        assert!((out[1] - (-0.3)).abs() < 0.001);
     }
 
     #[test]
@@ -132,9 +131,8 @@ mod tests {
         let buf1 = vec![0.3, 0.3];
         let buf2 = vec![0.2, 0.2];
         let out = mixer.mix(&[&buf1, &buf2]);
-        let g = std::f32::consts::FRAC_PI_4.cos();
-        let expected = (0.3 + 0.2) * g;
-        assert!((out[0] - expected).abs() < 0.001);
+        // Center pan = unity, so sum is 0.3 + 0.2
+        assert!((out[0] - 0.5).abs() < 0.001);
     }
 
     #[test]
@@ -144,9 +142,8 @@ mod tests {
         let buf1 = vec![1.0, 1.0];
         let buf2 = vec![0.5, 0.5];
         let out = mixer.mix(&[&buf1, &buf2]);
-        let g = std::f32::consts::FRAC_PI_4.cos();
         // Only track 2 should contribute
-        assert!((out[0] - 0.5 * g).abs() < 0.001);
+        assert!((out[0] - 0.5).abs() < 0.001);
     }
 
     #[test]
@@ -156,9 +153,8 @@ mod tests {
         let buf1 = vec![1.0, 1.0];
         let buf2 = vec![0.3, 0.3];
         let out = mixer.mix(&[&buf1, &buf2]);
-        let g = std::f32::consts::FRAC_PI_4.cos();
         // Only track 2 (solo) should play
-        assert!((out[0] - 0.3 * g).abs() < 0.001);
+        assert!((out[0] - 0.3).abs() < 0.001);
     }
 
     #[test]
@@ -167,8 +163,7 @@ mod tests {
         mixer.tracks[0].volume = 0.5;
         let buf = vec![1.0, 1.0];
         let out = mixer.mix(&[&buf]);
-        let g = std::f32::consts::FRAC_PI_4.cos();
-        assert!((out[0] - 0.5 * g).abs() < 0.001);
+        assert!((out[0] - 0.5).abs() < 0.001);
     }
 
     #[test]
@@ -177,8 +172,7 @@ mod tests {
         mixer.master_volume = 0.5;
         let buf = vec![1.0, 1.0];
         let out = mixer.mix(&[&buf]);
-        let g = std::f32::consts::FRAC_PI_4.cos();
-        assert!((out[0] - 0.5 * g).abs() < 0.001);
+        assert!((out[0] - 0.5).abs() < 0.001);
     }
 
     #[test]

@@ -113,6 +113,7 @@ pub enum AppCommand {
     AppendClipToTrack { media_id: MediaId, track_index: usize },
     RemoveClip { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
+    MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
     TrimClip {
         clip_id: ClipId,
         new_source_in: Timecode,

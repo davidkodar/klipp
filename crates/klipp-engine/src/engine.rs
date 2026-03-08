@@ -209,7 +209,9 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
-                if self.state == PlaybackState::Paused && self.v1_decoder.is_some() {
+                if self.state == PlaybackState::Paused
+                    && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
+                {
                     // Compute current source position from playhead
                     let source_secs = self.clip_source_start
                         + (self.playhead - self.clip_timeline_start).to_secs_f64();
@@ -233,11 +235,10 @@ impl PlaybackEngine {
                         dec.resume();
                     }
 
-                    // Flush stale audio, seek to current position.
-                    // seek_audio_and_wait flushes mix thread staging, seeks sources,
+                    // Flush stale audio, seek all tracks to current position.
+                    // Flushes mix thread staging, seeks each source per-track,
                     // and bumps seek_gen on audio output to drain stale main buffer.
-                    // Audio sources stay paused — we wait for video first.
-                    self.seek_audio_and_wait(source_secs);
+                    self.seek_all_audio_to_timecode(self.playhead);
 
                     // Wait for a valid post-seek video frame before starting
                     // clock+audio. This also gives cpal time to process the
@@ -372,6 +373,37 @@ impl PlaybackEngine {
                 self.color_pipeline.global_lut_opacity = opacity;
             }
 
+            AppCommand::SetTrackVolume { track_index, volume } => {
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track_index + 1);
+                    m.tracks[track_index].volume = volume;
+                }
+            }
+            AppCommand::SetTrackMute { track_index, muted } => {
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track_index + 1);
+                    m.tracks[track_index].muted = muted;
+                }
+            }
+            AppCommand::SetTrackSolo { track_index } => {
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track_index + 1);
+                    let currently_solo = m.tracks[track_index].solo;
+                    m.tracks[track_index].solo = !currently_solo;
+                }
+            }
+            AppCommand::SetTrackPan { track_index, pan } => {
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track_index + 1);
+                    m.tracks[track_index].pan = pan;
+                }
+            }
+            AppCommand::SetMasterVolume(vol) => {
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.master_volume = vol;
+                }
+            }
+
             // UI-side commands — engine ignores them
             _ => {}
         }
@@ -381,24 +413,27 @@ impl PlaybackEngine {
 
     fn handle_play(&mut self) {
         let seq = self.sequence.read().unwrap();
-        let clip_info = seq.video_track().and_then(|track| {
-            if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
-                let source_secs = clip.source_in.to_secs_f64()
-                    + (self.playhead - clip.timeline_in).to_secs_f64();
-                let clip_source_in = clip.source_in.to_secs_f64();
-                return Some((idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in));
-            }
-            for (idx, clip) in track.clips.iter().enumerate() {
-                if clip.timeline_in >= self.playhead {
-                    let si = clip.source_in.to_secs_f64();
-                    return Some((idx, clip.media_id, si, clip.timeline_in, si));
+        // Search ALL video tracks (not just Video 1)
+        let clip_info = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|track| {
+                if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (self.playhead - clip.timeline_in).to_secs_f64();
+                    let clip_source_in = clip.source_in.to_secs_f64();
+                    return Some((idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in));
                 }
-            }
-            track.clips.first().map(|clip| {
-                let si = clip.source_in.to_secs_f64();
-                (0, clip.media_id, si, clip.timeline_in, si)
-            })
-        });
+                for (idx, clip) in track.clips.iter().enumerate() {
+                    if clip.timeline_in >= self.playhead {
+                        let si = clip.source_in.to_secs_f64();
+                        return Some((idx, clip.media_id, si, clip.timeline_in, si));
+                    }
+                }
+                track.clips.first().map(|clip| {
+                    let si = clip.source_in.to_secs_f64();
+                    (0, clip.media_id, si, clip.timeline_in, si)
+                })
+            });
         drop(seq);
 
         if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
@@ -420,8 +455,8 @@ impl PlaybackEngine {
                     }
                 }
 
-                // Open audio decoder + output (starts producing samples)
-                self.start_audio(media_id, &path, source_secs);
+                // Open audio for ALL tracks that have a clip at the playhead
+                self.start_all_audio(self.playhead);
 
                 // Pause audio immediately — don't let it advance while we
                 // wait for the first video frame.
@@ -435,24 +470,14 @@ impl PlaybackEngine {
                 // Wait for a valid post-seek video frame
                 self.wait_for_valid_frame(source_secs);
 
-                // Clean slate: flush staging, re-seek audio, drain main buffer.
-                if let Some(ref mt) = self.mix_thread {
-                    mt.flush();
-                }
-                for active in &self.audio_sources {
-                    active.source.seek(source_secs);
-                }
-                if let Some(aout) = &self.audio_output {
-                    aout.0.notify_seek();
-                }
+                // Clean slate: flush staging, re-seek all audio, drain main buffer.
+                self.seek_all_audio_to_timecode(self.playhead);
 
                 // Set clock to target (not running yet)
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
 
-                // Pre-fill audio pipeline: resume audio sources so samples
-                // flow through staging → mix thread → main ring buffer.
-                // cpal is still paused, so it accumulates without consuming.
+                // Pre-fill audio pipeline
                 for active in &self.audio_sources {
                     active.source.resume();
                 }
@@ -482,16 +507,95 @@ impl PlaybackEngine {
                 warn!("No path for media {:?}", media_id);
             }
         } else {
-            debug!("No clips in sequence");
+            // No video clip — try audio-only playback
+            self.handle_play_audio_only();
         }
     }
 
-    fn start_audio(&mut self, media_id: MediaId, path: &std::path::Path, source_secs: f64) {
-        // Drop previous audio
+    /// Audio-only playback — no video decoder, just audio tracks.
+    fn handle_play_audio_only(&mut self) {
+        // Check if any audio track has a clip at the playhead
+        let has_audio = {
+            let seq = self.sequence.read().unwrap();
+            seq.tracks.iter().any(|track| {
+                track.kind == klipp_timeline::TrackKind::Audio
+                    && track.clip_at_timecode(self.playhead).is_some()
+            })
+        };
+        if !has_audio {
+            debug!("No clips in sequence (video or audio)");
+            return;
+        }
+
+        info!("handle_play: audio-only at {:.3}s", self.playhead.to_secs_f64());
+
+        self.start_all_audio(self.playhead);
+
+        // Pause audio, flush, re-seek
+        for active in &self.audio_sources {
+            active.source.pause();
+        }
+        if let Some(aout) = &self.audio_output {
+            aout.0.pause();
+        }
+        self.seek_all_audio_to_timecode(self.playhead);
+
+        // Set clock
+        let source_us = (self.playhead.to_secs_f64() * 1_000_000.0) as u64;
+        self.master_clock.seek(source_us);
+
+        // Pre-fill audio pipeline
+        for active in &self.audio_sources {
+            active.source.resume();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Start playback
+        if let Some(aout) = &self.audio_output {
+            aout.0.resume();
+        }
+        self.master_clock.resume();
+
+        self.clip_source_start = self.playhead.to_secs_f64();
+        self.clip_timeline_start = self.playhead;
+        self.state = PlaybackState::Playing;
+        self.dropped_frames = 0;
+        self.frames_consumed = 0;
+        self.last_playback_log = std::time::Instant::now();
+        self.last_frame_time = std::time::Instant::now();
+        let _ = self.event_tx.send(AppEvent::PlaybackStarted);
+        (self.repaint_cb)();
+    }
+
+    /// Open audio sources for ALL tracks that have a clip at `tc`.
+    /// Replaces any existing audio sources.
+    fn start_all_audio(&mut self, tc: Timecode) {
         self.stop_all_audio();
 
-        // Open a single audio source for the video track's clip (track_index 0)
-        self.open_audio_source(0, media_id, path, source_secs);
+        // Collect (track_index, media_id, path, source_secs) for every track with audio at tc
+        let track_audio: Vec<(usize, MediaId, PathBuf, f64)> = {
+            let seq = self.sequence.read().unwrap();
+            let pool = self.media_pool.read().unwrap();
+            seq.tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(track_idx, track)| {
+                    let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
+                    let item = pool.get(&clip.media_id)?;
+                    if !item.has_audio {
+                        return None;
+                    }
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (tc - clip.timeline_in).to_secs_f64();
+                    Some((track_idx, clip.media_id, item.path.clone(), source_secs))
+                })
+                .collect()
+        };
+
+        debug!("start_all_audio: {} tracks with audio at {:.3}s", track_audio.len(), tc.to_secs_f64());
+        for (track_idx, media_id, path, source_secs) in track_audio {
+            self.open_audio_source(track_idx, media_id, &path, source_secs);
+        }
     }
 
     /// Stop and drop all audio sources, mix thread, and the output.
@@ -600,23 +704,38 @@ impl PlaybackEngine {
         item.audio_cache.as_ref().map(|c| c.pcm_path.clone())
     }
 
-    /// Seek audio and wait for readiness using generation counter.
-    /// With PCM feeder this is sub-millisecond; the timeout is a safety net
-    /// for the AudioDecoder fallback path.
-    fn seek_audio_and_wait(&mut self, source_secs: f64) {
+    /// Seek all audio sources to match the clip at `tc` on each source's track.
+    /// Flushes the mix pipeline, bumps seek_gen, and waits for all sources to confirm.
+    fn seek_all_audio_to_timecode(&mut self, tc: Timecode) {
         if self.audio_sources.is_empty() {
             return;
         }
 
-        // Flush mix thread staging BEFORE telling sources to seek —
-        // prevents stale samples from being mixed into the main buffer.
+        // Flush mix thread staging BEFORE telling sources to seek
         if let Some(ref mt) = self.mix_thread {
             mt.flush();
         }
 
+        // Compute per-track seek positions from the timeline
+        let seek_positions: Vec<(usize, f64)> = {
+            let seq = self.sequence.read().unwrap();
+            self.audio_sources
+                .iter()
+                .filter_map(|active| {
+                    let track = seq.tracks.get(active.track_index)?;
+                    let (_idx, clip) = track.clip_at_timecode(tc)?;
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (tc - clip.timeline_in).to_secs_f64();
+                    Some((active.track_index, source_secs))
+                })
+                .collect()
+        };
+
         self.expected_audio_generation += 1;
         for active in &self.audio_sources {
-            active.source.seek(source_secs);
+            if let Some((_, secs)) = seek_positions.iter().find(|(idx, _)| *idx == active.track_index) {
+                active.source.seek(*secs);
+            }
         }
 
         // Tell cpal callback to drain stale main ring buffer samples
@@ -711,6 +830,24 @@ impl PlaybackEngine {
         let frame = match display_frame {
             Some(f) => f,
             None => {
+                if self.v1_decoder.is_none() && !self.audio_sources.is_empty() {
+                    // Audio-only playback: update playhead from clock
+                    let playhead_secs = current_source_secs;
+                    let new_playhead = RationalTime::from_secs_f64(playhead_secs, self.fps.rate());
+                    self.playhead = new_playhead;
+
+                    // Check if past end of all audio clips
+                    let seq_dur = self.sequence_duration();
+                    if self.playhead >= seq_dur {
+                        self.stop_at_end();
+                        return;
+                    }
+
+                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    (self.repaint_cb)();
+                    return;
+                }
+
                 // Log actual stalls (delta > 0.5s means decode can't keep up)
                 if q_len > 0 && self.last_playback_log.elapsed().as_millis() > 2000 {
                     if let Some(dec) = &self.v1_decoder {
@@ -738,26 +875,28 @@ impl PlaybackEngine {
         }
 
         // Update playhead from the frame's PTS relative to clip timeline
+        // Search ALL video tracks for the current clip
         let seq = self.sequence.read().unwrap();
-        if let Some(track) = seq.video_track() {
-            if let Some(clip) = track.clips.get(self.current_clip_index) {
-                let source_elapsed_secs = frame.pts_secs() - clip.source_in.to_secs_f64();
-                let elapsed_tc = RationalTime::from_secs_f64(
-                    source_elapsed_secs.max(0.0),
-                    self.fps.rate(),
-                );
-                self.playhead = clip.timeline_in + elapsed_tc;
+        let found_clip = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|track| track.clips.get(self.current_clip_index).cloned());
+        drop(seq);
 
-                // Check if we've passed source_out
-                if frame.pts_secs() >= clip.source_out.to_secs_f64() - 0.01 {
-                    self.playhead = clip.timeline_out;
-                    drop(seq);
-                    self.advance_to_next_clip();
-                    return;
-                }
+        if let Some(clip) = found_clip {
+            let source_elapsed_secs = frame.pts_secs() - clip.source_in.to_secs_f64();
+            let elapsed_tc = RationalTime::from_secs_f64(
+                source_elapsed_secs.max(0.0),
+                self.fps.rate(),
+            );
+            self.playhead = clip.timeline_in + elapsed_tc;
+
+            // Check if we've passed source_out
+            if frame.pts_secs() >= clip.source_out.to_secs_f64() - 0.01 {
+                self.playhead = clip.timeline_out;
+                self.advance_to_next_clip();
+                return;
             }
         }
-        drop(seq);
 
         // Check V2 decoder lifecycle — open/close as playhead moves through V2 clips
         self.maybe_open_v2_decoder(self.playhead);
@@ -824,8 +963,9 @@ impl PlaybackEngine {
         // Apply per-clip color grade
         let final_rgba = {
             let seq = self.sequence.read().unwrap();
-            let grade = seq.video_track()
-                .and_then(|t| t.clips.get(self.current_clip_index))
+            let grade = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|t| t.clips.get(self.current_clip_index))
                 .map(|c| c.color_grade);
             drop(seq);
             if let Some(g) = grade {
@@ -844,8 +984,9 @@ impl PlaybackEngine {
         // Apply per-clip OFX effects chain (Phase 6A: stub passthrough)
         let final_rgba = {
             let seq = self.sequence.read().unwrap();
-            let effects = seq.video_track()
-                .and_then(|t| t.clips.get(self.current_clip_index))
+            let effects = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|t| t.clips.get(self.current_clip_index))
                 .map(|c| c.effects.clone());
             drop(seq);
             if let Some(fx) = effects {
@@ -894,11 +1035,13 @@ impl PlaybackEngine {
     fn advance_to_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap();
         let next_idx = self.current_clip_index + 1;
-        let next_clip_info = seq.video_track().and_then(|track| {
-            track.clips.get(next_idx).map(|clip| {
-                (clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in)
-            })
-        });
+        let next_clip_info = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|track| {
+                track.clips.get(next_idx).map(|clip| {
+                    (clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in)
+                })
+            });
         drop(seq);
 
         if let Some((media_id, source_in_secs, timeline_in)) = next_clip_info {
@@ -942,11 +1085,11 @@ impl PlaybackEngine {
                     }
                 }
 
-                // Open new audio decoder + output, set master clock
+                // Open audio for all tracks at the new clip position
                 let start_us = (source_in_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
                 self.master_clock.resume();
-                self.start_audio(media_id, &path, source_in_secs);
+                self.start_all_audio(self.playhead);
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
@@ -1043,14 +1186,17 @@ impl PlaybackEngine {
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
         let seq = self.sequence.read().unwrap();
-        let clip_info = seq.video_track().and_then(|track| {
-            track.clip_at_timecode(tc).map(|(idx, clip)| {
-                let source_secs = clip.source_in.to_secs_f64()
-                    + (tc - clip.timeline_in).to_secs_f64();
-                let clip_source_in = clip.source_in.to_secs_f64();
-                (idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in)
-            })
-        });
+        // Search ALL video tracks (not just Video 1)
+        let clip_info = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|track| {
+                track.clip_at_timecode(tc).map(|(idx, clip)| {
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (tc - clip.timeline_in).to_secs_f64();
+                    let clip_source_in = clip.source_in.to_secs_f64();
+                    (idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in)
+                })
+            });
         drop(seq);
 
         if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
@@ -1074,8 +1220,8 @@ impl PlaybackEngine {
                             error!("Failed to open decoder for seek: {e}");
                         }
                     }
-                    // Re-open audio for the new clip
-                    self.start_audio(media_id, &path, source_secs);
+                    // Re-open audio for all tracks at the new position
+                    self.start_all_audio(tc);
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
@@ -1094,13 +1240,10 @@ impl PlaybackEngine {
             // 1. Pause clock
             self.master_clock.pause();
 
-            // 2. Flush audio output
-            if let Some(aout) = &self.audio_output {
-                aout.0.start_flush();
-            }
-
-            // 3. Seek audio with generation counter (waits for readiness)
-            self.seek_audio_and_wait(source_secs);
+            // 2. Re-open audio for current sequence state then seek+flush.
+            //    This handles cross-track moves where track indices changed.
+            self.start_all_audio(tc);
+            self.seek_all_audio_to_timecode(tc);
 
             // 4. Set master clock to target
             let target_us = (source_secs * 1_000_000.0) as u64;
@@ -1139,6 +1282,60 @@ impl PlaybackEngine {
                     }
                 }
             }
+        } else {
+            // No video clip at this timecode — handle audio-only seek
+            self.v1_decoder = None;
+            self.v2_frame_cache = None;
+
+            // Check if any audio track has a clip here
+            let has_audio = {
+                let seq = self.sequence.read().unwrap();
+                seq.tracks.iter().any(|track| {
+                    track.kind == klipp_timeline::TrackKind::Audio
+                        && track.clip_at_timecode(tc).is_some()
+                })
+            };
+
+            if has_audio {
+                self.start_all_audio(tc);
+
+                // Master clock seek
+                self.master_clock.pause();
+                self.seek_all_audio_to_timecode(tc);
+                let target_us = (tc.to_secs_f64() * 1_000_000.0) as u64;
+                self.master_clock.seek(target_us);
+
+                if self.state == PlaybackState::Playing {
+                    for active in &self.audio_sources {
+                        active.source.resume();
+                    }
+                    if let Some(aout) = &self.audio_output {
+                        aout.0.resume();
+                    }
+                    self.master_clock.resume();
+                } else {
+                    for active in &self.audio_sources {
+                        active.source.pause();
+                    }
+                    // Play scrub chirp for audio-only
+                    if let Some(active) = self.audio_sources.first() {
+                        let source_secs = {
+                            let seq = self.sequence.read().unwrap();
+                            seq.tracks.iter().find_map(|track| {
+                                let (_, clip) = track.clip_at_timecode(tc)?;
+                                Some(clip.source_in.to_secs_f64()
+                                    + (tc - clip.timeline_in).to_secs_f64())
+                            }).unwrap_or(0.0)
+                        };
+                        active.source.chirp(source_secs, 0.04);
+                        if let Some(aout) = &self.audio_output {
+                            aout.0.start_chirp();
+                        }
+                    }
+                }
+            } else {
+                self.stop_all_audio();
+            }
         }
 
         self.playhead = tc;
@@ -1162,16 +1359,17 @@ impl PlaybackEngine {
                 if let Some(frame) = last_frame {
                     let chirp_pos = frame.pts_secs();
                     let seq = self.sequence.read().unwrap();
-                    if let Some(track) = seq.video_track() {
-                        if let Some(clip) = track.clips.get(self.current_clip_index) {
-                            let source_elapsed =
-                                frame.pts_secs() - clip.source_in.to_secs_f64();
-                            let elapsed_tc = RationalTime::from_secs_f64(
-                                source_elapsed.max(0.0),
-                                self.fps.rate(),
-                            );
-                            self.playhead = clip.timeline_in + elapsed_tc;
-                        }
+                    if let Some(clip) = seq.tracks.iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                        .find_map(|t| t.clips.get(self.current_clip_index))
+                    {
+                        let source_elapsed =
+                            frame.pts_secs() - clip.source_in.to_secs_f64();
+                        let elapsed_tc = RationalTime::from_secs_f64(
+                            source_elapsed.max(0.0),
+                            self.fps.rate(),
+                        );
+                        self.playhead = clip.timeline_in + elapsed_tc;
                     }
                     drop(seq);
                     let rgba = frame.to_rgba();
@@ -1205,16 +1403,17 @@ impl PlaybackEngine {
                         // Update playhead from frame PTS
                         let chirp_pos = frame.pts_secs();
                         let seq = self.sequence.read().unwrap();
-                        if let Some(track) = seq.video_track() {
-                            if let Some(clip) = track.clips.get(self.current_clip_index) {
-                                let source_elapsed =
-                                    frame.pts_secs() - clip.source_in.to_secs_f64();
-                                let elapsed_tc = RationalTime::from_secs_f64(
-                                    source_elapsed.max(0.0),
-                                    self.fps.rate(),
-                                );
-                                self.playhead = clip.timeline_in + elapsed_tc;
-                            }
+                        if let Some(clip) = seq.tracks.iter()
+                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .find_map(|t| t.clips.get(self.current_clip_index))
+                        {
+                            let source_elapsed =
+                                frame.pts_secs() - clip.source_in.to_secs_f64();
+                            let elapsed_tc = RationalTime::from_secs_f64(
+                                source_elapsed.max(0.0),
+                                self.fps.rate(),
+                            );
+                            self.playhead = clip.timeline_in + elapsed_tc;
                         }
                         drop(seq);
 

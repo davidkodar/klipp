@@ -44,6 +44,8 @@ pub struct TimelinePanel {
     filmstrip_total: usize,
     /// Last filmstrip refinement request time — debounce to avoid spamming
     last_refine_request: Option<std::time::Instant>,
+    /// Track rects from last frame — used for cross-track drag detection
+    track_rects: Vec<(usize, TrackKind, egui::Rect)>,
 }
 
 struct DragState {
@@ -183,6 +185,26 @@ impl TimelinePanel {
         let mut track_y = tracks_start_y;
 
         let track_count = state.sequence.tracks.len();
+
+        // Pre-compute all track rects so cross-track drag can find any track
+        self.track_rects.clear();
+        {
+            let mut pre_y = tracks_start_y;
+            for ti in 0..track_count {
+                let tk = state.sequence.tracks[ti].kind;
+                let th = match tk {
+                    TrackKind::Video => VIDEO_TRACK_HEIGHT,
+                    TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                };
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(content_rect.left(), pre_y),
+                    egui::vec2(content_rect.width(), th),
+                );
+                self.track_rects.push((ti, tk, rect));
+                pre_y += th;
+            }
+        }
+
         for track_idx in 0..track_count {
             let track_kind = state.sequence.tracks[track_idx].kind;
             let track_name = state.sequence.tracks[track_idx].name.clone();
@@ -322,15 +344,44 @@ impl TimelinePanel {
                             cmds.push(AppCommand::SetTrackSolo { track_index: track_idx });
                         }
 
-                        // Volume label
+                        // Volume drag control (like video opacity)
+                        let vol_rect = egui::Rect::from_min_size(
+                            egui::pos2(s_rect.right() + 4.0, btn_y),
+                            egui::vec2(header_rect.right() - s_rect.right() - 8.0, 12.0),
+                        );
+                        let vol_resp = ui.interact(
+                            vol_rect,
+                            ui.id().with(("vol_ctrl", track_idx)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        bg_painter.rect_filled(vol_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
+                        let fill_w = vol_rect.width() * (track.volume / 1.3);
+                        let fill_rect = egui::Rect::from_min_size(
+                            vol_rect.left_top(),
+                            egui::vec2(fill_w, vol_rect.height()),
+                        );
+                        bg_painter.rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(50, 100, 60));
                         let vol_pct = (track.volume * 100.0) as u32;
                         bg_painter.text(
-                            egui::pos2(s_rect.right() + 4.0, btn_y + 6.0),
-                            egui::Align2::LEFT_CENTER,
+                            vol_rect.center(),
+                            egui::Align2::CENTER_CENTER,
                             format!("{}%", vol_pct),
                             egui::FontId::proportional(9.0),
-                            egui::Color32::from_rgb(90, 90, 100),
+                            egui::Color32::from_rgb(180, 200, 180),
                         );
+                        if vol_resp.double_clicked() {
+                            cmds.push(AppCommand::SetTrackVolume {
+                                track_index: track_idx,
+                                volume: 1.0,
+                            });
+                        } else if vol_resp.dragged() {
+                            let dx = vol_resp.drag_delta().x;
+                            let new_vol = (track.volume + dx / vol_rect.width() * 1.3).clamp(0.0, 1.3);
+                            cmds.push(AppCommand::SetTrackVolume {
+                                track_index: track_idx,
+                                volume: new_vol,
+                            });
+                        }
                     }
                 }
             }
@@ -350,33 +401,49 @@ impl TimelinePanel {
             );
 
             // Draw clips for this track
-            let is_primary_video = track_name == "Video 1";
             self.draw_track_clips(
                 ui, &painter, &track_rect, &content_rect,
-                state, &mut cmds, track_idx, is_primary_video,
+                state, &mut cmds, track_idx, true,
             );
 
             // Media pool drag-and-drop: highlight track when dragging over it
-            if state.dragging_media.is_some() {
+            if let Some(drag_media_id) = state.dragging_media {
                 let hover_pos = ui.input(|i| i.pointer.hover_pos());
                 let any_down = ui.input(|i| i.pointer.any_down());
                 if let Some(pos) = hover_pos {
-                    if track_rect.contains(pos) && track_kind == TrackKind::Video {
-                        // Highlight drop target
-                        painter.rect_stroke(
-                            track_rect,
-                            0.0,
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
-                        );
-                        // Drop on release
-                        if !any_down {
-                            if let Some(media_id) = state.dragging_media.take() {
-                                tracing::info!("Media drop: {:?} -> track {} ({})", media_id, track_idx, track_name);
+                    if track_rect.contains(pos) {
+                        // Check media type vs track type compatibility:
+                        // Audio-only → audio tracks only. Video → video tracks only.
+                        let is_audio_only = state.media_pool.get(&drag_media_id)
+                            .map(|item| item.video_codec.is_empty())
+                            .unwrap_or(false);
+                        let compatible = match track_kind {
+                            TrackKind::Audio => is_audio_only,
+                            TrackKind::Video => !is_audio_only,
+                        };
+                        if compatible {
+                            // Highlight drop target (cyan = valid)
+                            painter.rect_stroke(
+                                track_rect,
+                                0.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                            );
+                            // Drop on release
+                            if !any_down {
+                                state.dragging_media = None;
+                                tracing::info!("Media drop: {:?} -> track {} ({})", drag_media_id, track_idx, track_name);
                                 cmds.push(AppCommand::AppendClipToTrack {
-                                    media_id,
+                                    media_id: drag_media_id,
                                     track_index: track_idx,
                                 });
                             }
+                        } else {
+                            // Show red border for invalid drop target
+                            painter.rect_stroke(
+                                track_rect,
+                                0.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+                            );
                         }
                     }
                 }
@@ -1270,6 +1337,11 @@ impl TimelinePanel {
         // Handle ongoing drag
         if let Some(ref drag) = self.dragging_clip {
             if let Some(pos) = pointer_pos {
+                // Determine which track the pointer is hovering over
+                let hover_track_idx = self.track_rects.iter()
+                    .find(|(_, _, rect)| rect.contains(pos))
+                    .map(|(idx, _, _)| *idx);
+
                 if pointer_down {
                     let dx = pos.x - drag.start_x;
                     let dt_secs = dx as f64 / zoom as f64;
@@ -1329,18 +1401,77 @@ impl TimelinePanel {
                         }
                     }
 
+                    // Highlight target track if different from source
+                    if let Some(target_idx) = hover_track_idx {
+                        if target_idx != drag.track_idx {
+                            let source_kind = state.sequence.tracks.get(drag.track_idx)
+                                .map(|t| t.kind);
+                            let target_kind = state.sequence.tracks.get(target_idx)
+                                .map(|t| t.kind);
+                            if source_kind == target_kind {
+                                if let Some((_, _, rect)) = self.track_rects.iter()
+                                    .find(|(idx, _, _)| *idx == target_idx)
+                                {
+                                    painter.rect_stroke(
+                                        *rect, 0.0,
+                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let _ = snapped; // suppress unused warning
                 }
             }
 
             if pointer_released {
                 let clip_id = drag.clip_id;
-                if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
-                    if let Some(clip) = track.find_clip(clip_id) {
-                        cmds.push(AppCommand::MoveClip {
-                            clip_id,
-                            new_timeline_in: clip.timeline_in,
-                        });
+                let from_track = drag.track_idx;
+
+                // Check if pointer is over a different compatible track
+                let target_track = pointer_pos.and_then(|pos| {
+                    self.track_rects.iter()
+                        .find(|(_, _, rect)| rect.contains(pos))
+                        .map(|(idx, _, _)| *idx)
+                });
+
+                if let Some(to_track) = target_track {
+                    if to_track != from_track {
+                        let source_kind = state.sequence.tracks.get(from_track).map(|t| t.kind);
+                        let target_kind = state.sequence.tracks.get(to_track).map(|t| t.kind);
+                        if source_kind == target_kind {
+                            // Cross-track move
+                            if let Some(track) = state.sequence.tracks.get(from_track) {
+                                if let Some(clip) = track.find_clip(clip_id) {
+                                    cmds.push(AppCommand::MoveClipToTrack {
+                                        clip_id,
+                                        new_timeline_in: clip.timeline_in,
+                                        from_track,
+                                        to_track,
+                                    });
+                                }
+                            }
+                        } else {
+                            // Incompatible track type — revert position
+                            if let Some(track) = state.sequence.tracks.get_mut(from_track) {
+                                if let Some(clip) = track.find_clip_mut(clip_id) {
+                                    let dur = clip.duration();
+                                    clip.timeline_in = drag.original_timeline_in;
+                                    clip.timeline_out = drag.original_timeline_in + dur;
+                                }
+                            }
+                        }
+                    } else {
+                        // Same track — normal move
+                        if let Some(track) = state.sequence.tracks.get(from_track) {
+                            if let Some(clip) = track.find_clip(clip_id) {
+                                cmds.push(AppCommand::MoveClip {
+                                    clip_id,
+                                    new_timeline_in: clip.timeline_in,
+                                });
+                            }
+                        }
                     }
                 }
                 self.dragging_clip = None;

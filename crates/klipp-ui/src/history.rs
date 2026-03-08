@@ -54,6 +54,14 @@ pub enum EditCommand {
         clip: Clip,
         track_index: usize,
     },
+    MoveClipToTrack {
+        clip: Clip,
+        old_timeline_in: RationalTime,
+        old_timeline_out: RationalTime,
+        new_timeline_in: RationalTime,
+        from_track: usize,
+        to_track: usize,
+    },
 }
 
 impl EditCommand {
@@ -61,7 +69,7 @@ impl EditCommand {
         match self {
             EditCommand::AppendClip { .. } => "Append Clip",
             EditCommand::RemoveClip { .. } | EditCommand::RippleRemove { .. } => "Remove Clip",
-            EditCommand::MoveClip { .. } => "Move Clip",
+            EditCommand::MoveClip { .. } | EditCommand::MoveClipToTrack { .. } => "Move Clip",
             EditCommand::TrimClip { .. } => "Trim Clip",
             EditCommand::BladeClip { .. } => "Blade Clip",
             EditCommand::CutClip { .. } => "Cut Clip",
