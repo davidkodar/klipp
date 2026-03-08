@@ -57,6 +57,8 @@ pub struct PlaybackEngine {
     // Timeline offset: maps source PTS to sequence timeline.
     clip_source_start: f64, // source seconds at which playback started for current clip
     clip_timeline_start: Timecode, // timeline position of clip_source_start
+    // Audio seek synchronization — generation counter
+    expected_audio_generation: u64,
     // Performance
     use_hw_decode: bool,
     last_stats_time: std::time::Instant,
@@ -121,6 +123,7 @@ impl PlaybackEngine {
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
+            expected_audio_generation: 0,
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
             frames_consumed: 0,
@@ -205,15 +208,13 @@ impl PlaybackEngine {
                     if let Some(aout) = &self.audio_output {
                         aout.0.start_flush();
                     }
-                    if let Some(adec) = &self.audio_source {
-                        adec.seek(source_secs);
-                        adec.resume();
+                    self.seek_audio_and_wait(source_secs);
+                    if let Some(asrc) = &self.audio_source {
+                        asrc.resume();
                     }
                     // Set master clock to current position and resume
                     let source_us = (source_secs * 1_000_000.0) as u64;
                     self.master_clock.seek(source_us);
-                    // Brief flush to clear stale ring buffer samples
-                    std::thread::sleep(Duration::from_millis(5));
                     if let Some(aout) = &self.audio_output {
                         aout.0.resume();
                     }
@@ -460,10 +461,39 @@ impl PlaybackEngine {
         item.audio_cache.as_ref().map(|c| c.pcm_path.clone())
     }
 
+    /// Seek audio and wait for readiness using generation counter.
+    /// With PCM feeder this is sub-millisecond; the timeout is a safety net
+    /// for the AudioDecoder fallback path.
+    fn seek_audio_and_wait(&mut self, source_secs: f64) {
+        if let Some(asrc) = &self.audio_source {
+            self.expected_audio_generation += 1;
+            asrc.seek(source_secs);
+
+            // Wait for audio to confirm seek (generation counter incremented)
+            let deadline = std::time::Instant::now() + Duration::from_millis(50);
+            loop {
+                let gen = asrc.seek_generation().load(Ordering::Acquire);
+                if gen >= self.expected_audio_generation {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    debug!(
+                        "audio seek timeout: expected gen={}, got gen={} — proceeding anyway",
+                        self.expected_audio_generation, gen
+                    );
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
+    }
+
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
         // Master clock is the single source of truth.
         let current_source_secs = self.master_clock.current_secs();
+        // Frame presentation tolerance: half a frame duration (scales with FPS)
+        let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
         let _clock_running = self.master_clock.is_running();
 
         // Pop frames from the queue, presenting the one closest to current time
@@ -484,7 +514,7 @@ impl PlaybackEngine {
                     }
                     Some(f) => {
                         let pts = f.pts_secs();
-                        if pts <= current_source_secs + 0.008 {
+                        if pts <= current_source_secs + frame_tolerance {
                             // Frame is due or overdue — take it
                             if self.frames_consumed == 0 {
                                 info!(
@@ -495,7 +525,7 @@ impl PlaybackEngine {
                             let frame = queue.pop().unwrap();
                             // Check if the next frame is also due (we're behind — drop this one)
                             if let Some(next) = queue.front() {
-                                if !next.is_eof && next.pts_secs() <= current_source_secs + 0.008 {
+                                if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
                                     // Only count as a drop if we're behind by more than 1 frame
                                     // (normal drift of <1 frame interval is not a real drop)
                                     let gap = next.pts_secs() - pts;
@@ -584,11 +614,11 @@ impl PlaybackEngine {
                     break;
                 }
                 let pts = f.pts_secs();
-                if pts <= current_source_secs + 0.008 {
+                if pts <= current_source_secs + frame_tolerance {
                     let v2f = queue.pop().unwrap();
                     // Check if next is also due (drop current)
                     if let Some(next) = queue.front() {
-                        if !next.is_eof && next.pts_secs() <= current_source_secs + 0.008 {
+                        if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
                             continue;
                         }
                     }
@@ -890,39 +920,31 @@ impl PlaybackEngine {
             // 1. Pause clock
             self.master_clock.pause();
 
-            // 2. Flush audio
+            // 2. Flush audio output
             if let Some(aout) = &self.audio_output {
                 aout.0.start_flush();
             }
 
-            // 3. Seek audio decoder
-            if let Some(adec) = &self.audio_source {
-                adec.seek(source_secs);
-                if self.state != PlaybackState::Playing {
-                    adec.resume();
-                }
-            }
+            // 3. Seek audio with generation counter (waits for readiness)
+            self.seek_audio_and_wait(source_secs);
 
             // 4. Set master clock to target
             let target_us = (source_secs * 1_000_000.0) as u64;
             self.master_clock.seek(target_us);
 
-            // 5. Brief flush to drain stale ring buffer samples
-            std::thread::sleep(Duration::from_millis(10));
-
-            // 6. Resume audio output
-            if let Some(aout) = &self.audio_output {
-                if self.state == PlaybackState::Playing {
+            // 5. Resume or pause audio based on playback state
+            if self.state == PlaybackState::Playing {
+                if let Some(asrc) = &self.audio_source {
+                    asrc.resume();
+                }
+                if let Some(aout) = &self.audio_output {
                     aout.0.resume();
                 }
-            }
-            if let Some(adec) = &self.audio_source {
-                if self.state != PlaybackState::Playing {
-                    adec.pause();
-                }
+            } else if let Some(asrc) = &self.audio_source {
+                asrc.pause();
             }
 
-            // 7. Resume master clock if playing
+            // 6. Resume master clock if playing
             if self.state == PlaybackState::Playing {
                 self.master_clock.resume();
             }
