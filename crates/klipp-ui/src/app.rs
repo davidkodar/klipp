@@ -13,7 +13,7 @@ use klipp_core::{
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::Sequence;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 struct ThumbnailResult {
@@ -35,6 +35,17 @@ enum FilmstripResult {
     },
 }
 
+enum AudioConformResult {
+    Complete {
+        media_id: MediaId,
+        entry: klipp_media::AudioCacheEntry,
+    },
+    Failed {
+        media_id: MediaId,
+        error: String,
+    },
+}
+
 pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
@@ -51,6 +62,8 @@ pub struct KlippApp {
     thumb_rx: Receiver<ThumbnailResult>,
     filmstrip_tx: Sender<FilmstripResult>,
     filmstrip_rx: Receiver<FilmstripResult>,
+    audio_conform_tx: Sender<AudioConformResult>,
+    audio_conform_rx: Receiver<AudioConformResult>,
     export_child: Option<std::process::Child>,
     /// Track proxy ffmpeg child PIDs so we can kill them on exit
     proxy_children: Vec<Arc<std::sync::atomic::AtomicU32>>,
@@ -78,6 +91,7 @@ impl KlippApp {
     ) -> Self {
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
+        let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (export_event_tx, export_event_rx) = crossbeam_channel::unbounded();
         let mut visuals = egui::Visuals::dark();
         visuals.window_fill = egui::Color32::from_rgb(8, 8, 13);
@@ -107,6 +121,8 @@ impl KlippApp {
             thumb_rx,
             filmstrip_tx,
             filmstrip_rx,
+            audio_conform_tx,
+            audio_conform_rx,
             export_child: None,
             proxy_children: Vec::new(),
             export_event_tx,
@@ -252,6 +268,7 @@ impl KlippApp {
                         default_source_in: None,
                         default_source_out: None,
                         waveform_data: None,
+                        audio_cache: None,
                     };
 
                     self.state.media_pool.add(media_item);
@@ -273,9 +290,12 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
 
-                    // Start thumbnail + filmstrip generation
+                    // Start thumbnail + filmstrip generation + audio conforming
                     self.spawn_thumbnail(media_id, path.clone(), duration);
-                    self.spawn_filmstrip(media_id, path, duration);
+                    self.spawn_filmstrip(media_id, path.clone(), duration);
+                    if has_audio {
+                        self.spawn_audio_conform(media_id, path);
+                    }
                     self.state.filmstrip_generating = true;
                     self.state.filmstrip_generate_start = std::time::Instant::now();
                     self.state.filmstrip_toast_dismissed = false;
@@ -317,8 +337,11 @@ impl KlippApp {
                 | AppEvent::SourceMediaLoaded { .. }
                 | AppEvent::ProxyGenerationStarted { .. }
                 | AppEvent::ProxyGenerationComplete { .. }
-                | AppEvent::ProxyGenerationFailed { .. } => {
-                    // Handled elsewhere or not yet wired
+                | AppEvent::ProxyGenerationFailed { .. }
+                | AppEvent::AudioConformStarted { .. }
+                | AppEvent::AudioConformComplete { .. }
+                | AppEvent::AudioConformFailed { .. } => {
+                    // Audio conform events come through audio_conform_rx channel
                 }
             }
         }
@@ -387,6 +410,107 @@ impl KlippApp {
                 }
             })
             .ok();
+    }
+
+    fn spawn_audio_conform(&mut self, media_id: MediaId, path: PathBuf) {
+        let tx = self.audio_conform_tx.clone();
+        // Use XDG cache dir for audio cache (same area as proxies)
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("klipp")
+            .join("audio-cache");
+        std::thread::Builder::new()
+            .name("klipp-audio-conform".into())
+            .spawn(move || {
+                // Ensure cache directory exists
+                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                    tracing::warn!("Failed to create audio cache dir: {e}");
+                    let _ = tx.send(AudioConformResult::Failed {
+                        media_id,
+                        error: format!("cache dir: {e}"),
+                    });
+                    return;
+                }
+
+                // Skip if already conformed
+                if klipp_media::audio_cache::cache_exists(&cache_dir, media_id) {
+                    tracing::info!("Audio cache already exists for {:?}, loading peaks", media_id);
+                    let peaks_path = cache_dir.join(format!("{}.peaks", media_id));
+                    let pcm_path = cache_dir.join(format!("{}.pcm", media_id));
+                    match klipp_media::audio_cache::load_peaks(&peaks_path) {
+                        Ok(peaks) => {
+                            // Compute duration from PCM file size
+                            let pcm_size = std::fs::metadata(&pcm_path)
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            let duration_secs = pcm_size as f64
+                                / (48000.0 * 2.0 * 4.0); // sample_rate * channels * sizeof(f32)
+                            let _ = tx.send(AudioConformResult::Complete {
+                                media_id,
+                                entry: klipp_media::AudioCacheEntry {
+                                    media_id,
+                                    pcm_path,
+                                    peaks_path,
+                                    sample_rate: 48000,
+                                    channels: 2,
+                                    duration_secs,
+                                    peaks,
+                                },
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load cached peaks, re-conforming: {e}");
+                            // Fall through to re-conform
+                            do_conform(media_id, &path, &cache_dir, &tx);
+                        }
+                    }
+                    return;
+                }
+
+                do_conform(media_id, &path, &cache_dir, &tx);
+            })
+            .ok();
+
+        fn do_conform(
+            media_id: MediaId,
+            path: &Path,
+            cache_dir: &Path,
+            tx: &Sender<AudioConformResult>,
+        ) {
+            match klipp_media::audio_cache::conform_audio(media_id, path, cache_dir) {
+                Ok(entry) => {
+                    let _ = tx.send(AudioConformResult::Complete { media_id, entry });
+                }
+                Err(e) => {
+                    tracing::warn!("Audio conforming failed for {:?}: {e}", media_id);
+                    let _ = tx.send(AudioConformResult::Failed {
+                        media_id,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn drain_audio_conforms(&mut self) {
+        while let Ok(result) = self.audio_conform_rx.try_recv() {
+            match result {
+                AudioConformResult::Complete { media_id, entry } => {
+                    tracing::info!(
+                        "Audio conform complete for {:?}: {:.1}s, {} peaks",
+                        media_id,
+                        entry.duration_secs,
+                        entry.peaks.len(),
+                    );
+                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                        item.audio_cache = Some(entry);
+                    }
+                }
+                AudioConformResult::Failed { media_id, error } => {
+                    tracing::warn!("Audio conform failed for {:?}: {}", media_id, error);
+                }
+            }
+        }
     }
 
     fn spawn_proxy_generation(&mut self, media_id: MediaId) {
@@ -1701,6 +1825,7 @@ impl eframe::App for KlippApp {
         // 1. Drain events from engine
         self.drain_events(ctx);
         self.drain_thumbnails();
+        self.drain_audio_conforms();
         self.drain_export_events();
         self.poll_render_queue();
         self.upload_frame_to_egui(ctx);

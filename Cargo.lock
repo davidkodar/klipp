@@ -1999,9 +1999,12 @@ dependencies = [
 name = "klipp-media"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "ffmpeg-next",
  "klipp-core",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

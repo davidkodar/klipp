@@ -49,6 +49,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             waveform_data: None,
+            audio_cache: None,
         };
         media_pool.add(media_item);
     }

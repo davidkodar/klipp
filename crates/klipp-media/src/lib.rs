@@ -1,8 +1,10 @@
+pub mod audio_cache;
 mod item;
 mod pool;
 mod thumbnail;
 pub mod waveform;
 
+pub use audio_cache::AudioCacheEntry;
 pub use item::MediaItem;
 pub use pool::MediaPool;
 pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};

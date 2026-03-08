@@ -27,4 +27,7 @@ pub struct MediaItem {
     /// Waveform min/max pairs for timeline display. Generated in background.
     #[serde(skip)]
     pub waveform_data: Option<Vec<(f32, f32)>>,
+    /// Audio cache entry — set after background conforming completes.
+    #[serde(skip)]
+    pub audio_cache: Option<crate::audio_cache::AudioCacheEntry>,
 }
