@@ -400,6 +400,8 @@ impl PlaybackEngine {
         // Drop previous audio
         self.audio_source = None;
         self.audio_output = None;
+        // Reset generation counter — new audio source starts at gen=0
+        self.expected_audio_generation = 0;
 
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
@@ -468,6 +470,11 @@ impl PlaybackEngine {
         if let Some(asrc) = &self.audio_source {
             self.expected_audio_generation += 1;
             asrc.seek(source_secs);
+
+            // Tell cpal callback to drain stale ring buffer samples
+            if let Some(aout) = &self.audio_output {
+                aout.0.notify_seek();
+            }
 
             // Wait for audio to confirm seek (generation counter incremented)
             let deadline = std::time::Instant::now() + Duration::from_millis(50);

@@ -1,7 +1,7 @@
 use crate::audio_decoder::AudioConsumer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::Consumer;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -11,6 +11,9 @@ pub struct AudioOutput {
     pub channels: u16,
     paused: Arc<AtomicBool>,
     flushing: Arc<AtomicBool>,
+    /// Bumped by the engine after a seek. The cpal callback detects the change
+    /// and discards all buffered samples to prevent playing stale audio.
+    seek_gen: Arc<AtomicU64>,
 }
 
 impl AudioOutput {
@@ -44,22 +47,48 @@ impl AudioOutput {
         let paused_flag = paused.clone();
         let flushing = Arc::new(AtomicBool::new(false));
         let flushing_flag = flushing.clone();
+        let seek_gen = Arc::new(AtomicU64::new(0));
+        let seek_gen_flag = seek_gen.clone();
 
         let stream = device
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if paused_flag.load(Ordering::Acquire)
-                        || flushing_flag.load(Ordering::Acquire)
-                    {
-                        // Drain ring buffer but output silence
-                        let _ = consumer.pop_slice(data);
-                        data.fill(0.0);
-                        return;
+                    // Check for seek — if generation changed, drain stale buffer
+                    let current_gen = seek_gen_flag.load(Ordering::Acquire);
+                    // Use a thread-local to track last seen generation
+                    // (cpal callbacks always run on the same thread)
+                    thread_local! {
+                        static LAST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
                     }
-                    let filled = consumer.pop_slice(data);
-                    data[filled..].fill(0.0);
-                    // NO clock update — master clock is external
+                    LAST_GEN.with(|lg| {
+                        if lg.get() != current_gen {
+                            lg.set(current_gen);
+                            // Drain all stale samples from the ring buffer
+                            let mut discard = vec![0.0f32; 8192];
+                            loop {
+                                let n = consumer.pop_slice(&mut discard);
+                                if n == 0 {
+                                    break;
+                                }
+                            }
+                            // Output silence for this callback
+                            data.fill(0.0);
+                            return;
+                        }
+
+                        if paused_flag.load(Ordering::Acquire)
+                            || flushing_flag.load(Ordering::Acquire)
+                        {
+                            // Drain ring buffer but output silence
+                            let _ = consumer.pop_slice(data);
+                            data.fill(0.0);
+                            return;
+                        }
+                        let filled = consumer.pop_slice(data);
+                        data[filled..].fill(0.0);
+                        // NO clock update — master clock is external
+                    });
                 },
                 move |err| {
                     error!("cpal stream error: {err}");
@@ -78,6 +107,7 @@ impl AudioOutput {
             channels,
             paused,
             flushing,
+            seek_gen,
         })
     }
 
@@ -93,6 +123,11 @@ impl AudioOutput {
     /// Start flushing: drain ring buffer silently.
     pub fn start_flush(&self) {
         self.flushing.store(true, Ordering::Release);
+    }
+
+    /// Signal a seek happened — cpal callback will drain stale samples.
+    pub fn notify_seek(&self) {
+        self.seek_gen.fetch_add(1, Ordering::Release);
     }
 }
 
