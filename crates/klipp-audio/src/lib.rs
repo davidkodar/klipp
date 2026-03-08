@@ -1,1 +1,3 @@
-// Stub — audio engine is Phase 2+
+pub mod mixer;
+
+pub use mixer::{AudioMixer, AudioTrackSettings};

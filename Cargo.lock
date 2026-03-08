@@ -1987,7 +1987,12 @@ dependencies = [
 name = "klipp-export"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "klipp-core",
+ "klipp-media",
+ "klipp-timeline",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2003,7 +2008,11 @@ dependencies = [
 name = "klipp-plugin"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "klipp-core",
+ "libloading",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -2012,6 +2021,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "klipp-media",
+ "klipp-plugin",
  "klipp-timeline",
  "serde",
  "serde_json",
@@ -2025,6 +2035,7 @@ name = "klipp-timeline"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-plugin",
  "serde",
  "serde_json",
  "uuid",
@@ -2041,7 +2052,9 @@ dependencies = [
  "klipp-audio",
  "klipp-core",
  "klipp-engine",
+ "klipp-export",
  "klipp-media",
+ "klipp-plugin",
  "klipp-project",
  "klipp-timeline",
  "rfd",

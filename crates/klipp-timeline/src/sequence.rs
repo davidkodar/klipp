@@ -126,6 +126,8 @@ impl Track {
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
+            color_grade: ClipColorGrade::default(),
+            effects: Vec::new(),
         });
         clip_id
     }
@@ -210,7 +212,7 @@ impl Track {
     /// Returns (clip_a, clip_b) if successful.
     pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
-        let clip = self.clips[pos];
+        let clip = self.clips[pos].clone();
 
         // Validate cut position
         let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
@@ -226,6 +228,8 @@ impl Track {
             timeline_out: cut_at,
             source_in: clip.source_in,
             source_out: clip.source_in + offset,
+            color_grade: clip.color_grade,
+            effects: clip.effects.clone(),
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -234,11 +238,13 @@ impl Track {
             timeline_out: clip.timeline_out,
             source_in: clip.source_in + offset,
             source_out: clip.source_out,
+            color_grade: clip.color_grade,
+            effects: clip.effects.clone(),
         };
 
         self.clips.remove(pos);
-        self.clips.insert(pos, clip_b);
-        self.clips.insert(pos, clip_a);
+        self.clips.insert(pos, clip_b.clone());
+        self.clips.insert(pos, clip_a.clone());
 
         Some((clip_a, clip_b))
     }
@@ -264,7 +270,36 @@ pub enum TrackKind {
     Audio,
 }
 
+/// Per-clip color grade. All fields default to identity (no change).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ClipColorGrade {
+    pub enabled: bool,
+    /// Exposure in stops: -5.0 to +5.0, default 0.0
+    pub exposure: f32,
+    /// Contrast: -1.0 to +1.0, default 0.0
+    pub contrast: f32,
+    /// Saturation: 0.0 to 2.0, default 1.0
+    pub saturation: f32,
+    /// Temperature offset: -100.0 to +100.0, default 0.0
+    pub temperature: f32,
+    /// Tint offset: -100.0 to +100.0, default 0.0
+    pub tint: f32,
+}
+
+impl Default for ClipColorGrade {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exposure: 0.0,
+            contrast: 0.0,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clip {
     pub id: ClipId,
     pub media_id: MediaId,
@@ -272,6 +307,10 @@ pub struct Clip {
     pub timeline_out: Timecode,
     pub source_in: Timecode,
     pub source_out: Timecode,
+    #[serde(default)]
+    pub color_grade: ClipColorGrade,
+    #[serde(default)]
+    pub effects: Vec<klipp_plugin::AppliedEffect>,
 }
 
 impl Clip {

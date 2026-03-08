@@ -97,6 +97,18 @@ pub struct AppState {
     // Filmstrip generation progress
     pub filmstrip_generating: bool,
     pub filmstrip_generate_start: std::time::Instant,
+    pub filmstrip_toast_dismissed: bool,
+
+    // Global LUT
+    pub global_lut_path: Option<PathBuf>,
+    pub global_lut_opacity: f32,
+
+    // OFX plugins
+    pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
+
+    // Render queue
+    pub render_queue: klipp_export::RenderQueue,
+    pub show_render_queue: bool,
 
     // Smooth playhead interpolation
     /// Last engine-reported playhead and the wall time it was received
@@ -107,20 +119,15 @@ pub struct AppState {
     pub playhead_smooth_secs: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlayheadFollow {
     /// No auto-scroll
     Off,
     /// Jump one page when playhead reaches edge
+    #[default]
     Page,
     /// Continuously scroll to keep playhead visible
     Smooth,
-}
-
-impl Default for PlayheadFollow {
-    fn default() -> Self {
-        Self::Page
-    }
 }
 
 impl PlayheadFollow {
@@ -212,8 +219,14 @@ impl Default for AppState {
             perf_frame_times: Vec::with_capacity(120),
             perf_prev_cpu_ticks: 0,
             perf_prev_wall_time: std::time::Instant::now(),
+            global_lut_path: None,
+            global_lut_opacity: 1.0,
+            available_plugins: Vec::new(),
+            render_queue: klipp_export::RenderQueue::new(),
+            show_render_queue: false,
             filmstrip_generating: false,
             filmstrip_generate_start: std::time::Instant::now(),
+            filmstrip_toast_dismissed: false,
             playhead_anchor: Timecode::zero(),
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,

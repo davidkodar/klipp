@@ -24,4 +24,7 @@ pub struct MediaItem {
     pub default_source_in: Option<Timecode>,
     #[serde(default)]
     pub default_source_out: Option<Timecode>,
+    /// Waveform min/max pairs for timeline display. Generated in background.
+    #[serde(skip)]
+    pub waveform_data: Option<Vec<(f32, f32)>>,
 }

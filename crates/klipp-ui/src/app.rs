@@ -23,9 +23,16 @@ struct ThumbnailResult {
     height: u32,
 }
 
-struct FilmstripResult {
-    media_id: MediaId,
-    frames: Vec<klipp_media::FilmstripFrame>,
+enum FilmstripResult {
+    /// A single frame generated incrementally
+    Frame {
+        media_id: MediaId,
+        frame: klipp_media::FilmstripFrame,
+    },
+    /// Generation complete for this media
+    Done {
+        media_id: MediaId,
+    },
 }
 
 pub struct KlippApp {
@@ -45,6 +52,8 @@ pub struct KlippApp {
     filmstrip_tx: Sender<FilmstripResult>,
     filmstrip_rx: Receiver<FilmstripResult>,
     export_child: Option<std::process::Child>,
+    /// Track proxy ffmpeg child PIDs so we can kill them on exit
+    proxy_children: Vec<Arc<std::sync::atomic::AtomicU32>>,
     export_event_tx: Sender<AppEvent>,
     export_event_rx: Receiver<AppEvent>,
     // Export dialog state
@@ -82,7 +91,7 @@ impl KlippApp {
         visuals.selection.bg_fill = egui::Color32::from_rgb(50, 90, 160);
         cc.egui_ctx.set_visuals(visuals);
 
-        Self {
+        let mut app = Self {
             cmd_tx,
             event_rx,
             frame_buffer,
@@ -91,7 +100,7 @@ impl KlippApp {
             state: AppState::default(),
             toolbar: ToolbarPanel,
             viewer: ViewerPanel::default(),
-            inspector: InspectorPanel,
+            inspector: InspectorPanel::default(),
             transport: TransportBar,
             timeline: TimelinePanel::default(),
             thumb_tx,
@@ -99,6 +108,7 @@ impl KlippApp {
             filmstrip_tx,
             filmstrip_rx,
             export_child: None,
+            proxy_children: Vec::new(),
             export_event_tx,
             export_event_rx,
             export_output_path: String::new(),
@@ -109,7 +119,13 @@ impl KlippApp {
             export_audio_bitrate: 128,
             export_confirm_overwrite: false,
             export_marked_range: false,
-        }
+        };
+        // Discover OFX plugins at startup
+        let mut ofx_host = klipp_plugin::OfxHost::new();
+        let count = ofx_host.discover_plugins();
+        app.state.available_plugins = ofx_host.plugin_infos();
+        tracing::info!("OFX: discovered {} plugin(s)", count);
+        app
     }
 
     fn update_perf_stats(&mut self, ctx: &egui::Context) {
@@ -235,6 +251,7 @@ impl KlippApp {
                         proxy_ready: false,
                         default_source_in: None,
                         default_source_out: None,
+                        waveform_data: None,
                     };
 
                     self.state.media_pool.add(media_item);
@@ -261,9 +278,11 @@ impl KlippApp {
                     self.spawn_filmstrip(media_id, path, duration);
                     self.state.filmstrip_generating = true;
                     self.state.filmstrip_generate_start = std::time::Instant::now();
+                    self.state.filmstrip_toast_dismissed = false;
 
-                    // Auto-generate proxy
-                    self.spawn_proxy_generation(media_id);
+                    // Don't auto-generate proxies — CUDA NVDEC + 1080p downscale
+                    // handles playback fine. Proxies can be requested manually via
+                    // the GenerateProxy command if needed.
                 }
                 AppEvent::MediaLoadFailed { media_id: _, error } => {
                     self.state.pending_media_path = None;
@@ -340,26 +359,30 @@ impl KlippApp {
     ) {
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
-        // Generate one filmstrip frame per second, capped at 500 frames
-        let interval = (duration_secs / 500.0).max(1.0);
+        // Target ~60 filmstrip frames max — enough for visual coverage without
+        // hammering the CPU. For a 5-min clip this means one frame every ~5 seconds.
+        let interval = (duration_secs / 60.0).max(1.0);
         std::thread::Builder::new()
             .name("klipp-filmstrip".into())
             .spawn(move || {
-                match klipp_engine::generate_filmstrip(&path, duration_secs, interval, 48) {
-                    Ok(raw_frames) => {
-                        let frames: Vec<klipp_media::FilmstripFrame> = raw_frames
-                            .into_iter()
-                            .map(|(time, rgba, w, h)| klipp_media::FilmstripFrame {
-                                time_secs: time,
-                                rgba,
-                                width: w,
-                                height: h,
-                            })
-                            .collect();
-                        let _ = tx.send(FilmstripResult { media_id, frames });
+                match klipp_engine::generate_filmstrip_incremental(&path, duration_secs, interval, 48, |time, rgba, w, h| {
+                    let _ = tx.send(FilmstripResult::Frame {
+                        media_id,
+                        frame: klipp_media::FilmstripFrame {
+                            time_secs: time,
+                            rgba,
+                            width: w,
+                            height: h,
+                        },
+                    });
+                }) {
+                    Ok(count) => {
+                        tracing::info!("Filmstrip: generated {count} frames for {:?}", path);
+                        let _ = tx.send(FilmstripResult::Done { media_id });
                     }
                     Err(e) => {
                         tracing::warn!("Filmstrip generation failed for {:?}: {}", media_id, e);
+                        let _ = tx.send(FilmstripResult::Done { media_id });
                     }
                 }
             })
@@ -390,9 +413,12 @@ impl KlippApp {
         let source_path = item.path.clone();
         let tx = self.export_event_tx.clone();
         let proxy_out = proxy_path.clone();
+        let child_pid: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let pid_clone = child_pid.clone();
+        self.proxy_children.push(child_pid);
         std::thread::spawn(move || {
             let _ = tx.send(AppEvent::ProxyGenerationStarted { media_id });
-            let status = std::process::Command::new("ffmpeg")
+            let child = std::process::Command::new("ffmpeg")
                 .arg("-i").arg(&source_path)
                 .arg("-vf").arg("scale=960:-2")
                 .arg("-c:v").arg("libx264").arg("-crf").arg("28").arg("-preset").arg("ultrafast")
@@ -400,13 +426,23 @@ impl KlippApp {
                 .arg("-y").arg(&proxy_out)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
-            match status {
-                Ok(s) if s.success() => {
-                    let _ = tx.send(AppEvent::ProxyGenerationComplete { media_id, path: proxy_out });
-                }
-                Ok(_) => {
-                    let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: "ffmpeg failed".into() });
+                .spawn();
+            match child {
+                Ok(mut child) => {
+                    pid_clone.store(child.id(), std::sync::atomic::Ordering::Relaxed);
+                    let status = child.wait();
+                    pid_clone.store(0, std::sync::atomic::Ordering::Relaxed);
+                    match status {
+                        Ok(s) if s.success() => {
+                            let _ = tx.send(AppEvent::ProxyGenerationComplete { media_id, path: proxy_out });
+                        }
+                        Ok(_) => {
+                            let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: "ffmpeg failed".into() });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: e.to_string() });
+                        }
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: e.to_string() });
@@ -424,21 +460,29 @@ impl KlippApp {
                 result.height,
             );
         }
-        while let Ok(result) = self.filmstrip_rx.try_recv() {
-            tracing::info!(
-                "Filmstrip ready for {:?}: {} frames",
-                result.media_id,
-                result.frames.len()
-            );
-            self.state.thumbnail_cache.set_filmstrip(
-                result.media_id,
-                result.frames,
-            );
-            self.state.filmstrip_generating = false;
+        // Process up to 10 filmstrip frames per UI tick to avoid stalling the UI
+        for _ in 0..10 {
+            match self.filmstrip_rx.try_recv() {
+                Ok(FilmstripResult::Frame { media_id, frame }) => {
+                    self.state.thumbnail_cache.push_filmstrip_frame(media_id, frame);
+                    // Clear cached textures so they get rebuilt with the new frame
+                    self.state.filmstrip_textures.remove(&media_id);
+                }
+                Ok(FilmstripResult::Done { media_id }) => {
+                    let count = self.state.thumbnail_cache
+                        .filmstrip(&media_id)
+                        .map(|f| f.len())
+                        .unwrap_or(0);
+                    tracing::info!("Filmstrip complete for {:?}: {count} frames", media_id);
+                    self.state.filmstrip_generating = false;
+                }
+                Err(_) => break,
+            }
         }
     }
 
     fn upload_frame_to_egui(&mut self, ctx: &egui::Context) {
+        let t_total = std::time::Instant::now();
         let mut fb = self.frame_buffer.lock().unwrap();
         if !fb.dirty {
             return;
@@ -452,12 +496,25 @@ impl KlippApp {
             return;
         }
 
-        let pixels: Vec<egui::Color32> = fb
-            .data
-            .chunks_exact(4)
-            .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
-            .collect();
+        // Zero-copy: RGBA [u8;4] has the same layout as egui::Color32.
+        // Take ownership of the data to avoid a copy.
+        let rgba_bytes = std::mem::take(&mut fb.data);
+        fb.dirty = false;
+        drop(fb);
 
+        let t_convert = std::time::Instant::now();
+        // Safety: Color32 is repr(C) [u8; 4], same as our RGBA layout.
+        // Vec reinterpret: same alignment (1), element size (4), length and capacity divide evenly.
+        let pixels = {
+            let mut bytes = std::mem::ManuallyDrop::new(rgba_bytes);
+            let ptr = bytes.as_mut_ptr() as *mut egui::Color32;
+            let len = bytes.len() / 4;
+            let cap = bytes.capacity() / 4;
+            unsafe { Vec::from_raw_parts(ptr, len, cap) }
+        };
+        let convert_ms = t_convert.elapsed().as_secs_f64() * 1000.0;
+
+        let t_texture = std::time::Instant::now();
         let image = egui::ColorImage {
             size: [w, h],
             pixels,
@@ -469,8 +526,14 @@ impl KlippApp {
             image,
             egui::TextureOptions::LINEAR,
         ));
+        let texture_ms = t_texture.elapsed().as_secs_f64() * 1000.0;
 
-        fb.dirty = false;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        if total_ms > 2.0 {
+            tracing::info!(
+                "PERF upload_frame: {w}x{h} total={total_ms:.1}ms (convert={convert_ms:.1}ms texture={texture_ms:.1}ms)"
+            );
+        }
     }
 
     fn sync_sequence_to_engine(&self) {
@@ -511,8 +574,8 @@ impl KlippApp {
                             .video_track_mut()
                             .unwrap()
                             .append_clip(*media_id, duration);
-                        let clip = *self.state.sequence.video_track().unwrap()
-                            .find_clip(clip_id).unwrap();
+                        let clip = self.state.sequence.video_track().unwrap()
+                            .find_clip(clip_id).unwrap().clone();
                         self.state.history.push(EditCommand::AppendClip {
                             clip,
                             track_index,
@@ -528,7 +591,7 @@ impl KlippApp {
                         let duration = item.duration;
                         if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                             let clip_id = track.append_clip(*media_id, duration);
-                            let clip = *track.find_clip(clip_id).unwrap();
+                            let clip = track.find_clip(clip_id).unwrap().clone();
                             self.state.history.push(EditCommand::AppendClip {
                                 clip,
                                 track_index: *track_index,
@@ -636,6 +699,14 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     continue;
                 }
+                AppCommand::ShowRenderQueue => {
+                    self.state.show_render_queue = true;
+                    continue;
+                }
+                AppCommand::ClearCompletedJobs => {
+                    self.state.render_queue.clear_completed();
+                    continue;
+                }
                 AppCommand::ShowExportDialog => {
                     self.state.show_export_dialog = true;
                     if self.export_output_path.is_empty() {
@@ -695,6 +766,139 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Color grading
+                AppCommand::SetClipExposure { clip_id, exposure } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.exposure = *exposure;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipContrast { clip_id, contrast } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.contrast = *contrast;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipSaturation { clip_id, saturation } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.saturation = *saturation;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipTemperature { clip_id, temperature } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.temperature = *temperature;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipTint { clip_id, tint } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.tint = *tint;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::ResetClipColorGrade { clip_id } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade = klipp_timeline::ClipColorGrade::default();
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+
+                // Global LUT — update UI state and forward to engine
+                AppCommand::LoadGlobalLut { ref path } => {
+                    self.state.global_lut_path = Some(path.clone());
+                }
+                AppCommand::ClearGlobalLut => {
+                    self.state.global_lut_path = None;
+                }
+                AppCommand::SetGlobalLutOpacity(opacity) => {
+                    self.state.global_lut_opacity = *opacity;
+                }
+
+                // Effects
+                AppCommand::AddEffect { clip_id, ref plugin_name } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.effects.push(klipp_plugin::AppliedEffect {
+                                plugin_name: plugin_name.clone(),
+                                enabled: true,
+                                param_values: std::collections::HashMap::new(),
+                            });
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::RemoveEffect { clip_id, effect_index } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *effect_index < clip.effects.len() {
+                                clip.effects.remove(*effect_index);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetEffectEnabled { clip_id, effect_index, enabled } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                                effect.enabled = *enabled;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::ReorderEffect { clip_id, from_index, to_index } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let from = *from_index;
+                            let to = *to_index;
+                            if from < clip.effects.len() && to < clip.effects.len() {
+                                let effect = clip.effects.remove(from);
+                                clip.effects.insert(to, effect);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
                     let ti = *track_index;
@@ -702,7 +906,7 @@ impl KlippApp {
                     let cut = *cut_at;
                     if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
                         // Find original clip before blade
-                        let original = track.find_clip(cid).copied();
+                        let original = track.find_clip(cid).cloned();
                         let position = track.clips.iter().position(|c| c.id == cid);
                         if let (Some(original), Some(pos)) = (original, position) {
                             if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
@@ -727,14 +931,14 @@ impl KlippApp {
                         .position(|t| t.find_clip(cid).is_some())
                         .unwrap_or(0);
                     if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
-                        if let Some(clip) = track.find_clip(cid).copied() {
+                        if let Some(clip) = track.find_clip(cid).cloned() {
                             if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
                                 let pos = track.clips.iter().position(|c| c.id == cid).unwrap_or(0);
                                 let shifted: Vec<_> = track.clips[pos + 1..].iter()
                                     .map(|c| (c.id, c.timeline_in, c.timeline_out))
                                     .collect();
                                 self.state.clipboard = Some(ClipboardContent {
-                                    clips: vec![(clip, media.clone())],
+                                    clips: vec![(clip.clone(), media.clone())],
                                     source_track_index: track_index,
                                 });
                                 track.ripple_remove(cid);
@@ -761,7 +965,7 @@ impl KlippApp {
                         .position(|t| t.find_clip(cid).is_some())
                         .unwrap_or(0);
                     if let Some(track) = self.state.sequence.tracks.get(track_index) {
-                        if let Some(clip) = track.find_clip(cid).copied() {
+                        if let Some(clip) = track.find_clip(cid).cloned() {
                             if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
                                 self.state.clipboard = Some(ClipboardContent {
                                     clips: vec![(clip, media)],
@@ -789,8 +993,10 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in: clip.source_in,
                                     source_out: clip.source_out,
+                                    color_grade: clip.color_grade,
+                                    effects: clip.effects.clone(),
                                 };
-                                track.clips.push(new_clip);
+                                track.clips.push(new_clip.clone());
                                 track.sort_clips();
                                 self.state.history.push(EditCommand::PasteClip {
                                     clip: new_clip,
@@ -860,6 +1066,8 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in,
                                     source_out,
+                                    color_grade: klipp_timeline::ClipColorGrade::default(),
+                                    effects: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -950,6 +1158,42 @@ impl KlippApp {
                     self.do_open_project(path);
                     continue;
                 }
+                AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
+                    // Spawn a targeted filmstrip pass for the requested range
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        let path = item.path.clone();
+                        let tx = self.filmstrip_tx.clone();
+                        let mid = *media_id;
+                        let s = *start_secs;
+                        let e = *end_secs;
+                        let iv = *interval_secs;
+                        std::thread::Builder::new()
+                            .name("klipp-filmstrip-refine".into())
+                            .spawn(move || {
+                                let _ = klipp_engine::generate_filmstrip_incremental(
+                                    &path,
+                                    e,
+                                    iv,
+                                    48,
+                                    |time, rgba, w, h| {
+                                        if time >= s - 0.01 && time <= e + 0.01 {
+                                            let _ = tx.send(FilmstripResult::Frame {
+                                                media_id: mid,
+                                                frame: klipp_media::FilmstripFrame {
+                                                    time_secs: time,
+                                                    rgba,
+                                                    width: w,
+                                                    height: h,
+                                                },
+                                            });
+                                        }
+                                    },
+                                );
+                            })
+                            .ok();
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let _ = self.cmd_tx.send(cmd);
@@ -996,7 +1240,7 @@ impl KlippApp {
             EditCommand::RemoveClip { clip, track_index, position } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     let pos = (*position).min(track.clips.len());
-                    track.clips.insert(pos, *clip);
+                    track.clips.insert(pos, clip.clone());
                 }
             }
             EditCommand::RippleRemove { removed_clip, track_index, position, shifted_clips } => {
@@ -1010,7 +1254,7 @@ impl KlippApp {
                     }
                     // Re-insert the removed clip
                     let pos = (*position).min(track.clips.len());
-                    track.clips.insert(pos, *removed_clip);
+                    track.clips.insert(pos, removed_clip.clone());
                     track.sort_clips();
                 }
             }
@@ -1042,7 +1286,7 @@ impl KlippApp {
                     // Undo: remove clip_a and clip_b, insert original
                     track.clips.retain(|c| c.id != clip_a.id && c.id != clip_b.id);
                     let pos = (*position).min(track.clips.len());
-                    track.clips.insert(pos, *original_clip);
+                    track.clips.insert(pos, original_clip.clone());
                     track.sort_clips();
                 }
             }
@@ -1056,7 +1300,7 @@ impl KlippApp {
                         }
                     }
                     let pos = (*position).min(track.clips.len());
-                    track.clips.insert(pos, *clip);
+                    track.clips.insert(pos, clip.clone());
                     track.sort_clips();
                 }
             }
@@ -1073,7 +1317,7 @@ impl KlippApp {
         match cmd {
             EditCommand::AppendClip { clip, track_index } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
-                    track.clips.push(*clip);
+                    track.clips.push(clip.clone());
                     track.sort_clips();
                 }
             }
@@ -1114,8 +1358,8 @@ impl KlippApp {
                 // Redo blade: remove original, insert clip_a and clip_b
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.remove_clip(original_clip.id);
-                    track.clips.push(*clip_a);
-                    track.clips.push(*clip_b);
+                    track.clips.push(clip_a.clone());
+                    track.clips.push(clip_b.clone());
                     track.sort_clips();
                 }
             }
@@ -1128,7 +1372,7 @@ impl KlippApp {
             EditCommand::PasteClip { clip, track_index } => {
                 // Redo paste = re-insert
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
-                    track.clips.push(*clip);
+                    track.clips.push(clip.clone());
                     track.sort_clips();
                 }
             }
@@ -1419,6 +1663,26 @@ impl KlippApp {
     }
 }
 
+impl Drop for KlippApp {
+    fn drop(&mut self) {
+        // Kill export child process
+        if let Some(ref mut child) = self.export_child {
+            let _ = child.kill();
+        }
+        // Kill proxy ffmpeg child processes
+        for pid_ref in &self.proxy_children {
+            let pid = pid_ref.load(std::sync::atomic::Ordering::Relaxed);
+            if pid != 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        // Kill render queue child processes
+        self.state.render_queue.kill_active();
+    }
+}
+
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Smooth playhead interpolation BEFORE draining events
@@ -1438,6 +1702,7 @@ impl eframe::App for KlippApp {
         self.drain_events(ctx);
         self.drain_thumbnails();
         self.drain_export_events();
+        self.poll_render_queue();
         self.upload_frame_to_egui(ctx);
 
         // Continuous repaint during playback (must be AFTER drain_events so Playing state is set)
@@ -1470,6 +1735,9 @@ impl eframe::App for KlippApp {
         // 4b. Export dialog
         let export_cmds = self.show_export_dialog(ctx);
         all_cmds.extend(export_cmds);
+
+        // 4c. Render queue window
+        self.show_render_queue_window(ctx);
 
         // Handle fullscreen toggle
         if self.state.fullscreen_viewer {
@@ -1640,7 +1908,7 @@ impl eframe::App for KlippApp {
         }
 
         // 12. Filmstrip generation toast
-        if self.state.filmstrip_generating {
+        if self.state.filmstrip_generating && !self.state.filmstrip_toast_dismissed {
             let elapsed = self.state.filmstrip_generate_start.elapsed().as_secs_f64();
             egui::Area::new(egui::Id::new("filmstrip_toast"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
@@ -1663,6 +1931,10 @@ impl eframe::App for KlippApp {
                                     .color(egui::Color32::from_rgb(200, 200, 210))
                                     .size(12.0),
                                 );
+                                ui.add_space(8.0);
+                                if ui.small_button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                                    self.state.filmstrip_toast_dismissed = true;
+                                }
                             });
                         });
                 });
@@ -1715,6 +1987,100 @@ impl KlippApp {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn poll_render_queue(&mut self) {
+        let events = self.state.render_queue.poll();
+        for event in events {
+            match event {
+                klipp_export::RenderQueueEvent::Complete { id, output_path } => {
+                    tracing::info!("Render job {} complete: {}", id, output_path.display());
+                }
+                klipp_export::RenderQueueEvent::Failed { id, error } => {
+                    tracing::error!("Render job {} failed: {}", id, error);
+                }
+                klipp_export::RenderQueueEvent::Progress { .. } => {}
+            }
+        }
+    }
+
+    fn show_render_queue_window(&mut self, ctx: &egui::Context) {
+        if !self.state.show_render_queue {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Render Queue")
+            .open(&mut open)
+            .default_width(500.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if self.state.render_queue.jobs.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(80, 80, 90),
+                        "No render jobs",
+                    );
+                    return;
+                }
+
+                let mut cancel_id = None;
+                for job in &self.state.render_queue.jobs {
+                    ui.horizontal(|ui| {
+                        let (icon, color) = match job.status {
+                            klipp_export::RenderJobStatus::Queued => {
+                                ("\u{23F3}", egui::Color32::from_rgb(180, 180, 100))
+                            }
+                            klipp_export::RenderJobStatus::Rendering => {
+                                ("\u{25B6}", egui::Color32::from_rgb(100, 180, 255))
+                            }
+                            klipp_export::RenderJobStatus::Complete => {
+                                ("\u{2713}", egui::Color32::from_rgb(100, 200, 120))
+                            }
+                            klipp_export::RenderJobStatus::Failed => {
+                                ("\u{2717}", egui::Color32::from_rgb(255, 100, 100))
+                            }
+                            klipp_export::RenderJobStatus::Cancelled => {
+                                ("\u{2014}", egui::Color32::from_rgb(120, 120, 120))
+                            }
+                        };
+                        ui.colored_label(color, icon);
+                        ui.label(&job.label);
+                    });
+
+                    // Progress bar
+                    let progress = egui::ProgressBar::new(job.progress)
+                        .show_percentage();
+                    ui.add(progress);
+
+                    if let Some(err) = &job.error {
+                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
+                    }
+
+                    ui.horizontal(|ui| {
+                        match job.status {
+                            klipp_export::RenderJobStatus::Queued
+                            | klipp_export::RenderJobStatus::Rendering => {
+                                if ui.small_button("Cancel").clicked() {
+                                    cancel_id = Some(job.id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui.separator();
+                }
+
+                if let Some(id) = cancel_id {
+                    self.state.render_queue.cancel_job(id);
+                }
+
+                ui.add_space(4.0);
+                if ui.button("Clear Completed").clicked() {
+                    self.state.render_queue.clear_completed();
+                }
+            });
+        if !open {
+            self.state.show_render_queue = false;
         }
     }
 
@@ -1850,6 +2216,35 @@ impl KlippApp {
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         self.state.show_export_dialog = false;
+                    }
+                    if ui.button("Add to Queue").clicked() {
+                        let path = PathBuf::from(&self.export_output_path);
+                        let settings = ExportSettings {
+                            output_path: path.clone(),
+                            format: self.export_format,
+                            video_codec: self.export_video_codec,
+                            resolution: None,
+                            fps: None,
+                            crf: self.export_crf,
+                            audio_codec: self.export_audio_codec,
+                            audio_bitrate_kbps: self.export_audio_bitrate,
+                        };
+                        let export_range = if self.export_marked_range {
+                            if let (Some(inp), Some(outp)) = (self.state.sequence.in_point, self.state.sequence.out_point) {
+                                Some((inp, outp))
+                            } else { None }
+                        } else { None };
+                        let snapshot = klipp_export::RenderSnapshot::from_sequence(
+                            &self.state.sequence,
+                            &self.state.media_pool,
+                            export_range,
+                        );
+                        let label = path.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Render".into());
+                        self.state.render_queue.add_job(path, settings, label, snapshot);
+                        self.state.show_export_dialog = false;
+                        self.state.show_render_queue = true;
                     }
                     if ui.button("Export").clicked() {
                         let path = PathBuf::from(&self.export_output_path);

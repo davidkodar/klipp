@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectJson {
@@ -72,6 +73,45 @@ pub struct ClipJson {
     pub source_out: i64,
     #[serde(default = "default_rate")]
     pub rate: u32,
+    #[serde(default)]
+    pub color_grade: Option<ColorGradeJson>,
+    #[serde(default)]
+    pub effects: Vec<EffectJson>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ColorGradeJson {
+    pub enabled: bool,
+    #[serde(default)]
+    pub exposure: f32,
+    #[serde(default)]
+    pub contrast: f32,
+    #[serde(default = "default_saturation")]
+    pub saturation: f32,
+    #[serde(default)]
+    pub temperature: f32,
+    #[serde(default)]
+    pub tint: f32,
+}
+
+fn default_saturation() -> f32 { 1.0 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EffectJson {
+    pub plugin_name: String,
+    #[serde(default = "default_visible")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub param_values: HashMap<String, OfxValueJson>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OfxValueJson {
+    Double(f64),
+    Int(i64),
+    Bool(bool),
+    String(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ edition = "2021"
 klipp-core = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
+klipp-plugin = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

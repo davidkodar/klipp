@@ -42,6 +42,8 @@ pub struct TimelinePanel {
     /// Filmstrip stats for status bar: (visible_unique, total)
     filmstrip_visible: usize,
     filmstrip_total: usize,
+    /// Last filmstrip refinement request time — debounce to avoid spamming
+    last_refine_request: Option<std::time::Instant>,
 }
 
 struct DragState {
@@ -636,7 +638,7 @@ impl TimelinePanel {
                             };
 
                             // Draw separator when frame changes
-                            let draw_sep = prev_idx.map_or(false, |pi| pi != idx);
+                            let draw_sep = prev_idx.is_some_and(|pi| pi != idx);
                             let img_x0 = if draw_sep { x0 + sep_w } else { x0 };
                             prev_idx = Some(idx);
                             visible_count += 1;
@@ -679,6 +681,32 @@ impl TimelinePanel {
 
                         self.filmstrip_visible = visible_count;
                         self.filmstrip_total = filmstrip.len();
+
+                        // Request refinement if tiles are too sparse for current zoom.
+                        // Debounce: only request once every 2 seconds.
+                        if visible_count > 3 && filmstrip.len() > 1 {
+                            let secs_per_tile = (clip_out_secs - clip_in_secs) / num_tiles.max(1) as f64;
+                            let min_interval = state.thumbnail_cache.filmstrip_min_interval(&clip.media_id);
+                            let debounce_ok = self.last_refine_request
+                                .map(|t| t.elapsed().as_secs_f64() > 2.0)
+                                .unwrap_or(true);
+                            if let Some(min_iv) = min_interval {
+                                if secs_per_tile < min_iv * 0.5 && !state.filmstrip_generating && debounce_ok {
+                                    let vis_start_frac = ((first_visible as f32 * tile_w) / clip_rect.width().max(1.0)) as f64;
+                                    let vis_end_frac = ((last_visible as f32 * tile_w) / clip_rect.width().max(1.0)).min(1.0) as f64;
+                                    let range_start = clip_in_secs + vis_start_frac * (clip_out_secs - clip_in_secs);
+                                    let range_end = clip_in_secs + vis_end_frac * (clip_out_secs - clip_in_secs);
+                                    let new_interval = secs_per_tile.max(0.5);
+                                    cmds.push(AppCommand::RefineFilmstrip {
+                                        media_id: clip.media_id,
+                                        start_secs: range_start,
+                                        end_secs: range_end,
+                                        interval_secs: new_interval,
+                                    });
+                                    self.last_refine_request = Some(std::time::Instant::now());
+                                }
+                            }
+                        }
 
                         // Very subtle color tint at top edge only (like Resolve)
                         let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];

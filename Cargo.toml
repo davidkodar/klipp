@@ -82,6 +82,9 @@ dirs = "5"
 
 # Channels / messaging between threads
 crossbeam-channel = "0.5"
+
+# Dynamic library loading (OFX plugins)
+libloading = "0.8"
 flume = "0.11"
 pollster = "0.4"
 

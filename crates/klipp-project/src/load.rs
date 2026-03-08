@@ -1,7 +1,8 @@
 use crate::format::*;
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipColorGrade, Sequence, Track, TrackKind};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -47,6 +48,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
             proxy_ready: item_json.proxy_ready,
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+            waveform_data: None,
         };
         media_pool.add(media_item);
     }
@@ -81,6 +83,29 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
                     timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
                     source_in: RationalTime { value: c.source_in, rate: c.rate },
                     source_out: RationalTime { value: c.source_out, rate: c.rate },
+                    color_grade: c.color_grade.as_ref().map(|cg| ClipColorGrade {
+                        enabled: cg.enabled,
+                        exposure: cg.exposure,
+                        contrast: cg.contrast,
+                        saturation: cg.saturation,
+                        temperature: cg.temperature,
+                        tint: cg.tint,
+                    }).unwrap_or_default(),
+                    effects: c.effects.iter().map(|e| {
+                        klipp_plugin::AppliedEffect {
+                            plugin_name: e.plugin_name.clone(),
+                            enabled: e.enabled,
+                            param_values: e.param_values.iter().map(|(k, v)| {
+                                let val = match v {
+                                    OfxValueJson::Double(d) => klipp_plugin::OfxValue::Double(*d),
+                                    OfxValueJson::Int(i) => klipp_plugin::OfxValue::Double(*i as f64),
+                                    OfxValueJson::Bool(b) => klipp_plugin::OfxValue::Bool(*b),
+                                    OfxValueJson::String(s) => klipp_plugin::OfxValue::String(s.clone()),
+                                };
+                                (k.clone(), val)
+                            }).collect::<HashMap<_, _>>(),
+                        }
+                    }).collect(),
                 }
             }).collect();
             track

@@ -58,6 +58,10 @@ pub struct PlaybackEngine {
     // Performance
     use_hw_decode: bool,
     last_stats_time: std::time::Instant,
+    frames_consumed: u64,
+    last_playback_log: std::time::Instant,
+    // Color pipeline — post-processing on RGBA frames before display
+    color_pipeline: klipp_color::ColorPipeline,
 }
 
 impl PlaybackEngine {
@@ -117,6 +121,9 @@ impl PlaybackEngine {
             clip_timeline_start: Timecode::zero(),
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
+            frames_consumed: 0,
+            last_playback_log: std::time::Instant::now(),
+            color_pipeline: klipp_color::ColorPipeline::new(),
         })
     }
 
@@ -297,6 +304,20 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::LoadGlobalLut { path } => {
+                match self.color_pipeline.load_global_lut(&path) {
+                    Ok(()) => info!("Loaded global LUT: {}", path.display()),
+                    Err(e) => error!("Failed to load LUT {}: {}", path.display(), e),
+                }
+            }
+            AppCommand::ClearGlobalLut => {
+                self.color_pipeline.clear_global_lut();
+                info!("Cleared global LUT");
+            }
+            AppCommand::SetGlobalLutOpacity(opacity) => {
+                self.color_pipeline.global_lut_opacity = opacity;
+            }
+
             // UI-side commands — engine ignores them
             _ => {}
         }
@@ -359,6 +380,8 @@ impl PlaybackEngine {
                 // Open V2 decoder if there's a clip on Video 2 at the playhead
                 self.maybe_open_v2_decoder(self.playhead);
                 self.dropped_frames = 0;
+                self.frames_consumed = 0;
+                self.last_playback_log = std::time::Instant::now();
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlaybackStarted);
                 (self.repaint_cb)();
@@ -399,14 +422,18 @@ impl PlaybackEngine {
     }
 
     fn update_playback(&mut self) {
+        let t_update = std::time::Instant::now();
         // Master clock is the single source of truth.
         let current_source_secs = self.master_clock.current_secs();
+        let _clock_running = self.master_clock.is_running();
 
         // Pop frames from the queue, presenting the one closest to current time
         let mut display_frame = None;
+        let mut q_len = 0usize;
 
         if let Some(dec) = &self.v1_decoder {
             let mut queue = dec.frame_queue().lock().unwrap();
+            q_len = queue.len();
 
             loop {
                 match queue.front() {
@@ -420,6 +447,12 @@ impl PlaybackEngine {
                         let pts = f.pts_secs();
                         if pts <= current_source_secs + 0.008 {
                             // Frame is due or overdue — take it
+                            if self.frames_consumed == 0 {
+                                info!(
+                                    "FIRST FRAME: pts={:.3}s clock={:.3}s delta={:.3}s q_len={}",
+                                    pts, current_source_secs, pts - current_source_secs, q_len
+                                );
+                            }
                             let frame = queue.pop().unwrap();
                             // Check if the next frame is also due (we're behind — drop this one)
                             if let Some(next) = queue.front() {
@@ -451,7 +484,25 @@ impl PlaybackEngine {
 
         let frame = match display_frame {
             Some(f) => f,
-            None => return,
+            None => {
+                // Log actual stalls (delta > 0.5s means decode can't keep up)
+                if q_len > 0 && self.last_playback_log.elapsed().as_millis() > 2000 {
+                    if let Some(dec) = &self.v1_decoder {
+                        let queue = dec.frame_queue().lock().unwrap();
+                        if let Some(front) = queue.front() {
+                            let delta = front.pts_secs() - current_source_secs;
+                            if delta > 0.5 {
+                                warn!(
+                                    "STALL: clock={:.3}s front_pts={:.3}s delta={:.3}s q_len={}",
+                                    current_source_secs, front.pts_secs(), delta, q_len
+                                );
+                                self.last_playback_log = std::time::Instant::now();
+                            }
+                        }
+                    }
+                }
+                return;
+            }
         };
 
         if frame.is_eof {
@@ -544,10 +595,56 @@ impl PlaybackEngine {
             frame.into_rgba()
         };
 
+        // Apply per-clip color grade
+        let final_rgba = {
+            let seq = self.sequence.read().unwrap();
+            let grade = seq.video_track()
+                .and_then(|t| t.clips.get(self.current_clip_index))
+                .map(|c| c.color_grade);
+            drop(seq);
+            if let Some(g) = grade {
+                if g.enabled {
+                    self.color_pipeline.apply_clip_grade(
+                        final_rgba, g.exposure, g.contrast, g.saturation, g.temperature, g.tint,
+                    )
+                } else {
+                    final_rgba
+                }
+            } else {
+                final_rgba
+            }
+        };
+
+        // Apply global color pipeline (passthrough when disabled)
+        let final_rgba = self.color_pipeline.process_frame(final_rgba, final_w, final_h);
+
         // Write frame to the shared FrameBuffer
         let mut fb = self.frame_buffer.lock().unwrap();
         fb.write_frame(final_rgba, final_w, final_h);
         drop(fb);
+
+        self.frames_consumed += 1;
+
+        let update_ms = t_update.elapsed().as_secs_f64() * 1000.0;
+        if update_ms > 5.0 {
+            info!(
+                "PERF update_playback: {update_ms:.1}ms for {}x{} frame",
+                final_w, final_h
+            );
+        }
+
+        // Periodic playback status (every 2 seconds)
+        if self.last_playback_log.elapsed().as_secs() >= 2 {
+            let elapsed = self.last_playback_log.elapsed().as_secs_f64();
+            info!(
+                "PLAYBACK: clock={:.3}s consumed={} ({:.1}fps) drops={} q_len={}",
+                current_source_secs, self.frames_consumed,
+                self.frames_consumed as f64 / elapsed.max(0.001),
+                self.dropped_frames, q_len
+            );
+            self.frames_consumed = 0;
+            self.last_playback_log = std::time::Instant::now();
+        }
 
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -1174,15 +1271,16 @@ pub fn generate_thumbnail(
     Ok((rgba, dst_w, dst_h))
 }
 
-/// Generate filmstrip thumbnails at regular intervals for timeline display.
-/// Returns a Vec of (time_secs, rgba, width, height) tuples.
-/// `target_height` is the desired thumbnail height in pixels (e.g., 48 for timeline tracks).
-pub fn generate_filmstrip(
+/// Generate filmstrip thumbnails incrementally with throttling.
+/// Calls `on_frame` for each generated frame, sleeping between frames to avoid
+/// starving the playback decode thread. Returns the total number of frames generated.
+pub fn generate_filmstrip_incremental(
     path: &std::path::Path,
     duration_secs: f64,
     interval_secs: f64,
     target_height: u32,
-) -> Result<Vec<(f64, Vec<u8>, u32, u32)>, String> {
+    mut on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
+) -> Result<usize, String> {
     use ffmpeg_next::software::scaling;
 
     let mut format_ctx = ffmpeg_next::format::input(path)
@@ -1195,8 +1293,18 @@ pub fn generate_filmstrip(
     let stream_index = video_stream.index();
     let params = video_stream.parameters();
 
-    let codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
+    let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
+
+    // Enable multi-threaded decode but limit to half the cores so playback isn't starved
+    unsafe {
+        let half_cores = (std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4) / 2)
+            .max(1) as i32;
+        (*codec_ctx.as_mut_ptr()).thread_count = half_cores;
+    }
+
     let mut decoder = codec_ctx.decoder().video()
         .map_err(|e| format!("video decoder: {e}"))?;
 
@@ -1207,7 +1315,7 @@ pub fn generate_filmstrip(
     let dst_w = (dst_h as f64 * aspect).round() as u32;
 
     let mut scaler: Option<scaling::Context> = None;
-    let mut results = Vec::new();
+    let mut count = 0;
 
     let num_frames = ((duration_secs / interval_secs).ceil() as usize).min(500);
 
@@ -1217,7 +1325,12 @@ pub fn generate_filmstrip(
             break;
         }
 
-        // seek with stream=-1 expects AV_TIME_BASE (microseconds)
+        // Throttle: yield CPU between frames so playback decode isn't starved.
+        // 100ms sleep keeps filmstrip generation gentle in the background.
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
         let ts = (seek_secs * 1_000_000.0) as i64;
         if format_ctx.seek(ts, ..ts).is_err() {
             continue;
@@ -1263,7 +1376,6 @@ pub fn generate_filmstrip(
                 let rgba = if stride == expected {
                     rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
                 } else {
-                    // Strip padding from each row
                     let mut buf = Vec::with_capacity(expected * dst_h as usize);
                     for row in 0..dst_h as usize {
                         let start = row * stride;
@@ -1271,11 +1383,11 @@ pub fn generate_filmstrip(
                     }
                     buf
                 };
-                results.push((seek_secs, rgba, dst_w, dst_h));
+                on_frame(seek_secs, rgba, dst_w, dst_h);
+                count += 1;
             }
         }
     }
 
-    tracing::info!("Filmstrip: generated {} frames for {:?}", results.len(), path);
-    Ok(results)
+    Ok(count)
 }

@@ -84,6 +84,10 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::ShowExportDialog);
                         ui.close_menu();
                     }
+                    if ui.button("Render Queue").clicked() {
+                        cmds.push(AppCommand::ShowRenderQueue);
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         cmds.push(AppCommand::Quit);

@@ -42,8 +42,9 @@ impl AudioDecoder {
                 .ok_or(AudioDecoderError::NoAudioStream)?;
         }
 
-        // Ring buffer: ~0.5s of stereo f32 audio at output_rate
-        let buf_size = (output_rate as usize) * 2; // stereo = 2 channels
+        // Ring buffer: ~2s of stereo f32 audio at output_rate
+        // Larger buffer prevents underruns from bursty decode timing.
+        let buf_size = (output_rate as usize) * 2 * 2; // stereo * 2 seconds
         let (producer, consumer) = HeapRb::<f32>::new(buf_size).split();
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
@@ -206,6 +207,11 @@ fn audio_decode_thread(
     let mut seek_target: Option<f64> = None;
     let mut packets = format_ctx.packets();
     let mut eof_from_demuxer = false;
+    let mut pending_packet: Option<ffmpeg_next::Packet> = None;
+    let mut frame = ffmpeg_next::frame::Audio::empty();
+
+    // Temporary buffer for samples that couldn't fit in the ring buffer
+    let mut overflow_buf: Vec<f32> = Vec::new();
 
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
@@ -234,6 +240,8 @@ fn audio_decode_thread(
                     seek_target = Some(secs);
                     eof = false;
                     eof_from_demuxer = false;
+                    pending_packet = None;
+                    overflow_buf.clear();
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -252,34 +260,30 @@ fn audio_decode_thread(
             continue;
         }
 
-        // Throttle if ring buffer is mostly full
-        if producer.vacant_len() < 4096 {
-            std::thread::sleep(Duration::from_millis(2));
-            continue;
-        }
-
-        // Read next packet (persistent iterator)
-        if !eof_from_demuxer {
-            match packets.next() {
-                Some((stream, packet)) => {
-                    if stream.index() != stream_index {
-                        continue;
-                    }
-                    let _ = decoder.send_packet(&packet);
-                }
-                None => {
-                    let _ = decoder.send_eof();
-                    eof_from_demuxer = true;
-                }
+        // ── Flush overflow buffer first ──
+        // If we had samples that didn't fit last time, push them now.
+        if !overflow_buf.is_empty() {
+            let vacant = producer.vacant_len();
+            if vacant == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
             }
-        } else {
-            eof = true;
-            continue;
+            let to_push = overflow_buf.len().min(vacant);
+            producer.push_slice(&overflow_buf[..to_push]);
+            overflow_buf.drain(..to_push);
+            if !overflow_buf.is_empty() {
+                continue; // still have overflow, wait for more space
+            }
         }
 
-        // Drain decoded frames
-        let mut frame = ffmpeg_next::frame::Audio::empty();
-        while decoder.receive_frame(&mut frame).is_ok() {
+        // ── Phase 1: Drain decoded audio frames from the decoder ──
+        let mut drained_any = false;
+        loop {
+            if decoder.receive_frame(&mut frame).is_err() {
+                break; // need more packets
+            }
+            drained_any = true;
+
             // Skip pre-seek frames based on PTS
             if let Some(target) = seek_target {
                 let pts_secs = frame
@@ -290,7 +294,6 @@ fn audio_decode_thread(
                     continue; // discard audio before seek target
                 }
                 debug!("audio_decode_thread: first post-seek frame at {pts_secs:.3}s (target={target:.3}s)");
-                // Report actual PTS to engine for precise clock sync
                 post_seek_pts_us.store((pts_secs * 1_000_000.0) as u64, Ordering::Release);
                 seek_generation.fetch_add(1, Ordering::Release);
                 seek_target = None;
@@ -301,28 +304,74 @@ fn audio_decode_thread(
                 continue;
             }
 
+            // Use actual sample count, NOT data(0).len() which may include
+            // linesize padding — reading padding bytes causes audio artifacts.
+            let nb_samples = resampled.samples();
+            let channels = 2usize; // we requested stereo from resampler
+            let actual_floats = nb_samples * channels;
             let data = resampled.data(0);
-            if data.is_empty() {
+            if actual_floats == 0 || data.len() < actual_floats * 4 {
                 continue;
             }
 
-            let floats: &[f32] = bytemuck::cast_slice(data);
+            let floats: &[f32] = bytemuck::cast_slice(&data[..actual_floats * 4]);
 
             let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
             let is_muted = muted.load(Ordering::Relaxed);
 
-            if is_muted {
-                // Push silence (advance the position without audio)
-                let silence = vec![0.0f32; floats.len()];
-                producer.push_slice(&silence);
+            // Prepare samples with volume applied
+            let samples: Vec<f32> = if is_muted {
+                vec![0.0f32; floats.len()]
             } else if (vol - 1.0).abs() < 0.01 {
-                // Unity gain — push directly
-                producer.push_slice(floats);
+                floats.to_vec()
             } else {
-                // Apply volume scaling
-                let scaled: Vec<f32> = floats.iter().map(|s| s * vol).collect();
-                producer.push_slice(&scaled);
+                floats.iter().map(|s| s * vol).collect()
+            };
+
+            // Push to ring buffer, saving overflow if it doesn't all fit
+            let vacant = producer.vacant_len();
+            if samples.len() <= vacant {
+                producer.push_slice(&samples);
+            } else {
+                // Push what fits, buffer the rest
+                if vacant > 0 {
+                    producer.push_slice(&samples[..vacant]);
+                }
+                overflow_buf.extend_from_slice(&samples[vacant..]);
+                break; // ring buffer full, stop draining
             }
+        }
+
+        // ── Phase 2: Feed next packet to the decoder ──
+        if let Some(pkt) = pending_packet.take() {
+            match decoder.send_packet(&pkt) {
+                Ok(()) => {}
+                Err(_) => {
+                    pending_packet = Some(pkt);
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+            }
+        } else if !eof_from_demuxer {
+            match packets.next() {
+                Some((stream, packet)) => {
+                    if stream.index() == stream_index {
+                        match decoder.send_packet(&packet) {
+                            Ok(()) => {}
+                            Err(_) => {
+                                pending_packet = Some(packet);
+                            }
+                        }
+                    }
+                    // Non-audio packets: just skip
+                }
+                None => {
+                    let _ = decoder.send_eof();
+                    eof_from_demuxer = true;
+                }
+            }
+        } else if !drained_any {
+            eof = true;
         }
     }
 }

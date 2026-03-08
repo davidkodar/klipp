@@ -299,7 +299,7 @@ impl ViewerPanel {
         let line_h = 15.0;
         let pad = 6.0;
 
-        let hw_label = if state.perf_hw_decode { "VAAPI" } else { "SW" };
+        let hw_label = if state.perf_hw_decode { "NVDEC" } else { "SW" };
         let playback_label = match state.playback {
             PlaybackState::Playing => "PLAY",
             PlaybackState::Paused => "PAUSE",
@@ -375,13 +375,68 @@ impl ViewerPanel {
             let bg = ui.allocate_rect(panel_rect, egui::Sense::hover());
             ui.painter().rect_filled(bg.rect, 0.0, egui::Color32::from_rgb(15, 15, 18));
 
-            // Source info
+            // Source info — filename
+            let cx = panel_rect.center().x;
+            let cy = panel_rect.center().y;
+            let dim = egui::Color32::from_rgb(120, 120, 130);
+            let label_col = egui::Color32::from_rgb(180, 180, 190);
+            let val_col = egui::Color32::from_rgb(210, 210, 220);
+
             ui.painter().text(
-                egui::pos2(panel_rect.center().x, panel_rect.center().y - 20.0),
+                egui::pos2(cx, cy - 60.0),
                 egui::Align2::CENTER_CENTER,
-                format!("Source: {}", media.filename),
+                &media.filename,
                 egui::FontId::proportional(14.0),
-                egui::Color32::from_rgb(180, 180, 190),
+                label_col,
+            );
+
+            // Resolution, FPS, duration line
+            let dur_secs = if media.duration.rate > 0 {
+                media.duration.value as f64 / media.duration.rate as f64
+            } else {
+                0.0
+            };
+            let dur_m = (dur_secs / 60.0) as u32;
+            let dur_s = dur_secs % 60.0;
+            let fps_str = if media.fps.den == 1 {
+                format!("{}", media.fps.num)
+            } else {
+                format!("{:.2}", media.fps.num as f64 / media.fps.den as f64)
+            };
+            let res_line = format!(
+                "{}x{}  {}fps  {}:{:05.2}",
+                media.resolution.width, media.resolution.height, fps_str, dur_m, dur_s,
+            );
+            ui.painter().text(
+                egui::pos2(cx, cy - 38.0),
+                egui::Align2::CENTER_CENTER,
+                &res_line,
+                egui::FontId::monospace(12.0),
+                val_col,
+            );
+
+            // Codec + file size line
+            let size_mb = media.file_size_bytes as f64 / (1024.0 * 1024.0);
+            let size_str = if size_mb >= 1024.0 {
+                format!("{:.1} GB", size_mb / 1024.0)
+            } else {
+                format!("{:.1} MB", size_mb)
+            };
+            let audio_str = if media.has_audio {
+                media.audio_codec.to_lowercase()
+            } else {
+                "none".to_string()
+            };
+            let codec_line = format!(
+                "{}  \u{2502}  {}  \u{2502}  {}",
+                media.video_codec.to_lowercase(), audio_str, size_str,
+            );
+            ui.painter().text(
+                egui::pos2(cx, cy - 20.0),
+                egui::Align2::CENTER_CENTER,
+                &codec_line,
+                egui::FontId::monospace(11.0),
+                dim,
             );
 
             // In/Out display
@@ -392,7 +447,7 @@ impl ViewerPanel {
                 .map(|t| t.to_timecode_string())
                 .unwrap_or_else(|| media.duration.to_timecode_string());
             ui.painter().text(
-                egui::pos2(panel_rect.center().x, panel_rect.center().y + 10.0),
+                egui::pos2(cx, cy + 6.0),
                 egui::Align2::CENTER_CENTER,
                 format!("In: {}  Out: {}", in_str, out_str),
                 egui::FontId::monospace(12.0),
@@ -401,7 +456,7 @@ impl ViewerPanel {
 
             // Insert button area
             let btn_rect = egui::Rect::from_min_size(
-                egui::pos2(panel_rect.center().x - 80.0, panel_rect.center().y + 40.0),
+                egui::pos2(cx - 80.0, cy + 34.0),
                 egui::vec2(160.0, 28.0),
             );
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());

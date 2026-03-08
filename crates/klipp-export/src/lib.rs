@@ -1,1 +1,3 @@
-// Stub — export pipeline is Phase 2+
+pub mod queue;
+
+pub use queue::{RenderJob, RenderJobStatus, RenderQueue, RenderQueueEvent, RenderSnapshot};

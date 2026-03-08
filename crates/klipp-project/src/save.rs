@@ -74,9 +74,48 @@ fn sequence_to_json(seq: &Sequence) -> SequenceJson {
                         source_in: c.source_in.value,
                         source_out: c.source_out.value,
                         rate: c.timeline_in.rate,
+                        color_grade: if c.color_grade.enabled
+                            || c.color_grade.exposure != 0.0
+                            || c.color_grade.contrast != 0.0
+                            || c.color_grade.saturation != 1.0
+                            || c.color_grade.temperature != 0.0
+                            || c.color_grade.tint != 0.0
+                        {
+                            Some(color_grade_to_json(&c.color_grade))
+                        } else {
+                            None
+                        },
+                        effects: c.effects.iter().map(effect_to_json).collect(),
                     }
                 }).collect(),
             }
+        }).collect(),
+    }
+}
+
+fn color_grade_to_json(cg: &klipp_timeline::ClipColorGrade) -> ColorGradeJson {
+    ColorGradeJson {
+        enabled: cg.enabled,
+        exposure: cg.exposure,
+        contrast: cg.contrast,
+        saturation: cg.saturation,
+        temperature: cg.temperature,
+        tint: cg.tint,
+    }
+}
+
+fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
+    EffectJson {
+        plugin_name: effect.plugin_name.clone(),
+        enabled: effect.enabled,
+        param_values: effect.param_values.iter().map(|(k, v): (&String, &klipp_plugin::OfxValue)| {
+            let json_val = match v {
+                klipp_plugin::OfxValue::Double(d) => OfxValueJson::Double(*d),
+                klipp_plugin::OfxValue::Int(i) => OfxValueJson::Double(*i as f64),
+                klipp_plugin::OfxValue::Bool(b) => OfxValueJson::Bool(*b),
+                klipp_plugin::OfxValue::String(s) => OfxValueJson::String(s.clone()),
+            };
+            (k.clone(), json_val)
         }).collect(),
     }
 }

@@ -171,9 +171,41 @@ pub enum AppCommand {
     SetUseProxies(bool),
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
 
+    // Color
+    SetClipExposure { clip_id: ClipId, exposure: f32 },
+    SetClipContrast { clip_id: ClipId, contrast: f32 },
+    SetClipSaturation { clip_id: ClipId, saturation: f32 },
+    SetClipTemperature { clip_id: ClipId, temperature: f32 },
+    SetClipTint { clip_id: ClipId, tint: f32 },
+    ResetClipColorGrade { clip_id: ClipId },
+
+    // Global LUT
+    LoadGlobalLut { path: PathBuf },
+    ClearGlobalLut,
+    SetGlobalLutOpacity(f32),
+
+    // Effects
+    AddEffect { clip_id: ClipId, plugin_name: String },
+    RemoveEffect { clip_id: ClipId, effect_index: usize },
+    SetEffectEnabled { clip_id: ClipId, effect_index: usize, enabled: bool },
+    ReorderEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+
+    // Render Queue
+    ShowRenderQueue,
+    ClearCompletedJobs,
+
     // Snap & Ripple
     SetSnapEnabled(bool),
     SetRippleEnabled(bool),
+
+    // Filmstrip
+    /// Request more filmstrip detail for a time range (progressive refinement on zoom)
+    RefineFilmstrip {
+        media_id: MediaId,
+        start_secs: f64,
+        end_secs: f64,
+        interval_secs: f64,
+    },
 
     // UI
     SetViewerMode(ViewerMode),

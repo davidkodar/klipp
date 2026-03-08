@@ -1,3 +1,3 @@
 mod sequence;
 
-pub use sequence::{Clip, Sequence, Track, TrackKind, Transition, TransitionKind};
+pub use sequence::{Clip, ClipColorGrade, Sequence, Track, TrackKind, Transition, TransitionKind};
