@@ -6,7 +6,7 @@ use klipp_timeline::TrackKind;
 const TRACK_HEADER_WIDTH: f32 = 80.0;
 const RULER_HEIGHT: f32 = 24.0;
 const VIDEO_TRACK_HEIGHT: f32 = 56.0;
-const AUDIO_TRACK_HEIGHT: f32 = 40.0;
+const AUDIO_TRACK_HEIGHT: f32 = 60.0;
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
@@ -381,6 +381,91 @@ impl TimelinePanel {
                                 track_index: track_idx,
                                 volume: new_vol,
                             });
+                        }
+
+                        // Pan slider (horizontal drag, double-click resets to center)
+                        let pan_y = btn_y - 14.0;
+                        let pan_rect = egui::Rect::from_min_size(
+                            egui::pos2(header_rect.left() + 4.0, pan_y),
+                            egui::vec2(header_rect.width() - 8.0, 10.0),
+                        );
+                        let pan_resp = ui.interact(
+                            pan_rect,
+                            ui.id().with(("pan_ctrl", track_idx)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        bg_painter.rect_filled(pan_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
+                        // Center marker
+                        let cx = pan_rect.center().x;
+                        bg_painter.line_segment(
+                            [egui::pos2(cx, pan_rect.top()), egui::pos2(cx, pan_rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 70)),
+                        );
+                        // Pan indicator
+                        let pan_x = cx + (track.pan * pan_rect.width() * 0.5);
+                        bg_painter.rect_filled(
+                            egui::Rect::from_center_size(egui::pos2(pan_x, pan_rect.center().y), egui::vec2(4.0, 8.0)),
+                            1.0,
+                            egui::Color32::from_rgb(140, 180, 150),
+                        );
+                        // Pan label
+                        let pan_label = if track.pan.abs() < 0.05 {
+                            "C".to_string()
+                        } else if track.pan < 0.0 {
+                            format!("L{}", (track.pan.abs() * 100.0) as u32)
+                        } else {
+                            format!("R{}", (track.pan * 100.0) as u32)
+                        };
+                        bg_painter.text(
+                            egui::pos2(pan_rect.right() - 2.0, pan_rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            &pan_label,
+                            egui::FontId::proportional(7.0),
+                            egui::Color32::from_rgb(140, 140, 150),
+                        );
+                        if pan_resp.double_clicked() {
+                            cmds.push(AppCommand::SetTrackPan {
+                                track_index: track_idx,
+                                pan: 0.0,
+                            });
+                        } else if pan_resp.dragged() {
+                            let dx = pan_resp.drag_delta().x;
+                            let new_pan = (track.pan + dx / (pan_rect.width() * 0.5)).clamp(-1.0, 1.0);
+                            cmds.push(AppCommand::SetTrackPan {
+                                track_index: track_idx,
+                                pan: new_pan,
+                            });
+                        }
+
+                        // VU meter bars (stereo, horizontal)
+                        let vu_y = track_y + 4.0;
+                        let vu_w = header_rect.width() - 8.0;
+                        let vu_h = 3.0;
+                        let (peak_l, peak_r) = state.track_peak_levels
+                            .get(track_idx)
+                            .copied()
+                            .unwrap_or((0.0, 0.0));
+                        for (ch, peak) in [(0, peak_l), (1, peak_r)] {
+                            let bar_rect = egui::Rect::from_min_size(
+                                egui::pos2(header_rect.left() + 4.0, vu_y + ch as f32 * (vu_h + 1.0)),
+                                egui::vec2(vu_w, vu_h),
+                            );
+                            bg_painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(20, 20, 25));
+                            let fill = (peak.min(1.0) * vu_w).max(0.0);
+                            if fill > 0.0 {
+                                let color = if peak > 0.9 {
+                                    egui::Color32::from_rgb(220, 50, 50)
+                                } else if peak > 0.7 {
+                                    egui::Color32::from_rgb(220, 180, 40)
+                                } else {
+                                    egui::Color32::from_rgb(50, 180, 70)
+                                };
+                                let fill_rect = egui::Rect::from_min_size(
+                                    bar_rect.left_top(),
+                                    egui::vec2(fill, vu_h),
+                                );
+                                bg_painter.rect_filled(fill_rect, 1.0, color);
+                            }
                         }
                     }
                 }

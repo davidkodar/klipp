@@ -154,6 +154,48 @@ impl TransportBar {
                     .size(14.0)
                     .color(egui::Color32::from_rgb(100, 100, 110)),
             );
+
+            // Spacer to push master controls right
+            ui.add_space(24.0);
+
+            // Master volume slider
+            ui.label(egui::RichText::new("Master").size(10.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            let mut vol = state.master_volume;
+            let slider = egui::Slider::new(&mut vol, 0.0..=1.3)
+                .show_value(false);
+            if ui.add(slider).changed() {
+                state.master_volume = vol;
+                cmds.push(AppCommand::SetMasterVolume(vol));
+            }
+            let vol_pct = (state.master_volume * 100.0) as u32;
+            ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(egui::Color32::from_rgb(140, 140, 150)));
+
+            // Master VU bars (compact)
+            let vu_w = 60.0;
+            let vu_h = 4.0;
+            let (vu_rect, _) = ui.allocate_exact_size(egui::vec2(vu_w, vu_h * 2.0 + 2.0), egui::Sense::hover());
+            let painter = ui.painter();
+            for (ch, peak) in [(0, state.master_peak_left), (1, state.master_peak_right)] {
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(vu_rect.left(), vu_rect.top() + ch as f32 * (vu_h + 1.0)),
+                    egui::vec2(vu_w, vu_h),
+                );
+                painter.rect_filled(bar, 1.0, egui::Color32::from_rgb(20, 20, 25));
+                let fill = (peak.min(1.0) * vu_w).max(0.0);
+                if fill > 0.0 {
+                    let color = if peak > 0.9 {
+                        egui::Color32::from_rgb(220, 50, 50)
+                    } else if peak > 0.7 {
+                        egui::Color32::from_rgb(220, 180, 40)
+                    } else {
+                        egui::Color32::from_rgb(50, 180, 70)
+                    };
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(bar.left_top(), egui::vec2(fill, vu_h)),
+                        1.0, color,
+                    );
+                }
+            }
         });
 
         cmds

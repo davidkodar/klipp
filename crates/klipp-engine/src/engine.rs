@@ -78,6 +78,8 @@ pub struct PlaybackEngine {
     color_pipeline: klipp_color::ColorPipeline,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
+    // VU metering — emit peak levels at ~30Hz
+    last_peak_time: std::time::Instant,
 }
 
 impl PlaybackEngine {
@@ -144,6 +146,7 @@ impl PlaybackEngine {
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
             ofx_host: klipp_plugin::OfxHost::new(),
+            last_peak_time: std::time::Instant::now(),
         })
     }
 
@@ -193,6 +196,35 @@ impl PlaybackEngine {
                     dropped_frames: self.dropped_frames,
                     hw_decode: hw,
                 });
+            }
+
+            // Emit VU peak levels at ~30Hz
+            if self.state == PlaybackState::Playing
+                && self.last_peak_time.elapsed() >= Duration::from_millis(33)
+            {
+                self.last_peak_time = std::time::Instant::now();
+                if let Ok(mixer) = self.mixer.lock() {
+                    let mut master_l = 0.0f32;
+                    let mut master_r = 0.0f32;
+                    for (i, track) in mixer.tracks.iter().enumerate() {
+                        // Map mixer index to sequence track index
+                        let seq_track_idx = self.audio_sources
+                            .get(i)
+                            .map(|s| s.track_index)
+                            .unwrap_or(i);
+                        let _ = self.event_tx.send(AppEvent::TrackPeakLevels {
+                            track_index: seq_track_idx,
+                            left: track.peak_left,
+                            right: track.peak_right,
+                        });
+                        master_l = master_l.max(track.peak_left);
+                        master_r = master_r.max(track.peak_right);
+                    }
+                    let _ = self.event_tx.send(AppEvent::MasterPeakLevels {
+                        left: master_l,
+                        right: master_r,
+                    });
+                }
             }
         }
 
@@ -455,14 +487,11 @@ impl PlaybackEngine {
                     }
                 }
 
-                // Open audio for ALL tracks that have a clip at the playhead
+                // Open audio for ALL tracks (sources start paused, already
+                // seeked to correct position — no stale data to flush)
                 self.start_all_audio(self.playhead);
 
-                // Pause audio immediately — don't let it advance while we
-                // wait for the first video frame.
-                for active in &self.audio_sources {
-                    active.source.pause();
-                }
+                // Pause cpal output while we wait for video
                 if let Some(aout) = &self.audio_output {
                     aout.0.pause();
                 }
@@ -470,20 +499,18 @@ impl PlaybackEngine {
                 // Wait for a valid post-seek video frame
                 self.wait_for_valid_frame(source_secs);
 
-                // Clean slate: flush staging, re-seek all audio, drain main buffer.
-                self.seek_all_audio_to_timecode(self.playhead);
-
                 // Set clock to target (not running yet)
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
 
-                // Pre-fill audio pipeline
+                // Pre-fill: resume audio sources so samples flow into ring buffer
+                // while cpal is still paused (accumulates without consuming)
                 for active in &self.audio_sources {
                     active.source.resume();
                 }
                 std::thread::sleep(Duration::from_millis(20));
 
-                // Start playback: resume audio output + clock together.
+                // Start playback: resume cpal + clock together
                 if let Some(aout) = &self.audio_output {
                     aout.0.resume();
                 }
@@ -529,16 +556,13 @@ impl PlaybackEngine {
 
         info!("handle_play: audio-only at {:.3}s", self.playhead.to_secs_f64());
 
+        // Open audio sources (start paused, already seeked — no stale data)
         self.start_all_audio(self.playhead);
 
-        // Pause audio, flush, re-seek
-        for active in &self.audio_sources {
-            active.source.pause();
-        }
+        // Pause cpal while we set up
         if let Some(aout) = &self.audio_output {
             aout.0.pause();
         }
-        self.seek_all_audio_to_timecode(self.playhead);
 
         // Set clock
         let source_us = (self.playhead.to_secs_f64() * 1_000_000.0) as u64;
@@ -616,7 +640,7 @@ impl PlaybackEngine {
 
     /// Open one audio source for a given track and add it to audio_sources.
     /// Creates mix thread + audio output if not already present.
-    /// The source's ring buffer consumer is routed through the mix thread.
+    /// The source starts PAUSED — caller is responsible for resuming.
     fn open_audio_source(
         &mut self,
         track_index: usize,
@@ -633,7 +657,7 @@ impl PlaybackEngine {
                         if source_secs > 0.01 {
                             feeder.seek(source_secs);
                         }
-                        feeder.resume();
+                        // Source starts paused — caller resumes when ready
 
                         self.ensure_mix_pipeline(consumer, track_index);
                         self.audio_sources.push(ActiveAudioSource {
@@ -655,7 +679,7 @@ impl PlaybackEngine {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);
                 }
-                adec.resume();
+                // Source starts paused — caller resumes when ready
 
                 self.ensure_mix_pipeline(consumer, track_index);
                 self.audio_sources.push(ActiveAudioSource {
@@ -1086,10 +1110,20 @@ impl PlaybackEngine {
                 }
 
                 // Open audio for all tracks at the new clip position
+                // (sources start paused, already seeked — no stale data)
                 let start_us = (source_in_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
-                self.master_clock.resume();
                 self.start_all_audio(self.playhead);
+
+                // Pre-fill + resume
+                for active in &self.audio_sources {
+                    active.source.resume();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                if let Some(aout) = &self.audio_output {
+                    aout.0.resume();
+                }
+                self.master_clock.resume();
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
@@ -1220,14 +1254,10 @@ impl PlaybackEngine {
                             error!("Failed to open decoder for seek: {e}");
                         }
                     }
-                    // Re-open audio for all tracks at the new position
-                    self.start_all_audio(tc);
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
-                // Clear stale frames from queue — decoder thread will also clear
-                // when it processes the seek, but this prevents stale frames from
-                // being visible between now and then.
+                // Clear stale frames from queue
                 dec.frame_queue().lock().unwrap().clear();
                 if self.state != PlaybackState::Playing {
                     dec.resume();
@@ -1236,43 +1266,43 @@ impl PlaybackEngine {
                 self.clip_timeline_start = timeline_in;
             }
 
-            // Master clock seek procedure:
-            // 1. Pause clock
-            self.master_clock.pause();
+            let was_playing = self.state == PlaybackState::Playing;
 
-            // 2. Re-open audio for current sequence state then seek+flush.
-            //    This handles cross-track moves where track indices changed.
+            // 1. Pause clock + cpal output
+            self.master_clock.pause();
+            if let Some(aout) = &self.audio_output {
+                aout.0.pause();
+            }
+
+            // 2. Re-open audio sources (start paused) then flush+seek
             self.start_all_audio(tc);
             self.seek_all_audio_to_timecode(tc);
 
-            // 4. Set master clock to target
+            // 3. Set master clock to target
             let target_us = (source_secs * 1_000_000.0) as u64;
             self.master_clock.seek(target_us);
 
-            // 5. Resume or pause audio based on playback state
-            if self.state == PlaybackState::Playing {
+            // 4. Resume or stay paused based on playback state
+            if was_playing {
+                // Pre-fill: resume audio sources while cpal is still paused
                 for active in &self.audio_sources {
                     active.source.resume();
                 }
+                std::thread::sleep(Duration::from_millis(15));
+
+                // Resume cpal + clock together
                 if let Some(aout) = &self.audio_output {
                     aout.0.resume();
                 }
-            } else {
-                for active in &self.audio_sources {
-                    active.source.pause();
-                }
-            }
-
-            // 6. Resume master clock if playing
-            if self.state == PlaybackState::Playing {
                 self.master_clock.resume();
             }
+            // Sources already start paused, no need to pause them
 
             // Re-check V2 at the new playhead
             self.v2_frame_cache = None;
             self.maybe_open_v2_decoder(tc);
 
-            if self.state != PlaybackState::Playing {
+            if !was_playing {
                 self.grab_single_frame_timeout(grab_timeout);
                 // Play scrub chirp (~40ms snippet at the seek position)
                 if let Some(active) = self.audio_sources.first() {
@@ -1297,26 +1327,30 @@ impl PlaybackEngine {
             };
 
             if has_audio {
-                self.start_all_audio(tc);
+                let was_playing = self.state == PlaybackState::Playing;
 
-                // Master clock seek
                 self.master_clock.pause();
+                if let Some(aout) = &self.audio_output {
+                    aout.0.pause();
+                }
+
+                // Re-open audio (paused), flush+seek
+                self.start_all_audio(tc);
                 self.seek_all_audio_to_timecode(tc);
                 let target_us = (tc.to_secs_f64() * 1_000_000.0) as u64;
                 self.master_clock.seek(target_us);
 
-                if self.state == PlaybackState::Playing {
+                if was_playing {
+                    // Pre-fill then resume
                     for active in &self.audio_sources {
                         active.source.resume();
                     }
+                    std::thread::sleep(Duration::from_millis(15));
                     if let Some(aout) = &self.audio_output {
                         aout.0.resume();
                     }
                     self.master_clock.resume();
                 } else {
-                    for active in &self.audio_sources {
-                        active.source.pause();
-                    }
                     // Play scrub chirp for audio-only
                     if let Some(active) = self.audio_sources.first() {
                         let source_secs = {

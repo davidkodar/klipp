@@ -336,9 +336,19 @@ impl KlippApp {
                 | AppEvent::AudioConformFailed { .. } => {
                     // Audio conform events come through audio_conform_rx channel
                 }
-                AppEvent::TrackPeakLevels { .. }
-                | AppEvent::MasterPeakLevels { .. } => {
-                    // Handled in Phase G (VU metering UI)
+                AppEvent::TrackPeakLevels { track_index, left, right } => {
+                    // Grow peak levels vec if needed
+                    while self.state.track_peak_levels.len() <= track_index {
+                        self.state.track_peak_levels.push((0.0, 0.0));
+                    }
+                    let (ref mut dl, ref mut dr) = self.state.track_peak_levels[track_index];
+                    // Peak hold: only update if new value is higher (decay happens per-frame)
+                    *dl = dl.max(left);
+                    *dr = dr.max(right);
+                }
+                AppEvent::MasterPeakLevels { left, right } => {
+                    self.state.master_peak_left = self.state.master_peak_left.max(left);
+                    self.state.master_peak_right = self.state.master_peak_right.max(right);
                 }
             }
         }
@@ -1952,6 +1962,15 @@ impl eframe::App for KlippApp {
         if self.state.playback == PlaybackState::Playing {
             ctx.request_repaint();
         }
+
+        // VU meter peak decay (~10dB/sec at 60fps → ~0.016 per frame)
+        let decay = 0.016;
+        for (l, r) in &mut self.state.track_peak_levels {
+            *l = (*l - decay).max(0.0);
+            *r = (*r - decay).max(0.0);
+        }
+        self.state.master_peak_left = (self.state.master_peak_left - decay).max(0.0);
+        self.state.master_peak_right = (self.state.master_peak_right - decay).max(0.0);
 
         // Update performance stats
         if self.state.show_perf_overlay {

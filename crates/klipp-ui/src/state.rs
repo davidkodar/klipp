@@ -117,6 +117,15 @@ pub struct AppState {
     pub playhead_speed: f64,
     /// High-precision playhead for smooth display (not quantized to frame rate)
     pub playhead_smooth_secs: f64,
+
+    // Phase 6B: VU metering
+    /// Per-track peak levels (display values with decay)
+    pub track_peak_levels: Vec<(f32, f32)>,
+    /// Master peak levels (display values with decay)
+    pub master_peak_left: f32,
+    pub master_peak_right: f32,
+    /// Master volume control
+    pub master_volume: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -231,6 +240,10 @@ impl Default for AppState {
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,
             playhead_smooth_secs: 0.0,
+            track_peak_levels: Vec::new(),
+            master_peak_left: 0.0,
+            master_peak_right: 0.0,
+            master_volume: 1.0,
         }
     }
 }
