@@ -548,7 +548,7 @@ impl PlaybackEngine {
                         if pts <= current_source_secs + frame_tolerance {
                             // Frame is due or overdue — take it
                             if self.frames_consumed == 0 {
-                                info!(
+                                debug!(
                                     "FIRST FRAME: pts={:.3}s clock={:.3}s delta={:.3}s q_len={}",
                                     pts, current_source_secs, pts - current_source_secs, q_len
                                 );
@@ -592,7 +592,7 @@ impl PlaybackEngine {
                         if let Some(front) = queue.front() {
                             let delta = front.pts_secs() - current_source_secs;
                             if delta > 0.5 {
-                                warn!(
+                                debug!(
                                     "STALL: clock={:.3}s front_pts={:.3}s delta={:.3}s q_len={}",
                                     current_source_secs, front.pts_secs(), delta, q_len
                                 );
@@ -727,7 +727,7 @@ impl PlaybackEngine {
 
         let update_ms = t_update.elapsed().as_secs_f64() * 1000.0;
         if update_ms > 5.0 {
-            info!(
+            debug!(
                 "PERF update_playback: {update_ms:.1}ms for {}x{} frame",
                 final_w, final_h
             );
@@ -736,7 +736,7 @@ impl PlaybackEngine {
         // Periodic playback status (every 2 seconds)
         if self.last_playback_log.elapsed().as_secs() >= 2 {
             let elapsed = self.last_playback_log.elapsed().as_secs_f64();
-            info!(
+            debug!(
                 "PLAYBACK: clock={:.3}s consumed={} ({:.1}fps) drops={} q_len={}",
                 current_source_secs, self.frames_consumed,
                 self.frames_consumed as f64 / elapsed.max(0.001),

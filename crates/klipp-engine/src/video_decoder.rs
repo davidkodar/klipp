@@ -639,7 +639,7 @@ fn decode_thread_main(
             if perf_frame_count % PERF_LOG_INTERVAL == 0 {
                 let elapsed = perf_interval_start.elapsed();
                 let fps = PERF_LOG_INTERVAL as f64 / elapsed.as_secs_f64();
-                info!(
+                debug!(
                     "PERF decode_thread: {PERF_LOG_INTERVAL} frames in {:.0}ms ({fps:.1} fps) | \
                      decode={:.1}ms transfer={:.1}ms copy={:.1}ms queue={:.1}ms | \
                      frame={}x{} hw={:?}",

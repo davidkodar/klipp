@@ -504,6 +504,10 @@ impl KlippApp {
                         entry.peaks.len(),
                     );
                     if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                        // Use conform peaks as waveform data for timeline display
+                        if item.waveform_data.is_none() {
+                            item.waveform_data = Some(entry.peaks.clone());
+                        }
                         item.audio_cache = Some(entry);
                         changed = true;
                     }
