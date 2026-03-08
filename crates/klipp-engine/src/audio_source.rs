@@ -1,0 +1,81 @@
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::Arc;
+
+use crate::audio_decoder::AudioDecoder;
+use crate::pcm_reader::PcmAudioFeeder;
+
+/// Unified audio source — either a real-time ffmpeg decoder or a PCM cache reader.
+/// Provides the same interface for the engine regardless of backend.
+pub enum AudioSource {
+    Decoder(AudioDecoder),
+    PcmFeeder(PcmAudioFeeder),
+}
+
+impl AudioSource {
+    pub fn seek(&self, secs: f64) {
+        match self {
+            Self::Decoder(d) => d.seek(secs),
+            Self::PcmFeeder(f) => f.seek(secs),
+        }
+    }
+
+    pub fn resume(&self) {
+        match self {
+            Self::Decoder(d) => d.resume(),
+            Self::PcmFeeder(f) => f.resume(),
+        }
+    }
+
+    pub fn pause(&self) {
+        match self {
+            Self::Decoder(d) => d.pause(),
+            Self::PcmFeeder(f) => f.pause(),
+        }
+    }
+
+    pub fn stop(&mut self) {
+        match self {
+            Self::Decoder(d) => d.stop(),
+            Self::PcmFeeder(f) => f.stop(),
+        }
+    }
+
+    pub fn stop_detached(&mut self) {
+        match self {
+            Self::Decoder(d) => d.stop_detached(),
+            Self::PcmFeeder(f) => f.stop_detached(),
+        }
+    }
+
+    pub fn volume(&self) -> &Arc<AtomicU32> {
+        match self {
+            Self::Decoder(d) => &d.volume,
+            Self::PcmFeeder(f) => &f.volume,
+        }
+    }
+
+    pub fn muted(&self) -> &Arc<AtomicBool> {
+        match self {
+            Self::Decoder(d) => &d.muted,
+            Self::PcmFeeder(f) => &f.muted,
+        }
+    }
+
+    pub fn post_seek_pts_us(&self) -> &Arc<AtomicU64> {
+        match self {
+            Self::Decoder(d) => &d.post_seek_pts_us,
+            Self::PcmFeeder(f) => &f.post_seek_pts_us,
+        }
+    }
+
+    pub fn seek_generation(&self) -> &Arc<AtomicU64> {
+        match self {
+            Self::Decoder(d) => &d.seek_generation,
+            Self::PcmFeeder(f) => &f.seek_generation,
+        }
+    }
+
+    pub fn is_pcm(&self) -> bool {
+        matches!(self, Self::PcmFeeder(_))
+    }
+}

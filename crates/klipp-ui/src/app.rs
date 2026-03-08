@@ -493,6 +493,7 @@ impl KlippApp {
     }
 
     fn drain_audio_conforms(&mut self) {
+        let mut changed = false;
         while let Ok(result) = self.audio_conform_rx.try_recv() {
             match result {
                 AudioConformResult::Complete { media_id, entry } => {
@@ -504,12 +505,16 @@ impl KlippApp {
                     );
                     if let Some(item) = self.state.media_pool.get_mut(&media_id) {
                         item.audio_cache = Some(entry);
+                        changed = true;
                     }
                 }
                 AudioConformResult::Failed { media_id, error } => {
                     tracing::warn!("Audio conform failed for {:?}: {}", media_id, error);
                 }
             }
+        }
+        if changed {
+            self.sync_media_pool_to_engine();
         }
     }
 

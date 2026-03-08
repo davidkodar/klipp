@@ -1,7 +1,9 @@
 pub mod audio_decoder;
 pub mod audio_output;
+pub mod audio_source;
 pub mod composite;
 pub mod engine;
+pub mod pcm_reader;
 pub mod sync;
 pub mod texture;
 pub mod types;

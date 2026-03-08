@@ -1,5 +1,7 @@
 use crate::audio_decoder::AudioDecoder;
 use crate::audio_output::AudioOutput;
+use crate::audio_source::AudioSource;
+use crate::pcm_reader::PcmAudioFeeder;
 use crate::sync::MasterClock;
 use crate::texture::SharedFrameBuffer;
 use crate::video_decoder::VideoDecoder;
@@ -46,8 +48,8 @@ pub struct PlaybackEngine {
     v2_decoder: Option<VideoDecoder>,
     current_clip_v2: Option<usize>,
     v2_frame_cache: Option<crate::types::DecodedFrame>,
-    // Audio
-    audio_decoder: Option<AudioDecoder>,
+    // Audio — AudioSource wraps either AudioDecoder (ffmpeg) or PcmAudioFeeder (cache)
+    audio_source: Option<AudioSource>,
     audio_output: Option<SendAudioOutput>,
     cpal_sample_rate: u32,
     // Master clock — single source of truth for A/V timing
@@ -113,7 +115,7 @@ impl PlaybackEngine {
             v2_decoder: None,
             current_clip_v2: None,
             v2_frame_cache: None,
-            audio_decoder: None,
+            audio_source: None,
             audio_output: None,
             cpal_sample_rate,
             master_clock: Arc::new(MasterClock::new()),
@@ -203,7 +205,7 @@ impl PlaybackEngine {
                     if let Some(aout) = &self.audio_output {
                         aout.0.start_flush();
                     }
-                    if let Some(adec) = &self.audio_decoder {
+                    if let Some(adec) = &self.audio_source {
                         adec.seek(source_secs);
                         adec.resume();
                     }
@@ -236,7 +238,7 @@ impl PlaybackEngine {
                         dec.pause();
                     }
                     self.master_clock.pause();
-                    if let Some(adec) = &self.audio_decoder {
+                    if let Some(adec) = &self.audio_source {
                         adec.pause();
                     }
                     if let Some(aout) = &self.audio_output {
@@ -255,7 +257,7 @@ impl PlaybackEngine {
                     self.v2_decoder = None;
                     self.current_clip_v2 = None;
                     self.v2_frame_cache = None;
-                    self.audio_decoder = None;
+                    self.audio_source = None;
                     self.audio_output = None;
                     self.playhead = Timecode::zero();
                     self.state = PlaybackState::Stopped;
@@ -364,7 +366,7 @@ impl PlaybackEngine {
                 }
 
                 // Open audio decoder + output
-                self.start_audio(&path, source_secs);
+                self.start_audio(media_id, &path, source_secs);
 
                 // Set master clock to source position and start it
                 let source_us = (source_secs * 1_000_000.0) as u64;
@@ -393,11 +395,41 @@ impl PlaybackEngine {
         }
     }
 
-    fn start_audio(&mut self, path: &std::path::Path, source_secs: f64) {
+    fn start_audio(&mut self, media_id: MediaId, path: &std::path::Path, source_secs: f64) {
         // Drop previous audio
-        self.audio_decoder = None;
+        self.audio_source = None;
         self.audio_output = None;
 
+        // Try PCM cache first (instant seeks, zero codec overhead)
+        let pcm_path = self.pcm_cache_path(media_id);
+        if let Some(ref pcm) = pcm_path {
+            if pcm.exists() {
+                match PcmAudioFeeder::open(pcm, self.cpal_sample_rate) {
+                    Ok((feeder, consumer)) => {
+                        if source_secs > 0.01 {
+                            feeder.seek(source_secs);
+                        }
+                        feeder.resume();
+
+                        match AudioOutput::new(consumer) {
+                            Ok(output) => {
+                                self.audio_output = Some(SendAudioOutput(output));
+                            }
+                            Err(e) => {
+                                warn!("Failed to create audio output: {e}");
+                            }
+                        }
+                        self.audio_source = Some(AudioSource::PcmFeeder(feeder));
+                        return;
+                    }
+                    Err(e) => {
+                        warn!("PCM feeder failed, falling back to decoder: {e}");
+                    }
+                }
+            }
+        }
+
+        // Fallback: real-time ffmpeg decode
         match AudioDecoder::open(path, self.cpal_sample_rate) {
             Ok((adec, consumer)) => {
                 if source_secs > 0.01 {
@@ -413,12 +445,19 @@ impl PlaybackEngine {
                         warn!("Failed to create audio output: {e}");
                     }
                 }
-                self.audio_decoder = Some(adec);
+                self.audio_source = Some(AudioSource::Decoder(adec));
             }
             Err(e) => {
                 debug!("No audio for this clip: {e}");
             }
         }
+    }
+
+    /// Look up the PCM cache path for a media item.
+    fn pcm_cache_path(&self, media_id: MediaId) -> Option<std::path::PathBuf> {
+        let pool = self.media_pool.read().ok()?;
+        let item = pool.get(&media_id)?;
+        item.audio_cache.as_ref().map(|c| c.pcm_path.clone())
     }
 
     fn update_playback(&mut self) {
@@ -679,10 +718,10 @@ impl PlaybackEngine {
                 self.v2_decoder = None;
                 self.current_clip_v2 = None;
                 self.v2_frame_cache = None;
-                if let Some(adec) = &mut self.audio_decoder {
+                if let Some(adec) = &mut self.audio_source {
                     adec.stop_detached();
                 }
-                self.audio_decoder = None;
+                self.audio_source = None;
                 self.audio_output = None;
 
                 // Open new video decoder
@@ -706,7 +745,7 @@ impl PlaybackEngine {
                 let start_us = (source_in_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
                 self.master_clock.resume();
-                self.start_audio(&path, source_in_secs);
+                self.start_audio(media_id, &path, source_in_secs);
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
@@ -791,7 +830,7 @@ impl PlaybackEngine {
         self.v2_decoder = None;
         self.current_clip_v2 = None;
         self.v2_frame_cache = None;
-        self.audio_decoder = None;
+        self.audio_source = None;
         self.audio_output = None;
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
@@ -819,7 +858,7 @@ impl PlaybackEngine {
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
-                    self.audio_decoder = None;
+                    self.audio_source = None;
                     self.audio_output = None;
                     match VideoDecoder::open(&path) {
                         Ok(dec) => {
@@ -827,7 +866,7 @@ impl PlaybackEngine {
                             dec.resume();
                             self.v1_decoder = Some(dec);
                             self.current_clip_index = idx;
-                            self.current_file = Some(path);
+                            self.current_file = Some(path.clone());
                             self.clip_source_start = source_secs;
                             self.clip_timeline_start = timeline_in;
                         }
@@ -835,6 +874,8 @@ impl PlaybackEngine {
                             error!("Failed to open decoder for seek: {e}");
                         }
                     }
+                    // Re-open audio for the new clip
+                    self.start_audio(media_id, &path, source_secs);
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
@@ -855,7 +896,7 @@ impl PlaybackEngine {
             }
 
             // 3. Seek audio decoder
-            if let Some(adec) = &self.audio_decoder {
+            if let Some(adec) = &self.audio_source {
                 adec.seek(source_secs);
                 if self.state != PlaybackState::Playing {
                     adec.resume();
@@ -875,7 +916,7 @@ impl PlaybackEngine {
                     aout.0.resume();
                 }
             }
-            if let Some(adec) = &self.audio_decoder {
+            if let Some(adec) = &self.audio_source {
                 if self.state != PlaybackState::Playing {
                     adec.pause();
                 }
