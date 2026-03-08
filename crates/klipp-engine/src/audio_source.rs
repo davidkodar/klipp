@@ -78,4 +78,11 @@ impl AudioSource {
     pub fn is_pcm(&self) -> bool {
         matches!(self, Self::PcmFeeder(_))
     }
+
+    /// Play a short audio chirp for scrub/frame step. Only works with PCM feeder.
+    pub fn chirp(&self, position_secs: f64, duration_secs: f64) {
+        if let Self::PcmFeeder(f) = self {
+            f.chirp(position_secs, duration_secs);
+        }
+    }
 }

@@ -14,6 +14,9 @@ pub struct AudioOutput {
     /// Bumped by the engine after a seek. The cpal callback detects the change
     /// and discards all buffered samples to prevent playing stale audio.
     seek_gen: Arc<AtomicU64>,
+    /// When true, play ring buffer samples even while paused (for scrub chirps).
+    /// Automatically cleared by the cpal callback when the ring buffer empties.
+    chirp_active: Arc<AtomicBool>,
 }
 
 impl AudioOutput {
@@ -49,6 +52,8 @@ impl AudioOutput {
         let flushing_flag = flushing.clone();
         let seek_gen = Arc::new(AtomicU64::new(0));
         let seek_gen_flag = seek_gen.clone();
+        let chirp_active = Arc::new(AtomicBool::new(false));
+        let chirp_flag = chirp_active.clone();
 
         let stream = device
             .build_output_stream(
@@ -77,10 +82,26 @@ impl AudioOutput {
                             return;
                         }
 
-                        if paused_flag.load(Ordering::Acquire)
-                            || flushing_flag.load(Ordering::Acquire)
-                        {
-                            // Drain ring buffer but output silence
+                        let is_paused = paused_flag.load(Ordering::Acquire);
+                        let is_chirping = chirp_flag.load(Ordering::Acquire);
+
+                        if is_paused && is_chirping {
+                            // Chirp mode: play ring buffer samples even while paused.
+                            // When buffer empties, chirp is done.
+                            let filled = consumer.pop_slice(data);
+                            data[filled..].fill(0.0);
+                            if filled == 0 {
+                                chirp_flag.store(false, Ordering::Release);
+                            }
+                            return;
+                        }
+                        if is_paused {
+                            // Paused — output silence, don't drain ring buffer
+                            data.fill(0.0);
+                            return;
+                        }
+                        if flushing_flag.load(Ordering::Acquire) {
+                            // Flushing — drain ring buffer but output silence
                             let _ = consumer.pop_slice(data);
                             data.fill(0.0);
                             return;
@@ -108,6 +129,7 @@ impl AudioOutput {
             paused,
             flushing,
             seek_gen,
+            chirp_active,
         })
     }
 
@@ -128,6 +150,12 @@ impl AudioOutput {
     /// Signal a seek happened — cpal callback will drain stale samples.
     pub fn notify_seek(&self) {
         self.seek_gen.fetch_add(1, Ordering::Release);
+    }
+
+    /// Enable chirp mode — play ring buffer samples even while paused.
+    /// Automatically deactivates when the ring buffer empties.
+    pub fn start_chirp(&self) {
+        self.chirp_active.store(true, Ordering::Release);
     }
 }
 

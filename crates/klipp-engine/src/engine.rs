@@ -195,16 +195,25 @@ impl PlaybackEngine {
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
                 if self.state == PlaybackState::Paused && self.v1_decoder.is_some() {
-                    // Resume existing decoders — no need to reopen
+                    // Compute current source position from playhead
+                    let source_secs = self.clip_source_start
+                        + (self.playhead - self.clip_timeline_start).to_secs_f64();
+                    debug!(
+                        "Play resume: playhead={:.3}s clip_source_start={:.3}s clip_timeline_start={:.3}s → source={:.3}s",
+                        self.playhead.to_secs_f64(), self.clip_source_start,
+                        self.clip_timeline_start.to_secs_f64(), source_secs
+                    );
+
+                    // Seek video decoders to current position and flush stale frames
                     if let Some(dec) = &self.v1_decoder {
+                        dec.seek(source_secs);
                         dec.resume();
                     }
                     if let Some(dec) = &self.v2_decoder {
                         dec.resume();
                     }
+
                     // Flush stale audio, seek to current position
-                    let source_secs = self.clip_source_start
-                        + (self.playhead - self.clip_timeline_start).to_secs_f64();
                     if let Some(aout) = &self.audio_output {
                         aout.0.start_flush();
                     }
@@ -212,6 +221,7 @@ impl PlaybackEngine {
                     if let Some(asrc) = &self.audio_source {
                         asrc.resume();
                     }
+
                     // Set master clock to current position and resume
                     let source_us = (source_secs * 1_000_000.0) as u64;
                     self.master_clock.seek(source_us);
@@ -274,8 +284,19 @@ impl PlaybackEngine {
                 }
             }
 
-            AppCommand::SetSpeed(_speed) => {
-                debug!("SetSpeed({_speed}) — not yet implemented");
+            AppCommand::SetSpeed(speed) => {
+                debug!("SetSpeed({speed})");
+                self.master_clock.set_speed(speed);
+                // Mute audio at high speeds (unintelligible above 4x)
+                if let Some(asrc) = &self.audio_source {
+                    if speed.abs() > 4.0 {
+                        asrc.muted().store(true, Ordering::Release);
+                    } else {
+                        // Restore user's mute setting (not forced mute)
+                        // For now, un-mute — proper mute tracking is Phase 5
+                        asrc.muted().store(false, Ordering::Release);
+                    }
+                }
             }
 
             AppCommand::SeekRelative(frames) => {
@@ -334,20 +355,23 @@ impl PlaybackEngine {
             if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
                 let source_secs = clip.source_in.to_secs_f64()
                     + (self.playhead - clip.timeline_in).to_secs_f64();
-                return Some((idx, clip.media_id, source_secs, clip.timeline_in));
+                let clip_source_in = clip.source_in.to_secs_f64();
+                return Some((idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in));
             }
             for (idx, clip) in track.clips.iter().enumerate() {
                 if clip.timeline_in >= self.playhead {
-                    return Some((idx, clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in));
+                    let si = clip.source_in.to_secs_f64();
+                    return Some((idx, clip.media_id, si, clip.timeline_in, si));
                 }
             }
             track.clips.first().map(|clip| {
-                (0, clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in)
+                let si = clip.source_in.to_secs_f64();
+                (0, clip.media_id, si, clip.timeline_in, si)
             })
         });
         drop(seq);
 
-        if let Some((clip_idx, media_id, source_secs, timeline_in)) = clip_info {
+        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
             if let Some(path) = self.path_for_media(media_id) {
                 info!("handle_play: clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
 
@@ -374,7 +398,7 @@ impl PlaybackEngine {
                 self.master_clock.seek(source_us);
                 self.master_clock.resume();
 
-                self.clip_source_start = source_secs;
+                self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
                 self.current_clip_index = clip_idx;
                 self.current_file = Some(path);
@@ -884,12 +908,13 @@ impl PlaybackEngine {
             track.clip_at_timecode(tc).map(|(idx, clip)| {
                 let source_secs = clip.source_in.to_secs_f64()
                     + (tc - clip.timeline_in).to_secs_f64();
-                (idx, clip.media_id, source_secs, clip.timeline_in)
+                let clip_source_in = clip.source_in.to_secs_f64();
+                (idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in)
             })
         });
         drop(seq);
 
-        if let Some((idx, media_id, source_secs, timeline_in)) = clip_info {
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
@@ -904,7 +929,7 @@ impl PlaybackEngine {
                             self.v1_decoder = Some(dec);
                             self.current_clip_index = idx;
                             self.current_file = Some(path.clone());
-                            self.clip_source_start = source_secs;
+                            self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
                         }
                         Err(e) => {
@@ -919,7 +944,7 @@ impl PlaybackEngine {
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
-                self.clip_source_start = source_secs;
+                self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
             }
 
@@ -962,6 +987,13 @@ impl PlaybackEngine {
 
             if self.state != PlaybackState::Playing {
                 self.grab_single_frame_timeout(grab_timeout);
+                // Play scrub chirp (~40ms snippet at the seek position)
+                if let Some(asrc) = &self.audio_source {
+                    asrc.chirp(source_secs, 0.04);
+                    if let Some(aout) = &self.audio_output {
+                        aout.0.start_chirp();
+                    }
+                }
             }
         }
 
@@ -984,6 +1016,7 @@ impl PlaybackEngine {
                 }
                 // If we got a queued frame, use it as the step
                 if let Some(frame) = last_frame {
+                    let chirp_pos = frame.pts_secs();
                     let seq = self.sequence.read().unwrap();
                     if let Some(track) = seq.video_track() {
                         if let Some(clip) = track.clips.get(self.current_clip_index) {
@@ -1001,6 +1034,13 @@ impl PlaybackEngine {
                     let mut fb = self.frame_buffer.lock().unwrap();
                     fb.write_frame(rgba, frame.width, frame.height);
                     drop(fb);
+                    // Frame step chirp (~20ms)
+                    if let Some(asrc) = &self.audio_source {
+                        asrc.chirp(chirp_pos, 0.02);
+                        if let Some(aout) = &self.audio_output {
+                            aout.0.start_chirp();
+                        }
+                    }
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     let _ = self.event_tx.send(AppEvent::FrameReady);
                     (self.repaint_cb)();
@@ -1019,6 +1059,7 @@ impl PlaybackEngine {
                             return;
                         }
                         // Update playhead from frame PTS
+                        let chirp_pos = frame.pts_secs();
                         let seq = self.sequence.read().unwrap();
                         if let Some(track) = seq.video_track() {
                             if let Some(clip) = track.clips.get(self.current_clip_index) {
@@ -1037,6 +1078,14 @@ impl PlaybackEngine {
                         let mut fb = self.frame_buffer.lock().unwrap();
                         fb.write_frame(rgba, frame.width, frame.height);
                         drop(fb);
+                        // Frame step chirp (~20ms)
+                        if let Some(asrc) = &self.audio_source {
+                            if let Some(aout) = &self.audio_output {
+                                aout.0.notify_seek();
+                                aout.0.resume();
+                            }
+                            asrc.chirp(chirp_pos, 0.02);
+                        }
                         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                         let _ = self.event_tx.send(AppEvent::FrameReady);
                         if let Some(dec) = &self.v1_decoder {

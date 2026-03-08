@@ -18,6 +18,9 @@ enum PcmCommand {
     Pause,
     Resume,
     Stop,
+    /// Play a short audio chirp at the given position (scrub/frame step).
+    /// Duration in seconds (typically 0.02-0.05s).
+    Chirp { position_secs: f64, duration_secs: f64 },
 }
 
 /// A PCM audio feeder that reads from a pre-conformed .pcm cache file.
@@ -111,6 +114,11 @@ impl PcmAudioFeeder {
         let _ = self.cmd_tx.send(PcmCommand::Pause);
     }
 
+    /// Play a short audio snippet at the given position (for scrub/frame step).
+    pub fn chirp(&self, position_secs: f64, duration_secs: f64) {
+        let _ = self.cmd_tx.send(PcmCommand::Chirp { position_secs, duration_secs });
+    }
+
     pub fn stop(&mut self) {
         let _ = self.cmd_tx.send(PcmCommand::Stop);
         if let Some(thread) = self.thread.take() {
@@ -197,6 +205,48 @@ fn pcm_feed_thread(
                 PcmCommand::Stop => {
                     debug!("pcm_feed: stop");
                     return;
+                }
+                PcmCommand::Chirp { position_secs, duration_secs } => {
+                    // Push a short audio snippet at the given position.
+                    // Works even when paused — that's the point of scrub audio.
+                    debug!("pcm_feed: chirp at {position_secs:.3}s, {duration_secs:.3}s");
+                    let chirp_samples = (duration_secs * SAMPLE_RATE as f64) as usize;
+                    let start_idx = (position_secs * SAMPLE_RATE as f64) as usize * CHANNELS;
+                    let end_idx = (start_idx + chirp_samples * CHANNELS).min(total_floats);
+                    if start_idx < total_floats {
+                        let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
+                        let is_muted = muted.load(Ordering::Relaxed);
+                        let snippet = &samples[start_idx..end_idx];
+
+                        // Apply short fade-in/fade-out to avoid clicks (2ms each)
+                        let fade_samples = (SAMPLE_RATE as usize / 500).min(snippet.len() / CHANNELS / 2);
+                        let mut chirp_buf: Vec<f32> = Vec::with_capacity(snippet.len());
+                        let total_frames = snippet.len() / CHANNELS;
+                        for i in 0..total_frames {
+                            let fade = if i < fade_samples {
+                                i as f32 / fade_samples as f32
+                            } else if i >= total_frames - fade_samples {
+                                (total_frames - 1 - i) as f32 / fade_samples as f32
+                            } else {
+                                1.0
+                            };
+                            for ch in 0..CHANNELS {
+                                let s = snippet[i * CHANNELS + ch];
+                                if is_muted {
+                                    chirp_buf.push(0.0);
+                                } else {
+                                    chirp_buf.push(s * vol * fade);
+                                }
+                            }
+                        }
+
+                        // Push to ring buffer (best effort — don't block)
+                        let vacant = producer.vacant_len();
+                        let to_push = chirp_buf.len().min(vacant);
+                        if to_push > 0 {
+                            producer.push_slice(&chirp_buf[..to_push]);
+                        }
+                    }
                 }
             }
         }
