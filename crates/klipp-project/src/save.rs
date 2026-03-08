@@ -4,10 +4,31 @@ use klipp_timeline::{Sequence, TrackKind};
 use std::path::Path;
 use tracing::info;
 
+/// Global color settings to persist alongside the project.
+pub struct ColorSettings {
+    pub global_lut_path: Option<std::path::PathBuf>,
+    pub global_lut_opacity: f32,
+}
+
+impl Default for ColorSettings {
+    fn default() -> Self {
+        Self { global_lut_path: None, global_lut_opacity: 1.0 }
+    }
+}
+
 pub fn save_project(
     dir: &Path,
     sequence: &Sequence,
     media_pool: &MediaPool,
+) -> Result<(), String> {
+    save_project_with_color(dir, sequence, media_pool, &ColorSettings::default())
+}
+
+pub fn save_project_with_color(
+    dir: &Path,
+    sequence: &Sequence,
+    media_pool: &MediaPool,
+    color: &ColorSettings,
 ) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
@@ -17,7 +38,7 @@ pub fn save_project(
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
-        sequence: sequence_to_json(sequence),
+        sequence: sequence_to_json(sequence, color),
     };
 
     let project_json = serde_json::to_string_pretty(&project)
@@ -44,7 +65,7 @@ fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
     TimecodeJson { value: tc.value, rate: tc.rate }
 }
 
-fn sequence_to_json(seq: &Sequence) -> SequenceJson {
+fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
     SequenceJson {
         id: seq.id.to_string(),
         name: seq.name.clone(),
@@ -52,6 +73,8 @@ fn sequence_to_json(seq: &Sequence) -> SequenceJson {
         resolution: ResolutionJson { width: seq.resolution.width, height: seq.resolution.height },
         in_point: seq.in_point.as_ref().map(timecode_to_json),
         out_point: seq.out_point.as_ref().map(timecode_to_json),
+        global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        global_lut_opacity: color.global_lut_opacity,
         tracks: seq.tracks.iter().map(|t| {
             TrackJson {
                 id: t.id.to_string(),

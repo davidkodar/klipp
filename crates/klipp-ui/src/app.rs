@@ -1513,7 +1513,11 @@ impl KlippApp {
     }
 
     fn do_save_project(&mut self, path: &std::path::Path) {
-        match klipp_project::save_project(path, &self.state.sequence, &self.state.media_pool) {
+        let color = klipp_project::ColorSettings {
+            global_lut_path: self.state.global_lut_path.clone(),
+            global_lut_opacity: self.state.global_lut_opacity,
+        };
+        match klipp_project::save_project_with_color(path, &self.state.sequence, &self.state.media_pool, &color) {
             Ok(()) => {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -1527,10 +1531,25 @@ impl KlippApp {
 
     fn do_open_project(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
-            Ok((sequence, media_pool)) => {
+            Ok((sequence, media_pool, color_settings)) => {
                 self.state.fps = sequence.fps;
                 self.state.sequence = sequence;
                 self.state.media_pool = media_pool;
+
+                // Restore global LUT
+                self.state.global_lut_opacity = color_settings.global_lut_opacity;
+                if let Some(ref lut_path) = color_settings.global_lut_path {
+                    if lut_path.exists() {
+                        self.state.global_lut_path = Some(lut_path.clone());
+                        self.cmd_tx.send(AppCommand::LoadGlobalLut { path: lut_path.clone() }).ok();
+                        self.cmd_tx.send(AppCommand::SetGlobalLutOpacity(color_settings.global_lut_opacity)).ok();
+                    } else {
+                        tracing::warn!("Global LUT not found, skipping: {:?}", lut_path);
+                        self.state.global_lut_path = None;
+                    }
+                } else {
+                    self.state.global_lut_path = None;
+                }
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.selected_clip = None;

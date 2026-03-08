@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
+pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::ColorSettings), String> {
     let project_path = dir.join("project.json");
     let manifest_path = dir.join("media").join("manifest.json");
 
@@ -115,8 +115,13 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool), String> {
         out_point: seq_json.out_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
     };
 
+    let color_settings = crate::save::ColorSettings {
+        global_lut_path: seq_json.global_lut_path.as_ref().map(PathBuf::from),
+        global_lut_opacity: seq_json.global_lut_opacity,
+    };
+
     info!("Project loaded from {:?}", dir);
-    Ok((sequence, media_pool))
+    Ok((sequence, media_pool, color_settings))
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {

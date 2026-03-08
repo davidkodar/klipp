@@ -19,7 +19,13 @@ pub struct SequenceJson {
     pub in_point: Option<TimecodeJson>,
     #[serde(default)]
     pub out_point: Option<TimecodeJson>,
+    #[serde(default)]
+    pub global_lut_path: Option<String>,
+    #[serde(default = "default_lut_opacity")]
+    pub global_lut_opacity: f32,
 }
+
+fn default_lut_opacity() -> f32 { 1.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimecodeJson {

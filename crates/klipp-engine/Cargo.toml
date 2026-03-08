@@ -8,6 +8,7 @@ klipp-core = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-color = { workspace = true }
+klipp-plugin = { workspace = true }
 ffmpeg-next = { workspace = true }
 cpal = { workspace = true }
 rubato = { workspace = true }

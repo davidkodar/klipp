@@ -1977,6 +1977,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-media",
+ "klipp-plugin",
  "klipp-timeline",
  "ringbuf",
  "rubato",

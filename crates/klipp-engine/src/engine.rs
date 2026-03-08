@@ -66,6 +66,8 @@ pub struct PlaybackEngine {
     last_playback_log: std::time::Instant,
     // Color pipeline — post-processing on RGBA frames before display
     color_pipeline: klipp_color::ColorPipeline,
+    // OFX plugin host — applies per-clip effects chain after color grade
+    ofx_host: klipp_plugin::OfxHost,
 }
 
 impl PlaybackEngine {
@@ -129,6 +131,7 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
+            ofx_host: klipp_plugin::OfxHost::new(),
         })
     }
 
@@ -710,6 +713,20 @@ impl PlaybackEngine {
                 } else {
                     final_rgba
                 }
+            } else {
+                final_rgba
+            }
+        };
+
+        // Apply per-clip OFX effects chain (Phase 6A: stub passthrough)
+        let final_rgba = {
+            let seq = self.sequence.read().unwrap();
+            let effects = seq.video_track()
+                .and_then(|t| t.clips.get(self.current_clip_index))
+                .map(|c| c.effects.clone());
+            drop(seq);
+            if let Some(fx) = effects {
+                self.ofx_host.apply_effects_chain(&fx, &final_rgba, final_w, final_h)
             } else {
                 final_rgba
             }
