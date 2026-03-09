@@ -88,6 +88,8 @@ pub struct PlaybackEngine {
     title_renderer: klipp_title::TitleRenderer,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
+    // Proxy: when true, decode from proxy files instead of originals
+    use_proxies: bool,
 }
 
 impl PlaybackEngine {
@@ -160,6 +162,7 @@ impl PlaybackEngine {
             transition_frame_cache: None,
             title_renderer: klipp_title::TitleRenderer::new(),
             last_peak_time: std::time::Instant::now(),
+            use_proxies: true,
         })
     }
 
@@ -328,6 +331,11 @@ impl PlaybackEngine {
                     }
                     if let Some(aout) = &self.audio_output {
                         aout.0.pause();
+                        // Drain stale samples so they don't play on resume
+                        aout.0.notify_seek();
+                    }
+                    if let Some(ref mt) = self.mix_thread {
+                        mt.flush();
                     }
                     self.state = PlaybackState::Paused;
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
@@ -446,6 +454,11 @@ impl PlaybackEngine {
                 if let Ok(mut m) = self.mixer.lock() {
                     m.master_volume = vol;
                 }
+            }
+
+            AppCommand::SetUseProxies(enabled) => {
+                info!("Engine: use_proxies = {enabled}");
+                self.use_proxies = enabled;
             }
 
             // UI-side commands — engine ignores them
@@ -706,7 +719,15 @@ impl PlaybackEngine {
                     }
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64();
-                    Some((track_idx, media_id, item.path.clone(), source_secs))
+                    let decode_path = if self.use_proxies && item.proxy_ready {
+                        item.proxy_path.as_ref()
+                            .filter(|p| p.exists())
+                            .cloned()
+                            .unwrap_or_else(|| item.path.clone())
+                    } else {
+                        item.path.clone()
+                    };
+                    Some((track_idx, media_id, decode_path, source_secs))
                 })
                 .collect()
         };
@@ -1928,7 +1949,17 @@ impl PlaybackEngine {
             .read()
             .unwrap()
             .get(&media_id)
-            .map(|item| item.path.clone())
+            .map(|item| {
+                if self.use_proxies {
+                    if let Some(ref proxy_path) = item.proxy_path {
+                        if item.proxy_ready && proxy_path.exists() {
+                            tracing::trace!("resolve_media_path: using proxy for {}", item.filename);
+                            return proxy_path.clone();
+                        }
+                    }
+                }
+                item.path.clone()
+            })
     }
 
     fn load_file(&mut self, path: PathBuf, media_id: MediaId) {

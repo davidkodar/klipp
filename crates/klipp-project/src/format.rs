@@ -214,6 +214,14 @@ pub struct MediaItemJson {
     pub default_source_in: Option<TimecodeJson>,
     #[serde(default)]
     pub default_source_out: Option<TimecodeJson>,
+    #[serde(default)]
+    pub rating: u8,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub user_notes: String,
+    #[serde(default)]
+    pub bin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -31,6 +31,10 @@ impl MediaPool {
         self.items.values()
     }
 
+    pub fn remove(&mut self, id: &MediaId) -> Option<MediaItem> {
+        self.items.remove(id)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

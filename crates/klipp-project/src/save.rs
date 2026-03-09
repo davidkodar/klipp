@@ -237,5 +237,9 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         proxy_ready: item.proxy_ready,
         default_source_in: item.default_source_in.as_ref().map(timecode_to_json),
         default_source_out: item.default_source_out.as_ref().map(timecode_to_json),
+        rating: item.rating,
+        tags: item.tags.clone(),
+        user_notes: item.user_notes.clone(),
+        bin: item.bin.clone(),
     }
 }

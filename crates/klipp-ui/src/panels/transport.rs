@@ -209,6 +209,42 @@ impl TransportBar {
                     );
                 }
             }
+
+            // Render progress indicator
+            if let Some((label, progress)) = state.render_queue.active_job_progress() {
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                let pct = (progress * 100.0) as u32;
+                ui.label(
+                    egui::RichText::new(format!("Rendering: {} {}%", label, pct))
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(200, 180, 60)),
+                );
+
+                // Mini progress bar
+                let bar_w = 80.0;
+                let bar_h = 8.0;
+                let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+                let painter = ui.painter();
+                painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(30, 30, 35));
+                let fill_w = (progress * bar_w).max(0.0).min(bar_w);
+                if fill_w > 0.0 {
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(bar_rect.left_top(), egui::vec2(fill_w, bar_h)),
+                        2.0,
+                        egui::Color32::from_rgb(200, 180, 60),
+                    );
+                }
+
+                // Cancel button
+                if ui.add(egui::Button::new(
+                    egui::RichText::new("\u{2717}").size(12.0).color(egui::Color32::from_rgb(200, 80, 80)),
+                ).min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
+                    cmds.push(AppCommand::CancelExport);
+                }
+            }
         });
 
         cmds

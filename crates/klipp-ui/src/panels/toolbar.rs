@@ -1,10 +1,11 @@
 use crate::state::{AppState, PlayheadFollow};
 use klipp_core::{AppCommand, Tool};
+use std::path::PathBuf;
 
 pub struct ToolbarPanel;
 
 impl ToolbarPanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, recent_projects: &[PathBuf]) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
         ui.horizontal(|ui| {
@@ -24,6 +25,19 @@ impl ToolbarPanel {
                         {
                             cmds.push(AppCommand::OpenProject { path });
                         }
+                    }
+                    if !recent_projects.is_empty() {
+                        ui.menu_button("Recent Projects", |ui| {
+                            for path in recent_projects {
+                                let label = path.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                if ui.button(&label).on_hover_text(path.to_string_lossy()).clicked() {
+                                    cmds.push(AppCommand::OpenProject { path: path.clone() });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                     }
                     if ui.button("Import Media...").clicked() {
                         ui.close_menu();
@@ -199,9 +213,19 @@ impl ToolbarPanel {
                         ui.close_menu();
                     }
                     ui.separator();
+                    let media_label = if state.show_media_panel { "\u{2713} Media Panel" } else { "  Media Panel" };
+                    if ui.button(media_label).clicked() {
+                        state.show_media_panel = !state.show_media_panel;
+                        ui.close_menu();
+                    }
                     let markers_label = if state.show_markers_panel { "\u{2713} Markers Panel" } else { "  Markers Panel" };
                     if ui.button(markers_label).clicked() {
                         state.show_markers_panel = !state.show_markers_panel;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.add(egui::Button::new("Preferences...").shortcut_text("Ctrl+,")).clicked() {
+                        cmds.push(AppCommand::ShowPreferences);
                         ui.close_menu();
                     }
                 });

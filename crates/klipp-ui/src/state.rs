@@ -41,9 +41,6 @@ pub struct AppState {
 
     // Export
     pub show_export_dialog: bool,
-    pub export_in_progress: bool,
-    pub export_progress: f32,
-    pub export_error: Option<String>,
 
     // Phase 4: Tools & modes
     pub active_tool: Tool,
@@ -132,6 +129,32 @@ pub struct AppState {
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
     pub show_markers_panel: bool,
+
+    // Phase 9: Preferences
+    pub show_preferences: bool,
+
+    // Media panel
+    pub show_media_panel: bool,
+
+    // Remove media confirmation
+    pub show_remove_media_confirm: Option<MediaId>,
+
+    // Auto-save recovery dialog
+    pub show_autosave_recovery: bool,
+    pub autosave_recovery_path: Option<PathBuf>,
+    pub autosave_original_path: Option<PathBuf>,
+
+    // Proxy generation tracking
+    /// Media IDs currently generating proxies — shown as status in UI
+    pub proxy_generating: std::collections::HashSet<MediaId>,
+    /// Per-media proxy generation progress (0.0..1.0)
+    pub proxy_progress: std::collections::HashMap<MediaId, f32>,
+    /// Per-media proxy generation start time (for ETA calculation)
+    pub proxy_start_times: std::collections::HashMap<MediaId, std::time::Instant>,
+    /// Last proxy generation message (toast-like feedback)
+    pub proxy_status_message: Option<(String, std::time::Instant)>,
+    /// Whether the proxy toast was dismissed by the user
+    pub proxy_toast_dismissed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -202,9 +225,6 @@ impl Default for AppState {
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),
             show_export_dialog: false,
-            export_in_progress: false,
-            export_progress: 0.0,
-            export_error: None,
             active_tool: Tool::Select,
             viewer_mode: ViewerMode::Program,
             snap_enabled: true,
@@ -253,6 +273,17 @@ impl Default for AppState {
             master_muted: false,
             confirm_remove_track: None,
             show_markers_panel: false,
+            show_preferences: false,
+            show_media_panel: false,
+            show_remove_media_confirm: None,
+            show_autosave_recovery: false,
+            autosave_recovery_path: None,
+            autosave_original_path: None,
+            proxy_generating: std::collections::HashSet::new(),
+            proxy_progress: std::collections::HashMap::new(),
+            proxy_start_times: std::collections::HashMap::new(),
+            proxy_status_message: None,
+            proxy_toast_dismissed: false,
         }
     }
 }

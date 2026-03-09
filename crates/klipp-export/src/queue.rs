@@ -243,6 +243,13 @@ impl RenderQueue {
         self.jobs.iter().any(|j| j.status == RenderJobStatus::Rendering)
     }
 
+    /// Returns (label, progress 0.0..1.0) of the currently rendering job, if any.
+    pub fn active_job_progress(&self) -> Option<(&str, f32)> {
+        self.jobs.iter()
+            .find(|j| j.status == RenderJobStatus::Rendering)
+            .map(|j| (j.label.as_str(), j.progress))
+    }
+
     pub fn queued_count(&self) -> usize {
         self.jobs.iter().filter(|j| j.status == RenderJobStatus::Queued).count()
     }

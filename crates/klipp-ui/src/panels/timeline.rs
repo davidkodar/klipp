@@ -1123,15 +1123,21 @@ impl TimelinePanel {
                         label_color,
                     );
 
-                    // Proxy badge [P]
+                    // Proxy badge [P] — orange pill when using proxy for this clip
                     if media.proxy_ready && state.use_proxies && clip_rect.width() > 30.0 {
+                        let badge_font = egui::FontId::proportional(8.0);
                         let badge_pos = egui::pos2(clip_rect.right() - 12.0, clip_rect.top() + 8.0);
+                        let badge_rect = egui::Rect::from_center_size(
+                            badge_pos,
+                            egui::vec2(12.0, 11.0),
+                        );
+                        painter.rect_filled(badge_rect, 3.0, egui::Color32::from_rgb(220, 170, 40));
                         painter.text(
                             badge_pos,
                             egui::Align2::CENTER_CENTER,
                             "P",
-                            egui::FontId::proportional(8.0),
-                            egui::Color32::from_rgb(100, 180, 255),
+                            badge_font,
+                            egui::Color32::from_rgb(30, 30, 35),
                         );
                     }
                 }
@@ -2349,6 +2355,26 @@ impl TimelinePanel {
             state.playhead_follow = state.playhead_follow.next();
         }
         follow_resp.on_hover_text("Playhead follow mode: Off / Page / Smooth");
+
+        // Proxy toggle
+        let proxy_w = 40.0;
+        let proxy_rect = egui::Rect::from_min_size(
+            egui::pos2(x + (btn_w + 2.0) * 2.0 + follow_w + 4.0, y_offset + 2.0),
+            egui::vec2(proxy_w, btn_h),
+        );
+        let proxy_resp = ui.interact(proxy_rect, ui.id().with("proxy_toggle"), egui::Sense::click());
+        let proxy_col = if state.use_proxies {
+            egui::Color32::from_rgb(180, 140, 30)
+        } else {
+            egui::Color32::from_rgb(40, 40, 48)
+        };
+        painter.rect_filled(proxy_rect, 2.0, proxy_col);
+        painter.text(proxy_rect.center(), egui::Align2::CENTER_CENTER, "Proxy",
+            egui::FontId::proportional(8.0), egui::Color32::WHITE);
+        if proxy_resp.clicked() {
+            cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+        }
+        proxy_resp.on_hover_text("Use proxy files for playback (lower quality, faster decode)");
     }
 
     fn draw_in_out_markers(

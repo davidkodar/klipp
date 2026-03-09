@@ -51,6 +51,10 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             proxy_ready: item_json.proxy_ready,
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+            rating: item_json.rating,
+            tags: item_json.tags.clone(),
+            user_notes: item_json.user_notes.clone(),
+            bin: item_json.bin.clone(),
             waveform_data: None,
             audio_cache: None,
         };

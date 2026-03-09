@@ -167,10 +167,13 @@ impl ViewerPanel {
 
         let available = ui.available_size();
 
+        // Find topmost video clip at playhead (check all video tracks, top-down)
         let current_media = state
             .sequence
-            .video_track()
-            .and_then(|t| t.clip_at_timecode(state.playhead))
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clip_at_timecode(state.playhead))
             .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
         let has_content = state.playback != PlaybackState::Idle || current_media.is_some();
@@ -281,6 +284,39 @@ impl ViewerPanel {
             );
             ui.painter()
                 .galley(res_pos, res_galley, egui::Color32::WHITE);
+        }
+
+        // Proxy badge — show when proxy mode is active and current clip has a proxy
+        if state.use_proxies {
+            let proxy_active = current_media.is_some_and(|m| m.proxy_ready);
+            if proxy_active {
+                let badge_text = " PROXY ";
+                let badge_font = egui::FontId::monospace(11.0);
+                let badge_galley = ui.painter().layout_no_wrap(
+                    badge_text.to_string(),
+                    badge_font,
+                    egui::Color32::from_rgb(30, 30, 35),
+                );
+                let badge_size = badge_galley.size();
+                let badge_pos = egui::pos2(
+                    image_rect.right() - badge_size.x - 8.0,
+                    image_rect.top() + 8.0,
+                );
+                let badge_rect = egui::Rect::from_min_size(
+                    egui::pos2(badge_pos.x - 2.0, badge_pos.y - 2.0),
+                    egui::vec2(badge_size.x + 4.0, badge_size.y + 4.0),
+                );
+                ui.painter().rect_filled(
+                    badge_rect,
+                    3.0,
+                    egui::Color32::from_rgb(220, 170, 40),
+                );
+                ui.painter().galley(
+                    badge_pos,
+                    badge_galley,
+                    egui::Color32::from_rgb(30, 30, 35),
+                );
+            }
         }
 
         // Performance overlay (toggle with P key or via menu)
