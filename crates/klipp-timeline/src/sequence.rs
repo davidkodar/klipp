@@ -1,6 +1,6 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{ClipId, Fps, GroupId, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +138,8 @@ pub struct Track {
     pub visible: bool,
     #[serde(default)]
     pub pan: f32,
+    #[serde(default)]
+    pub locked: bool,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -158,6 +160,7 @@ impl Track {
             solo: false,
             visible: true,
             pan: 0.0,
+            locked: false,
         }
     }
 
@@ -186,6 +189,7 @@ impl Track {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             linked_clip_id: None,
+            group_id: None,
         });
         clip_id
     }
@@ -290,6 +294,7 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
+            group_id: clip.group_id,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -302,6 +307,7 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
+            group_id: clip.group_id,
         };
 
         self.clips.remove(pos);
@@ -383,6 +389,8 @@ pub struct Clip {
     pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
+    #[serde(default)]
+    pub group_id: Option<GroupId>,
 }
 
 impl Clip {

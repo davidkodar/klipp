@@ -84,6 +84,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             track.solo = t.solo;
             track.visible = t.visible;
             track.pan = t.pan;
+            track.locked = t.locked;
             track.transitions = t.transitions.iter().filter_map(|tr| {
                 let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
                 let kind = match tr.kind.as_str() {
@@ -142,6 +143,9 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
                     linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(ClipId)
                     }),
+                    group_id: c.group_id.as_ref().and_then(|s| {
+                        parse_uuid(s).ok().map(GroupId)
+                    }),
                 }
             }).collect();
             track
@@ -170,6 +174,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
     let color_settings = crate::save::ColorSettings {
         global_lut_path: seq_json.global_lut_path.as_ref().map(PathBuf::from),
         global_lut_opacity: seq_json.global_lut_opacity,
+        track_header_width: seq_json.track_header_width,
     };
 
     info!("Project loaded from {:?}", dir);

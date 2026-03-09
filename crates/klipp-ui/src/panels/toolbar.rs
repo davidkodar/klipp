@@ -223,6 +223,11 @@ impl ToolbarPanel {
                         state.show_markers_panel = !state.show_markers_panel;
                         ui.close_menu();
                     }
+                    let overview_label = if state.show_overview_bar { "\u{2713} Overview Bar" } else { "  Overview Bar" };
+                    if ui.button(overview_label).clicked() {
+                        state.show_overview_bar = !state.show_overview_bar;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.add(egui::Button::new("Preferences...").shortcut_text("Ctrl+,")).clicked() {
                         cmds.push(AppCommand::ShowPreferences);

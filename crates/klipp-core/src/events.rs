@@ -1,4 +1,4 @@
-use crate::id::{ClipId, MarkerId, MediaId, TrackId};
+use crate::id::{ClipId, GroupId, MarkerId, MediaId, TrackId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use std::path::PathBuf;
@@ -273,6 +273,14 @@ pub enum AppCommand {
     SetActiveTool(Tool),
     ToggleFullscreen,
     ShowPreferences,
+
+    // Track locking
+    SetTrackLocked { track_id: TrackId, locked: bool },
+
+    // Clip grouping
+    GroupClips { clip_ids: Vec<ClipId> },
+    UngroupClips { group_id: GroupId },
+    UngroupClip { clip_id: ClipId },
 
     // Application
     Quit,

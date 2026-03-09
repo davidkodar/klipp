@@ -10,7 +10,7 @@ use crate::panels::viewer::ViewerPanel;
 use crate::state::{AppState, ClipboardContent, UnsavedAction};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
-    AppCommand, AppEvent, ExportAudioCodec, ExportFormat, ExportPreset,
+    AppCommand, AppEvent, ClipId, GroupId, ExportAudioCodec, ExportFormat, ExportPreset,
     ExportPresetSettings, ExportSettings, ExportVideoCodec, MarkerId, MediaId,
     Timecode, Tool, ViewerMode, builtin_presets,
 };
@@ -914,6 +914,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::RemoveClip { clip_id } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
                     // Get linked partner before removing
                     let linked_id = self.state.sequence.tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -973,8 +974,20 @@ impl KlippApp {
                     clip_id,
                     new_timeline_in,
                 } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
                     // Timeline already moved both the clip and its linked partner during drag.
                     // Here we just record undo history and sync.
+                    // Find group_id and compute delta before moving
+                    let (group_id, delta) = {
+                        let clip = self.state.sequence.tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_id);
+                        match clip {
+                            Some(c) => (c.group_id, *new_timeline_in - c.timeline_in),
+                            None => (None, klipp_core::RationalTime { value: 0, rate: 1 }),
+                        }
+                    };
+
                     if let Some(track) = self.state.sequence.tracks.iter_mut()
                         .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                     {
@@ -994,11 +1007,29 @@ impl KlippApp {
                         }
                         track.sort_clips();
                     }
+
+                    // Propagate move to grouped clips
+                    if let Some(gid) = group_id {
+                        if delta.value != 0 {
+                            for track in &mut self.state.sequence.tracks {
+                                for clip in &mut track.clips {
+                                    if clip.group_id == Some(gid) && clip.id != *clip_id {
+                                        clip.timeline_in += delta;
+                                        clip.timeline_out += delta;
+                                    }
+                                }
+                                track.sort_clips();
+                            }
+                        }
+                    }
+
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     continue;
                 }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
+                    if self.state.sequence.tracks.get(*to_track).is_some_and(|t| t.locked) { continue; }
                     let from = *from_track;
                     let to = *to_track;
                     let new_in = *new_timeline_in;
@@ -1041,6 +1072,7 @@ impl KlippApp {
                     new_timeline_out,
                     ripple: _,
                 } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
                     // Get linked partner info before mutating
                     let linked_id = self.state.sequence.tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -1480,6 +1512,7 @@ impl KlippApp {
                         builtin_effects: Vec::new(),
                         effects: Vec::new(),
                         linked_clip_id: None,
+                        group_id: None,
                     };
                     if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -1571,6 +1604,7 @@ impl KlippApp {
 
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
+                    if self.state.sequence.tracks.get(*track_index).is_some_and(|t| t.locked) { continue; }
                     let ti = *track_index;
                     let cid = *clip_id;
                     let cut = *cut_at;
@@ -1665,6 +1699,7 @@ impl KlippApp {
                                     effects: clip.effects.clone(),
                                     builtin_effects: clip.builtin_effects.clone(),
                                     linked_clip_id: None,
+                                    group_id: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(EditCommand::PasteClip {
@@ -1762,6 +1797,7 @@ impl KlippApp {
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
+                                    group_id: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -1818,6 +1854,7 @@ impl KlippApp {
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
+                                    group_id: None,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -2184,6 +2221,48 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                // Track locking
+                AppCommand::SetTrackLocked { track_id, locked } => {
+                    if let Some(track) = self.state.sequence.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.locked = *locked;
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::GroupClips { clip_ids } => {
+                    let gid = GroupId::new();
+                    for track in &mut self.state.sequence.tracks {
+                        for clip in &mut track.clips {
+                            if clip_ids.contains(&clip.id) {
+                                clip.group_id = Some(gid);
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UngroupClips { group_id } => {
+                    for track in &mut self.state.sequence.tracks {
+                        for clip in &mut track.clips {
+                            if clip.group_id == Some(*group_id) {
+                                clip.group_id = None;
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UngroupClip { clip_id } => {
+                    for track in &mut self.state.sequence.tracks {
+                        for clip in &mut track.clips {
+                            if clip.id == *clip_id {
+                                clip.group_id = None;
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
                 _ => {}
             }
             let _ = self.cmd_tx.send(cmd);
@@ -2196,6 +2275,8 @@ impl KlippApp {
         self.state.project_path = None;
         self.state.dirty = false;
         self.state.selected_clip = None;
+        self.state.selected_clips.clear();
+        self.state.hovered_clip = None;
         self.state.playback = PlaybackState::Idle;
         self.state.playhead = Timecode::zero();
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
@@ -2471,6 +2552,7 @@ impl KlippApp {
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
+                group_id: clip.group_id,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -2552,6 +2634,7 @@ impl KlippApp {
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
+                group_id: clip.group_id,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -2580,6 +2663,7 @@ impl KlippApp {
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
+            track_header_width: self.state.track_header_width,
         };
         match klipp_project::save_project_with_color(path, &self.state.sequence, &self.state.media_pool, &color) {
             Ok(()) => {
@@ -2641,6 +2725,9 @@ impl KlippApp {
                 } else {
                     self.state.global_lut_path = None;
                 }
+                // Restore track header width
+                self.state.track_header_width = color_settings.track_header_width;
+
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.selected_clip = None;
@@ -2834,6 +2921,31 @@ impl KlippApp {
                 cmds.push(AppCommand::Redo);
             }
 
+            // Ctrl+G — Group selected clips
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::G) {
+                let mut ids = self.state.selected_clips.clone();
+                if let Some(primary) = self.state.selected_clip {
+                    if !ids.contains(&primary) {
+                        ids.push(primary);
+                    }
+                }
+                if ids.len() >= 2 {
+                    cmds.push(AppCommand::GroupClips { clip_ids: ids });
+                }
+            }
+            // Ctrl+Shift+G — Ungroup
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::G) {
+                if let Some(primary) = self.state.selected_clip {
+                    let gid = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == primary)
+                        .and_then(|c| c.group_id);
+                    if let Some(gid) = gid {
+                        cmds.push(AppCommand::UngroupClips { group_id: gid });
+                    }
+                }
+            }
+
             // Skip single-key shortcuts while typing in a text field
             if text_editing {
                 return;
@@ -2978,6 +3090,53 @@ impl KlippApp {
                     color: klipp_core::MarkerColor::Blue,
                 });
             }
+            // Z — Fit to window (no modifiers)
+            if i.key_pressed(egui::Key::Z) && !i.modifiers.ctrl && !i.modifiers.shift {
+                let dur_secs = self.state.sequence_duration().to_secs_f64() as f32;
+                if dur_secs > 0.0 {
+                    let content_width = self.state.last_timeline_content_width - 20.0;
+                    self.state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 2000.0);
+                    self.state.timeline_scroll_x = 0.0;
+                }
+            }
+            // Shift+Z — Zoom to selection
+            if i.key_pressed(egui::Key::Z) && i.modifiers.shift && !i.modifiers.ctrl {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let clip = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id);
+                    if let Some(clip) = clip {
+                        let start = clip.timeline_in.to_secs_f64() as f32;
+                        let end = clip.timeline_out.to_secs_f64() as f32;
+                        let dur = (end - start).max(0.1);
+                        let content_width = self.state.last_timeline_content_width;
+                        self.state.timeline_zoom = (content_width / dur * 0.9).clamp(0.1, 2000.0);
+                        self.state.timeline_scroll_x = (start * self.state.timeline_zoom - 20.0).max(0.0);
+                    }
+                }
+            }
+            // + / = — Zoom in (playhead-centred)
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "+" || s == "="))
+                && !i.modifiers.ctrl
+            {
+                let playhead_secs = self.state.playhead_smooth_secs as f32;
+                let old_zoom = self.state.timeline_zoom;
+                let new_zoom = (old_zoom * 1.5).clamp(0.1, 2000.0);
+                self.state.timeline_scroll_x = (playhead_secs * new_zoom
+                    - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
+                    .max(0.0);
+                self.state.timeline_zoom = new_zoom;
+            }
+            // - — Zoom out (playhead-centred)
+            if i.key_pressed(egui::Key::Minus) && !i.modifiers.ctrl {
+                let playhead_secs = self.state.playhead_smooth_secs as f32;
+                let old_zoom = self.state.timeline_zoom;
+                let new_zoom = (old_zoom / 1.5).clamp(0.1, 2000.0);
+                self.state.timeline_scroll_x = (playhead_secs * new_zoom
+                    - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
+                    .max(0.0);
+                self.state.timeline_zoom = new_zoom;
+            }
         });
 
         cmds
@@ -3053,6 +3212,7 @@ impl eframe::App for KlippApp {
                 let color = klipp_project::ColorSettings {
                     global_lut_path: self.state.global_lut_path.clone(),
                     global_lut_opacity: self.state.global_lut_opacity,
+                    track_header_width: self.state.track_header_width,
                 };
                 match klipp_project::save_project_with_color(&autosave_path, &self.state.sequence, &self.state.media_pool, &color) {
                     Ok(()) => tracing::info!("Auto-saved to {:?}", autosave_path),
@@ -3541,6 +3701,13 @@ impl eframe::App for KlippApp {
 }
 
 impl KlippApp {
+    /// Check if the track containing a given clip is locked.
+    fn clip_track_is_locked(&self, clip_id: &ClipId) -> bool {
+        self.state.sequence.tracks.iter()
+            .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
+            .is_some_and(|t| t.locked)
+    }
+
     fn drain_proxy_events(&mut self) {
         while let Ok(event) = self.proxy_event_rx.try_recv() {
             match event {

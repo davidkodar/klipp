@@ -24,9 +24,14 @@ pub struct AppState {
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
     pub playhead_follow: PlayheadFollow,
+    pub track_header_width: f32,
+    pub last_timeline_content_width: f32,
+    pub show_overview_bar: bool,
 
     // Selection
     pub selected_clip: Option<ClipId>,
+    pub selected_clips: Vec<ClipId>,
+    pub hovered_clip: Option<ClipId>,
 
     // UI state
     pub show_unsaved_dialog: bool,
@@ -217,7 +222,12 @@ impl Default for AppState {
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
             playhead_follow: PlayheadFollow::default(),
+            track_header_width: 160.0,
+            last_timeline_content_width: 800.0,
+            show_overview_bar: true,
             selected_clip: None,
+            selected_clips: Vec::new(),
+            hovered_clip: None,
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,

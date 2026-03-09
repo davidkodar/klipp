@@ -3,7 +3,8 @@ use klipp_core::{AppCommand, ClipId, RationalTime, Timecode, Tool};
 use klipp_engine::PlaybackState;
 use klipp_timeline::TrackKind;
 
-const TRACK_HEADER_WIDTH: f32 = 80.0;
+const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
+const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
 const VIDEO_TRACK_HEIGHT: f32 = 56.0;
 const AUDIO_TRACK_HEIGHT: f32 = 60.0;
@@ -11,6 +12,7 @@ const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
 const STATUS_BAR_HEIGHT: f32 = 18.0;
+const OVERVIEW_BAR_HEIGHT: f32 = 24.0;
 
 const CLIP_COLORS: &[(u8, u8, u8)] = &[
     (50, 90, 160),   // blue
@@ -81,6 +83,9 @@ impl TimelinePanel {
         let mut cmds = Vec::new();
         let available = ui.available_size();
 
+        // Reset hovered clip each frame
+        state.hovered_clip = None;
+
         // Handle scroll (horizontal pan) and Ctrl+scroll (cursor-anchored zoom).
         // egui 0.29: Ctrl+scroll → zoom_delta() (smooth_scroll_delta is zero).
         //            Normal scroll → smooth_scroll_delta (zoom_delta() is 1.0).
@@ -97,7 +102,7 @@ impl TimelinePanel {
                 let old_zoom = state.timeline_zoom;
                 let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 2000.0);
 
-                let content_left = avail_rect.left() + TRACK_HEADER_WIDTH;
+                let content_left = avail_rect.left() + state.track_header_width;
                 if let Some(cursor_pos) = pointer_pos {
                     let cursor_x = cursor_pos.x - content_left;
                     let time_at_cursor = (state.timeline_scroll_x + cursor_x) / old_zoom;
@@ -141,7 +146,7 @@ impl TimelinePanel {
         // Track header area
         let header_rect = egui::Rect::from_min_size(
             panel_rect.min,
-            egui::vec2(TRACK_HEADER_WIDTH, available.y),
+            egui::vec2(state.track_header_width, available.y),
         );
         bg_painter.rect_filled(header_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
 
@@ -154,16 +159,92 @@ impl TimelinePanel {
             egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)),
         );
 
+        // Track header resize handle (4px wide at right edge)
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(header_rect.right() - 2.0, panel_rect.top()),
+            egui::vec2(4.0, panel_rect.height()),
+        );
+        let handle_response = ui.interact(
+            handle_rect,
+            ui.id().with("header_resize"),
+            egui::Sense::drag(),
+        );
+        if handle_response.dragged() {
+            state.track_header_width = (state.track_header_width + handle_response.drag_delta().x)
+                .clamp(TRACK_HEADER_MIN_WIDTH, TRACK_HEADER_MAX_WIDTH);
+        }
+        if handle_response.hovered() || handle_response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            // Highlight handle on hover
+            bg_painter.line_segment(
+                [
+                    egui::pos2(header_rect.right() - 1.0, panel_rect.top()),
+                    egui::pos2(header_rect.right() - 1.0, panel_rect.bottom()),
+                ],
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 80, 100)),
+            );
+        }
+
         // Timeline content area
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(panel_rect.left() + TRACK_HEADER_WIDTH, panel_rect.top()),
+            egui::pos2(panel_rect.left() + state.track_header_width, panel_rect.top()),
             panel_rect.max,
         );
+        state.last_timeline_content_width = content_rect.width();
         let painter = bg_painter.with_clip_rect(content_rect);
+
+        // Overview / minimap bar (above ruler)
+        let overview_height = if state.show_overview_bar { OVERVIEW_BAR_HEIGHT } else { 0.0 };
+        if state.show_overview_bar {
+            let overview_rect = egui::Rect::from_min_size(
+                content_rect.min,
+                egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
+            );
+            self.draw_overview_bar(&painter, &overview_rect, state);
+        }
+
+        // Overview bar interaction — raw pointer (ui.interact doesn't work in manual layout)
+        let mut overview_bar_consumed = false;
+        if state.show_overview_bar {
+            let overview_rect = egui::Rect::from_min_size(
+                content_rect.min,
+                egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
+            );
+            let dur_secs = state.sequence.total_duration().to_secs_f64() as f32;
+            if dur_secs > 0.0 {
+                let px_per_sec = overview_rect.width() / dur_secs;
+                let zoom = state.timeline_zoom;
+                let content_w = state.last_timeline_content_width;
+                let (pointer_pos, primary_down, primary_released, drag_delta) = ui.input(|i| (
+                    i.pointer.latest_pos(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                    i.pointer.delta(),
+                ));
+                let in_overview = pointer_pos.is_some_and(|p| overview_rect.contains(p));
+
+                // Drag: pointer is in overview and button held with movement
+                if in_overview && primary_down && drag_delta.x.abs() > 0.5 {
+                    overview_bar_consumed = true;
+                    let delta_secs = drag_delta.x / px_per_sec;
+                    state.timeline_scroll_x = (state.timeline_scroll_x + delta_secs * zoom).max(0.0);
+                }
+                // Click: pointer released in overview — jump viewport
+                if in_overview && primary_released {
+                    overview_bar_consumed = true;
+                    if let Some(pos) = pointer_pos {
+                        let click_secs = (pos.x - overview_rect.left()) / px_per_sec;
+                        let view_width_secs = content_w / zoom;
+                        let new_start_secs = click_secs - view_width_secs / 2.0;
+                        state.timeline_scroll_x = (new_start_secs * zoom).max(0.0);
+                    }
+                }
+            }
+        }
 
         // Time ruler
         let ruler_rect = egui::Rect::from_min_size(
-            content_rect.min,
+            egui::pos2(content_rect.left(), content_rect.top() + overview_height),
             egui::vec2(content_rect.width(), RULER_HEIGHT),
         );
         painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
@@ -196,9 +277,9 @@ impl TimelinePanel {
             }
         }
 
-        // Ruler click to seek
+        // Ruler click to seek (skip if overview bar consumed the event)
         let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
-        if ruler_response.clicked() || ruler_response.dragged() {
+        if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
             if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                 let secs = x_in_content / state.timeline_zoom;
@@ -231,7 +312,7 @@ impl TimelinePanel {
         self.snap_line_x = None;
 
         // Draw tracks: Video 2, Video 1, Audio 1
-        let tracks_start_y = content_rect.top() + RULER_HEIGHT + MEDIA_POOL_HEIGHT;
+        let tracks_start_y = content_rect.top() + overview_height + RULER_HEIGHT + MEDIA_POOL_HEIGHT;
         let mut track_y = tracks_start_y;
 
         let track_count = state.sequence.tracks.len();
@@ -268,12 +349,25 @@ impl TimelinePanel {
                 TrackKind::Video => egui::Color32::from_rgb(140, 140, 150),
                 TrackKind::Audio => egui::Color32::from_rgb(100, 150, 110),
             };
+            let track_locked = state.sequence.tracks[track_idx].locked;
+
+            // Lock state read above — button placed in track controls block to avoid context menu overlap
+
+            // Dim header tint for locked tracks
+            if track_locked {
+                let dim_rect = egui::Rect::from_min_size(
+                    egui::pos2(header_rect.left(), track_y),
+                    egui::vec2(state.track_header_width, track_height),
+                );
+                bg_painter.rect_filled(dim_rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
+            }
+
             bg_painter.text(
                 egui::pos2(header_rect.left() + 4.0, track_y + 8.0),
                 egui::Align2::LEFT_TOP,
                 &track_name,
                 egui::FontId::proportional(10.0),
-                label_color,
+                if track_locked { egui::Color32::from_rgb(90, 90, 100) } else { label_color },
             );
 
             // Track control buttons
@@ -281,6 +375,28 @@ impl TimelinePanel {
                 let track = &state.sequence.tracks[track_idx];
                 match track_kind {
                     TrackKind::Video => {
+                        // [L] lock toggle
+                        let l_rect = egui::Rect::from_min_size(
+                            egui::pos2(header_rect.right() - 42.0, track_y + 4.0),
+                            egui::vec2(18.0, 14.0),
+                        );
+                        let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                        let l_bg = if track_locked {
+                            egui::Color32::from_rgb(160, 120, 40)
+                        } else if l_resp.hovered() {
+                            egui::Color32::from_rgb(50, 50, 60)
+                        } else {
+                            egui::Color32::from_rgb(35, 35, 42)
+                        };
+                        bg_painter.rect_filled(l_rect, 2.0, l_bg);
+                        bg_painter.text(l_rect.center(), egui::Align2::CENTER_CENTER, "L",
+                            egui::FontId::proportional(9.0),
+                            if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
+                        if l_resp.clicked() {
+                            let track_id = state.sequence.tracks[track_idx].id;
+                            cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        }
+
                         // [V] visibility toggle
                         let v_rect = egui::Rect::from_min_size(
                             egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
@@ -350,6 +466,28 @@ impl TimelinePanel {
                         }
                     }
                     TrackKind::Audio => {
+                        // [L] lock toggle (top-right of audio header)
+                        let al_rect = egui::Rect::from_min_size(
+                            egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
+                            egui::vec2(18.0, 14.0),
+                        );
+                        let al_resp = ui.interact(al_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                        let al_bg = if track_locked {
+                            egui::Color32::from_rgb(160, 120, 40)
+                        } else if al_resp.hovered() {
+                            egui::Color32::from_rgb(50, 50, 60)
+                        } else {
+                            egui::Color32::from_rgb(35, 35, 42)
+                        };
+                        bg_painter.rect_filled(al_rect, 2.0, al_bg);
+                        bg_painter.text(al_rect.center(), egui::Align2::CENTER_CENTER, "L",
+                            egui::FontId::proportional(9.0),
+                            if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
+                        if al_resp.clicked() {
+                            let track_id = state.sequence.tracks[track_idx].id;
+                            cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        }
+
                         let btn_y = track_y + track_height - 16.0;
                         // [M] mute
                         let m_rect = egui::Rect::from_min_size(
@@ -527,7 +665,7 @@ impl TimelinePanel {
                 let ctx_h = 22.0;
                 let hdr_rect = egui::Rect::from_min_size(
                     egui::pos2(header_rect.left(), track_y),
-                    egui::vec2(TRACK_HEADER_WIDTH, ctx_h),
+                    egui::vec2(state.track_header_width, ctx_h),
                 );
                 let hdr_resp = ui.interact(
                     hdr_rect,
@@ -807,6 +945,8 @@ impl TimelinePanel {
             }
 
             let is_selected = state.selected_clip == Some(clip.id);
+            let is_multi_selected = state.selected_clips.contains(&clip.id);
+            let is_hovered = state.hovered_clip == Some(clip.id);
             let is_title = clip.title_data().is_some();
             let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
@@ -835,6 +975,10 @@ impl TimelinePanel {
 
             let (fill, border_color, border_width) = if is_selected {
                 (bright_color, egui::Color32::from_rgb(120, 160, 240), 2.0)
+            } else if is_multi_selected {
+                (bright_color, egui::Color32::from_rgb(80, 130, 220), 1.5)
+            } else if is_hovered {
+                (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
             } else {
                 (base_color, bright_color, 1.0)
             };
@@ -1143,8 +1287,49 @@ impl TimelinePanel {
                 }
             }
 
+            // Group badge [G] — bottom-left
+            if clip.group_id.is_some() && clip_rect.width() > 30.0 {
+                let g_pos = egui::pos2(clip_rect.left() + 10.0, clip_rect.bottom() - 8.0);
+                let g_rect = egui::Rect::from_center_size(g_pos, egui::vec2(14.0, 11.0));
+                painter.rect_filled(g_rect, 3.0, egui::Color32::from_rgb(80, 140, 220));
+                painter.text(g_pos, egui::Align2::CENTER_CENTER, "G",
+                    egui::FontId::proportional(8.0), egui::Color32::WHITE);
+            }
+
+            // Locked track overlay: semi-transparent dark with diagonal lines
+            if state.sequence.tracks[track_idx].locked {
+                painter.rect_filled(
+                    clip_rect,
+                    3.0,
+                    egui::Color32::from_rgba_premultiplied(0, 0, 0, 80),
+                );
+                // Diagonal hatch lines
+                let step = 8.0;
+                let mut lx = clip_rect.left() - clip_rect.height();
+                while lx < clip_rect.right() {
+                    let x0 = lx.max(clip_rect.left());
+                    let y0_raw = clip_rect.top() + (x0 - lx);
+                    let y0 = y0_raw.max(clip_rect.top());
+                    let x1 = (lx + clip_rect.height()).min(clip_rect.right());
+                    let y1_raw = clip_rect.bottom() - (lx + clip_rect.height() - x1);
+                    let y1 = y1_raw.min(clip_rect.bottom());
+                    painter.line_segment(
+                        [egui::pos2(x0, y0), egui::pos2(x1, y1)],
+                        egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)),
+                    );
+                    lx += step;
+                }
+            }
+
             if !interactive {
                 continue;
+            }
+
+            // Hover detection
+            if let Some(pos) = pointer_pos {
+                if clip_rect.contains(pos) {
+                    state.hovered_clip = Some(clip.id);
+                }
             }
 
             // Blade cursor/line with snap support
@@ -1531,6 +1716,41 @@ impl TimelinePanel {
                 }
 
                 ui.separator();
+
+                // Group / Ungroup
+                let has_multi = state.selected_clips.len() >= 2
+                    || (state.selected_clips.len() == 1 && state.selected_clip.is_some_and(|id| !state.selected_clips.contains(&id)));
+                if ui.add_enabled(has_multi, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() {
+                    let mut ids = state.selected_clips.clone();
+                    if let Some(primary) = state.selected_clip {
+                        if !ids.contains(&primary) {
+                            ids.push(primary);
+                        }
+                    }
+                    cmds.push(AppCommand::GroupClips { clip_ids: ids });
+                    ui.close_menu();
+                }
+                let clip_group = state.sequence.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| Some(c.id) == state.selected_clip)
+                    .and_then(|c| c.group_id);
+                if ui.add_enabled(clip_group.is_some(), egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() {
+                    if let Some(gid) = clip_group {
+                        cmds.push(AppCommand::UngroupClips { group_id: gid });
+                    }
+                    ui.close_menu();
+                }
+
+                // Lock Track
+                let track_locked = state.sequence.tracks.get(track_idx).is_some_and(|t| t.locked);
+                let lock_label = if track_locked { "Unlock Track" } else { "Lock Track" };
+                if ui.button(lock_label).clicked() {
+                    let track_id = state.sequence.tracks[track_idx].id;
+                    cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                    ui.close_menu();
+                }
+
+                ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
                 r.on_disabled_hover_text("(coming soon)");
             }
@@ -1595,11 +1815,32 @@ impl TimelinePanel {
                             cut_at: cut_tc,
                         });
                     } else {
+                        let modifiers = ui.input(|i| i.modifiers);
+                        if modifiers.shift || modifiers.ctrl || modifiers.command {
+                            // Multi-select: toggle in selected_clips
+                            if let Some(pos) = state.selected_clips.iter().position(|&id| id == hit_clip.id) {
+                                state.selected_clips.remove(pos);
+                            } else {
+                                state.selected_clips.push(hit_clip.id);
+                            }
+                        } else {
+                            // If clip is grouped, select all group members
+                            if let Some(gid) = hit_clip.group_id {
+                                state.selected_clips = state.sequence.tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .filter(|c| c.group_id == Some(gid))
+                                    .map(|c| c.id)
+                                    .collect();
+                            } else {
+                                state.selected_clips.clear();
+                            }
+                        }
                         cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                     }
                 } else {
                     // Clicked empty area — deselect
                     if self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+                        state.selected_clips.clear();
                         cmds.push(AppCommand::SelectClip(None));
                     }
                 }
@@ -2432,6 +2673,123 @@ impl TimelinePanel {
                 );
             }
         }
+    }
+
+    fn draw_overview_bar(
+        &self,
+        painter: &egui::Painter,
+        rect: &egui::Rect,
+        state: &AppState,
+    ) {
+        // Background
+        painter.rect_filled(*rect, 0.0, egui::Color32::from_rgb(16, 16, 20));
+        // Bottom border
+        painter.line_segment(
+            [
+                egui::pos2(rect.left(), rect.bottom()),
+                egui::pos2(rect.right(), rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 50, 60)),
+        );
+
+        // Compute total sequence duration
+        let dur_secs = state.sequence.total_duration().to_secs_f64() as f32;
+        if dur_secs <= 0.0 {
+            return;
+        }
+
+        let bar_width = rect.width();
+        let px_per_sec = bar_width / dur_secs;
+
+        // Viewport rectangle bounds (needed for dimming)
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        let content_width = state.last_timeline_content_width;
+        let view_start_secs = scroll / zoom;
+        let view_end_secs = (scroll + content_width) / zoom;
+        let vp_x0 = (rect.left() + view_start_secs * px_per_sec).max(rect.left());
+        let vp_x1 = (rect.left() + view_end_secs * px_per_sec).min(rect.right());
+
+        // Draw clips as tiny colored rectangles with lane gaps
+        let track_count = state.sequence.tracks.len().max(1) as f32;
+        let lane_gap = 1.0_f32;
+        let total_gap = lane_gap * (track_count - 1.0).max(0.0);
+        let lane_h = ((rect.height() - 4.0 - total_gap) / track_count).max(2.0);
+
+        for (track_idx, track) in state.sequence.tracks.iter().enumerate() {
+            let lane_y = rect.top() + 2.0 + track_idx as f32 * (lane_h + lane_gap);
+
+            for clip in &track.clips {
+                let x0 = rect.left() + clip.timeline_in.to_secs_f64() as f32 * px_per_sec;
+                let x1 = rect.left() + clip.timeline_out.to_secs_f64() as f32 * px_per_sec;
+                if x1 < rect.left() || x0 > rect.right() {
+                    continue;
+                }
+                let cx0 = x0.max(rect.left());
+                let cx1 = x1.min(rect.right());
+                // Minimum 2px width so tiny clips are visible
+                let cx1 = cx1.max(cx0 + 2.0);
+                let clip_rect = egui::Rect::from_min_max(
+                    egui::pos2(cx0, lane_y),
+                    egui::pos2(cx1, (lane_y + lane_h).min(rect.bottom() - 2.0)),
+                );
+                let (r, g, b) = CLIP_COLORS[track_idx % CLIP_COLORS.len()];
+                // Brighter fill inside viewport, dimmer outside
+                let in_viewport = cx1 >= vp_x0 && cx0 <= vp_x1;
+                let color = if in_viewport {
+                    egui::Color32::from_rgb(r.saturating_add(20), g.saturating_add(20), b.saturating_add(20))
+                } else {
+                    egui::Color32::from_rgb(r / 2, g / 2, b / 2)
+                };
+                painter.rect_filled(clip_rect, 1.0, color);
+                // Subtle outline
+                painter.rect_stroke(
+                    clip_rect,
+                    1.0,
+                    egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 25)),
+                );
+            }
+        }
+
+        // Dim areas outside viewport
+        let dim = egui::Color32::from_rgba_premultiplied(0, 0, 0, 100);
+        if vp_x0 > rect.left() {
+            painter.rect_filled(
+                egui::Rect::from_min_max(rect.min, egui::pos2(vp_x0, rect.bottom())),
+                0.0,
+                dim,
+            );
+        }
+        if vp_x1 < rect.right() {
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(vp_x1, rect.top()), rect.max),
+                0.0,
+                dim,
+            );
+        }
+
+        // Viewport border
+        let vp_rect = egui::Rect::from_min_max(
+            egui::pos2(vp_x0, rect.top()),
+            egui::pos2(vp_x1, rect.bottom()),
+        );
+        painter.rect_stroke(
+            vp_rect,
+            0.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 120)),
+        );
+
+        // Draw playhead as thin red vertical line
+        let playhead_secs = state.playhead.to_secs_f64() as f32;
+        let ph_x = rect.left() + playhead_secs * px_per_sec;
+        if ph_x >= rect.left() && ph_x <= rect.right() {
+            painter.line_segment(
+                [egui::pos2(ph_x, rect.top()), egui::pos2(ph_x, rect.bottom())],
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(220, 50, 50)),
+            );
+        }
+
+        // (interaction handled in show() to avoid z-order conflicts)
     }
 
     fn draw_ruler_ticks(
