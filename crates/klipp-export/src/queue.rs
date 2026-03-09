@@ -62,7 +62,7 @@ impl RenderSnapshot {
                         continue;
                     }
                 }
-                if let Some(media) = media_pool.get(&clip.media_id) {
+                if let Some(media) = clip.media_id().and_then(|mid| media_pool.get(&mid)) {
                     let path_str = media.path.to_string_lossy().to_string();
                     let (src_in, src_out) = if let Some((range_in, range_out)) = export_range {
                         let clip_start = clip.timeline_in.max(range_in);

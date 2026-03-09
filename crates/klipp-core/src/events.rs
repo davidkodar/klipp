@@ -187,11 +187,17 @@ pub enum AppCommand {
     ClearGlobalLut,
     SetGlobalLutOpacity(f32),
 
-    // Effects
+    // Effects (OFX)
     AddEffect { clip_id: ClipId, plugin_name: String },
     RemoveEffect { clip_id: ClipId, effect_index: usize },
     SetEffectEnabled { clip_id: ClipId, effect_index: usize, enabled: bool },
     ReorderEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+
+    // Built-in effects
+    AddBuiltinEffect { clip_id: ClipId, effect: klipp_effects::BuiltinEffect },
+    RemoveBuiltinEffect { clip_id: ClipId, index: usize },
+    UpdateBuiltinEffect { clip_id: ClipId, index: usize, effect: klipp_effects::BuiltinEffect },
+    ReorderBuiltinEffect { clip_id: ClipId, from_index: usize, to_index: usize },
 
     // Render Queue
     ShowRenderQueue,

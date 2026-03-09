@@ -78,6 +78,8 @@ pub struct PlaybackEngine {
     color_pipeline: klipp_color::ColorPipeline,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
+    // GPU effects pipeline — compute shaders for built-in effects
+    gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
 }
@@ -146,6 +148,7 @@ impl PlaybackEngine {
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
             ofx_host: klipp_plugin::OfxHost::new(),
+            gpu_effects: klipp_effects::gpu::GpuEffectsPipeline::new(),
             last_peak_time: std::time::Instant::now(),
         })
     }
@@ -449,20 +452,23 @@ impl PlaybackEngine {
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
                 if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
+                    let media_id = clip.media_id()?;
                     let source_secs = clip.source_in.to_secs_f64()
                         + (self.playhead - clip.timeline_in).to_secs_f64();
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    return Some((idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in));
+                    return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in));
                 }
                 for (idx, clip) in track.clips.iter().enumerate() {
                     if clip.timeline_in >= self.playhead {
+                        let media_id = clip.media_id()?;
                         let si = clip.source_in.to_secs_f64();
-                        return Some((idx, clip.media_id, si, clip.timeline_in, si));
+                        return Some((idx, media_id, si, clip.timeline_in, si));
                     }
                 }
-                track.clips.first().map(|clip| {
+                track.clips.first().and_then(|clip| {
+                    let media_id = clip.media_id()?;
                     let si = clip.source_in.to_secs_f64();
-                    (0, clip.media_id, si, clip.timeline_in, si)
+                    Some((0, media_id, si, clip.timeline_in, si))
                 })
             });
         drop(seq);
@@ -604,7 +610,8 @@ impl PlaybackEngine {
                 .enumerate()
                 .filter_map(|(track_idx, track)| {
                     let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
-                    let item = pool.get(&clip.media_id)?;
+                    let media_id = clip.media_id()?;
+                    let item = pool.get(&media_id)?;
                     if !item.has_audio {
                         return None;
                     }
@@ -623,7 +630,7 @@ impl PlaybackEngine {
                     }
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64();
-                    Some((track_idx, clip.media_id, item.path.clone(), source_secs))
+                    Some((track_idx, media_id, item.path.clone(), source_secs))
                 })
                 .collect()
         };
@@ -963,6 +970,7 @@ impl PlaybackEngine {
         }
 
         // Composite V1 + V2 if V2 frame is available, or pass V1 directly
+        let t_composite = std::time::Instant::now();
         let (final_w, final_h) = (frame.width, frame.height);
         let final_rgba = if let Some(v2_frame) = &self.v2_frame_cache {
             let v2_opacity = self.sequence.read().unwrap()
@@ -996,44 +1004,13 @@ impl PlaybackEngine {
             frame.into_rgba()
         };
 
-        // Apply per-clip color grade
-        let final_rgba = {
-            let seq = self.sequence.read().unwrap();
-            let grade = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .find_map(|t| t.clips.get(self.current_clip_index))
-                .map(|c| c.color_grade);
-            drop(seq);
-            if let Some(g) = grade {
-                if g.enabled {
-                    self.color_pipeline.apply_clip_grade(
-                        final_rgba, g.exposure, g.contrast, g.saturation, g.temperature, g.tint,
-                    )
-                } else {
-                    final_rgba
-                }
-            } else {
-                final_rgba
-            }
-        };
+        let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
+        if composite_ms > 2.0 {
+            debug!("PERF composite+into_rgba: {composite_ms:.1}ms");
+        }
 
-        // Apply per-clip OFX effects chain (Phase 6A: stub passthrough)
-        let final_rgba = {
-            let seq = self.sequence.read().unwrap();
-            let effects = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .find_map(|t| t.clips.get(self.current_clip_index))
-                .map(|c| c.effects.clone());
-            drop(seq);
-            if let Some(fx) = effects {
-                self.ofx_host.apply_effects_chain(&fx, &final_rgba, final_w, final_h)
-            } else {
-                final_rgba
-            }
-        };
-
-        // Apply global color pipeline (passthrough when disabled)
-        let final_rgba = self.color_pipeline.process_frame(final_rgba, final_w, final_h);
+        // Apply full post-processing pipeline (color grade → OFX → builtin FX → global LUT)
+        let final_rgba = self.post_process_rgba(final_rgba, final_w, final_h);
 
         // Write frame to the shared FrameBuffer
         let mut fb = self.frame_buffer.lock().unwrap();
@@ -1074,8 +1051,9 @@ impl PlaybackEngine {
         let next_clip_info = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
-                track.clips.get(next_idx).map(|clip| {
-                    (clip.media_id, clip.source_in.to_secs_f64(), clip.timeline_in)
+                track.clips.get(next_idx).and_then(|clip| {
+                    let media_id = clip.media_id()?;
+                    Some((media_id, clip.source_in.to_secs_f64(), clip.timeline_in))
                 })
             });
         drop(seq);
@@ -1161,10 +1139,11 @@ impl PlaybackEngine {
             if track.muted {
                 return None;
             }
-            track.clip_at_timecode(playhead).map(|(idx, clip)| {
+            track.clip_at_timecode(playhead).and_then(|(idx, clip)| {
+                let media_id = clip.media_id()?;
                 let source_secs = clip.source_in.to_secs_f64()
                     + (playhead - clip.timeline_in).to_secs_f64();
-                (idx, clip.media_id, source_secs)
+                Some((idx, media_id, source_secs))
             })
         });
         drop(seq);
@@ -1236,11 +1215,12 @@ impl PlaybackEngine {
         let clip_info = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
-                track.clip_at_timecode(tc).map(|(idx, clip)| {
+                track.clip_at_timecode(tc).and_then(|(idx, clip)| {
+                    let media_id = clip.media_id()?;
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64();
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    (idx, clip.media_id, source_secs, clip.timeline_in, clip_source_in)
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
                 })
             });
         drop(seq);
@@ -1393,16 +1373,66 @@ impl PlaybackEngine {
     fn step_frame(&mut self, direction: i64) {
         if direction >= 0 {
             // Forward: drain any stale frames, then resume decoder to get the next one
-            if let Some(dec) = &self.v1_decoder {
-                // Drain existing queued frames (stale from before pause)
-                let mut last_frame = None;
+            let last_frame = self.v1_decoder.as_ref().and_then(|dec| {
+                let mut last = None;
                 while let Some(frame) = dec.frame_queue().lock().unwrap().pop() {
                     if !frame.is_eof {
-                        last_frame = Some(frame);
+                        last = Some(frame);
                     }
                 }
-                // If we got a queued frame, use it as the step
-                if let Some(frame) = last_frame {
+                last
+            });
+            // If we got a queued frame, use it as the step
+            if let Some(frame) = last_frame {
+                let chirp_pos = frame.pts_secs();
+                let seq = self.sequence.read().unwrap();
+                if let Some(clip) = seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|t| t.clips.get(self.current_clip_index))
+                {
+                    let source_elapsed =
+                        frame.pts_secs() - clip.source_in.to_secs_f64();
+                    let elapsed_tc = RationalTime::from_secs_f64(
+                        source_elapsed.max(0.0),
+                        self.fps.rate(),
+                    );
+                    self.playhead = clip.timeline_in + elapsed_tc;
+                }
+                drop(seq);
+                let (w, h) = (frame.width, frame.height);
+                let rgba = frame.to_rgba();
+                let rgba = self.post_process_rgba(rgba, w, h);
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(rgba, w, h);
+                drop(fb);
+                // Frame step chirp (~20ms)
+                if let Some(active) = self.audio_sources.first() {
+                    active.source.chirp(chirp_pos, 0.02);
+                    if let Some(aout) = &self.audio_output {
+                        aout.0.start_chirp();
+                    }
+                }
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                (self.repaint_cb)();
+                return;
+            }
+            // No queued frames — resume decoder to produce one
+            if let Some(dec) = &self.v1_decoder {
+                dec.resume();
+            }
+            // Wait for one frame with short timeout
+            let deadline = std::time::Instant::now() + Duration::from_millis(100);
+            while std::time::Instant::now() < deadline {
+                // Pop frame in a limited scope to avoid borrowing self across post_process
+                let popped = self.v1_decoder.as_ref()
+                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                if let Some(frame) = popped {
+                    if frame.is_eof {
+                        if let Some(dec) = &self.v1_decoder { dec.pause(); }
+                        return;
+                    }
+                    // Update playhead from frame PTS
                     let chirp_pos = frame.pts_secs();
                     let seq = self.sequence.read().unwrap();
                     if let Some(clip) = seq.tracks.iter()
@@ -1418,71 +1448,28 @@ impl PlaybackEngine {
                         self.playhead = clip.timeline_in + elapsed_tc;
                     }
                     drop(seq);
+
+                    let (w, h) = (frame.width, frame.height);
                     let rgba = frame.to_rgba();
+                    let rgba = self.post_process_rgba(rgba, w, h);
                     let mut fb = self.frame_buffer.lock().unwrap();
-                    fb.write_frame(rgba, frame.width, frame.height);
+                    fb.write_frame(rgba, w, h);
                     drop(fb);
                     // Frame step chirp (~20ms)
                     if let Some(active) = self.audio_sources.first() {
-                        active.source.chirp(chirp_pos, 0.02);
                         if let Some(aout) = &self.audio_output {
-                            aout.0.start_chirp();
+                            aout.0.notify_seek();
+                            aout.0.resume();
                         }
+                        active.source.chirp(chirp_pos, 0.02);
                     }
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     let _ = self.event_tx.send(AppEvent::FrameReady);
+                    if let Some(dec) = &self.v1_decoder {
+                        dec.pause();
+                    }
                     (self.repaint_cb)();
                     return;
-                }
-                // No queued frames — resume decoder to produce one
-                dec.resume();
-            }
-            // Wait for one frame with short timeout
-            let deadline = std::time::Instant::now() + Duration::from_millis(100);
-            while std::time::Instant::now() < deadline {
-                if let Some(dec) = &self.v1_decoder {
-                    if let Some(frame) = dec.frame_queue().lock().unwrap().pop() {
-                        if frame.is_eof {
-                            dec.pause();
-                            return;
-                        }
-                        // Update playhead from frame PTS
-                        let chirp_pos = frame.pts_secs();
-                        let seq = self.sequence.read().unwrap();
-                        if let Some(clip) = seq.tracks.iter()
-                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                            .find_map(|t| t.clips.get(self.current_clip_index))
-                        {
-                            let source_elapsed =
-                                frame.pts_secs() - clip.source_in.to_secs_f64();
-                            let elapsed_tc = RationalTime::from_secs_f64(
-                                source_elapsed.max(0.0),
-                                self.fps.rate(),
-                            );
-                            self.playhead = clip.timeline_in + elapsed_tc;
-                        }
-                        drop(seq);
-
-                        let rgba = frame.to_rgba();
-                        let mut fb = self.frame_buffer.lock().unwrap();
-                        fb.write_frame(rgba, frame.width, frame.height);
-                        drop(fb);
-                        // Frame step chirp (~20ms)
-                        if let Some(active) = self.audio_sources.first() {
-                            if let Some(aout) = &self.audio_output {
-                                aout.0.notify_seek();
-                                aout.0.resume();
-                            }
-                            active.source.chirp(chirp_pos, 0.02);
-                        }
-                        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                        let _ = self.event_tx.send(AppEvent::FrameReady);
-                        if let Some(dec) = &self.v1_decoder {
-                            dec.pause();
-                        }
-                        (self.repaint_cb)();
-                        return;
-                    }
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -1502,9 +1489,9 @@ impl PlaybackEngine {
     fn grab_single_frame_timeout(&mut self, timeout: Duration) {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            if let Some(dec) = &self.v1_decoder {
+            // Pop best frame in limited scope to avoid borrow across post_process
+            let best = self.v1_decoder.as_ref().and_then(|dec| {
                 let mut queue = dec.frame_queue().lock().unwrap();
-                // Drain to the latest non-EOF frame
                 let mut best = None;
                 while let Some(frame) = queue.pop() {
                     if frame.is_eof {
@@ -1512,23 +1499,84 @@ impl PlaybackEngine {
                     }
                     best = Some(frame);
                 }
-                drop(queue);
-                if let Some(frame) = best {
-                    let rgba = frame.to_rgba();
-                    let mut fb = self.frame_buffer.lock().unwrap();
-                    fb.write_frame(rgba, frame.width, frame.height);
-                    drop(fb);
-                    let _ = self.event_tx.send(AppEvent::FrameReady);
+                best
+            });
+            if let Some(frame) = best {
+                let (w, h) = (frame.width, frame.height);
+                let rgba = frame.to_rgba();
+                let rgba = self.post_process_rgba(rgba, w, h);
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(rgba, w, h);
+                drop(fb);
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                if let Some(dec) = &self.v1_decoder {
                     dec.pause();
-                    (self.repaint_cb)();
-                    return;
                 }
+                (self.repaint_cb)();
+                return;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
         }
+    }
+
+    /// Apply the full post-processing pipeline to a raw decoded RGBA frame:
+    /// color grade → OFX effects → built-in effects → global LUT.
+    fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let t0 = std::time::Instant::now();
+        let seq = self.sequence.read().unwrap();
+        let clip = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clips.get(self.current_clip_index));
+        let grade = clip.map(|c| c.color_grade);
+        let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
+        let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
+        drop(seq);
+
+        // 1. Per-clip color grade
+        let t1 = std::time::Instant::now();
+        let rgba = if let Some(g) = grade {
+            if g.enabled {
+                self.color_pipeline.apply_clip_grade(rgba, g.exposure, g.contrast, g.saturation, g.temperature, g.tint)
+            } else { rgba }
+        } else { rgba };
+        let t2 = std::time::Instant::now();
+
+        // 2. OFX effects chain
+        let rgba = if !ofx_effects.is_empty() {
+            self.ofx_host.apply_effects_chain(&ofx_effects, &rgba, width, height)
+        } else { rgba };
+        let t3 = std::time::Instant::now();
+
+        // 3. Built-in effects (GPU-accelerated when available, CPU fallback)
+        let rgba = if !builtin_fx.is_empty() {
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.apply_effects(&builtin_fx, rgba, width, height)
+            } else {
+                klipp_effects::apply_effects(&builtin_fx, rgba, width, height)
+            }
+        } else { rgba };
+        let t4 = std::time::Instant::now();
+
+        // 4. Global color pipeline
+        let rgba = self.color_pipeline.process_frame(rgba, width, height);
+        let t5 = std::time::Instant::now();
+
+        let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if total_ms > 2.0 {
+            debug!(
+                "PERF post_process: {:.1}ms total | seq_read={:.1}ms grade={:.1}ms ofx={:.1}ms builtin={:.1}ms lut={:.1}ms",
+                total_ms,
+                (t1 - t0).as_secs_f64() * 1000.0,
+                (t2 - t1).as_secs_f64() * 1000.0,
+                (t3 - t2).as_secs_f64() * 1000.0,
+                (t4 - t3).as_secs_f64() * 1000.0,
+                (t5 - t4).as_secs_f64() * 1000.0,
+            );
+        }
+        rgba
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.

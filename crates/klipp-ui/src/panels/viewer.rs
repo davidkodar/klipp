@@ -171,7 +171,7 @@ impl ViewerPanel {
             .sequence
             .video_track()
             .and_then(|t| t.clip_at_timecode(state.playhead))
-            .and_then(|(_, clip)| state.media_pool.get(&clip.media_id));
+            .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
         let has_content = state.playback != PlaybackState::Idle || current_media.is_some();
 

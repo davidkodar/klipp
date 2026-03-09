@@ -1960,9 +1960,21 @@ dependencies = [
 name = "klipp-core"
 version = "0.1.0"
 dependencies = [
+ "klipp-effects",
  "serde",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "klipp-effects"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pollster 0.4.0",
+ "serde",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -1977,6 +1989,7 @@ dependencies = [
  "klipp-audio",
  "klipp-color",
  "klipp-core",
+ "klipp-effects",
  "klipp-media",
  "klipp-plugin",
  "klipp-timeline",
@@ -2025,6 +2038,7 @@ name = "klipp-project"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-effects",
  "klipp-media",
  "klipp-plugin",
  "klipp-timeline",
@@ -2040,6 +2054,7 @@ name = "klipp-timeline"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-effects",
  "klipp-plugin",
  "serde",
  "serde_json",
@@ -2056,6 +2071,7 @@ dependencies = [
  "egui",
  "klipp-audio",
  "klipp-core",
+ "klipp-effects",
  "klipp-engine",
  "klipp-export",
  "klipp-media",

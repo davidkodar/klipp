@@ -693,7 +693,7 @@ impl TimelinePanel {
 
         if let Some(clip_id) = state.selected_clip {
             if let Some(clip) = state.sequence.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
-                if let Some(media) = state.media_pool.get(&clip.media_id) {
+                if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     left_text += &format!("{sep}{}", media.filename);
                 }
                 let dur = clip.duration().to_timecode_string();
@@ -771,7 +771,7 @@ impl TimelinePanel {
             }
 
             let is_selected = state.selected_clip == Some(clip.id);
-            let is_offline = state.media_pool.get(&clip.media_id)
+            let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
 
@@ -801,7 +801,7 @@ impl TimelinePanel {
             // Draw thumbnail/filmstrip background for video clips
             if track_kind == TrackKind::Video {
                 let mut drew_filmstrip = false;
-                if let Some(filmstrip) = state.filmstrip_textures.get(&clip.media_id) {
+                if let Some(filmstrip) = clip.media_id().and_then(|mid| state.filmstrip_textures.get(&mid)) {
                     if !filmstrip.is_empty() {
                         drew_filmstrip = true;
                         let clip_in_secs = clip.source_in.to_secs_f64();
@@ -912,7 +912,7 @@ impl TimelinePanel {
                         // Debounce: only request once every 2 seconds.
                         if visible_count > 3 && filmstrip.len() > 1 {
                             let secs_per_tile = (clip_out_secs - clip_in_secs) / num_tiles.max(1) as f64;
-                            let min_interval = state.thumbnail_cache.filmstrip_min_interval(&clip.media_id);
+                            let min_interval = clip.media_id().and_then(|mid| state.thumbnail_cache.filmstrip_min_interval(&mid));
                             let debounce_ok = self.last_refine_request
                                 .map(|t| t.elapsed().as_secs_f64() > 2.0)
                                 .unwrap_or(true);
@@ -923,13 +923,15 @@ impl TimelinePanel {
                                     let range_start = clip_in_secs + vis_start_frac * (clip_out_secs - clip_in_secs);
                                     let range_end = clip_in_secs + vis_end_frac * (clip_out_secs - clip_in_secs);
                                     let new_interval = secs_per_tile.max(0.5);
-                                    cmds.push(AppCommand::RefineFilmstrip {
-                                        media_id: clip.media_id,
-                                        start_secs: range_start,
-                                        end_secs: range_end,
-                                        interval_secs: new_interval,
-                                    });
-                                    self.last_refine_request = Some(std::time::Instant::now());
+                                    if let Some(mid) = clip.media_id() {
+                                        cmds.push(AppCommand::RefineFilmstrip {
+                                            media_id: mid,
+                                            start_secs: range_start,
+                                            end_secs: range_end,
+                                            interval_secs: new_interval,
+                                        });
+                                        self.last_refine_request = Some(std::time::Instant::now());
+                                    }
                                 }
                             }
                         }
@@ -950,7 +952,7 @@ impl TimelinePanel {
                 }
                 if !drew_filmstrip {
                     // Fallback: single thumbnail or solid color
-                    if let Some(tex) = state.thumbnail_textures.get(&clip.media_id) {
+                    if let Some(tex) = clip.media_id().and_then(|mid| state.thumbnail_textures.get(&mid)) {
                         painter.image(
                             tex.id(),
                             clip_rect,
@@ -1029,7 +1031,7 @@ impl TimelinePanel {
 
             // Clip name label
             if clip_rect.width() > 40.0 {
-                if let Some(media) = state.media_pool.get(&clip.media_id) {
+                if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     let font_size = if track_kind == TrackKind::Audio { 10.0 } else { 11.0 };
                     let max_text_width = clip_rect.width() - 8.0;
                     let label = if is_offline {
@@ -1387,7 +1389,7 @@ impl TimelinePanel {
 
                     let media_duration = state.sequence.tracks.get(trim.track_idx)
                         .and_then(|t| t.find_clip(trim.clip_id))
-                        .map(|c| c.media_id)
+                        .and_then(|c| c.media_id())
                         .and_then(|mid| state.media_pool.get(&mid))
                         .map(|m| m.duration)
                         .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });

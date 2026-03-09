@@ -8,6 +8,7 @@ members = [
     "crates/klipp-color",
     "crates/klipp-engine",
     "crates/klipp-plugin",
+    "crates/klipp-effects",
     "crates/klipp-export",
     "crates/klipp-ui",
     "crates/klipp-app",
@@ -67,7 +68,7 @@ rubato = "0.15"
 ringbuf = "0.4"
 
 # Safe transmute for GPU buffer data
-bytemuck = "1.14"
+bytemuck = { version = "1.14", features = ["derive"] }
 
 # OpenColorIO (color management)
 # Note: requires system libOpenColorIO - bindings via C FFI
@@ -97,6 +98,7 @@ klipp-audio   = { path = "crates/klipp-audio" }
 klipp-color   = { path = "crates/klipp-color" }
 klipp-engine  = { path = "crates/klipp-engine" }
 klipp-plugin  = { path = "crates/klipp-plugin" }
+klipp-effects = { path = "crates/klipp-effects" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ui      = { path = "crates/klipp-ui" }
 
@@ -107,6 +109,9 @@ debug = true
 
 [profile.dev.package."*"]
 opt-level = 3          # But optimize all dependencies fully even in dev
+
+[profile.dev.package.klipp-effects]
+opt-level = 3          # Per-pixel math must be fast even in debug builds
 
 [profile.release]
 opt-level = 3

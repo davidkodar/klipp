@@ -1,6 +1,6 @@
 use crate::format::*;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{Sequence, TrackKind};
+use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
 use tracing::info;
 
@@ -35,9 +35,41 @@ pub fn save_project_with_color(
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
 
     // Build project.json
+    let now = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Manual ISO 8601 without pulling in chrono
+        let (days, rem) = (secs / 86400, secs % 86400);
+        let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+        // Days since 1970-01-01 → year/month/day (simplified)
+        let mut y = 1970i64;
+        let mut d = days as i64;
+        loop {
+            let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+            if d < dy { break; }
+            d -= dy;
+            y += 1;
+        }
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut mo = 0usize;
+        for md in &mdays {
+            if d < *md { break; }
+            d -= md;
+            mo += 1;
+        }
+        format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, d + 1)
+    };
+
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
+        klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        saved_at: Some(now),
+        platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
         sequence: sequence_to_json(sequence, color),
     };
 
@@ -100,7 +132,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 clips: t.clips.iter().map(|c| {
                     ClipJson {
                         id: c.id.to_string(),
-                        media_id: c.media_id.to_string(),
+                        media_id: c.media_id().map(|mid| mid.to_string()),
+                        kind: Some(clip_kind_to_json(&c.kind)),
                         timeline_in: c.timeline_in.value,
                         timeline_out: c.timeline_out.value,
                         source_in: c.source_in.value,
@@ -118,6 +151,11 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                             None
                         },
                         effects: c.effects.iter().map(effect_to_json).collect(),
+                        builtin_effects: if c.builtin_effects.is_empty() {
+                            None
+                        } else {
+                            serde_json::to_value(&c.builtin_effects).ok()
+                        },
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                     }
                 }).collect(),
@@ -150,6 +188,25 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
             };
             (k.clone(), json_val)
         }).collect(),
+    }
+}
+
+fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
+    match kind {
+        ClipKind::Media { media_id } => ClipKindJson::Media {
+            media_id: media_id.to_string(),
+        },
+        ClipKind::Title(data) => ClipKindJson::Title {
+            text: data.text.clone(),
+            font_size: data.font_size,
+            font_name: data.font_name.clone(),
+            color: data.color,
+            alignment: format!("{:?}", data.alignment),
+            position_x: data.position.x,
+            position_y: data.position.y,
+            background: serde_json::to_value(&data.background).unwrap_or_default(),
+            shadow: serde_json::to_value(&data.shadow).unwrap_or_default(),
+        },
     }
 }
 

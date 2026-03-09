@@ -1,7 +1,10 @@
 use crate::format::*;
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{Clip, ClipColorGrade, Sequence, Track, TrackKind};
+use klipp_timeline::{
+    Clip, ClipColorGrade, ClipKind, Sequence, TextAlignment, TitleBackground, TitleData,
+    TitlePosition, TitleShadow, Track, TrackKind,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -78,9 +81,10 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             track.visible = t.visible;
             track.pan = t.pan;
             track.clips = t.clips.iter().map(|c| {
+                let clip_kind = load_clip_kind(c);
                 Clip {
                     id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
-                    media_id: MediaId(parse_uuid(&c.media_id).unwrap_or_else(|_| Uuid::new_v4())),
+                    kind: clip_kind,
                     timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
                     timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
                     source_in: RationalTime { value: c.source_in, rate: c.rate },
@@ -93,6 +97,9 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
                         temperature: cg.temperature,
                         tint: cg.tint,
                     }).unwrap_or_default(),
+                    builtin_effects: c.builtin_effects.as_ref()
+                        .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())
+                        .unwrap_or_default(),
                     effects: c.effects.iter().map(|e| {
                         klipp_plugin::AppliedEffect {
                             plugin_name: e.plugin_name.clone(),
@@ -143,6 +150,66 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
 
     info!("Project loaded from {:?}", dir);
     Ok((sequence, media_pool, color_settings))
+}
+
+/// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
+fn load_clip_kind(c: &ClipJson) -> ClipKind {
+    // New format: `kind` field is present
+    if let Some(kind_json) = &c.kind {
+        return match kind_json {
+            ClipKindJson::Media { media_id } => {
+                let mid = parse_uuid(media_id)
+                    .map(MediaId)
+                    .unwrap_or_else(|_| MediaId::new());
+                ClipKind::Media { media_id: mid }
+            }
+            ClipKindJson::Title {
+                text,
+                font_size,
+                font_name,
+                color,
+                alignment,
+                position_x,
+                position_y,
+                background,
+                shadow,
+            } => {
+                let align = match alignment.as_str() {
+                    "Left" => TextAlignment::Left,
+                    "Right" => TextAlignment::Right,
+                    _ => TextAlignment::Center,
+                };
+                let bg: TitleBackground = serde_json::from_value(background.clone())
+                    .unwrap_or(TitleBackground::None);
+                let sh: Option<TitleShadow> = serde_json::from_value(shadow.clone()).ok().flatten();
+                ClipKind::Title(TitleData {
+                    text: text.clone(),
+                    font_size: *font_size,
+                    font_name: font_name.clone(),
+                    color: *color,
+                    alignment: align,
+                    position: TitlePosition {
+                        x: *position_x,
+                        y: *position_y,
+                    },
+                    background: bg,
+                    shadow: sh,
+                })
+            }
+        };
+    }
+
+    // Old format: `media_id` field only (Phase 6/7 backward compat)
+    if let Some(media_id_str) = &c.media_id {
+        let mid = parse_uuid(media_id_str)
+            .map(MediaId)
+            .unwrap_or_else(|_| MediaId::new());
+        return ClipKind::Media { media_id: mid };
+    }
+
+    // Fallback — should not happen
+    warn!("Clip {} has neither 'kind' nor 'media_id' — using default", c.id);
+    ClipKind::default()
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {

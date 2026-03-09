@@ -1,3 +1,4 @@
+use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
 use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
@@ -176,13 +177,14 @@ impl Track {
         let clip_id = ClipId::new();
         self.clips.push(Clip {
             id: clip_id,
-            media_id,
+            kind: ClipKind::Media { media_id },
             timeline_in,
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
             color_grade: ClipColorGrade::default(),
             effects: Vec::new(),
+            builtin_effects: Vec::new(),
             linked_clip_id: None,
         });
         clip_id
@@ -279,24 +281,26 @@ impl Track {
         let offset = cut_at - clip.timeline_in;
         let clip_a = Clip {
             id: ClipId::new(),
-            media_id: clip.media_id,
+            kind: clip.kind.clone(),
             timeline_in: clip.timeline_in,
             timeline_out: cut_at,
             source_in: clip.source_in,
             source_out: clip.source_in + offset,
             color_grade: clip.color_grade,
             effects: clip.effects.clone(),
+            builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
         };
         let clip_b = Clip {
             id: ClipId::new(),
-            media_id: clip.media_id,
+            kind: clip.kind.clone(),
             timeline_in: cut_at,
             timeline_out: clip.timeline_out,
             source_in: clip.source_in + offset,
             source_out: clip.source_out,
             color_grade: clip.color_grade,
             effects: clip.effects.clone(),
+            builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
         };
 
@@ -360,7 +364,7 @@ impl Default for ClipColorGrade {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clip {
     pub id: ClipId,
-    pub media_id: MediaId,
+    pub kind: ClipKind,
     pub timeline_in: Timecode,
     pub timeline_out: Timecode,
     pub source_in: Timecode,
@@ -370,10 +374,26 @@ pub struct Clip {
     #[serde(default)]
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     #[serde(default)]
+    pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
+    #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
 }
 
 impl Clip {
+    pub fn media_id(&self) -> Option<MediaId> {
+        match &self.kind {
+            ClipKind::Media { media_id } => Some(*media_id),
+            ClipKind::Title(_) => None,
+        }
+    }
+
+    pub fn title_data(&self) -> Option<&crate::clip_kind::TitleData> {
+        match &self.kind {
+            ClipKind::Title(data) => Some(data),
+            ClipKind::Media { .. } => None,
+        }
+    }
+
     pub fn duration(&self) -> Timecode {
         self.timeline_out - self.timeline_in
     }

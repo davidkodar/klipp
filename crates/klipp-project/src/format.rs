@@ -5,6 +5,15 @@ use std::collections::HashMap;
 pub struct ProjectJson {
     pub version: String,
     pub klipp_version_min: String,
+    /// The Klipp build version that wrote this file.
+    #[serde(default)]
+    pub klipp_version: Option<String>,
+    /// ISO 8601 timestamp of when the project was saved.
+    #[serde(default)]
+    pub saved_at: Option<String>,
+    /// Platform that saved the project (e.g. "linux-x86_64").
+    #[serde(default)]
+    pub platform: Option<String>,
     pub sequence: SequenceJson,
 }
 
@@ -76,7 +85,12 @@ fn default_rate() -> u32 { 24 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClipJson {
     pub id: String,
-    pub media_id: String,
+    /// Old field — kept for backward compatibility when loading old projects.
+    #[serde(default)]
+    pub media_id: Option<String>,
+    /// New field — used for all new saves.
+    #[serde(default)]
+    pub kind: Option<ClipKindJson>,
     pub timeline_in: i64,
     pub timeline_out: i64,
     pub source_in: i64,
@@ -88,8 +102,43 @@ pub struct ClipJson {
     #[serde(default)]
     pub effects: Vec<EffectJson>,
     #[serde(default)]
+    pub builtin_effects: Option<serde_json::Value>,
+    #[serde(default)]
     pub linked_clip_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClipKindJson {
+    Media {
+        media_id: String,
+    },
+    Title {
+        text: String,
+        #[serde(default = "default_font_size")]
+        font_size: f32,
+        #[serde(default = "default_font_name")]
+        font_name: String,
+        #[serde(default = "default_color_white")]
+        color: [u8; 4],
+        #[serde(default = "default_alignment")]
+        alignment: String,
+        #[serde(default = "default_half")]
+        position_x: f32,
+        #[serde(default = "default_half")]
+        position_y: f32,
+        #[serde(default)]
+        background: serde_json::Value,
+        #[serde(default)]
+        shadow: serde_json::Value,
+    },
+}
+
+fn default_font_size() -> f32 { 72.0 }
+fn default_font_name() -> String { "sans-serif".to_string() }
+fn default_color_white() -> [u8; 4] { [255, 255, 255, 255] }
+fn default_alignment() -> String { "Center".to_string() }
+fn default_half() -> f32 { 0.5 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ColorGradeJson {

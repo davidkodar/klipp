@@ -1197,6 +1197,70 @@ impl KlippApp {
                     continue;
                 }
 
+                // Built-in effects
+                AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.builtin_effects.push(effect.clone());
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    // When not playing, re-seek to force re-render with updated effects
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    }
+                    continue;
+                }
+                AppCommand::RemoveBuiltinEffect { clip_id, index } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *index < clip.builtin_effects.len() {
+                                clip.builtin_effects.remove(*index);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    }
+                    continue;
+                }
+                AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(fx) = clip.builtin_effects.get_mut(*index) {
+                                *fx = effect.clone();
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    }
+                    continue;
+                }
+                AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let from = *from_index;
+                            let to = *to_index;
+                            if from < clip.builtin_effects.len() && to < clip.builtin_effects.len() {
+                                let fx = clip.builtin_effects.remove(from);
+                                clip.builtin_effects.insert(to, fx);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    }
+                    continue;
+                }
+
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
                     let ti = *track_index;
@@ -1230,7 +1294,7 @@ impl KlippApp {
                         .unwrap_or(0);
                     if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
                         if let Some(clip) = track.find_clip(cid).cloned() {
-                            if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
+                            if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)).cloned() {
                                 let pos = track.clips.iter().position(|c| c.id == cid).unwrap_or(0);
                                 let shifted: Vec<_> = track.clips[pos + 1..].iter()
                                     .map(|c| (c.id, c.timeline_in, c.timeline_out))
@@ -1264,7 +1328,7 @@ impl KlippApp {
                         .unwrap_or(0);
                     if let Some(track) = self.state.sequence.tracks.get(track_index) {
                         if let Some(clip) = track.find_clip(cid).cloned() {
-                            if let Some(media) = self.state.media_pool.get(&clip.media_id).cloned() {
+                            if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)).cloned() {
                                 self.state.clipboard = Some(ClipboardContent {
                                     clips: vec![(clip, media)],
                                     source_track_index: track_index,
@@ -1284,13 +1348,14 @@ impl KlippApp {
                                 let dur = clip.duration();
                                 let new_clip = klipp_timeline::Clip {
                                     id: new_id,
-                                    media_id: clip.media_id,
+                                    kind: clip.kind.clone(),
                                     timeline_in,
                                     timeline_out: timeline_in + dur,
                                     source_in: clip.source_in,
                                     source_out: clip.source_out,
                                     color_grade: clip.color_grade,
                                     effects: clip.effects.clone(),
+                                    builtin_effects: clip.builtin_effects.clone(),
                                     linked_clip_id: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
@@ -1380,13 +1445,14 @@ impl KlippApp {
                                 let new_id = klipp_core::ClipId::new();
                                 let new_clip = klipp_timeline::Clip {
                                     id: new_id,
-                                    media_id: mid,
+                                    kind: klipp_timeline::ClipKind::Media { media_id: mid },
                                     timeline_in,
                                     timeline_out: timeline_in + dur,
                                     source_in,
                                     source_out,
                                     color_grade: klipp_timeline::ClipColorGrade::default(),
                                     effects: Vec::new(),
+                                    builtin_effects: Vec::new(),
                                     linked_clip_id: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
@@ -1435,13 +1501,14 @@ impl KlippApp {
                                 let new_id = klipp_core::ClipId::new();
                                 let new_clip = klipp_timeline::Clip {
                                     id: new_id,
-                                    media_id: mid,
+                                    kind: klipp_timeline::ClipKind::Media { media_id: mid },
                                     timeline_in,
                                     timeline_out: timeline_in + dur,
                                     source_in,
                                     source_out,
                                     color_grade: klipp_timeline::ClipColorGrade::default(),
                                     effects: Vec::new(),
+                                    builtin_effects: Vec::new(),
                                     linked_clip_id: None,
                                 };
                                 track.clips.push(new_clip);
@@ -1997,13 +2064,14 @@ impl KlippApp {
             // Right portion: new clip starting at new_out
             let right_clip = klipp_timeline::Clip {
                 id: klipp_core::ClipId::new(),
-                media_id: clip.media_id,
+                kind: clip.kind.clone(),
                 timeline_in: new_out,
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
                 color_grade: clip.color_grade,
                 effects: clip.effects.clone(),
+                builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
             };
             track.clips.insert(i + 1, right_clip);
@@ -2077,13 +2145,14 @@ impl KlippApp {
             let right_offset = range_out - clip.timeline_in;
             let right_clip = klipp_timeline::Clip {
                 id: klipp_core::ClipId::new(),
-                media_id: clip.media_id,
+                kind: clip.kind.clone(),
                 timeline_in: range_out,
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
                 color_grade: clip.color_grade,
                 effects: clip.effects.clone(),
+                builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
             };
             track.clips.insert(i + 1, right_clip);
@@ -2154,6 +2223,13 @@ impl KlippApp {
                 self.state.playhead = Timecode::zero();
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 self.state.thumbnail_textures.clear();
+                self.state.filmstrip_textures.clear();
+                // Stop the engine so decoders are released and frame buffer is stale-free
+                self.cmd_tx.send(AppCommand::Stop).ok();
+                // Clear the shared frame buffer so the viewer doesn't show the old frame
+                if let Ok(mut fb) = self.frame_buffer.lock() {
+                    fb.clear();
+                }
                 self.sync_sequence_to_engine();
 
                 // Detect offline media
@@ -3186,7 +3262,7 @@ impl KlippApp {
                     }
                 }
 
-                if let Some(media) = self.state.media_pool.get(&clip.media_id) {
+                if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)) {
                     let path_str = media.path.to_string_lossy().to_string();
 
                     // Trim clip source in/out to fit within export range

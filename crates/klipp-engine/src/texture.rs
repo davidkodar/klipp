@@ -23,6 +23,11 @@ impl FrameBuffer {
         self.height = height;
         self.dirty = true;
     }
+
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+        self.dirty = true;
+    }
 }
 
 pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;

@@ -11,6 +11,7 @@ enum InspectorTab {
 pub struct InspectorPanel {
     active_tab: InspectorTab,
     show_add_effect: bool,
+    show_add_builtin: bool,
 }
 
 impl Default for InspectorPanel {
@@ -18,6 +19,7 @@ impl Default for InspectorPanel {
         Self {
             active_tab: InspectorTab::Info,
             show_add_effect: false,
+            show_add_builtin: false,
         }
     }
 }
@@ -38,7 +40,7 @@ impl InspectorPanel {
                 t.find_clip(cid).map(|c| (ti, c))
             })
         });
-        let media = clip_info.and_then(|(_, c)| state.media_pool.get(&c.media_id));
+        let media = clip_info.and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
         // Tab bar
         ui.add_space(4.0);
@@ -207,9 +209,8 @@ impl InspectorPanel {
         ui.separator();
         ui.add_space(4.0);
 
-        let filmstrip_count = state
-            .filmstrip_textures
-            .get(&clip.media_id)
+        let filmstrip_count = clip.media_id()
+            .and_then(|mid| state.filmstrip_textures.get(&mid))
             .map(|f| f.len())
             .unwrap_or(0);
         if filmstrip_count > 0 {
@@ -380,22 +381,138 @@ impl InspectorPanel {
     ) {
         let clip_id = clip.id;
 
+        // ── Built-in Effects ──────────────────────────────────────
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects").strong().size(12.0));
+            ui.label(egui::RichText::new("Built-in Effects").strong().size(12.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+ Add Effect").clicked() {
-                    self.show_add_effect = true;
+                if ui.small_button("+ Add").clicked() {
+                    self.show_add_builtin = !self.show_add_builtin;
+                    self.show_add_effect = false;
                 }
             });
         });
         ui.separator();
         ui.add_space(4.0);
 
-        if clip.effects.is_empty() {
+        if clip.builtin_effects.is_empty() && !self.show_add_builtin {
             ui.colored_label(
                 egui::Color32::from_rgb(80, 80, 90),
-                "No effects applied",
+                "No built-in effects applied",
+            );
+        }
+
+        let mut builtin_remove = None;
+        let mut builtin_move_up = None;
+        let mut builtin_move_down = None;
+
+        for (i, effect) in clip.builtin_effects.iter().enumerate() {
+            let name = builtin_effect_name(effect);
+
+            // Collapsing header for each effect with controls
+            let header_id = ui.make_persistent_id(format!("bfx_{clip_id:?}_{i}"));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
+                .show_header(ui, |ui| {
+                    ui.label(egui::RichText::new(name).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                            builtin_remove = Some(i);
+                        }
+                        if i + 1 < clip.builtin_effects.len()
+                            && ui.small_button("\u{25BC}").on_hover_text("Move down").clicked()
+                        {
+                            builtin_move_down = Some(i);
+                        }
+                        if i > 0
+                            && ui.small_button("\u{25B2}").on_hover_text("Move up").clicked()
+                        {
+                            builtin_move_up = Some(i);
+                        }
+                    });
+                })
+                .body(|ui| {
+                    if let Some(updated) = show_builtin_effect_params(ui, effect) {
+                        cmds.push(AppCommand::UpdateBuiltinEffect {
+                            clip_id,
+                            index: i,
+                            effect: updated,
+                        });
+                    }
+                });
+            ui.add_space(2.0);
+        }
+
+        if let Some(idx) = builtin_remove {
+            cmds.push(AppCommand::RemoveBuiltinEffect { clip_id, index: idx });
+        }
+        if let Some(idx) = builtin_move_up {
+            cmds.push(AppCommand::ReorderBuiltinEffect { clip_id, from_index: idx, to_index: idx - 1 });
+        }
+        if let Some(idx) = builtin_move_down {
+            cmds.push(AppCommand::ReorderBuiltinEffect { clip_id, from_index: idx, to_index: idx + 1 });
+        }
+
+        // Add built-in effect picker
+        if self.show_add_builtin {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Add Built-in Effect").strong().size(11.0));
+            ui.add_space(4.0);
+
+            let effects = [
+                ("Opacity", klipp_effects::BuiltinEffect::Opacity { value: 1.0 }),
+                ("Gaussian Blur", klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.0 }),
+                ("Sharpen", klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 }),
+                ("Crop", klipp_effects::BuiltinEffect::Crop {
+                    left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+                }),
+                ("Transform", klipp_effects::BuiltinEffect::Transform {
+                    position_x: 0.0, position_y: 0.0,
+                    scale_x: 1.0, scale_y: 1.0,
+                    rotation: 0.0,
+                    anchor_x: 0.5, anchor_y: 0.5,
+                }),
+                ("Chroma Key", klipp_effects::BuiltinEffect::ChromaKey {
+                    key_color: [0, 255, 0],
+                    tolerance: 0.2,
+                    spill_suppression: 0.1,
+                }),
+            ];
+
+            for (label, effect) in &effects {
+                if ui.small_button(*label).clicked() {
+                    cmds.push(AppCommand::AddBuiltinEffect {
+                        clip_id,
+                        effect: effect.clone(),
+                    });
+                    self.show_add_builtin = false;
+                }
+            }
+
+            ui.add_space(4.0);
+            if ui.small_button("Cancel").clicked() {
+                self.show_add_builtin = false;
+            }
+        }
+
+        // ── OFX Plugin Effects ────────────────────────────────────
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("OFX Plugins").strong().size(12.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("+ Add Plugin").clicked() {
+                    self.show_add_effect = !self.show_add_effect;
+                    self.show_add_builtin = false;
+                }
+            });
+        });
+        ui.separator();
+        ui.add_space(4.0);
+
+        if clip.effects.is_empty() && !self.show_add_effect {
+            ui.colored_label(
+                egui::Color32::from_rgb(80, 80, 90),
+                "No OFX effects applied",
             );
         }
 
@@ -414,7 +531,6 @@ impl InspectorPanel {
                     });
                 }
 
-                // Short display name (strip common prefixes)
                 let display_name = effect.plugin_name
                     .rsplit_once('.')
                     .map(|(_, name)| name)
@@ -450,9 +566,9 @@ impl InspectorPanel {
             cmds.push(AppCommand::ReorderEffect { clip_id, from_index: idx, to_index: idx + 1 });
         }
 
-        // Add effect popup
+        // Add OFX plugin popup
         if self.show_add_effect {
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             ui.separator();
             ui.label(egui::RichText::new("Available Plugins").strong().size(11.0));
             ui.add_space(4.0);
@@ -485,4 +601,68 @@ impl InspectorPanel {
             }
         }
     }
+}
+
+fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
+    match effect {
+        klipp_effects::BuiltinEffect::Opacity { .. } => "Opacity",
+        klipp_effects::BuiltinEffect::GaussianBlur { .. } => "Gaussian Blur",
+        klipp_effects::BuiltinEffect::Sharpen { .. } => "Sharpen",
+        klipp_effects::BuiltinEffect::Crop { .. } => "Crop",
+        klipp_effects::BuiltinEffect::Transform { .. } => "Transform",
+        klipp_effects::BuiltinEffect::ChromaKey { .. } => "Chroma Key",
+    }
+}
+
+/// Show parameter sliders for a built-in effect. Returns Some(updated) if any value changed.
+fn show_builtin_effect_params(
+    ui: &mut egui::Ui,
+    effect: &klipp_effects::BuiltinEffect,
+) -> Option<klipp_effects::BuiltinEffect> {
+    let mut changed = false;
+    let mut updated = effect.clone();
+
+    match &mut updated {
+        klipp_effects::BuiltinEffect::Opacity { value } => {
+            changed |= ui.add(egui::Slider::new(value, 0.0..=1.0).text("Opacity")).changed();
+        }
+        klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
+            changed |= ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")).changed();
+        }
+        klipp_effects::BuiltinEffect::Sharpen { amount } => {
+            changed |= ui.add(egui::Slider::new(amount, 0.0..=2.0).text("Amount")).changed();
+        }
+        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
+            changed |= ui.add(egui::Slider::new(left, 0.0..=0.5).text("Left")).changed();
+            changed |= ui.add(egui::Slider::new(right, 0.0..=0.5).text("Right")).changed();
+            changed |= ui.add(egui::Slider::new(top, 0.0..=0.5).text("Top")).changed();
+            changed |= ui.add(egui::Slider::new(bottom, 0.0..=0.5).text("Bottom")).changed();
+            changed |= ui.add(egui::Slider::new(feather, 0.0..=100.0).text("Feather")).changed();
+        }
+        klipp_effects::BuiltinEffect::Transform {
+            position_x, position_y, scale_x, scale_y,
+            rotation, anchor_x, anchor_y,
+        } => {
+            changed |= ui.add(egui::Slider::new(position_x, -1920.0..=1920.0).text("Position X")).changed();
+            changed |= ui.add(egui::Slider::new(position_y, -1080.0..=1080.0).text("Position Y")).changed();
+            changed |= ui.add(egui::Slider::new(scale_x, 0.01..=4.0).text("Scale X")).changed();
+            changed |= ui.add(egui::Slider::new(scale_y, 0.01..=4.0).text("Scale Y")).changed();
+            changed |= ui.add(egui::Slider::new(rotation, -360.0..=360.0).text("Rotation")).changed();
+            changed |= ui.add(egui::Slider::new(anchor_x, 0.0..=1.0).text("Anchor X")).changed();
+            changed |= ui.add(egui::Slider::new(anchor_y, 0.0..=1.0).text("Anchor Y")).changed();
+        }
+        klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
+            let mut color = egui::Color32::from_rgb(key_color[0], key_color[1], key_color[2]);
+            if ui.color_edit_button_srgba(&mut color).changed() {
+                key_color[0] = color.r();
+                key_color[1] = color.g();
+                key_color[2] = color.b();
+                changed = true;
+            }
+            changed |= ui.add(egui::Slider::new(tolerance, 0.0..=1.0).text("Tolerance")).changed();
+            changed |= ui.add(egui::Slider::new(spill_suppression, 0.0..=1.0).text("Spill")).changed();
+        }
+    }
+
+    if changed { Some(updated) } else { None }
 }
