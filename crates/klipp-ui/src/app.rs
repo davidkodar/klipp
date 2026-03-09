@@ -1314,6 +1314,47 @@ impl KlippApp {
                     continue;
                 }
 
+                // Title clips
+                AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
+                    let ti = *track_index;
+                    let fps_rate = self.state.sequence.fps.rate();
+                    let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
+                    let timeline_out = *timeline_in + duration;
+                    let clip = klipp_timeline::Clip {
+                        id: klipp_core::ClipId::new(),
+                        kind: klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::default()),
+                        timeline_in: *timeline_in,
+                        timeline_out,
+                        source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
+                        source_out: duration,
+                        color_grade: klipp_timeline::ClipColorGrade::default(),
+                        builtin_effects: Vec::new(),
+                        effects: Vec::new(),
+                        linked_clip_id: None,
+                    };
+                    if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
+                        track.clips.push(clip);
+                        track.clips.sort_by_key(|c| c.timeline_in.value);
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UpdateTitleData { clip_id, text, font_size, color } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.text = text.clone();
+                                td.font_size = *font_size;
+                                td.color = *color;
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
                     let ti = *track_index;
@@ -2495,6 +2536,41 @@ impl KlippApp {
                         });
                     }
                 }
+            }
+            // Ctrl+T — Create title clip at playhead on a free video track (or create new one)
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
+                let ph = self.state.playhead;
+                // Find a video track that has no clip at the playhead
+                let track_index = self.state.sequence.tracks.iter()
+                    .enumerate()
+                    .find(|(_, t)| {
+                        t.kind == klipp_timeline::TrackKind::Video
+                            && t.clip_at_timecode(ph).is_none()
+                    })
+                    .map(|(i, _)| i);
+                let track_index = match track_index {
+                    Some(i) => i,
+                    None => {
+                        // All video tracks occupied — add a new video track
+                        let _new_idx = self.state.sequence.tracks.len();
+                        let track_num = self.state.sequence.tracks.iter()
+                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .count() + 1;
+                        let track = klipp_timeline::Track::new(
+                            &format!("Video {track_num}"),
+                            klipp_timeline::TrackKind::Video,
+                        );
+                        self.state.sequence.tracks.insert(0, track); // insert at top
+                        0
+                    }
+                };
+                let fps_rate = self.state.sequence.fps.rate();
+                let duration_frames = fps_rate * 5; // 5 seconds default
+                cmds.push(AppCommand::CreateTitleClip {
+                    track_index,
+                    timeline_in: ph,
+                    duration_frames,
+                });
             }
             // B — Blade tool
             if !i.modifiers.ctrl && i.key_pressed(egui::Key::B) {

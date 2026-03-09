@@ -84,6 +84,8 @@ pub struct PlaybackEngine {
     transition_decoder: Option<VideoDecoder>,
     transition_clip_id: Option<klipp_core::ClipId>,
     transition_frame_cache: Option<crate::types::DecodedFrame>,
+    // Title renderer — generates RGBA frames for title clips
+    title_renderer: klipp_title::TitleRenderer,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
 }
@@ -156,6 +158,7 @@ impl PlaybackEngine {
             transition_decoder: None,
             transition_clip_id: None,
             transition_frame_cache: None,
+            title_renderer: klipp_title::TitleRenderer::new(),
             last_peak_time: std::time::Instant::now(),
         })
     }
@@ -453,6 +456,72 @@ impl PlaybackEngine {
     }
 
     fn handle_play(&mut self) {
+        // Check if no media clip exists at playhead but a title clip does (standalone title)
+        {
+            let seq = self.sequence.read().unwrap();
+            let has_media_clip = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .any(|track| {
+                    track.clip_at_timecode(self.playhead)
+                        .map(|(_, c)| c.media_id().is_some())
+                        .unwrap_or(false)
+                });
+            let title_info = if !has_media_clip {
+                seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|track| {
+                        track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
+                            let td = clip.title_data()?.clone();
+                            Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
+                        })
+                    })
+            } else {
+                None
+            };
+            drop(seq);
+
+            if let Some((idx, _title_data, timeline_in, clip_source_in)) = title_info {
+                info!("handle_play: title clip {idx} at playhead");
+                self.v1_decoder = None;
+                self.current_clip_index = idx;
+                self.current_file = None;
+                self.clip_source_start = clip_source_in;
+                self.clip_timeline_start = timeline_in;
+
+                // Start audio for all tracks
+                self.start_all_audio(self.playhead);
+                if let Some(aout) = &self.audio_output {
+                    aout.0.pause();
+                }
+
+                // Set clock to playhead position (title clips use timeline time as source)
+                let source_secs = self.playhead.to_secs_f64();
+                let source_us = (source_secs * 1_000_000.0) as u64;
+                self.master_clock.seek(source_us);
+
+                // Pre-fill audio
+                for active in &self.audio_sources {
+                    active.source.resume();
+                }
+                std::thread::sleep(Duration::from_millis(20));
+
+                if let Some(aout) = &self.audio_output {
+                    aout.0.resume();
+                }
+                self.master_clock.resume();
+
+                self.state = PlaybackState::Playing;
+                self.maybe_open_v2_decoder(self.playhead);
+                self.dropped_frames = 0;
+                self.frames_consumed = 0;
+                self.last_playback_log = std::time::Instant::now();
+                self.last_frame_time = std::time::Instant::now();
+                let _ = self.event_tx.send(AppEvent::PlaybackStarted);
+                (self.repaint_cb)();
+                return;
+            }
+        }
+
         let seq = self.sequence.read().unwrap();
         // Search ALL video tracks (not just Video 1)
         let clip_info = seq.tracks.iter()
@@ -822,6 +891,52 @@ impl PlaybackEngine {
         let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
         let _clock_running = self.master_clock.is_running();
 
+        // Title clip path — standalone title on V1 (no media decoder active)
+        if self.v1_decoder.is_none() && self.current_file.is_none() {
+            let seq = self.sequence.read().unwrap();
+            let title_clip = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|track| {
+                    track.clips.get(self.current_clip_index).and_then(|clip| {
+                        clip.title_data().map(|td| (clip.clone(), td.clone()))
+                    })
+                });
+            drop(seq);
+
+            if let Some((clip, title_data)) = title_clip {
+                // Update playhead from clock
+                let elapsed_secs = current_source_secs - self.clip_source_start;
+                let elapsed_tc = RationalTime::from_secs_f64(elapsed_secs.max(0.0), self.fps.rate());
+                self.playhead = clip.timeline_in + elapsed_tc;
+
+                // Check if past end of title clip
+                if self.playhead >= clip.timeline_out {
+                    self.playhead = clip.timeline_out;
+                    self.advance_to_next_clip();
+                    return;
+                }
+
+                // Render title frame at sequence resolution
+                let seq = self.sequence.read().unwrap();
+                let (w, h) = (seq.resolution.width, seq.resolution.height);
+                drop(seq);
+                let rgba = self.title_renderer.render(&title_data, w, h);
+
+                // Apply post-processing (color grade, effects, LUT)
+                let final_rgba = self.post_process_rgba(rgba, w, h);
+
+                // Write to frame buffer
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(final_rgba, w, h);
+                drop(fb);
+
+                self.frames_consumed += 1;
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                (self.repaint_cb)();
+                return;
+            }
+        }
+
         // Pop frames from the queue, presenting the one closest to current time
         let mut display_frame = None;
         let mut q_len = 0usize;
@@ -1145,52 +1260,77 @@ impl PlaybackEngine {
     /// Opens/closes the V2 decoder as needed.
     fn maybe_open_v2_decoder(&mut self, playhead: Timecode) {
         let seq = self.sequence.read().unwrap();
-        let v2_info = seq.video_track2().and_then(|track| {
-            if track.muted {
-                return None;
-            }
-            track.clip_at_timecode(playhead).and_then(|(idx, clip)| {
-                let media_id = clip.media_id()?;
-                let source_secs = clip.source_in.to_secs_f64()
-                    + (playhead - clip.timeline_in).to_secs_f64();
-                Some((idx, media_id, source_secs))
-            })
-        });
+        // Check ALL overlay video tracks (not just track2) for clips at playhead
+        let overlay_info = seq.tracks.iter()
+            .enumerate()
+            .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && *i > 0 && !t.muted)
+            .find_map(|(track_idx, track)| {
+                track.clip_at_timecode(playhead).map(|(idx, clip)| {
+                    (track_idx, idx, clip.clone())
+                })
+            });
+        let res = seq.resolution;
         drop(seq);
 
-        match v2_info {
-            Some((idx, media_id, source_secs)) => {
-                // Already have the right decoder open?
-                if self.current_clip_v2 == Some(idx) {
+        match overlay_info {
+            Some((_track_idx, idx, clip)) => {
+                // Title clip on overlay track — render directly to v2_frame_cache
+                if let Some(title_data) = clip.title_data() {
+                    // Close media V2 decoder if open
+                    if self.v2_decoder.is_some() {
+                        if let Some(dec) = &mut self.v2_decoder {
+                            dec.stop_detached();
+                        }
+                        self.v2_decoder = None;
+                    }
+                    let rgba = self.title_renderer.render(title_data, res.width, res.height);
+                    self.v2_frame_cache = Some(crate::types::DecodedFrame {
+                        data: crate::types::FrameData::Rgba(rgba),
+                        width: res.width,
+                        height: res.height,
+                        pts: RationalTime::from_frames(0, 24),
+                        is_eof: false,
+                    });
+                    self.current_clip_v2 = Some(idx);
                     return;
                 }
-                // Close old V2 decoder
-                if let Some(dec) = &mut self.v2_decoder {
-                    dec.stop_detached();
-                }
-                self.v2_decoder = None;
-                self.v2_frame_cache = None;
 
-                if let Some(path) = self.path_for_media(media_id) {
-                    match VideoDecoder::open(&path) {
-                        Ok(dec) => {
-                            if source_secs > 0.01 {
-                                dec.seek(source_secs);
+                // Media clip on overlay track
+                if let Some(media_id) = clip.media_id() {
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (playhead - clip.timeline_in).to_secs_f64();
+                    // Already have the right decoder open?
+                    if self.current_clip_v2 == Some(idx) {
+                        return;
+                    }
+                    // Close old V2 decoder
+                    if let Some(dec) = &mut self.v2_decoder {
+                        dec.stop_detached();
+                    }
+                    self.v2_decoder = None;
+                    self.v2_frame_cache = None;
+
+                    if let Some(path) = self.path_for_media(media_id) {
+                        match VideoDecoder::open(&path) {
+                            Ok(dec) => {
+                                if source_secs > 0.01 {
+                                    dec.seek(source_secs);
+                                }
+                                dec.resume();
+                                self.v2_decoder = Some(dec);
+                                self.current_clip_v2 = Some(idx);
+                                debug!("V2 decoder opened for clip {idx}");
                             }
-                            dec.resume();
-                            self.v2_decoder = Some(dec);
-                            self.current_clip_v2 = Some(idx);
-                            debug!("V2 decoder opened for clip {idx}");
-                        }
-                        Err(e) => {
-                            warn!("Failed to open V2 decoder: {e}");
-                            self.current_clip_v2 = None;
+                            Err(e) => {
+                                warn!("Failed to open V2 decoder: {e}");
+                                self.current_clip_v2 = None;
+                            }
                         }
                     }
                 }
             }
             None => {
-                // No V2 clip at playhead — close decoder if open
+                // No overlay clip at playhead — close decoder if open
                 if self.v2_decoder.is_some() {
                     if let Some(dec) = &mut self.v2_decoder {
                         dec.stop_detached();
@@ -1199,6 +1339,10 @@ impl PlaybackEngine {
                     self.current_clip_v2 = None;
                     self.v2_frame_cache = None;
                     debug!("V2 decoder closed (no clip at playhead)");
+                } else if self.v2_frame_cache.is_some() && self.current_clip_v2.is_some() {
+                    // Clear cached title frame
+                    self.v2_frame_cache = None;
+                    self.current_clip_v2 = None;
                 }
             }
         }
@@ -1226,6 +1370,53 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        // Check for standalone title clip (no media clip at this timecode on any track)
+        {
+            let seq = self.sequence.read().unwrap();
+            let has_media_clip = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .any(|track| {
+                    track.clip_at_timecode(tc)
+                        .map(|(_, c)| c.media_id().is_some())
+                        .unwrap_or(false)
+                });
+            let title_info = if !has_media_clip {
+                seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|track| {
+                        track.clip_at_timecode(tc).and_then(|(idx, clip)| {
+                            let td = clip.title_data()?.clone();
+                            Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
+                        })
+                    })
+            } else {
+                None
+            };
+            let res = seq.resolution;
+            drop(seq);
+
+            if let Some((idx, title_data, timeline_in, clip_source_in)) = title_info {
+                // Close any existing video decoder — title clips don't need one
+                self.v1_decoder = None;
+                self.current_clip_index = idx;
+                self.current_file = None;
+                self.clip_source_start = clip_source_in;
+                self.clip_timeline_start = timeline_in;
+
+                // Render title frame and write to frame buffer
+                let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+                let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(final_rgba, res.width, res.height);
+                drop(fb);
+
+                self.playhead = tc;
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
+                (self.repaint_cb)();
+                return;
+            }
+        }
+
         let seq = self.sequence.read().unwrap();
         // Search ALL video tracks (not just Video 1)
         let clip_info = seq.tracks.iter()

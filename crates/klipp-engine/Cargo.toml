@@ -11,6 +11,7 @@ klipp-timeline = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-color = { workspace = true }
 klipp-plugin = { workspace = true }
+klipp-title = { workspace = true }
 ffmpeg-next = { workspace = true }
 cpal = { workspace = true }
 rubato = { workspace = true }

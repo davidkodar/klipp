@@ -807,11 +807,14 @@ impl TimelinePanel {
             }
 
             let is_selected = state.selected_clip == Some(clip.id);
+            let is_title = clip.title_data().is_some();
             let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
 
-            let base_color = if is_offline {
+            let base_color = if is_title {
+                egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
+            } else if is_offline {
                 egui::Color32::from_rgb(58, 32, 32)
             } else {
                 match track_kind {
@@ -819,7 +822,9 @@ impl TimelinePanel {
                     TrackKind::Audio => egui::Color32::from_rgb(42, 90, 58),
                 }
             };
-            let bright_color = if is_offline {
+            let bright_color = if is_title {
+                egui::Color32::from_rgb(90, 65, 130)
+            } else if is_offline {
                 egui::Color32::from_rgb(80, 45, 45)
             } else {
                 match track_kind {
@@ -1067,7 +1072,35 @@ impl TimelinePanel {
 
             // Clip name label
             if clip_rect.width() > 40.0 {
-                if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+                if let Some(title_data) = clip.title_data() {
+                    // Title clip: show "T" badge and text preview
+                    let font_size = 11.0;
+                    let max_text_width = clip_rect.width() - 28.0;
+                    // "T" badge
+                    let badge_rect = egui::Rect::from_min_size(
+                        egui::pos2(clip_rect.left() + 3.0, clip_rect.center().y - 8.0),
+                        egui::vec2(16.0, 16.0),
+                    );
+                    painter.rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_premultiplied(200, 180, 255, 180));
+                    painter.text(
+                        badge_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "T",
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::BLACK,
+                    );
+                    // Text preview
+                    if max_text_width > 10.0 {
+                        let text_pos = egui::pos2(clip_rect.left() + 22.0, clip_rect.center().y);
+                        painter.text(
+                            text_pos,
+                            egui::Align2::LEFT_CENTER,
+                            truncate_text(&title_data.text, max_text_width, font_size),
+                            egui::FontId::proportional(font_size),
+                            egui::Color32::from_rgb(220, 200, 255),
+                        );
+                    }
+                } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     let font_size = if track_kind == TrackKind::Audio { 10.0 } else { 11.0 };
                     let max_text_width = clip_rect.width() - 8.0;
                     let label = if is_offline {

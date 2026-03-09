@@ -228,6 +228,10 @@ pub enum AppCommand {
     SetTransitionDuration { track_index: usize, transition_id: crate::id::TransitionId, duration_frames: u32 },
     SetTransitionKind { track_index: usize, transition_id: crate::id::TransitionId, kind_id: u8 },
 
+    // Title clips
+    CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },
+    UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, color: [u8; 4] },
+
     // Linked clips
     ImportMediaLinked { media_id: MediaId },
     UnlinkClip { clip_id: ClipId },

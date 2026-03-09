@@ -1,0 +1,9 @@
+[package]
+name = "klipp-title"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+klipp-timeline = { path = "../klipp-timeline" }
+fontdue = "0.9"
+tracing = { workspace = true }
