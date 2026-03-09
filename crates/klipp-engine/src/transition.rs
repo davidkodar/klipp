@@ -1,6 +1,5 @@
 /// CPU fallback transition rendering.
 /// GPU path in gpu.rs is preferred; this is used when GPU is unavailable.
-
 use klipp_timeline::TransitionKind;
 
 /// Map TransitionKind to the GPU shader's kind_id.

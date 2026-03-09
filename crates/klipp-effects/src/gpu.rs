@@ -338,7 +338,7 @@ impl GpuEffectsPipeline {
         // Track which buffer has the current data (true = buf_a, false = buf_b)
         let mut current_in_a = true;
         let pixel_count = width * height;
-        let workgroups = (pixel_count + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         for effect in effects {
             let (input, output) = if current_in_a {
@@ -613,7 +613,7 @@ impl GpuEffectsPipeline {
         });
 
         let pixel_count = width * height;
-        let workgroups = (pixel_count + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -715,7 +715,7 @@ struct TransitionParams {
 fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
     let w_ideal = ((12.0 * sigma * sigma / 3.0) + 1.0).sqrt();
     let mut wl = w_ideal.floor() as usize;
-    if wl % 2 == 0 {
+    if wl.is_multiple_of(2) {
         wl = wl.saturating_sub(1).max(1);
     }
     let wu = wl + 2;

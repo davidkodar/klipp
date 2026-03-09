@@ -1354,6 +1354,71 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitleAlignment { clip_id, alignment } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.alignment = match alignment {
+                                    0 => klipp_timeline::TextAlignment::Left,
+                                    2 => klipp_timeline::TextAlignment::Right,
+                                    _ => klipp_timeline::TextAlignment::Center,
+                                };
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitlePosition { clip_id, x, y } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.background = match bg_kind {
+                                    1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0 },
+                                    2 => klipp_timeline::TitleBackground::FullFrame { color: *color },
+                                    _ => klipp_timeline::TitleBackground::None,
+                                };
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y } => {
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                if *enabled {
+                                    td.shadow = Some(klipp_timeline::TitleShadow {
+                                        color: *color,
+                                        offset_x: *offset_x,
+                                        offset_y: *offset_y,
+                                        blur: 0.0,
+                                    });
+                                } else {
+                                    td.shadow = None;
+                                }
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
 
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {

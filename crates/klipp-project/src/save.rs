@@ -200,6 +200,7 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
     }
 }
 
+#[allow(clippy::needless_borrows_for_generic_args)]
 fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
     match kind {
         ClipKind::Media { media_id } => ClipKindJson::Media {

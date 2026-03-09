@@ -231,6 +231,10 @@ pub enum AppCommand {
     // Title clips
     CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, color: [u8; 4] },
+    SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
+    SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
+    SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
+    SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32 },
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },

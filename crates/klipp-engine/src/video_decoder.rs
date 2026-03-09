@@ -189,7 +189,7 @@ unsafe extern "C" fn vaapi_get_format(
 unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
-    let device_type = av_hwdevice_find_type_by_name(b"cuda\0".as_ptr() as *const _);
+    let device_type = av_hwdevice_find_type_by_name(c"cuda".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         warn!("CUDA: device type not found");
         return false;
@@ -219,7 +219,7 @@ unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) ->
 unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
-    let device_type = av_hwdevice_find_type_by_name(b"vaapi\0".as_ptr() as *const _);
+    let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         warn!("VAAPI: device type not found");
         return false;
@@ -383,6 +383,7 @@ unsafe fn download_hw_frame(
 // Decode thread
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::drop_non_drop)]
 fn decode_thread_main(
     path: PathBuf,
     frame_queue: SharedFrameQueue,
@@ -636,7 +637,7 @@ fn decode_thread_main(
             drained_any = true;
             perf_frame_count += 1;
 
-            if perf_frame_count % PERF_LOG_INTERVAL == 0 {
+            if perf_frame_count.is_multiple_of(PERF_LOG_INTERVAL) {
                 let elapsed = perf_interval_start.elapsed();
                 let fps = PERF_LOG_INTERVAL as f64 / elapsed.as_secs_f64();
                 debug!(

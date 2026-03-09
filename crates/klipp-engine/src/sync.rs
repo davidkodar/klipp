@@ -19,6 +19,12 @@ pub struct MasterClock {
     generation: AtomicU64,
 }
 
+impl Default for MasterClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MasterClock {
     pub fn new() -> Self {
         Self {

@@ -6,6 +6,7 @@ enum InspectorTab {
     Info,
     Color,
     Effects,
+    Title,
 }
 
 pub struct InspectorPanel {
@@ -71,7 +72,33 @@ impl InspectorPanel {
             if ui.selectable_label(self.active_tab == InspectorTab::Effects, fx_style).clicked() {
                 self.active_tab = InspectorTab::Effects;
             }
+
+            // Only show Title tab when a title clip is selected
+            let is_title_clip = clip_info.is_some_and(|(_, c)| {
+                matches!(c.kind, klipp_timeline::ClipKind::Title(_))
+            });
+            if is_title_clip {
+                let title_style = if self.active_tab == InspectorTab::Title {
+                    egui::RichText::new("Title").strong().size(12.0)
+                } else {
+                    egui::RichText::new("Title").size(12.0).color(egui::Color32::from_rgb(140, 140, 150))
+                };
+                if ui.selectable_label(self.active_tab == InspectorTab::Title, title_style).clicked() {
+                    self.active_tab = InspectorTab::Title;
+                }
+            }
         });
+
+        // Auto-switch to Title tab when a title clip is selected
+        let is_title_clip = clip_info.is_some_and(|(_, c)| {
+            matches!(c.kind, klipp_timeline::ClipKind::Title(_))
+        });
+        if is_title_clip && self.active_tab == InspectorTab::Info {
+            self.active_tab = InspectorTab::Title;
+        } else if !is_title_clip && self.active_tab == InspectorTab::Title {
+            self.active_tab = InspectorTab::Info;
+        }
+
         ui.separator();
 
         match self.active_tab {
@@ -101,6 +128,18 @@ impl InspectorPanel {
                         ui.colored_label(
                             egui::Color32::from_rgb(80, 80, 90),
                             "Select a clip to add effects",
+                        );
+                    });
+                }
+            }
+            InspectorTab::Title => {
+                if let Some((_, clip)) = clip_info {
+                    self.show_title_tab(ui, clip, &mut cmds);
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(80, 80, 90),
+                            "Select a title clip",
                         );
                     });
                 }
@@ -324,6 +363,182 @@ impl InspectorPanel {
         ui.add_space(12.0);
         if ui.button("Reset All").clicked() {
             cmds.push(AppCommand::ResetClipColorGrade { clip_id });
+        }
+    }
+
+    fn show_title_tab(
+        &self,
+        ui: &mut egui::Ui,
+        clip: &klipp_timeline::Clip,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let clip_id = clip.id;
+        let td = match &clip.kind {
+            klipp_timeline::ClipKind::Title(td) => td,
+            _ => return,
+        };
+
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Title Properties").strong().size(12.0));
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Text input
+        let mut text = td.text.clone();
+        ui.label("Text");
+        let response = ui.add(
+            egui::TextEdit::multiline(&mut text)
+                .desired_width(f32::INFINITY)
+                .desired_rows(3)
+                .font(egui::TextStyle::Monospace),
+        );
+        if response.changed() {
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: text.clone(),
+                font_size: td.font_size,
+                color: td.color,
+            });
+        }
+        ui.add_space(8.0);
+
+        // Font size
+        let mut font_size = td.font_size;
+        ui.label("Font Size");
+        if ui.add(egui::Slider::new(&mut font_size, 12.0..=300.0)
+            .step_by(1.0)
+            .suffix(" pt")
+        ).changed() {
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: td.text.clone(),
+                font_size,
+                color: td.color,
+            });
+        }
+        ui.add_space(8.0);
+
+        // Text color
+        ui.label("Text Color");
+        let mut color = egui::Color32::from_rgba_premultiplied(td.color[0], td.color[1], td.color[2], td.color[3]);
+        if ui.color_edit_button_srgba(&mut color).changed() {
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: td.text.clone(),
+                font_size: td.font_size,
+                color: [color.r(), color.g(), color.b(), color.a()],
+            });
+        }
+        ui.add_space(8.0);
+
+        // Alignment
+        ui.label("Alignment");
+        ui.horizontal(|ui| {
+            let current = match td.alignment {
+                klipp_timeline::TextAlignment::Left => 0u8,
+                klipp_timeline::TextAlignment::Center => 1,
+                klipp_timeline::TextAlignment::Right => 2,
+            };
+            for (val, label) in [(0, "Left"), (1, "Center"), (2, "Right")] {
+                if ui.selectable_label(current == val, label).clicked() && current != val {
+                    cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
+                }
+            }
+        });
+        ui.add_space(8.0);
+
+        // Position
+        ui.label("Position");
+        let mut pos_x = td.position.x;
+        let mut pos_y = td.position.y;
+        let mut pos_changed = false;
+        pos_changed |= ui.add(egui::Slider::new(&mut pos_x, 0.0..=1.0).text("X").step_by(0.01)).changed();
+        pos_changed |= ui.add(egui::Slider::new(&mut pos_y, 0.0..=1.0).text("Y").step_by(0.01)).changed();
+        if pos_changed {
+            cmds.push(AppCommand::SetTitlePosition { clip_id, x: pos_x, y: pos_y });
+        }
+        ui.add_space(4.0);
+        // Position presets
+        ui.horizontal(|ui| {
+            if ui.small_button("Center").clicked() {
+                cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.5 });
+            }
+            if ui.small_button("Lower Third").clicked() {
+                cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.85 });
+            }
+            if ui.small_button("Top").clicked() {
+                cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.15 });
+            }
+        });
+        ui.add_space(8.0);
+
+        // Background
+        ui.label("Background");
+        let bg_kind: u8 = match &td.background {
+            klipp_timeline::TitleBackground::None => 0,
+            klipp_timeline::TitleBackground::Color { .. } => 1,
+            klipp_timeline::TitleBackground::FullFrame { .. } => 2,
+        };
+        let bg_color = match &td.background {
+            klipp_timeline::TitleBackground::Color { color, .. } => *color,
+            klipp_timeline::TitleBackground::FullFrame { color } => *color,
+            _ => [0, 0, 0, 180],
+        };
+        ui.horizontal(|ui| {
+            for (val, label) in [(0, "None"), (1, "Box"), (2, "Full")] {
+                if ui.selectable_label(bg_kind == val, label).clicked() && bg_kind != val {
+                    cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind: val, color: bg_color });
+                }
+            }
+        });
+        if bg_kind > 0 {
+            let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
+            if ui.color_edit_button_srgba(&mut bg_col).changed() {
+                cmds.push(AppCommand::SetTitleBackground {
+                    clip_id,
+                    bg_kind,
+                    color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()],
+                });
+            }
+        }
+        ui.add_space(8.0);
+
+        // Shadow
+        ui.label("Shadow");
+        let has_shadow = td.shadow.is_some();
+        let shadow = td.shadow.unwrap_or(klipp_timeline::TitleShadow {
+            color: [0, 0, 0, 180],
+            offset_x: 3.0,
+            offset_y: 3.0,
+            blur: 0.0,
+        });
+        let mut shadow_enabled = has_shadow;
+        if ui.checkbox(&mut shadow_enabled, "Enable Shadow").changed() {
+            cmds.push(AppCommand::SetTitleShadow {
+                clip_id,
+                enabled: shadow_enabled,
+                color: shadow.color,
+                offset_x: shadow.offset_x,
+                offset_y: shadow.offset_y,
+            });
+        }
+        if has_shadow {
+            let mut ox = shadow.offset_x;
+            let mut oy = shadow.offset_y;
+            let mut s_changed = false;
+            s_changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
+            s_changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
+            let mut s_col = egui::Color32::from_rgba_premultiplied(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]);
+            s_changed |= ui.color_edit_button_srgba(&mut s_col).changed();
+            if s_changed {
+                cmds.push(AppCommand::SetTitleShadow {
+                    clip_id,
+                    enabled: true,
+                    color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()],
+                    offset_x: ox,
+                    offset_y: oy,
+                });
+            }
         }
     }
 

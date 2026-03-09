@@ -13,6 +13,12 @@ pub struct TitleRenderer {
     fallback_font: Font,
 }
 
+impl Default for TitleRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TitleRenderer {
     pub fn new() -> Self {
         let fallback_font = Font::from_bytes(
@@ -30,13 +36,10 @@ impl TitleRenderer {
         let mut buf = vec![0u8; w * h * 4];
 
         // Fill background if requested
-        match &title.background {
-            TitleBackground::FullFrame { color } => {
-                for pixel in buf.chunks_exact_mut(4) {
-                    pixel.copy_from_slice(color);
-                }
+        if let TitleBackground::FullFrame { color } = &title.background {
+            for pixel in buf.chunks_exact_mut(4) {
+                pixel.copy_from_slice(color);
             }
-            _ => {} // None and Color handled after text layout
         }
 
         // Scale font size relative to frame height (72pt at 1080p)
@@ -132,6 +135,7 @@ impl TitleRenderer {
         buf
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rasterize_glyphs(
         &self,
         buf: &mut [u8],
