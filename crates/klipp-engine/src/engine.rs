@@ -207,13 +207,8 @@ impl PlaybackEngine {
                     let mut master_l = 0.0f32;
                     let mut master_r = 0.0f32;
                     for (i, track) in mixer.tracks.iter().enumerate() {
-                        // Map mixer index to sequence track index
-                        let seq_track_idx = self.audio_sources
-                            .get(i)
-                            .map(|s| s.track_index)
-                            .unwrap_or(i);
                         let _ = self.event_tx.send(AppEvent::TrackPeakLevels {
-                            track_index: seq_track_idx,
+                            track_index: i,
                             left: track.peak_left,
                             right: track.peak_right,
                         });
@@ -417,11 +412,10 @@ impl PlaybackEngine {
                     m.tracks[track_index].muted = muted;
                 }
             }
-            AppCommand::SetTrackSolo { track_index } => {
+            AppCommand::SetTrackSolo { track_index, solo } => {
                 if let Ok(mut m) = self.mixer.lock() {
                     m.ensure_tracks(track_index + 1);
-                    let currently_solo = m.tracks[track_index].solo;
-                    m.tracks[track_index].solo = !currently_solo;
+                    m.tracks[track_index].solo = solo;
                 }
             }
             AppCommand::SetTrackPan { track_index, pan } => {
@@ -431,6 +425,11 @@ impl PlaybackEngine {
                 }
             }
             AppCommand::SetMasterVolume(vol) => {
+                // Apply in cpal callback for instant response (no ring buffer lag)
+                if let Some(aout) = &self.audio_output {
+                    aout.0.set_master_volume(vol);
+                }
+                // Also keep mixer in sync for VU metering
                 if let Ok(mut m) = self.mixer.lock() {
                     m.master_volume = vol;
                 }
@@ -608,6 +607,19 @@ impl PlaybackEngine {
                     let item = pool.get(&clip.media_id)?;
                     if !item.has_audio {
                         return None;
+                    }
+                    // Skip audio for video-track clips that have a linked audio-track partner
+                    // (the audio track clip will produce audio instead)
+                    if track.kind == klipp_timeline::TrackKind::Video {
+                        if let Some(lid) = clip.linked_clip_id {
+                            let partner_on_audio = seq.tracks.iter().any(|t| {
+                                t.kind == klipp_timeline::TrackKind::Audio
+                                    && t.clips.iter().any(|c| c.id == lid)
+                            });
+                            if partner_on_audio {
+                                return None;
+                            }
+                        }
                     }
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64();

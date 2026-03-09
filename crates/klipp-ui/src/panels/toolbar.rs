@@ -71,7 +71,9 @@ impl ToolbarPanel {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("Save Project As")
-                            .pick_folder()
+                            .add_filter("Klipp Project", &["klipp"])
+                            .set_file_name("project.klipp")
+                            .save_file()
                         {
                             cmds.push(AppCommand::SaveProjectAs { path });
                         }
@@ -147,6 +149,27 @@ impl ToolbarPanel {
 
                     ui.separator();
 
+                    let has_source = state.source_media_id.is_some();
+                    let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
+                    if ui.add_enabled(has_source, egui::Button::new("Insert Edit").shortcut_text(",")).clicked() {
+                        cmds.push(AppCommand::InsertEdit);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_source, egui::Button::new("Overwrite Edit").shortcut_text(".")).clicked() {
+                        cmds.push(AppCommand::OverwriteEdit);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_in_out, egui::Button::new("Lift").shortcut_text(";")).clicked() {
+                        cmds.push(AppCommand::LiftEdit);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_in_out, egui::Button::new("Extract").shortcut_text("'")).clicked() {
+                        cmds.push(AppCommand::ExtractEdit);
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
                     if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() {
                         let track_index = state.sequence.tracks.iter()
                             .position(|t| t.name == "Video 1")
@@ -173,6 +196,12 @@ impl ToolbarPanel {
                     let proxy_label = if state.use_proxies { "\u{2713} Use Proxies" } else { "  Use Proxies" };
                     if ui.button(proxy_label).clicked() {
                         cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    let markers_label = if state.show_markers_panel { "\u{2713} Markers Panel" } else { "  Markers Panel" };
+                    if ui.button(markers_label).clicked() {
+                        state.show_markers_panel = !state.show_markers_panel;
                         ui.close_menu();
                     }
                 });

@@ -1,5 +1,6 @@
 use crate::history::EditCommand;
 use crate::panels::inspector::InspectorPanel;
+use crate::panels::markers::MarkersPanel;
 use crate::panels::timeline::TimelinePanel;
 use crate::panels::toolbar::ToolbarPanel;
 use crate::panels::transport::TransportBar;
@@ -8,11 +9,11 @@ use crate::state::{AppState, ClipboardContent, UnsavedAction};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
     AppCommand, AppEvent, ExportAudioCodec, ExportFormat, ExportSettings,
-    ExportVideoCodec, MediaId, Timecode, Tool, ViewerMode,
+    ExportVideoCodec, MarkerId, MediaId, Timecode, Tool, ViewerMode,
 };
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 use klipp_media::{MediaItem, ThumbnailEntry};
-use klipp_timeline::Sequence;
+use klipp_timeline::{Marker, Sequence};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -56,6 +57,7 @@ pub struct KlippApp {
     toolbar: ToolbarPanel,
     viewer: ViewerPanel,
     inspector: InspectorPanel,
+    markers: MarkersPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
     thumb_tx: Sender<ThumbnailResult>,
@@ -115,6 +117,7 @@ impl KlippApp {
             toolbar: ToolbarPanel,
             viewer: ViewerPanel::default(),
             inspector: InspectorPanel::default(),
+            markers: MarkersPanel::default(),
             transport: TransportBar,
             timeline: TimelinePanel::default(),
             thumb_tx,
@@ -746,8 +749,63 @@ impl KlippApp {
                     }
                     continue;
                 }
+                AppCommand::ImportMediaLinked { media_id } => {
+                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                        let duration = item.duration;
+                        let has_video = !item.video_codec.is_empty();
+                        let has_audio = item.has_audio;
+
+                        if has_video && has_audio {
+                            // Create linked V+A pair
+                            let video_track_idx = self.state.sequence.tracks.iter()
+                                .position(|t| t.kind == klipp_timeline::TrackKind::Video);
+                            let audio_track_idx = self.state.sequence.tracks.iter()
+                                .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
+
+                            if let (Some(vi), Some(ai)) = (video_track_idx, audio_track_idx) {
+                                let video_clip_id = self.state.sequence.tracks[vi].append_clip(*media_id, duration);
+                                let audio_clip_id = self.state.sequence.tracks[ai].append_clip(*media_id, duration);
+
+                                // Link them
+                                if let Some(vc) = self.state.sequence.tracks[vi].find_clip_mut(video_clip_id) {
+                                    vc.linked_clip_id = Some(audio_clip_id);
+                                }
+                                if let Some(ac) = self.state.sequence.tracks[ai].find_clip_mut(audio_clip_id) {
+                                    ac.linked_clip_id = Some(video_clip_id);
+                                }
+
+                                self.state.selected_clip = Some(video_clip_id);
+                                self.sync_sequence_to_engine();
+                                self.state.dirty = true;
+                            }
+                        } else {
+                            // Single-stream: just append to matching track
+                            let target_kind = if has_video {
+                                klipp_timeline::TrackKind::Video
+                            } else {
+                                klipp_timeline::TrackKind::Audio
+                            };
+                            let track_idx = self.state.sequence.tracks.iter()
+                                .position(|t| t.kind == target_kind)
+                                .unwrap_or(0);
+                            if let Some(track) = self.state.sequence.tracks.get_mut(track_idx) {
+                                let clip_id = track.append_clip(*media_id, duration);
+                                self.state.selected_clip = Some(clip_id);
+                                self.sync_sequence_to_engine();
+                                self.state.dirty = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 AppCommand::RemoveClip { clip_id } => {
-                    // Find which track contains this clip
+                    // Get linked partner before removing
+                    let linked_id = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|c| c.linked_clip_id);
+
+                    // Remove main clip
                     let track_index = self.state.sequence.tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == *clip_id));
                     if let Some(track_index) = track_index {
@@ -766,19 +824,42 @@ impl KlippApp {
                                 });
                             }
                         }
-                        self.sync_sequence_to_engine();
                         if self.state.selected_clip == Some(*clip_id) {
                             self.state.selected_clip = None;
                         }
-                        self.state.dirty = true;
                     }
+                    // Also remove linked partner
+                    if let Some(lid) = linked_id {
+                        let ltrack_index = self.state.sequence.tracks.iter()
+                            .position(|t| t.clips.iter().any(|c| c.id == lid));
+                        if let Some(lti) = ltrack_index {
+                            let track = &mut self.state.sequence.tracks[lti];
+                            let pos = track.clips.iter().position(|c| c.id == lid);
+                            if let Some(pos) = pos {
+                                let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                    .collect();
+                                if let Some(removed) = track.ripple_remove(lid) {
+                                    self.state.history.push(EditCommand::RippleRemove {
+                                        removed_clip: removed,
+                                        track_index: lti,
+                                        position: pos,
+                                        shifted_clips: shifted,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::MoveClip {
                     clip_id,
                     new_timeline_in,
                 } => {
-                    // Find which track contains this clip
+                    // Timeline already moved both the clip and its linked partner during drag.
+                    // Here we just record undo history and sync.
                     if let Some(track) = self.state.sequence.tracks.iter_mut()
                         .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                     {
@@ -797,9 +878,9 @@ impl KlippApp {
                             });
                         }
                         track.sort_clips();
-                        self.sync_sequence_to_engine();
-                        self.state.dirty = true;
                     }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
@@ -845,7 +926,13 @@ impl KlippApp {
                     new_timeline_out,
                     ripple: _,
                 } => {
-                    // Find which track contains this clip
+                    // Get linked partner info before mutating
+                    let linked_id = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|c| c.linked_clip_id);
+
+                    // Trim main clip
                     if let Some(track) = self.state.sequence.tracks.iter_mut()
                         .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                     {
@@ -866,9 +953,22 @@ impl KlippApp {
                             clip.timeline_in = *new_timeline_in;
                             clip.timeline_out = *new_timeline_out;
                         }
-                        self.sync_sequence_to_engine();
-                        self.state.dirty = true;
                     }
+                    // Trim linked partner by same values
+                    if let Some(lid) = linked_id {
+                        if let Some(track) = self.state.sequence.tracks.iter_mut()
+                            .find(|t| t.clips.iter().any(|c| c.id == lid))
+                        {
+                            if let Some(lclip) = track.find_clip_mut(lid) {
+                                lclip.source_in = *new_source_in;
+                                lclip.source_out = *new_source_out;
+                                lclip.timeline_in = *new_timeline_in;
+                                lclip.timeline_out = *new_timeline_out;
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::Undo => {
@@ -943,10 +1043,24 @@ impl KlippApp {
                     }
                     // Fall through to forward to engine
                 }
-                AppCommand::SetTrackSolo { track_index } => {
-                    let solo_idx = *track_index;
-                    for (i, track) in self.state.sequence.tracks.iter_mut().enumerate() {
-                        track.solo = i == solo_idx;
+                AppCommand::SetTrackSolo { track_index, solo } => {
+                    if *solo {
+                        // Enable solo on this track, disable on all others
+                        let solo_idx = *track_index;
+                        for (i, track) in self.state.sequence.tracks.iter_mut().enumerate() {
+                            track.solo = i == solo_idx;
+                        }
+                    } else {
+                        // Unsolo: clear solo on all tracks
+                        for track in self.state.sequence.tracks.iter_mut() {
+                            track.solo = false;
+                        }
+                    }
+                    // Fall through to forward to engine
+                }
+                AppCommand::SetTrackPan { track_index, pan } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.pan = pan.clamp(-1.0, 1.0);
                     }
                     // Fall through to forward to engine
                 }
@@ -1166,9 +1280,7 @@ impl KlippApp {
                             let track_index = cb.source_track_index;
                             if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
                                 let new_id = klipp_core::ClipId::new();
-                                let timeline_in = track.clips.last()
-                                    .map(|c| c.timeline_out)
-                                    .unwrap_or(Timecode::zero());
+                                let timeline_in = self.state.playhead;
                                 let dur = clip.duration();
                                 let new_clip = klipp_timeline::Clip {
                                     id: new_id,
@@ -1179,9 +1291,9 @@ impl KlippApp {
                                     source_out: clip.source_out,
                                     color_grade: clip.color_grade,
                                     effects: clip.effects.clone(),
+                                    linked_clip_id: None,
                                 };
-                                track.clips.push(new_clip.clone());
-                                track.sort_clips();
+                                Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(EditCommand::PasteClip {
                                     clip: new_clip,
                                     track_index,
@@ -1213,6 +1325,15 @@ impl KlippApp {
                 }
                 // Phase 4: Source monitor
                 AppCommand::LoadSourceMedia { media_id } => {
+                    // Clear stale source I/O from previous source clip
+                    if let Some(old_mid) = self.state.source_media_id {
+                        if old_mid != *media_id {
+                            if let Some(old_item) = self.state.media_pool.get_mut(&old_mid) {
+                                old_item.default_source_in = None;
+                                old_item.default_source_out = None;
+                            }
+                        }
+                    }
                     self.state.source_media_id = Some(*media_id);
                     self.state.source_playhead = Timecode::zero();
                     self.state.viewer_mode = ViewerMode::Source;
@@ -1234,11 +1355,17 @@ impl KlippApp {
                     }
                     continue;
                 }
-                AppCommand::InsertSourceAtPlayhead => {
+                AppCommand::InsertSourceAtPlayhead | AppCommand::OverwriteEdit => {
                     if let Some(mid) = self.state.source_media_id {
                         if let Some(item) = self.state.media_pool.get(&mid).cloned() {
-                            let source_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
-                            let source_out = item.default_source_out.unwrap_or(item.duration);
+                            let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
+                            let raw_out = item.default_source_out.unwrap_or(item.duration);
+                            // If in/out are equal or both zero, use the full clip
+                            let (source_in, source_out) = if raw_in >= raw_out {
+                                (Timecode { value: 0, rate: item.duration.rate }, item.duration)
+                            } else {
+                                (raw_in, raw_out)
+                            };
                             let dur = source_out - source_in;
                             let is_audio_only = item.video_codec.is_empty();
                             let target_kind = if is_audio_only {
@@ -1246,11 +1373,11 @@ impl KlippApp {
                             } else {
                                 klipp_timeline::TrackKind::Video
                             };
+                            let timeline_in = self.state.sequence.in_point.unwrap_or(self.state.playhead);
                             if let Some(track) = self.state.sequence.tracks.iter_mut()
                                 .find(|t| t.kind == target_kind)
                             {
                                 let new_id = klipp_core::ClipId::new();
-                                let timeline_in = self.state.playhead;
                                 let new_clip = klipp_timeline::Clip {
                                     id: new_id,
                                     media_id: mid,
@@ -1260,6 +1387,62 @@ impl KlippApp {
                                     source_out,
                                     color_grade: klipp_timeline::ClipColorGrade::default(),
                                     effects: Vec::new(),
+                                    linked_clip_id: None,
+                                };
+                                Self::overwrite_insert_clip_on_track(track, new_clip);
+                                self.state.selected_clip = Some(new_id);
+                                self.state.dirty = true;
+                                self.sync_sequence_to_engine();
+                            }
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::InsertEdit => {
+                    // Ripple insert: push existing clips right, then insert source clip
+                    if let Some(mid) = self.state.source_media_id {
+                        if let Some(item) = self.state.media_pool.get(&mid).cloned() {
+                            let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
+                            let raw_out = item.default_source_out.unwrap_or(item.duration);
+                            let (source_in, source_out) = if raw_in >= raw_out {
+                                (Timecode { value: 0, rate: item.duration.rate }, item.duration)
+                            } else {
+                                (raw_in, raw_out)
+                            };
+                            let dur = source_out - source_in;
+                            let is_audio_only = item.video_codec.is_empty();
+                            let target_kind = if is_audio_only {
+                                klipp_timeline::TrackKind::Audio
+                            } else {
+                                klipp_timeline::TrackKind::Video
+                            };
+                            let timeline_in = self.state.sequence.in_point.unwrap_or(self.state.playhead);
+                            if let Some(track) = self.state.sequence.tracks.iter_mut()
+                                .find(|t| t.kind == target_kind)
+                            {
+                                // Ripple: shift all clips at or after timeline_in to the right by dur
+                                for clip in &mut track.clips {
+                                    if clip.timeline_in >= timeline_in {
+                                        clip.timeline_in += dur;
+                                        clip.timeline_out += dur;
+                                    } else if clip.timeline_out > timeline_in {
+                                        // Clip spans the insert point — split it
+                                        // For simplicity, just shift it right (overwrite would split)
+                                        clip.timeline_in += dur;
+                                        clip.timeline_out += dur;
+                                    }
+                                }
+                                let new_id = klipp_core::ClipId::new();
+                                let new_clip = klipp_timeline::Clip {
+                                    id: new_id,
+                                    media_id: mid,
+                                    timeline_in,
+                                    timeline_out: timeline_in + dur,
+                                    source_in,
+                                    source_out,
+                                    color_grade: klipp_timeline::ClipColorGrade::default(),
+                                    effects: Vec::new(),
+                                    linked_clip_id: None,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -1267,6 +1450,40 @@ impl KlippApp {
                                 self.state.dirty = true;
                                 self.sync_sequence_to_engine();
                             }
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::LiftEdit => {
+                    // Remove content between sequence in/out, leave gap
+                    if let (Some(in_pt), Some(out_pt)) = (self.state.sequence.in_point, self.state.sequence.out_point) {
+                        if in_pt < out_pt {
+                            for track in &mut self.state.sequence.tracks {
+                                Self::lift_range(track, in_pt, out_pt);
+                            }
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::ExtractEdit => {
+                    // Remove content between sequence in/out, ripple left to close gap
+                    if let (Some(in_pt), Some(out_pt)) = (self.state.sequence.in_point, self.state.sequence.out_point) {
+                        if in_pt < out_pt {
+                            let gap = out_pt - in_pt;
+                            for track in &mut self.state.sequence.tracks {
+                                Self::lift_range(track, in_pt, out_pt);
+                                // Ripple: shift clips at or after out_pt left by gap
+                                for clip in &mut track.clips {
+                                    if clip.timeline_in >= out_pt {
+                                        clip.timeline_in -= gap;
+                                        clip.timeline_out -= gap;
+                                    }
+                                }
+                            }
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
                         }
                     }
                     continue;
@@ -1384,6 +1601,122 @@ impl KlippApp {
                             })
                             .ok();
                     }
+                    continue;
+                }
+                // Dynamic tracks
+                AppCommand::AddVideoTrack => {
+                    let name = self.state.sequence.next_track_name(klipp_timeline::TrackKind::Video);
+                    self.state.sequence.add_video_track(name);
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::AddAudioTrack => {
+                    let name = self.state.sequence.next_track_name(klipp_timeline::TrackKind::Audio);
+                    self.state.sequence.add_audio_track(name);
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveTrack { track_id } => {
+                    let tid = *track_id;
+                    let has_clips = self.state.sequence.tracks.iter()
+                        .find(|t| t.id == tid)
+                        .map(|t| !t.clips.is_empty())
+                        .unwrap_or(false);
+                    if has_clips {
+                        // Show confirmation dialog
+                        self.state.confirm_remove_track = Some(tid);
+                    } else {
+                        let _ = self.state.sequence.remove_track(tid);
+                        self.sync_sequence_to_engine();
+                        self.state.dirty = true;
+                    }
+                    continue;
+                }
+                AppCommand::RenameTrack { track_id, ref name } => {
+                    if let Some(track) = self.state.sequence.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.name = name.clone();
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                // Markers
+                AppCommand::AddMarker { position, label, color } => {
+                    self.state.sequence.markers.push(Marker {
+                        id: MarkerId::new(),
+                        position: *position,
+                        label: label.clone(),
+                        color: *color,
+                    });
+                    self.state.sequence.markers.sort_by(|a, b| {
+                        a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap()
+                    });
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveMarker { marker_id } => {
+                    self.state.sequence.markers.retain(|m| m.id != *marker_id);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UpdateMarkerLabel { marker_id, label } => {
+                    if let Some(m) = self.state.sequence.markers.iter_mut().find(|m| m.id == *marker_id) {
+                        m.label = label.clone();
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UpdateMarkerColor { marker_id, color } => {
+                    if let Some(m) = self.state.sequence.markers.iter_mut().find(|m| m.id == *marker_id) {
+                        m.color = *color;
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::JumpToMarker { marker_id } => {
+                    if let Some(m) = self.state.sequence.markers.iter().find(|m| m.id == *marker_id) {
+                        let pos = m.position;
+                        self.state.playhead = pos;
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(pos));
+                    }
+                    continue;
+                }
+                // Linked clips
+                AppCommand::UnlinkClip { clip_id } => {
+                    let cid = *clip_id;
+                    // Find the linked partner
+                    let partner_id = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == cid)
+                        .and_then(|c| c.linked_clip_id);
+                    // Clear linked_clip_id on both
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(c) = track.find_clip_mut(cid) {
+                            c.linked_clip_id = None;
+                        }
+                        if let Some(pid) = partner_id {
+                            if let Some(c) = track.find_clip_mut(pid) {
+                                c.linked_clip_id = None;
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::LinkClips { clip_a, clip_b } => {
+                    let a = *clip_a;
+                    let b = *clip_b;
+                    // Set bidirectional link
+                    for track in &mut self.state.sequence.tracks {
+                        if let Some(c) = track.find_clip_mut(a) {
+                            c.linked_clip_id = Some(b);
+                        }
+                        if let Some(c) = track.find_clip_mut(b) {
+                            c.linked_clip_id = Some(a);
+                        }
+                    }
+                    self.state.dirty = true;
                     continue;
                 }
                 _ => {}
@@ -1612,6 +1945,170 @@ impl KlippApp {
         }
     }
 
+    /// Overwrite-insert a clip onto a track at a given position.
+    /// Trims or removes any overlapping clips in the range [timeline_in, timeline_out].
+    fn overwrite_insert_clip_on_track(
+        track: &mut klipp_timeline::Track,
+        new_clip: klipp_timeline::Clip,
+    ) {
+        let new_in = new_clip.timeline_in;
+        let new_out = new_clip.timeline_out;
+
+        // Collect indices of clips to modify (process in reverse to preserve indices)
+        let mut to_remove = Vec::new();
+        let mut to_trim_left = Vec::new();  // trim in-point forward (clip extends past new_out)
+        let mut to_trim_right = Vec::new(); // trim out-point back (clip starts before new_in)
+        let mut to_split = Vec::new();      // clip fully contains new range — needs split
+
+        for (i, clip) in track.clips.iter().enumerate() {
+            let c_in = clip.timeline_in;
+            let c_out = clip.timeline_out;
+
+            // No overlap
+            if c_out <= new_in || c_in >= new_out {
+                continue;
+            }
+
+            if c_in >= new_in && c_out <= new_out {
+                // Fully covered — remove
+                to_remove.push(i);
+            } else if c_in < new_in && c_out > new_out {
+                // Clip contains the new range — split into two
+                to_split.push(i);
+            } else if c_in < new_in && c_out > new_in {
+                // Overlaps from left — trim right edge back
+                to_trim_right.push(i);
+            } else if c_in < new_out && c_out > new_out {
+                // Overlaps from right — trim left edge forward
+                to_trim_left.push(i);
+            }
+        }
+
+        // Handle splits first (creates a new clip)
+        for &i in to_split.iter().rev() {
+            let clip = track.clips[i].clone();
+            let left_dur = new_in - clip.timeline_in;
+            let right_offset = new_out - clip.timeline_in;
+
+            // Left portion: keep original in, trim out to new_in
+            track.clips[i].timeline_out = new_in;
+            track.clips[i].source_out = clip.source_in + left_dur;
+
+            // Right portion: new clip starting at new_out
+            let right_clip = klipp_timeline::Clip {
+                id: klipp_core::ClipId::new(),
+                media_id: clip.media_id,
+                timeline_in: new_out,
+                timeline_out: clip.timeline_out,
+                source_in: clip.source_in + right_offset,
+                source_out: clip.source_out,
+                color_grade: clip.color_grade,
+                effects: clip.effects.clone(),
+                linked_clip_id: clip.linked_clip_id,
+            };
+            track.clips.insert(i + 1, right_clip);
+        }
+
+        // Trim left edges forward (clip starts before new_out, ends after)
+        for &i in &to_trim_left {
+            let clip = &track.clips[i];
+            let trim_amount = new_out - clip.timeline_in;
+            track.clips[i].source_in += trim_amount;
+            track.clips[i].timeline_in = new_out;
+        }
+
+        // Trim right edges back (clip starts before new_in, ends after)
+        for &i in &to_trim_right {
+            let clip = &track.clips[i];
+            let trim_amount = clip.timeline_out - new_in;
+            track.clips[i].source_out -= trim_amount;
+            track.clips[i].timeline_out = new_in;
+        }
+
+        // Remove fully covered clips (reverse order)
+        for &i in to_remove.iter().rev() {
+            track.clips.remove(i);
+        }
+
+        // Insert the new clip
+        track.clips.push(new_clip);
+        track.sort_clips();
+    }
+
+    /// Remove (lift) content in [range_in, range_out] from a track, leaving a gap.
+    /// Clips fully inside the range are removed. Clips partially overlapping are trimmed.
+    fn lift_range(
+        track: &mut klipp_timeline::Track,
+        range_in: Timecode,
+        range_out: Timecode,
+    ) {
+        let mut to_remove = Vec::new();
+        let mut to_split = Vec::new();
+        let mut to_trim_right = Vec::new(); // trim out-point back to range_in
+        let mut to_trim_left = Vec::new();  // trim in-point forward to range_out
+
+        for (i, clip) in track.clips.iter().enumerate() {
+            let c_in = clip.timeline_in;
+            let c_out = clip.timeline_out;
+            if c_out <= range_in || c_in >= range_out {
+                continue;
+            }
+            if c_in >= range_in && c_out <= range_out {
+                to_remove.push(i);
+            } else if c_in < range_in && c_out > range_out {
+                to_split.push(i);
+            } else if c_in < range_in && c_out > range_in {
+                to_trim_right.push(i);
+            } else if c_in < range_out && c_out > range_out {
+                to_trim_left.push(i);
+            }
+        }
+
+        // Handle splits (reverse order for safe insertion)
+        for &i in to_split.iter().rev() {
+            let clip = track.clips[i].clone();
+            let left_dur = range_in - clip.timeline_in;
+
+            // Left portion
+            track.clips[i].timeline_out = range_in;
+            track.clips[i].source_out = clip.source_in + left_dur;
+
+            // Right portion
+            let right_offset = range_out - clip.timeline_in;
+            let right_clip = klipp_timeline::Clip {
+                id: klipp_core::ClipId::new(),
+                media_id: clip.media_id,
+                timeline_in: range_out,
+                timeline_out: clip.timeline_out,
+                source_in: clip.source_in + right_offset,
+                source_out: clip.source_out,
+                color_grade: clip.color_grade,
+                effects: clip.effects.clone(),
+                linked_clip_id: clip.linked_clip_id,
+            };
+            track.clips.insert(i + 1, right_clip);
+        }
+
+        // Trim right edges back
+        for &i in &to_trim_right {
+            let trim = track.clips[i].timeline_out - range_in;
+            track.clips[i].source_out -= trim;
+            track.clips[i].timeline_out = range_in;
+        }
+
+        // Trim left edges forward
+        for &i in &to_trim_left {
+            let trim = range_out - track.clips[i].timeline_in;
+            track.clips[i].source_in += trim;
+            track.clips[i].timeline_in = range_out;
+        }
+
+        // Remove fully covered (reverse order)
+        for &i in to_remove.iter().rev() {
+            track.clips.remove(i);
+        }
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) {
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
@@ -1668,15 +2165,20 @@ impl KlippApp {
                     self.state.show_relink_dialog = true;
                 }
 
-                // Trigger thumbnail generation for all media
-                let thumb_items: Vec<_> = self
+                // Reload media files into the engine and trigger thumbnails
+                let media_items: Vec<_> = self
                     .state
                     .media_pool
                     .all()
                     .filter(|item| !item.offline)
                     .map(|item| (item.id, item.path.clone(), item.duration))
                     .collect();
-                for (id, path, duration) in thumb_items {
+                for (id, path, duration) in media_items {
+                    // Re-open decoders in the engine
+                    self.cmd_tx.send(AppCommand::LoadMediaFile {
+                        path: path.clone(),
+                        media_id: id,
+                    }).ok();
                     self.spawn_thumbnail(id, path, duration);
                 }
 
@@ -1779,7 +2281,9 @@ impl KlippApp {
             if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S) {
                 if let Some(path) = rfd::FileDialog::new()
                     .set_title("Save Project As")
-                    .pick_folder()
+                    .add_filter("Klipp Project", &["klipp"])
+                    .set_file_name("project.klipp")
+                    .save_file()
                 {
                     cmds.push(AppCommand::SaveProjectAs { path });
                 }
@@ -1909,6 +2413,32 @@ impl KlippApp {
                     cmds.push(AppCommand::SetSequenceOutPoint(self.state.playhead));
                 }
             }
+            // , — Insert edit (ripple)
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ",")) {
+                cmds.push(AppCommand::InsertEdit);
+            }
+            // . — Overwrite edit
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ".")) {
+                cmds.push(AppCommand::OverwriteEdit);
+            }
+            // ; — Lift edit
+            if i.key_pressed(egui::Key::Semicolon)
+                || i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ";"))
+            {
+                cmds.push(AppCommand::LiftEdit);
+            }
+            // ' — Extract edit
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "'")) {
+                cmds.push(AppCommand::ExtractEdit);
+            }
+            // M — Add marker
+            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl {
+                cmds.push(AppCommand::AddMarker {
+                    position: self.state.playhead,
+                    label: String::new(),
+                    color: klipp_core::MarkerColor::Blue,
+                });
+            }
         });
 
         cmds
@@ -1994,6 +2524,34 @@ impl eframe::App for KlippApp {
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
 
+        // 4a2. Confirm remove track dialog
+        if let Some(track_id) = self.state.confirm_remove_track {
+            let mut open = true;
+            egui::Window::new("Remove Track")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This track contains clips. Remove track and all its clips?");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Remove").clicked() {
+                            let _ = self.state.sequence.remove_track_with_clips(track_id);
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                            self.state.confirm_remove_track = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.confirm_remove_track = None;
+                        }
+                    });
+                });
+            if !open {
+                self.state.confirm_remove_track = None;
+            }
+        }
+
         // 4b. Export dialog
         let export_cmds = self.show_export_dialog(ctx);
         all_cmds.extend(export_cmds);
@@ -2063,6 +2621,12 @@ impl eframe::App for KlippApp {
                 let cmds = self.viewer.show(ui, &self.state);
                 all_cmds.extend(cmds);
             });
+        }
+
+        // Markers panel
+        if self.state.show_markers_panel {
+            let cmds = self.markers.show(ctx, &mut self.state);
+            all_cmds.extend(cmds);
         }
 
         // About dialog

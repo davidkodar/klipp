@@ -1,4 +1,4 @@
-use crate::id::{ClipId, MediaId};
+use crate::id::{ClipId, MarkerId, MediaId, TrackId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use std::path::PathBuf;
@@ -147,7 +147,7 @@ pub enum AppCommand {
     // Audio mixing
     SetTrackVolume { track_index: usize, volume: f32 },
     SetTrackMute { track_index: usize, muted: bool },
-    SetTrackSolo { track_index: usize },
+    SetTrackSolo { track_index: usize, solo: bool },
     SetTrackPan { track_index: usize, pan: f32 },
     SetMasterVolume(f32),
 
@@ -210,6 +210,30 @@ pub enum AppCommand {
         interval_secs: f64,
     },
 
+    // Three-point edits
+    InsertEdit,
+    OverwriteEdit,
+    LiftEdit,
+    ExtractEdit,
+
+    // Linked clips
+    ImportMediaLinked { media_id: MediaId },
+    UnlinkClip { clip_id: ClipId },
+    LinkClips { clip_a: ClipId, clip_b: ClipId },
+
+    // Markers
+    AddMarker { position: Timecode, label: String, color: MarkerColor },
+    RemoveMarker { marker_id: MarkerId },
+    UpdateMarkerLabel { marker_id: MarkerId, label: String },
+    UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },
+    JumpToMarker { marker_id: MarkerId },
+
+    // Dynamic tracks
+    AddVideoTrack,
+    AddAudioTrack,
+    RemoveTrack { track_id: TrackId },
+    RenameTrack { track_id: TrackId, name: String },
+
     // UI
     SetViewerMode(ViewerMode),
     SetActiveTool(Tool),
@@ -229,6 +253,51 @@ pub enum ViewerMode {
 pub enum Tool {
     Select,
     Blade,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum MarkerColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl MarkerColor {
+    pub fn to_rgb(self) -> (u8, u8, u8) {
+        match self {
+            MarkerColor::Red => (220, 60, 60),
+            MarkerColor::Orange => (220, 140, 40),
+            MarkerColor::Yellow => (220, 200, 40),
+            MarkerColor::Green => (60, 180, 80),
+            MarkerColor::Blue => (60, 120, 220),
+            MarkerColor::Purple => (160, 80, 200),
+        }
+    }
+
+    pub fn all() -> &'static [MarkerColor] {
+        &[
+            MarkerColor::Red,
+            MarkerColor::Orange,
+            MarkerColor::Yellow,
+            MarkerColor::Green,
+            MarkerColor::Blue,
+            MarkerColor::Purple,
+        ]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MarkerColor::Red => "Red",
+            MarkerColor::Orange => "Orange",
+            MarkerColor::Yellow => "Yellow",
+            MarkerColor::Green => "Green",
+            MarkerColor::Blue => "Blue",
+            MarkerColor::Purple => "Purple",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

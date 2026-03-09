@@ -23,6 +23,8 @@ pub struct SequenceJson {
     pub global_lut_path: Option<String>,
     #[serde(default = "default_lut_opacity")]
     pub global_lut_opacity: f32,
+    #[serde(default)]
+    pub markers: Vec<MarkerJson>,
 }
 
 fn default_lut_opacity() -> f32 { 1.0 }
@@ -85,6 +87,8 @@ pub struct ClipJson {
     pub color_grade: Option<ColorGradeJson>,
     #[serde(default)]
     pub effects: Vec<EffectJson>,
+    #[serde(default)]
+    pub linked_clip_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,4 +154,17 @@ pub struct MediaItemJson {
     pub default_source_in: Option<TimecodeJson>,
     #[serde(default)]
     pub default_source_out: Option<TimecodeJson>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MarkerJson {
+    pub id: String,
+    pub position: TimecodeJson,
+    pub label: String,
+    #[serde(default = "default_marker_color_str")]
+    pub color: String,
+}
+
+fn default_marker_color_str() -> String {
+    "Blue".to_string()
 }

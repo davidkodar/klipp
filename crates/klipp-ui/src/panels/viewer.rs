@@ -454,27 +454,53 @@ impl ViewerPanel {
                 egui::Color32::from_rgb(200, 160, 80),
             );
 
-            // Insert button area
-            let btn_rect = egui::Rect::from_min_size(
-                egui::pos2(cx - 80.0, cy + 34.0),
-                egui::vec2(160.0, 28.0),
-            );
-            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let fill = if btn_resp.hovered() {
-                egui::Color32::from_rgb(60, 60, 70)
-            } else {
-                egui::Color32::from_rgb(45, 45, 55)
-            };
-            ui.painter().rect_filled(btn_rect, 4.0, fill);
-            ui.painter().text(
-                btn_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{2190} Insert at Playhead",
-                egui::FontId::proportional(12.0),
-                egui::Color32::WHITE,
-            );
-            if btn_resp.clicked() {
-                cmds.push(AppCommand::InsertSourceAtPlayhead);
+            // Edit buttons row
+            let btn_w = 90.0;
+            let btn_h = 24.0;
+            let btn_gap = 6.0;
+            let total_w = btn_w * 4.0 + btn_gap * 3.0;
+            let btn_y = cy + 34.0;
+            let btn_x_start = cx - total_w / 2.0;
+
+            let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
+
+            let edit_buttons: &[(&str, AppCommand, bool)] = &[
+                ("Insert (,)", AppCommand::InsertEdit, true),
+                ("Overwrite (.)", AppCommand::OverwriteEdit, true),
+                ("Lift (;)", AppCommand::LiftEdit, has_in_out),
+                ("Extract (')", AppCommand::ExtractEdit, has_in_out),
+            ];
+
+            for (i, (label, cmd, enabled)) in edit_buttons.iter().enumerate() {
+                let bx = btn_x_start + (btn_w + btn_gap) * i as f32;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(bx, btn_y),
+                    egui::vec2(btn_w, btn_h),
+                );
+                let resp = ui.allocate_rect(rect, if *enabled { egui::Sense::click() } else { egui::Sense::hover() });
+                let fill = if !enabled {
+                    egui::Color32::from_rgb(30, 30, 35)
+                } else if resp.hovered() {
+                    egui::Color32::from_rgb(60, 60, 70)
+                } else {
+                    egui::Color32::from_rgb(45, 45, 55)
+                };
+                let text_color = if *enabled {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::from_rgb(70, 70, 80)
+                };
+                ui.painter().rect_filled(rect, 3.0, fill);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    *label,
+                    egui::FontId::proportional(10.0),
+                    text_color,
+                );
+                if *enabled && resp.clicked() {
+                    cmds.push(cmd.clone());
+                }
             }
         } else {
             let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);

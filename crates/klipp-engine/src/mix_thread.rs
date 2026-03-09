@@ -35,8 +35,9 @@ impl MixThread {
     /// Create the mix thread and the main output ring buffer.
     /// Returns `(MixThread, AudioConsumer)` — pass the consumer to `AudioOutput::new()`.
     pub fn new(sample_rate: u32, mixer: Arc<Mutex<AudioMixer>>) -> (Self, AudioConsumer) {
-        // Main ring buffer: ~2s stereo f32 at device sample rate
-        let buf_size = (sample_rate as usize) * 2 * 2;
+        // Main ring buffer: ~200ms stereo f32 at device sample rate
+        // Small buffer = low latency for volume/pan/mute changes
+        let buf_size = (sample_rate as usize) * 2 / 5;
         let (producer, consumer) = HeapRb::<f32>::new(buf_size).split();
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
@@ -198,12 +199,14 @@ fn mix_loop(
             continue;
         }
 
-        // Mix via AudioMixer
-        let refs: Vec<&[f32]> = track_buffers.iter().map(|b| b.as_slice()).collect();
+        // Mix via AudioMixer — pass (sequence_track_index, samples) pairs
+        let refs: Vec<(usize, &[f32])> = stagings.iter().zip(track_buffers.iter())
+            .map(|(s, b)| (s.track_index, b.as_slice()))
+            .collect();
+        let max_track_idx = stagings.iter().map(|s| s.track_index).max().unwrap_or(0);
         let mixed = match mixer.lock() {
             Ok(mut m) => {
-                // Ensure mixer has enough track slots
-                m.ensure_tracks(stagings.len());
+                m.ensure_tracks(max_track_idx + 1);
                 m.mix(&refs)
             }
             Err(e) => {

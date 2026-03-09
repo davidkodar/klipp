@@ -1,3 +1,4 @@
+use crate::marker::Marker;
 use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,8 @@ pub struct Sequence {
     pub in_point: Option<Timecode>,
     #[serde(default)]
     pub out_point: Option<Timecode>,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
 }
 
 impl Sequence {
@@ -28,6 +31,7 @@ impl Sequence {
             ],
             in_point: None,
             out_point: None,
+            markers: Vec::new(),
         }
     }
 
@@ -63,6 +67,54 @@ impl Sequence {
 
     pub fn audio_track(&self) -> Option<&Track> {
         self.tracks.iter().find(|t| t.kind == TrackKind::Audio)
+    }
+
+    /// Add a new video track. Inserts before the first Audio track to maintain V/A ordering.
+    pub fn add_video_track(&mut self, name: String) -> TrackId {
+        let track = Track::new(&name, TrackKind::Video);
+        let id = track.id;
+        let insert_pos = self.tracks.iter()
+            .position(|t| t.kind == TrackKind::Audio)
+            .unwrap_or(self.tracks.len());
+        self.tracks.insert(insert_pos, track);
+        id
+    }
+
+    /// Add a new audio track at the end.
+    pub fn add_audio_track(&mut self, name: String) -> TrackId {
+        let track = Track::new(&name, TrackKind::Audio);
+        let id = track.id;
+        self.tracks.push(track);
+        id
+    }
+
+    /// Remove a track. Returns Err if track has clips.
+    pub fn remove_track(&mut self, track_id: TrackId) -> Result<(), &'static str> {
+        let pos = self.tracks.iter().position(|t| t.id == track_id)
+            .ok_or("track not found")?;
+        if !self.tracks[pos].clips.is_empty() {
+            return Err("track has clips");
+        }
+        self.tracks.remove(pos);
+        Ok(())
+    }
+
+    /// Remove a track including all its clips.
+    pub fn remove_track_with_clips(&mut self, track_id: TrackId) -> Result<(), &'static str> {
+        let pos = self.tracks.iter().position(|t| t.id == track_id)
+            .ok_or("track not found")?;
+        self.tracks.remove(pos);
+        Ok(())
+    }
+
+    /// Generate the next auto-increment name for a track kind (e.g. "Video 3", "Audio 2").
+    pub fn next_track_name(&self, kind: TrackKind) -> String {
+        let prefix = match kind {
+            TrackKind::Video => "Video",
+            TrackKind::Audio => "Audio",
+        };
+        let count = self.tracks.iter().filter(|t| t.kind == kind).count();
+        format!("{} {}", prefix, count + 1)
     }
 }
 
@@ -131,6 +183,7 @@ impl Track {
             source_out: source_duration,
             color_grade: ClipColorGrade::default(),
             effects: Vec::new(),
+            linked_clip_id: None,
         });
         clip_id
     }
@@ -233,6 +286,7 @@ impl Track {
             source_out: clip.source_in + offset,
             color_grade: clip.color_grade,
             effects: clip.effects.clone(),
+            linked_clip_id: clip.linked_clip_id,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -243,6 +297,7 @@ impl Track {
             source_out: clip.source_out,
             color_grade: clip.color_grade,
             effects: clip.effects.clone(),
+            linked_clip_id: clip.linked_clip_id,
         };
 
         self.clips.remove(pos);
@@ -314,6 +369,8 @@ pub struct Clip {
     pub color_grade: ClipColorGrade,
     #[serde(default)]
     pub effects: Vec<klipp_plugin::AppliedEffect>,
+    #[serde(default)]
+    pub linked_clip_id: Option<ClipId>,
 }
 
 impl Clip {

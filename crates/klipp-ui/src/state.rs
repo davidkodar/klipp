@@ -1,5 +1,5 @@
 use crate::history::CommandHistory;
-use klipp_core::{ClipId, Fps, MediaId, Timecode, Tool, ViewerMode};
+use klipp_core::{ClipId, Fps, MediaId, Timecode, Tool, TrackId, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
@@ -126,6 +126,12 @@ pub struct AppState {
     pub master_peak_right: f32,
     /// Master volume control
     pub master_volume: f32,
+    /// Master mute
+    pub master_muted: bool,
+
+    // Phase 7: Dynamic tracks
+    pub confirm_remove_track: Option<TrackId>,
+    pub show_markers_panel: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -244,6 +250,9 @@ impl Default for AppState {
             master_peak_left: 0.0,
             master_peak_right: 0.0,
             master_volume: 1.0,
+            master_muted: false,
+            confirm_remove_track: None,
+            show_markers_panel: false,
         }
     }
 }

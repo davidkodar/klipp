@@ -108,12 +108,32 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
                             }).collect::<HashMap<_, _>>(),
                         }
                     }).collect(),
+                    linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
+                        parse_uuid(s).ok().map(ClipId)
+                    }),
                 }
             }).collect();
             track
         }).collect(),
         in_point: seq_json.in_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
         out_point: seq_json.out_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+        markers: seq_json.markers.iter().filter_map(|m| {
+            let id = parse_uuid(&m.id).ok().map(MarkerId)?;
+            let color = match m.color.as_str() {
+                "Red" => klipp_core::MarkerColor::Red,
+                "Orange" => klipp_core::MarkerColor::Orange,
+                "Yellow" => klipp_core::MarkerColor::Yellow,
+                "Green" => klipp_core::MarkerColor::Green,
+                "Purple" => klipp_core::MarkerColor::Purple,
+                _ => klipp_core::MarkerColor::Blue,
+            };
+            Some(klipp_timeline::Marker {
+                id,
+                position: RationalTime { value: m.position.value, rate: m.position.rate },
+                label: m.label.clone(),
+                color,
+            })
+        }).collect(),
     };
 
     let color_settings = crate::save::ColorSettings {

@@ -45,15 +45,15 @@ impl AudioMixer {
     }
 
     /// Mix one callback worth of samples from all tracks.
-    /// `track_buffers`: one slice per track of interleaved f32 stereo samples.
+    /// `track_buffers`: `(sequence_track_index, samples)` pairs.
     /// Returns interleaved f32 stereo output.
-    pub fn mix(&mut self, track_buffers: &[&[f32]]) -> Vec<f32> {
-        let frame_len = track_buffers.iter().map(|b| b.len()).max().unwrap_or(0);
+    pub fn mix(&mut self, track_buffers: &[(usize, &[f32])]) -> Vec<f32> {
+        let frame_len = track_buffers.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
         let mut output = vec![0.0f32; frame_len];
         let any_solo = self.tracks.iter().any(|t| t.solo);
 
-        for (i, buf) in track_buffers.iter().enumerate() {
-            let settings = match self.tracks.get_mut(i) {
+        for &(track_idx, buf) in track_buffers.iter() {
+            let settings = match self.tracks.get_mut(track_idx) {
                 Some(s) => s,
                 None => continue,
             };
@@ -79,8 +79,8 @@ impl AudioMixer {
             for (j, pair) in buf.chunks(2).enumerate() {
                 let l = pair.first().copied().unwrap_or(0.0);
                 let r = pair.get(1).copied().unwrap_or(0.0);
-                let out_l = l * settings.volume * pan_l * self.master_volume;
-                let out_r = r * settings.volume * pan_r * self.master_volume;
+                let out_l = l * settings.volume * pan_l;
+                let out_r = r * settings.volume * pan_r;
                 peak_l = peak_l.max(out_l.abs());
                 peak_r = peak_r.max(out_r.abs());
                 let base = j * 2;
@@ -110,17 +110,15 @@ mod tests {
     fn silence_in_silence_out() {
         let mut mixer = AudioMixer::new(1);
         let buf = vec![0.0f32; 8];
-        let out = mixer.mix(&[&buf]);
+        let out = mixer.mix(&[(0, &buf)]);
         assert_eq!(out, vec![0.0; 8]);
     }
 
     #[test]
     fn passthrough_single_track() {
         let mut mixer = AudioMixer::new(1);
-        // Stereo interleaved: L R L R
         let buf = vec![0.5, -0.3, 0.7, -0.1];
-        let out = mixer.mix(&[&buf]);
-        // Center pan = unity gain (balance-style)
+        let out = mixer.mix(&[(0, &buf)]);
         assert!((out[0] - 0.5).abs() < 0.001);
         assert!((out[1] - (-0.3)).abs() < 0.001);
     }
@@ -130,8 +128,7 @@ mod tests {
         let mut mixer = AudioMixer::new(2);
         let buf1 = vec![0.3, 0.3];
         let buf2 = vec![0.2, 0.2];
-        let out = mixer.mix(&[&buf1, &buf2]);
-        // Center pan = unity, so sum is 0.3 + 0.2
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
         assert!((out[0] - 0.5).abs() < 0.001);
     }
 
@@ -141,8 +138,7 @@ mod tests {
         mixer.tracks[0].muted = true;
         let buf1 = vec![1.0, 1.0];
         let buf2 = vec![0.5, 0.5];
-        let out = mixer.mix(&[&buf1, &buf2]);
-        // Only track 2 should contribute
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
         assert!((out[0] - 0.5).abs() < 0.001);
     }
 
@@ -152,8 +148,7 @@ mod tests {
         mixer.tracks[1].solo = true;
         let buf1 = vec![1.0, 1.0];
         let buf2 = vec![0.3, 0.3];
-        let out = mixer.mix(&[&buf1, &buf2]);
-        // Only track 2 (solo) should play
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
         assert!((out[0] - 0.3).abs() < 0.001);
     }
 
@@ -162,17 +157,17 @@ mod tests {
         let mut mixer = AudioMixer::new(1);
         mixer.tracks[0].volume = 0.5;
         let buf = vec![1.0, 1.0];
-        let out = mixer.mix(&[&buf]);
+        let out = mixer.mix(&[(0, &buf)]);
         assert!((out[0] - 0.5).abs() < 0.001);
     }
 
     #[test]
-    fn master_volume_scales() {
+    fn master_volume_not_applied_in_mixer() {
         let mut mixer = AudioMixer::new(1);
         mixer.master_volume = 0.5;
         let buf = vec![1.0, 1.0];
-        let out = mixer.mix(&[&buf]);
-        assert!((out[0] - 0.5).abs() < 0.001);
+        let out = mixer.mix(&[(0, &buf)]);
+        assert!((out[0] - 1.0).abs() < 0.001);
     }
 
     #[test]
@@ -180,10 +175,9 @@ mod tests {
         let mut mixer = AudioMixer::new(1);
         mixer.tracks[0].pan = -1.0;
         let buf = vec![0.8, 0.8];
-        let out = mixer.mix(&[&buf]);
-        // Hard left: angle = 0, cos(0)=1.0, sin(0)=0.0
-        assert!((out[0] - 0.8).abs() < 0.001); // full L
-        assert!(out[1].abs() < 0.001); // no R
+        let out = mixer.mix(&[(0, &buf)]);
+        assert!((out[0] - 0.8).abs() < 0.001);
+        assert!(out[1].abs() < 0.001);
     }
 
     #[test]
@@ -191,18 +185,16 @@ mod tests {
         let mut mixer = AudioMixer::new(1);
         mixer.tracks[0].pan = 1.0;
         let buf = vec![0.8, 0.8];
-        let out = mixer.mix(&[&buf]);
-        // Hard right: angle = pi/2, cos(pi/2)=0, sin(pi/2)=1.0
-        assert!(out[0].abs() < 0.001); // no L
-        assert!((out[1] - 0.8).abs() < 0.001); // full R
+        let out = mixer.mix(&[(0, &buf)]);
+        assert!(out[0].abs() < 0.001);
+        assert!((out[1] - 0.8).abs() < 0.001);
     }
 
     #[test]
     fn peak_levels_updated() {
         let mut mixer = AudioMixer::new(1);
         let buf = vec![0.5, -0.7, 0.3, 0.9];
-        let _ = mixer.mix(&[&buf]);
-        // Peaks should be the max abs values scaled by pan gain
+        let _ = mixer.mix(&[(0, &buf)]);
         assert!(mixer.tracks[0].peak_left > 0.0);
         assert!(mixer.tracks[0].peak_right > 0.0);
     }
@@ -212,7 +204,7 @@ mod tests {
         let mut mixer = AudioMixer::new(1);
         mixer.tracks[0].muted = true;
         let buf = vec![1.0, 1.0];
-        let _ = mixer.mix(&[&buf]);
+        let _ = mixer.mix(&[(0, &buf)]);
         assert_eq!(mixer.tracks[0].peak_left, 0.0);
         assert_eq!(mixer.tracks[0].peak_right, 0.0);
     }
@@ -222,7 +214,7 @@ mod tests {
         let mut mixer = AudioMixer::new(2);
         let buf1 = vec![0.9, 0.9];
         let buf2 = vec![0.9, 0.9];
-        let out = mixer.mix(&[&buf1, &buf2]);
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
         // Sum would exceed 1.0, should be clamped
         assert!(out[0] <= 1.0);
         assert!(out[1] <= 1.0);

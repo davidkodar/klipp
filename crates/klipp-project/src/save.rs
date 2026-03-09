@@ -75,6 +75,14 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
         out_point: seq.out_point.as_ref().map(timecode_to_json),
         global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
         global_lut_opacity: color.global_lut_opacity,
+        markers: seq.markers.iter().map(|m| {
+            MarkerJson {
+                id: m.id.to_string(),
+                position: timecode_to_json(&m.position),
+                label: m.label.clone(),
+                color: format!("{:?}", m.color),
+            }
+        }).collect(),
         tracks: seq.tracks.iter().map(|t| {
             TrackJson {
                 id: t.id.to_string(),
@@ -110,6 +118,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                             None
                         },
                         effects: c.effects.iter().map(effect_to_json).collect(),
+                        linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                     }
                 }).collect(),
             }

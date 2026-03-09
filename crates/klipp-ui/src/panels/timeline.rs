@@ -53,6 +53,8 @@ struct DragState {
     track_idx: usize,
     start_x: f32,
     original_timeline_in: Timecode,
+    linked_clip_id: Option<ClipId>,
+    linked_original_in: Option<Timecode>,
 }
 
 struct TrimState {
@@ -145,6 +147,30 @@ impl TimelinePanel {
 
         // In/Out markers on ruler
         self.draw_in_out_markers(&painter, &ruler_rect, &content_rect, state);
+
+        // Sequence markers on ruler
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        for marker in &state.sequence.markers {
+            let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
+            if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
+                let (r, g, b) = marker.color.to_rgb();
+                let color = egui::Color32::from_rgb(r, g, b);
+                // Small downward-pointing triangle
+                let top = ruler_rect.bottom() - 10.0;
+                let bot = ruler_rect.bottom() - 1.0;
+                let half_w = 4.0;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(x - half_w, top),
+                        egui::pos2(x + half_w, top),
+                        egui::pos2(x, bot),
+                    ],
+                    color,
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
 
         // Ruler click to seek
         let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
@@ -341,7 +367,7 @@ impl TimelinePanel {
                         bg_painter.text(s_rect.center(), egui::Align2::CENTER_CENTER, "S",
                             egui::FontId::proportional(9.0), egui::Color32::WHITE);
                         if s_resp.clicked() {
-                            cmds.push(AppCommand::SetTrackSolo { track_index: track_idx });
+                            cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !track.solo });
                         }
 
                         // Volume drag control (like video opacity)
@@ -423,17 +449,17 @@ impl TimelinePanel {
                             egui::FontId::proportional(7.0),
                             egui::Color32::from_rgb(140, 140, 150),
                         );
-                        if pan_resp.double_clicked() {
-                            cmds.push(AppCommand::SetTrackPan {
-                                track_index: track_idx,
-                                pan: 0.0,
-                            });
-                        } else if pan_resp.dragged() {
+                        if pan_resp.dragged() {
                             let dx = pan_resp.drag_delta().x;
                             let new_pan = (track.pan + dx / (pan_rect.width() * 0.5)).clamp(-1.0, 1.0);
                             cmds.push(AppCommand::SetTrackPan {
                                 track_index: track_idx,
                                 pan: new_pan,
+                            });
+                        } else if pan_resp.double_clicked() {
+                            cmds.push(AppCommand::SetTrackPan {
+                                track_index: track_idx,
+                                pan: 0.0,
                             });
                         }
 
@@ -469,6 +495,54 @@ impl TimelinePanel {
                         }
                     }
                 }
+            }
+
+            // Track header right-click context menu
+            {
+                // Context menu area: only the track name area at top of header
+                let ctx_h = 22.0;
+                let hdr_rect = egui::Rect::from_min_size(
+                    egui::pos2(header_rect.left(), track_y),
+                    egui::vec2(TRACK_HEADER_WIDTH, ctx_h),
+                );
+                let hdr_resp = ui.interact(
+                    hdr_rect,
+                    ui.id().with(("track_hdr_ctx", track_idx)),
+                    egui::Sense::click(),
+                );
+                let track_id = state.sequence.tracks[track_idx].id;
+                hdr_resp.context_menu(|ui| {
+                    ui.set_min_width(160.0);
+                    if track_kind == TrackKind::Video
+                        && ui.button("Add Video Track Above").clicked()
+                    {
+                        cmds.push(AppCommand::AddVideoTrack);
+                        ui.close_menu();
+                    }
+                    if ui.button("Add Audio Track").clicked() {
+                        cmds.push(AppCommand::AddAudioTrack);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Rename Track").clicked() {
+                        // For now, auto-rename to next name
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    let has_clips = !state.sequence.tracks[track_idx].clips.is_empty();
+                    let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
+                    if !has_clips && remove_resp.clicked() {
+                        cmds.push(AppCommand::RemoveTrack { track_id });
+                        ui.close_menu();
+                    }
+                    if has_clips {
+                        remove_resp.on_disabled_hover_text("Remove clips first");
+                    }
+                    if ui.button("Remove Track (with clips)").clicked() {
+                        cmds.push(AppCommand::RemoveTrack { track_id });
+                        ui.close_menu();
+                    }
+                });
             }
 
             // Track separator
@@ -904,6 +978,18 @@ impl TimelinePanel {
                 egui::Stroke::new(border_width, border_color),
             );
 
+            // Linked-clip chain icon
+            if clip.linked_clip_id.is_some() && clip_rect.width() > 20.0 {
+                let chain_pos = egui::pos2(clip_rect.left() + 10.0, clip_rect.top() + 8.0);
+                painter.text(
+                    chain_pos,
+                    egui::Align2::CENTER_CENTER,
+                    "⛓",
+                    egui::FontId::proportional(8.0),
+                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
+                );
+            }
+
             // Always-visible trim handle bars on both edges
             if clip_rect.width() > 12.0 {
                 let handle_w = 5.0;
@@ -1106,11 +1192,63 @@ impl TimelinePanel {
             }
         }
         track_response.context_menu(|ui| {
+            ui.set_min_width(160.0);
             if let Some(clip_id) = state.selected_clip {
                 if ui.button("Remove Clip").clicked() {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                     ui.close_menu();
                 }
+
+                // Link/Unlink
+                let clip_info = state.sequence.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id);
+                if let Some(clip) = clip_info {
+                    if clip.linked_clip_id.is_some() {
+                        if ui.button("Unlink Clip").clicked() {
+                            cmds.push(AppCommand::UnlinkClip { clip_id });
+                            ui.close_menu();
+                        }
+                    } else {
+                        // Find a candidate clip on another track at the same position
+                        let candidate = state.sequence.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| {
+                                c.id != clip_id
+                                    && c.linked_clip_id.is_none()
+                                    && c.timeline_in == clip.timeline_in
+                            });
+                        if let Some(partner) = candidate {
+                            let partner_id = partner.id;
+                            if ui.button("Link to Matching Clip").clicked() {
+                                cmds.push(AppCommand::LinkClips { clip_a: clip_id, clip_b: partner_id });
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                }
+
+                ui.separator();
+
+                // Three-point edit operations
+                let has_source = state.source_media_id.is_some();
+                let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
+                if ui.add_enabled(has_source, egui::Button::new("Insert (,)")).clicked() {
+                    cmds.push(AppCommand::InsertEdit);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(has_source, egui::Button::new("Overwrite (.)")).clicked() {
+                    cmds.push(AppCommand::OverwriteEdit);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(has_in_out, egui::Button::new("Lift (;)")).clicked() {
+                    cmds.push(AppCommand::LiftEdit);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(has_in_out, egui::Button::new("Extract (')")).clicked() {
+                    cmds.push(AppCommand::ExtractEdit);
+                    ui.close_menu();
+                }
+
                 ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
                 r.on_disabled_hover_text("(coming soon)");
@@ -1180,11 +1318,20 @@ impl TimelinePanel {
                 else if let Some((_cr, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
                     if state.active_tool == Tool::Select {
+                        let linked_id = hit_clip.linked_clip_id;
+                        let linked_orig = linked_id.and_then(|lid| {
+                            state.sequence.tracks.iter()
+                                .flat_map(|t| t.clips.iter())
+                                .find(|c| c.id == lid)
+                                .map(|c| c.timeline_in)
+                        });
                         self.dragging_clip = Some(DragState {
                             clip_id: hit_clip.id,
                             track_idx,
                             start_x: pos.x,
                             original_timeline_in: hit_clip.timeline_in,
+                            linked_clip_id: linked_id,
+                            linked_original_in: linked_orig,
                         });
                     }
                 }
@@ -1228,9 +1375,11 @@ impl TimelinePanel {
             best.map(|(_, target)| (target, target.to_secs_f64()))
         };
 
-        // Handle ongoing trim
+        // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
         if let Some(ref trim) = self.trimming_clip {
-            if let Some(pos) = pointer_pos {
+            if trim.track_idx != track_idx {
+                // Skip — will be handled when we draw the correct track
+            } else if let Some(pos) = pointer_pos {
                 if pointer_down {
                     let dx = pos.x - trim.start_x;
                     let dt_secs = dx as f64 / zoom as f64;
@@ -1258,6 +1407,10 @@ impl TimelinePanel {
                             if trim.subsequent_clips.is_empty() {
                                 // Non-ripple: move timeline_in, keep timeline_out fixed
                                 let mut new_timeline_in = trim.original_timeline_in + source_delta;
+                                // Clamp so timeline_in doesn't go negative
+                                if new_timeline_in.value < 0 {
+                                    new_timeline_in.value = 0;
+                                }
 
                                 // Snap the left edge
                                 if let Some((snap_target, snap_secs)) = find_snap(new_timeline_in, trim.clip_id) {
@@ -1401,7 +1554,7 @@ impl TimelinePanel {
                 }
             }
 
-            if pointer_released {
+            if pointer_released && trim.track_idx == track_idx {
                 if let Some(track) = state.sequence.tracks.get(trim.track_idx) {
                     if let Some(c) = track.find_clip(trim.clip_id) {
                         cmds.push(AppCommand::TrimClip {
@@ -1419,9 +1572,11 @@ impl TimelinePanel {
             }
         }
 
-        // Handle ongoing drag
+        // Handle ongoing drag (only process once, on the drag's source track)
         if let Some(ref drag) = self.dragging_clip {
-            if let Some(pos) = pointer_pos {
+            if drag.track_idx != track_idx {
+                // Skip — will be handled when we draw the correct track
+            } else if let Some(pos) = pointer_pos {
                 // Determine which track the pointer is hovering over
                 let hover_track_idx = self.track_rects.iter()
                     .find(|(_, _, rect)| rect.contains(pos))
@@ -1478,11 +1633,30 @@ impl TimelinePanel {
                         final_in.value = 0;
                     }
 
+                    let delta = final_in - drag.original_timeline_in;
+
                     if let Some(track) = state.sequence.tracks.get_mut(drag.track_idx) {
                         if let Some(clip) = track.find_clip_mut(drag.clip_id) {
                             let dur = clip.duration();
                             clip.timeline_in = final_in;
                             clip.timeline_out = clip.timeline_in + dur;
+                        }
+                    }
+
+                    // Move linked partner by same delta (absolute from its original position)
+                    if let (Some(lid), Some(orig_in)) = (drag.linked_clip_id, drag.linked_original_in) {
+                        for track in &mut state.sequence.tracks {
+                            if let Some(lclip) = track.find_clip_mut(lid) {
+                                let dur = lclip.duration();
+                                let new_in = orig_in + delta;
+                                lclip.timeline_in = if new_in.value < 0 {
+                                    RationalTime { value: 0, rate: new_in.rate }
+                                } else {
+                                    new_in
+                                };
+                                lclip.timeline_out = lclip.timeline_in + dur;
+                                break;
+                            }
                         }
                     }
 
@@ -1510,7 +1684,7 @@ impl TimelinePanel {
                 }
             }
 
-            if pointer_released {
+            if pointer_released && drag.track_idx == track_idx {
                 let clip_id = drag.clip_id;
                 let from_track = drag.track_idx;
 
@@ -1769,7 +1943,7 @@ impl TimelinePanel {
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
-                cmds.push(AppCommand::AppendClip { media_id: item.id });
+                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id });
             }
             // Drag: start dragging media to a track
             if resp.drag_started() {

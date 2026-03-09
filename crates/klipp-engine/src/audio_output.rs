@@ -1,7 +1,7 @@
 use crate::audio_decoder::AudioConsumer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::Consumer;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -17,6 +17,8 @@ pub struct AudioOutput {
     /// When true, play ring buffer samples even while paused (for scrub chirps).
     /// Automatically cleared by the cpal callback when the ring buffer empties.
     chirp_active: Arc<AtomicBool>,
+    /// Master volume applied in the cpal callback (lock-free, instant response).
+    master_volume: Arc<AtomicU32>,
 }
 
 impl AudioOutput {
@@ -54,6 +56,8 @@ impl AudioOutput {
         let seek_gen_flag = seek_gen.clone();
         let chirp_active = Arc::new(AtomicBool::new(false));
         let chirp_flag = chirp_active.clone();
+        let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let master_vol_flag = master_volume.clone();
 
         let stream = device
             .build_output_stream(
@@ -108,6 +112,13 @@ impl AudioOutput {
                         }
                         let filled = consumer.pop_slice(data);
                         data[filled..].fill(0.0);
+                        // Apply master volume (lock-free, instant response)
+                        let vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
+                        if (vol - 1.0).abs() > 0.001 {
+                            for sample in data[..filled].iter_mut() {
+                                *sample *= vol;
+                            }
+                        }
                         // NO clock update — master clock is external
                     });
                 },
@@ -130,6 +141,7 @@ impl AudioOutput {
             flushing,
             seek_gen,
             chirp_active,
+            master_volume,
         })
     }
 
@@ -156,6 +168,11 @@ impl AudioOutput {
     /// Automatically deactivates when the ring buffer empties.
     pub fn start_chirp(&self) {
         self.chirp_active.store(true, Ordering::Release);
+    }
+
+    /// Set master volume (applied instantly in cpal callback, no buffer lag).
+    pub fn set_master_volume(&self, vol: f32) {
+        self.master_volume.store(f32::to_bits(vol), Ordering::Relaxed);
     }
 }
 

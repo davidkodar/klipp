@@ -37,10 +37,10 @@ impl TransportBar {
                 cmds.push(AppCommand::SeekRelative(-(fps_val * 10.0) as i64));
             }
 
-            // Step back
+            // Step back (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{25C2}").min_size(egui::vec2(32.0, 32.0)))
-                .on_hover_text("Step back")
+                .add_enabled(enabled, egui::Button::new("|<").min_size(egui::vec2(32.0, 32.0)))
+                .on_hover_text("Step back 1 frame")
                 .clicked()
             {
                 cmds.push(AppCommand::SeekRelative(-1));
@@ -67,10 +67,10 @@ impl TransportBar {
                 }
             }
 
-            // Step forward
+            // Step forward (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{25B8}").min_size(egui::vec2(32.0, 32.0)))
-                .on_hover_text("Step forward")
+                .add_enabled(enabled, egui::Button::new(">|").min_size(egui::vec2(32.0, 32.0)))
+                .on_hover_text("Step forward 1 frame")
                 .clicked()
             {
                 cmds.push(AppCommand::SeekRelative(1));
@@ -158,14 +158,27 @@ impl TransportBar {
             // Spacer to push master controls right
             ui.add_space(24.0);
 
-            // Master volume slider
+            // Master volume slider + mute
             ui.label(egui::RichText::new("Master").size(10.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            let mute_color = if state.master_muted {
+                egui::Color32::from_rgb(255, 80, 80)
+            } else {
+                egui::Color32::from_rgb(100, 100, 110)
+            };
+            if ui.add(egui::Button::new(
+                egui::RichText::new("M").size(10.0).color(mute_color),
+            ).min_size(egui::vec2(18.0, 16.0))).clicked() {
+                state.master_muted = !state.master_muted;
+                let effective = if state.master_muted { 0.0 } else { state.master_volume };
+                cmds.push(AppCommand::SetMasterVolume(effective));
+            }
             let mut vol = state.master_volume;
             let slider = egui::Slider::new(&mut vol, 0.0..=1.3)
                 .show_value(false);
             if ui.add(slider).changed() {
                 state.master_volume = vol;
-                cmds.push(AppCommand::SetMasterVolume(vol));
+                let effective = if state.master_muted { 0.0 } else { vol };
+                cmds.push(AppCommand::SetMasterVolume(effective));
             }
             let vol_pct = (state.master_volume * 100.0) as u32;
             ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(egui::Color32::from_rgb(140, 140, 150)));
