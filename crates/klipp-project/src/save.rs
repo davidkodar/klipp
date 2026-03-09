@@ -129,6 +129,15 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 solo: t.solo,
                 visible: t.visible,
                 pan: t.pan,
+                transitions: t.transitions.iter().map(|tr| {
+                    TransitionJson {
+                        id: tr.id.to_string(),
+                        kind: format!("{:?}", tr.kind),
+                        duration: timecode_to_json(&tr.duration),
+                        clip_a_id: tr.clip_a_id.to_string(),
+                        clip_b_id: tr.clip_b_id.to_string(),
+                    }
+                }).collect(),
                 clips: t.clips.iter().map(|c| {
                     ClipJson {
                         id: c.id.to_string(),

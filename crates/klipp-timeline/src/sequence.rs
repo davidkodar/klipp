@@ -324,6 +324,12 @@ pub struct Transition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionKind {
     CrossDissolve,
+    WipeLeft,
+    WipeRight,
+    WipeUp,
+    WipeDown,
+    DipToBlack,
+    DipToWhite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

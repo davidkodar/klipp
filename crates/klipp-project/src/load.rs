@@ -80,6 +80,26 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             track.solo = t.solo;
             track.visible = t.visible;
             track.pan = t.pan;
+            track.transitions = t.transitions.iter().filter_map(|tr| {
+                let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
+                let kind = match tr.kind.as_str() {
+                    "CrossDissolve" => klipp_timeline::TransitionKind::CrossDissolve,
+                    "WipeLeft" => klipp_timeline::TransitionKind::WipeLeft,
+                    "WipeRight" => klipp_timeline::TransitionKind::WipeRight,
+                    "WipeUp" => klipp_timeline::TransitionKind::WipeUp,
+                    "WipeDown" => klipp_timeline::TransitionKind::WipeDown,
+                    "DipToBlack" => klipp_timeline::TransitionKind::DipToBlack,
+                    "DipToWhite" => klipp_timeline::TransitionKind::DipToWhite,
+                    _ => klipp_timeline::TransitionKind::CrossDissolve,
+                };
+                Some(klipp_timeline::Transition {
+                    id,
+                    kind,
+                    duration: RationalTime { value: tr.duration.value, rate: tr.duration.rate },
+                    clip_a_id: ClipId(parse_uuid(&tr.clip_a_id).ok()?),
+                    clip_b_id: ClipId(parse_uuid(&tr.clip_b_id).ok()?),
+                })
+            }).collect();
             track.clips = t.clips.iter().map(|c| {
                 let clip_kind = load_clip_kind(c);
                 Clip {

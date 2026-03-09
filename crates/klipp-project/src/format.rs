@@ -62,6 +62,8 @@ pub struct TrackJson {
     pub name: String,
     pub kind: String,
     pub clips: Vec<ClipJson>,
+    #[serde(default)]
+    pub transitions: Vec<TransitionJson>,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
     #[serde(default = "default_volume")]
@@ -74,6 +76,15 @@ pub struct TrackJson {
     pub visible: bool,
     #[serde(default)]
     pub pan: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransitionJson {
+    pub id: String,
+    pub kind: String,
+    pub duration: TimecodeJson,
+    pub clip_a_id: String,
+    pub clip_b_id: String,
 }
 
 fn default_opacity() -> f32 { 1.0 }

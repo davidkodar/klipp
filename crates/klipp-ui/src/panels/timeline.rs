@@ -81,19 +81,43 @@ impl TimelinePanel {
         let mut cmds = Vec::new();
         let available = ui.available_size();
 
-        // Handle zoom with Ctrl+scroll
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-        if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
-            let ctrl = ui.input(|i| i.modifiers.ctrl);
-            if ctrl {
-                let zoom_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                if zoom_delta != 0.0 {
-                    let factor = if zoom_delta > 0.0 { 1.2 } else { 1.0 / 1.2 };
-                    state.timeline_zoom = (state.timeline_zoom * factor).clamp(10.0, 500.0);
+        // Handle scroll (horizontal pan) and Ctrl+scroll (cursor-anchored zoom).
+        // egui 0.29: Ctrl+scroll → zoom_delta() (smooth_scroll_delta is zero).
+        //            Normal scroll → smooth_scroll_delta (zoom_delta() is 1.0).
+        // raw_scroll_delta is never consumed and always has the raw wheel input.
+        let avail_rect = ui.available_rect_before_wrap();
+        if ui.rect_contains_pointer(avail_rect) {
+            // Read zoom_delta first (immutable — always available)
+            let (zoom_factor, pointer_pos) = ui.input(|i| {
+                (i.zoom_delta(), i.pointer.interact_pos())
+            });
+
+            // Ctrl+scroll → zoom (egui sets zoom_delta != 1.0)
+            if (zoom_factor - 1.0).abs() > 0.001 {
+                let old_zoom = state.timeline_zoom;
+                let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 2000.0);
+
+                let content_left = avail_rect.left() + TRACK_HEADER_WIDTH;
+                if let Some(cursor_pos) = pointer_pos {
+                    let cursor_x = cursor_pos.x - content_left;
+                    let time_at_cursor = (state.timeline_scroll_x + cursor_x) / old_zoom;
+                    state.timeline_scroll_x = (time_at_cursor * new_zoom - cursor_x).max(0.0);
                 }
-            } else if scroll_delta.x.abs() > 0.0 || scroll_delta.y.abs() > 0.0 {
-                state.timeline_scroll_x =
-                    (state.timeline_scroll_x - scroll_delta.y).max(0.0);
+                state.timeline_zoom = new_zoom;
+            } else {
+                // Normal scroll → horizontal pan.
+                // Consume smooth_scroll_delta via input_mut so egui doesn't also scroll the panel.
+                let smooth_sy = ui.input_mut(|i| {
+                    let sy = i.smooth_scroll_delta.y;
+                    i.smooth_scroll_delta = egui::Vec2::ZERO;
+                    sy
+                });
+                if smooth_sy.abs() > 0.1 {
+                    state.timeline_scroll_x =
+                        (state.timeline_scroll_x - smooth_sy).max(0.0);
+                    // User took manual control — disengage playhead follow
+                    state.playhead_follow = PlayheadFollow::Off;
+                }
             }
         }
 
@@ -710,7 +734,19 @@ impl TimelinePanel {
         );
 
         // Right side: filmstrip + zoom
-        let mut right_text = format!("Zoom: {:.0} px/s", state.timeline_zoom);
+        // Show zoom as human-readable time span visible in the viewport
+        let view_secs = content_rect.width() / state.timeline_zoom;
+        let zoom_label = if view_secs >= 7200.0 {
+            format!("{:.0}h", view_secs / 3600.0)
+        } else if view_secs >= 120.0 {
+            format!("{:.0}m", view_secs / 60.0)
+        } else if view_secs >= 1.0 {
+            format!("{:.0}s", view_secs)
+        } else {
+            let fps = state.sequence.fps.num as f32 / state.sequence.fps.den as f32;
+            format!("{:.0}f", view_secs * fps)
+        };
+        let mut right_text = format!("Zoom: {zoom_label} visible");
         if self.filmstrip_total > 0 {
             right_text = format!(
                 "Filmstrip: {}/{}{sep}{}",
@@ -1072,22 +1108,142 @@ impl TimelinePanel {
                 continue;
             }
 
-            // Blade cursor/line (visual only, no interaction needed)
+            // Blade cursor/line with snap support
             if state.active_tool == Tool::Blade {
                 if let Some(pos) = pointer_pos {
                     if clip_rect.contains(pos) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                        let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
+                        let raw_x = pos.x - content_rect.left() + scroll;
+                        let raw_secs = (raw_x as f64 / zoom as f64).max(0.0);
+                        let mut blade_x = pos.x;
+
+                        if blade_snap {
+                            let snap_thresh_secs = 20.0 / zoom as f64;
+                            // Snap targets: playhead, clip edges, in/out markers
+                            let mut best_dist = f64::MAX;
+                            let mut best_secs = raw_secs;
+
+                            // Playhead
+                            let ph_secs = state.playhead.to_secs_f64();
+                            let d = (raw_secs - ph_secs).abs();
+                            if d < snap_thresh_secs && d < best_dist {
+                                best_dist = d;
+                                best_secs = ph_secs;
+                            }
+                            // All clip edges
+                            for track in &state.sequence.tracks {
+                                for c in &track.clips {
+                                    for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
+                                        let d = (raw_secs - edge_secs).abs();
+                                        if d < snap_thresh_secs && d < best_dist {
+                                            best_dist = d;
+                                            best_secs = edge_secs;
+                                        }
+                                    }
+                                }
+                            }
+                            // In/out markers
+                            if let Some(inp) = state.sequence.in_point {
+                                let d = (raw_secs - inp.to_secs_f64()).abs();
+                                if d < snap_thresh_secs && d < best_dist {
+                                    best_dist = d;
+                                    best_secs = inp.to_secs_f64();
+                                }
+                            }
+                            if let Some(outp) = state.sequence.out_point {
+                                let d = (raw_secs - outp.to_secs_f64()).abs();
+                                if d < snap_thresh_secs && d < best_dist {
+                                    best_secs = outp.to_secs_f64();
+                                }
+                            }
+
+                            if best_dist < f64::MAX {
+                                blade_x = content_rect.left() + best_secs as f32 * zoom - scroll;
+                            }
+                        }
+
+                        // Draw blade line (yellow if snapped, red if unsnapped)
+                        let snapped = (blade_x - pos.x).abs() > 0.5;
+                        let blade_color = if snapped {
+                            egui::Color32::from_rgb(255, 220, 60)
+                        } else {
+                            egui::Color32::from_rgb(255, 60, 60)
+                        };
                         painter.line_segment(
                             [
-                                egui::pos2(pos.x, clip_rect.top()),
-                                egui::pos2(pos.x, clip_rect.bottom()),
+                                egui::pos2(blade_x, clip_rect.top()),
+                                egui::pos2(blade_x, clip_rect.bottom()),
                             ],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 60, 60)),
+                            egui::Stroke::new(if snapped { 2.0 } else { 1.0 }, blade_color),
                         );
                     }
                 }
             }
 
+        }
+
+        // Draw transition indicators between clips
+        if let Some(track) = state.sequence.tracks.get(track_idx) {
+            for transition in &track.transitions {
+                // Find clip_b (the incoming clip) to determine the transition position
+                let clip_b = track.find_clip(transition.clip_b_id);
+                if let Some(clip_b) = clip_b {
+                    let trans_start_secs = clip_b.timeline_in.to_secs_f64();
+                    let trans_dur_secs = transition.duration.to_secs_f64();
+                    let trans_start_x = content_rect.left() + (trans_start_secs * zoom as f64) as f32 - scroll;
+                    let trans_end_x = content_rect.left() + ((trans_start_secs + trans_dur_secs) * zoom as f64) as f32 - scroll;
+
+                    // Only draw if visible
+                    if trans_end_x > content_rect.left() && trans_start_x < content_rect.right() {
+                        let trans_w = (trans_end_x - trans_start_x).max(4.0);
+                        let indicator_rect = egui::Rect::from_min_size(
+                            egui::pos2(trans_start_x, track_rect.top()),
+                            egui::vec2(trans_w, track_height),
+                        );
+                        // Semi-transparent overlay
+                        painter.rect_filled(
+                            indicator_rect,
+                            0.0,
+                            egui::Color32::from_rgba_premultiplied(255, 180, 40, 35),
+                        );
+                        // Diamond marker at center
+                        let cx = (trans_start_x + trans_end_x) / 2.0;
+                        let cy = track_rect.center().y;
+                        let d = 5.0;
+                        let diamond = vec![
+                            egui::pos2(cx, cy - d),
+                            egui::pos2(cx + d, cy),
+                            egui::pos2(cx, cy + d),
+                            egui::pos2(cx - d, cy),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            diamond,
+                            egui::Color32::from_rgb(255, 200, 60),
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 30)),
+                        ));
+                        // Label if wide enough
+                        if trans_w > 40.0 {
+                            let kind_label = match transition.kind {
+                                klipp_timeline::TransitionKind::CrossDissolve => "Dissolve",
+                                klipp_timeline::TransitionKind::WipeLeft => "Wipe L",
+                                klipp_timeline::TransitionKind::WipeRight => "Wipe R",
+                                klipp_timeline::TransitionKind::WipeUp => "Wipe U",
+                                klipp_timeline::TransitionKind::WipeDown => "Wipe D",
+                                klipp_timeline::TransitionKind::DipToBlack => "Dip Blk",
+                                klipp_timeline::TransitionKind::DipToWhite => "Dip Wht",
+                            };
+                            painter.text(
+                                egui::pos2(cx, cy - d - 8.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                kind_label,
+                                egui::FontId::proportional(9.0),
+                                egui::Color32::from_rgb(255, 220, 100),
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Trim handle hover highlight — edge-first detection
@@ -1251,6 +1407,90 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Transitions
+                ui.separator();
+                // Find adjacent clip pairs involving the selected clip
+                if let Some(track) = state.sequence.tracks.get(track_idx) {
+                    let clip_pos = track.clips.iter().position(|c| c.id == clip_id);
+                    if let Some(pos) = clip_pos {
+                        // Check if there's a clip after this one (transition at the cut point)
+                        if pos + 1 < track.clips.len() {
+                            let next_clip = &track.clips[pos + 1];
+                            let has_transition = track.transitions.iter().any(|t| {
+                                t.clip_a_id == clip_id && t.clip_b_id == next_clip.id
+                            });
+                            let next_id = next_clip.id;
+                            if has_transition {
+                                // Show existing transition with option to change/remove
+                                let tid = track.transitions.iter()
+                                    .find(|t| t.clip_a_id == clip_id && t.clip_b_id == next_id)
+                                    .map(|t| t.id);
+                                if let Some(tid) = tid {
+                                    if ui.button("Remove Transition →").clicked() {
+                                        cmds.push(AppCommand::RemoveTransition {
+                                            track_index: track_idx,
+                                            transition_id: tid,
+                                        });
+                                        ui.close_menu();
+                                    }
+                                }
+                            } else {
+                                ui.menu_button("Add Transition →", |ui| {
+                                    for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                                        if ui.button(label).clicked() {
+                                            cmds.push(AppCommand::AddTransition {
+                                                track_index: track_idx,
+                                                clip_a_id: clip_id,
+                                                clip_b_id: next_id,
+                                                kind_id,
+                                                duration_frames: 24,
+                                            });
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        // Check if there's a clip before this one
+                        if pos > 0 {
+                            let prev_clip = &track.clips[pos - 1];
+                            let has_transition = track.transitions.iter().any(|t| {
+                                t.clip_a_id == prev_clip.id && t.clip_b_id == clip_id
+                            });
+                            let prev_id = prev_clip.id;
+                            if has_transition {
+                                let tid = track.transitions.iter()
+                                    .find(|t| t.clip_a_id == prev_id && t.clip_b_id == clip_id)
+                                    .map(|t| t.id);
+                                if let Some(tid) = tid {
+                                    if ui.button("Remove Transition ←").clicked() {
+                                        cmds.push(AppCommand::RemoveTransition {
+                                            track_index: track_idx,
+                                            transition_id: tid,
+                                        });
+                                        ui.close_menu();
+                                    }
+                                }
+                            } else {
+                                ui.menu_button("Add Transition ←", |ui| {
+                                    for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                                        if ui.button(label).clicked() {
+                                            cmds.push(AppCommand::AddTransition {
+                                                track_index: track_idx,
+                                                clip_a_id: prev_id,
+                                                clip_b_id: clip_id,
+                                                kind_id,
+                                                duration_frames: 24,
+                                            });
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+
                 ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
                 r.on_disabled_hover_text("(coming soon)");
@@ -1268,7 +1508,48 @@ impl TimelinePanel {
 
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     if state.active_tool == Tool::Blade {
-                        let cut_tc = RationalTime::from_secs_f64(click_secs, fps.rate());
+                        // Snap blade position when snap is enabled (hold Shift to override)
+                        let mut cut_secs = click_secs;
+                        let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
+                        if blade_snap {
+                            let snap_thresh_secs = 20.0 / zoom as f64;
+                            let mut best_dist = f64::MAX;
+                            // Playhead
+                            let ph_secs = state.playhead.to_secs_f64();
+                            let d = (click_secs - ph_secs).abs();
+                            if d < snap_thresh_secs && d < best_dist {
+                                best_dist = d;
+                                cut_secs = ph_secs;
+                            }
+                            // Clip edges
+                            for track in &state.sequence.tracks {
+                                for c in &track.clips {
+                                    for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
+                                        let d = (click_secs - edge_secs).abs();
+                                        if d < snap_thresh_secs && d < best_dist {
+                                            best_dist = d;
+                                            cut_secs = edge_secs;
+                                        }
+                                    }
+                                }
+                            }
+                            // In/out markers
+                            if let Some(inp) = state.sequence.in_point {
+                                let d = (click_secs - inp.to_secs_f64()).abs();
+                                if d < snap_thresh_secs && d < best_dist {
+                                    best_dist = d;
+                                    cut_secs = inp.to_secs_f64();
+                                }
+                            }
+                            if let Some(outp) = state.sequence.out_point {
+                                let d = (click_secs - outp.to_secs_f64()).abs();
+                                if d < snap_thresh_secs && d < best_dist {
+                                    cut_secs = outp.to_secs_f64();
+                                }
+                            }
+                            let _ = best_dist;
+                        }
+                        let cut_tc = RationalTime::from_secs_f64(cut_secs, fps.rate());
                         cmds.push(AppCommand::BladeClip {
                             track_index: track_idx,
                             clip_id: hit_clip.id,
@@ -1854,7 +2135,7 @@ impl TimelinePanel {
             if dur_secs > 0.0 {
                 let content_width = ruler_rect.width() - 20.0;
                 // Allow zoom down to 0.1 px/sec for long clips (e.g. 12 min movie)
-                state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 500.0);
+                state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 2000.0);
                 state.timeline_scroll_x = 0.0;
             }
         }
@@ -1871,7 +2152,7 @@ impl TimelinePanel {
         painter.text(minus_rect.center(), egui::Align2::CENTER_CENTER, "\u{2212}",
             egui::FontId::proportional(11.0), egui::Color32::from_rgb(160, 160, 170));
         if minus_resp.clicked() {
-            state.timeline_zoom = (state.timeline_zoom / 1.5).clamp(10.0, 500.0);
+            state.timeline_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
         }
         x += btn_w + 2.0;
 
@@ -1886,7 +2167,7 @@ impl TimelinePanel {
         painter.text(plus_rect.center(), egui::Align2::CENTER_CENTER, "+",
             egui::FontId::proportional(11.0), egui::Color32::from_rgb(160, 160, 170));
         if plus_resp.clicked() {
-            state.timeline_zoom = (state.timeline_zoom * 1.5).clamp(10.0, 500.0);
+            state.timeline_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
         }
     }
 
@@ -2112,8 +2393,13 @@ impl TimelinePanel {
         let min_label_spacing_px = 60.0; // minimum pixels between labels
         let min_label_interval_secs = secs_per_pixel * min_label_spacing_px;
 
-        // Choose a "nice" major interval in seconds
-        let major_interval = if min_label_interval_secs > 60.0 { 60.0 }
+        // Choose a "nice" major interval in seconds — covers frame-level to multi-hour
+        let major_interval = if min_label_interval_secs > 3600.0 { 3600.0 }  // 1h
+            else if min_label_interval_secs > 1800.0 { 1800.0 }  // 30m
+            else if min_label_interval_secs > 600.0 { 600.0 }    // 10m
+            else if min_label_interval_secs > 300.0 { 300.0 }    // 5m
+            else if min_label_interval_secs > 120.0 { 120.0 }    // 2m
+            else if min_label_interval_secs > 60.0 { 60.0 }      // 1m
             else if min_label_interval_secs > 30.0 { 30.0 }
             else if min_label_interval_secs > 10.0 { 10.0 }
             else if min_label_interval_secs > 5.0 { 5.0 }
@@ -2145,24 +2431,32 @@ impl TimelinePanel {
                         let tc = RationalTime::from_secs_f64(t as f64, rate);
                         tc.to_timecode_string()
                     } else {
-                        let total_ms = (t * 1000.0) as i64;
-                        let hh = total_ms / 3_600_000;
-                        let mm = (total_ms / 60_000) % 60;
-                        let ss = (total_ms / 1_000) % 60;
-                        let ms = total_ms % 1000;
-                        if hh > 0 {
-                            format!("{hh}:{mm:02}:{ss:02}.{ms:03}")
+                        let total_secs = t.round() as i64;
+                        let hh = total_secs / 3600;
+                        let mm = (total_secs / 60) % 60;
+                        let ss = total_secs % 60;
+                        if major_interval >= 3600.0 {
+                            format!("{hh}h{mm:02}m")
+                        } else if major_interval >= 60.0 {
+                            if hh > 0 {
+                                format!("{hh}:{mm:02}:{ss:02}")
+                            } else {
+                                format!("{mm}:{ss:02}")
+                            }
                         } else if major_interval <= 1.0 {
-                            // Show ms when interval is 1s or less
+                            let total_ms = (t * 1000.0) as i64;
+                            let ms = total_ms % 1000;
                             format!("{mm}:{ss:02}.{ms:03}")
                         } else if major_interval <= 5.0 {
-                            // Show tenths at 2-5s intervals
-                            let tenths = ms / 100;
+                            let total_ms = (t * 1000.0) as i64;
+                            let tenths = (total_ms % 1000) / 100;
                             if tenths > 0 {
                                 format!("{mm}:{ss:02}.{tenths}")
                             } else {
                                 format!("{mm}:{ss:02}")
                             }
+                        } else if hh > 0 {
+                            format!("{hh}:{mm:02}:{ss:02}")
                         } else {
                             format!("{mm}:{ss:02}")
                         }
@@ -2181,7 +2475,9 @@ impl TimelinePanel {
         }
 
         // Draw minor ticks (subdivisions between major ticks)
-        let minor_interval = if major_interval >= 10.0 { major_interval / 5.0 }
+        let minor_interval = if major_interval >= 600.0 { major_interval / 5.0 }   // 10m+ → 5 subdivisions
+            else if major_interval >= 60.0 { major_interval / 6.0 }   // 1m+ → 10s subdivisions
+            else if major_interval >= 10.0 { major_interval / 5.0 }
             else if major_interval >= 2.0 { 1.0 }
             else if major_interval >= 1.0 { 0.5 }
             else { major_interval / 2.0 };

@@ -80,6 +80,10 @@ pub struct PlaybackEngine {
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
     gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
+    // Transition decoder — secondary decoder for the partner clip during transitions
+    transition_decoder: Option<VideoDecoder>,
+    transition_clip_id: Option<klipp_core::ClipId>,
+    transition_frame_cache: Option<crate::types::DecodedFrame>,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
 }
@@ -149,6 +153,9 @@ impl PlaybackEngine {
             color_pipeline: klipp_color::ColorPipeline::new(),
             ofx_host: klipp_plugin::OfxHost::new(),
             gpu_effects: klipp_effects::gpu::GpuEffectsPipeline::new(),
+            transition_decoder: None,
+            transition_clip_id: None,
+            transition_frame_cache: None,
             last_peak_time: std::time::Instant::now(),
         })
     }
@@ -1009,6 +1016,9 @@ impl PlaybackEngine {
             debug!("PERF composite+into_rgba: {composite_ms:.1}ms");
         }
 
+        // Check for active transition and blend if needed
+        let final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
+
         // Apply full post-processing pipeline (color grade → OFX → builtin FX → global LUT)
         let final_rgba = self.post_process_rgba(final_rgba, final_w, final_h);
 
@@ -1199,6 +1209,12 @@ impl PlaybackEngine {
         self.v2_decoder = None;
         self.current_clip_v2 = None;
         self.v2_frame_cache = None;
+        if let Some(dec) = &mut self.transition_decoder {
+            dec.stop_detached();
+        }
+        self.transition_decoder = None;
+        self.transition_clip_id = None;
+        self.transition_frame_cache = None;
         self.stop_all_audio();
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
@@ -1524,6 +1540,107 @@ impl PlaybackEngine {
 
     /// Apply the full post-processing pipeline to a raw decoded RGBA frame:
     /// color grade → OFX effects → built-in effects → global LUT.
+    /// Check for an active transition at the current playhead and blend if needed.
+    fn apply_transition_if_active(&mut self, from_rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        // Read sequence to check for transitions
+        let seq = self.sequence.read().unwrap();
+        let active = crate::transition::find_active_transition(&seq, self.playhead);
+        drop(seq);
+
+        let active = match active {
+            Some(a) => a,
+            None => {
+                // No transition active — close transition decoder if open
+                if self.transition_decoder.is_some() {
+                    if let Some(dec) = &mut self.transition_decoder {
+                        dec.stop_detached();
+                    }
+                    self.transition_decoder = None;
+                    self.transition_clip_id = None;
+                    self.transition_frame_cache = None;
+                }
+                return from_rgba;
+            }
+        };
+
+        // Open transition decoder for partner clip if needed
+        let partner_clip_id = active.partner_clip.id;
+        if self.transition_clip_id != Some(partner_clip_id) {
+            // Close old transition decoder
+            if let Some(dec) = &mut self.transition_decoder {
+                dec.stop_detached();
+            }
+            self.transition_decoder = None;
+            self.transition_frame_cache = None;
+
+            // Open new decoder for the partner clip
+            if let Some(media_id) = active.partner_clip.media_id() {
+                if let Some(path) = self.path_for_media(media_id) {
+                    match VideoDecoder::open(&path) {
+                        Ok(dec) => {
+                            let source_secs = active.partner_clip.source_in.to_secs_f64()
+                                + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0);
+                            if source_secs > 0.01 {
+                                dec.seek(source_secs);
+                            }
+                            dec.resume();
+                            self.transition_decoder = Some(dec);
+                            self.transition_clip_id = Some(partner_clip_id);
+                            debug!("Transition decoder opened for partner clip");
+                        }
+                        Err(e) => {
+                            warn!("Failed to open transition decoder: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pop frame from transition decoder
+        if let Some(t_dec) = &self.transition_decoder {
+            let current_source_secs = self.master_clock.current_secs();
+            let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
+            let mut queue = t_dec.frame_queue().lock().unwrap();
+            while let Some(f) = queue.front() {
+                if f.is_eof {
+                    let _ = queue.pop();
+                    break;
+                }
+                let pts = f.pts_secs();
+                if pts <= current_source_secs + frame_tolerance {
+                    let tf = queue.pop().unwrap();
+                    if let Some(next) = queue.front() {
+                        if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
+                            continue;
+                        }
+                    }
+                    self.transition_frame_cache = Some(tf);
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Blend if we have the partner frame
+        let to_rgba = match &self.transition_frame_cache {
+            Some(f) => f.to_rgba(),
+            None => {
+                // No partner frame yet — show from frame unblended
+                return from_rgba;
+            }
+        };
+
+        let kind_id = crate::transition::transition_kind_to_id(active.kind);
+
+        // GPU-accelerated transition (preferred) or CPU fallback
+        if let Some(gpu) = &mut self.gpu_effects {
+            gpu.render_transition(&from_rgba, &to_rgba, kind_id, active.progress, width, height)
+        } else {
+            crate::transition::render_transition(active.kind, &from_rgba, &to_rgba, active.progress, width, height)
+        }
+    }
+
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap();

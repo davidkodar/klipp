@@ -1261,6 +1261,59 @@ impl KlippApp {
                     continue;
                 }
 
+                // Transitions
+                AppCommand::AddTransition { track_index, clip_a_id, clip_b_id, kind_id, duration_frames } => {
+                    let ti = *track_index;
+                    let kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
+                    if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
+                        let fps_rate = self.state.sequence.fps.rate();
+                        let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
+                        // Remove any existing transition between these two clips
+                        track.transitions.retain(|t| {
+                            !(t.clip_a_id == *clip_a_id && t.clip_b_id == *clip_b_id)
+                        });
+                        track.transitions.push(klipp_timeline::Transition {
+                            id: klipp_core::TransitionId::new(),
+                            kind,
+                            duration,
+                            clip_a_id: *clip_a_id,
+                            clip_b_id: *clip_b_id,
+                        });
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveTransition { track_index, transition_id } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        track.transitions.retain(|t| t.id != *transition_id);
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTransitionDuration { track_index, transition_id, duration_frames } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
+                            let fps_rate = self.state.sequence.fps.rate();
+                            t.duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTransitionKind { track_index, transition_id, kind_id } => {
+                    if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
+                        if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
+                            t.kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
                     let ti = *track_index;
@@ -2430,18 +2483,15 @@ impl KlippApp {
             if i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
                 cmds.push(AppCommand::PasteClip);
             }
-            // Ctrl+B — Split at playhead
+            // Ctrl+B — Split at playhead (all tracks with clips at playhead)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
-                // Find clip at playhead on primary video track
-                let track_index = self.state.sequence.tracks.iter()
-                    .position(|t| t.name == "Video 1")
-                    .unwrap_or(0);
-                if let Some(track) = self.state.sequence.tracks.get(track_index) {
-                    if let Some((_, clip)) = track.clip_at_timecode(self.state.playhead) {
+                let ph = self.state.playhead;
+                for (track_index, track) in self.state.sequence.tracks.iter().enumerate() {
+                    if let Some((_, clip)) = track.clip_at_timecode(ph) {
                         cmds.push(AppCommand::BladeClip {
                             track_index,
                             clip_id: clip.id,
-                            cut_at: self.state.playhead,
+                            cut_at: ph,
                         });
                     }
                 }

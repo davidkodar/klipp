@@ -7,6 +7,7 @@ pub mod mix_thread;
 pub mod pcm_reader;
 pub mod sync;
 pub mod texture;
+pub mod transition;
 pub mod types;
 pub mod video_decoder;
 

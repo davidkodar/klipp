@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 pub struct GpuEffectsPipeline {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    // Compute pipelines
+    // Compute pipelines — effects (2-buffer: input, output, params)
     opacity_pipeline: wgpu::ComputePipeline,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
@@ -19,11 +19,15 @@ pub struct GpuEffectsPipeline {
     crop_pipeline: wgpu::ComputePipeline,
     transform_pipeline: wgpu::ComputePipeline,
     chroma_key_pipeline: wgpu::ComputePipeline,
-    // Shared bind group layout (input, output, params)
-    bind_group_layout: wgpu::BindGroupLayout,
+    // Compute pipelines — transitions (3-buffer: from, to, output, params)
+    transition_pipeline: wgpu::ComputePipeline,
+    // Bind group layouts
+    bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
+    transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
     // Reusable buffers — resized when frame dimensions change
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
+    buf_c: Option<wgpu::Buffer>,  // third buffer for transition "to" frame
     staging_read: Option<wgpu::Buffer>,
     params_buf: wgpu::Buffer,
     current_buf_size: u64,
@@ -132,17 +136,70 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
 
+        // Transition bind group layout: from (read), to (read), output (write), params (uniform)
+        let transition_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("transition_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let transition_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("transition_pl"),
+            bind_group_layouts: &[&transition_bgl],
+            push_constant_ranges: &[],
+        });
+
         // Push error handler to capture shader validation errors instead of panicking
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        let create_pipeline = |dev: &wgpu::Device, label: &str, shader_src: &str| -> wgpu::ComputePipeline {
+        let create_pipeline = |dev: &wgpu::Device, layout: &wgpu::PipelineLayout, label: &str, shader_src: &str| -> wgpu::ComputePipeline {
             let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(shader_src.into()),
             });
             dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 module: &module,
                 entry_point: "main",
                 compilation_options: Default::default(),
@@ -150,13 +207,14 @@ impl GpuEffectsPipeline {
             })
         };
 
-        let opacity_pipeline = create_pipeline(&device, "opacity", SHADER_OPACITY);
-        let blur_h_pipeline = create_pipeline(&device, "blur_h", SHADER_BLUR_H);
-        let blur_v_pipeline = create_pipeline(&device, "blur_v", SHADER_BLUR_V);
-        let sharpen_pipeline = create_pipeline(&device, "sharpen", SHADER_SHARPEN);
-        let crop_pipeline = create_pipeline(&device, "crop", SHADER_CROP);
-        let transform_pipeline = create_pipeline(&device, "transform", SHADER_TRANSFORM);
-        let chroma_key_pipeline = create_pipeline(&device, "chroma_key", SHADER_CHROMA_KEY);
+        let opacity_pipeline = create_pipeline(&device, &pipeline_layout, "opacity", SHADER_OPACITY);
+        let blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "blur_h", SHADER_BLUR_H);
+        let blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "blur_v", SHADER_BLUR_V);
+        let sharpen_pipeline = create_pipeline(&device, &pipeline_layout, "sharpen", SHADER_SHARPEN);
+        let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP);
+        let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
+        let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
+        let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
 
         // Check if any shader compilation failed
         if let Some(err) = pollster::block_on(device.pop_error_scope()) {
@@ -183,9 +241,12 @@ impl GpuEffectsPipeline {
             crop_pipeline,
             transform_pipeline,
             chroma_key_pipeline,
+            transition_pipeline,
             bind_group_layout,
+            transition_bgl,
             buf_a: None,
             buf_b: None,
+            buf_c: None,
             staging_read: None,
             params_buf,
             current_buf_size: 0,
@@ -208,6 +269,14 @@ impl GpuEffectsPipeline {
         }));
         self.buf_b = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx_b"),
+            size: byte_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        self.buf_c = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx_c"),
             size: byte_size,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
@@ -501,6 +570,65 @@ impl GpuEffectsPipeline {
             }
         }
     }
+
+    /// Render a transition between two frames on the GPU.
+    /// `kind_id`: 0=CrossDissolve, 1=WipeLeft, 2=WipeRight, 3=WipeUp, 4=WipeDown, 5=DipToBlack, 6=DipToWhite
+    pub fn render_transition(
+        &mut self,
+        from_rgba: &[u8],
+        to_rgba: &[u8],
+        kind_id: u32,
+        progress: f32,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        let buf_c = self.buf_c.as_ref().unwrap();
+
+        // Upload: buf_a = from, buf_c = to, buf_b = output
+        self.queue.write_buffer(buf_a, 0, from_rgba);
+        self.queue.write_buffer(buf_c, 0, to_rgba);
+
+        self.write_params(&TransitionParams {
+            width,
+            height,
+            progress,
+            kind_id,
+        });
+
+        // Create transition bind group (from, to, output, params)
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        let pixel_count = width * height;
+        let workgroups = (pixel_count + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.transition_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.download(buf_b, byte_size)
+    }
 }
 
 // ─── Param structs (must be Pod for bytemuck) ────────────────────────────────
@@ -571,6 +699,15 @@ struct ChromaKeyParams {
     tolerance: f32,
     spill_suppression: f32,
     _pad: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TransitionParams {
+    width: u32,
+    height: u32,
+    progress: f32,
+    kind_id: u32, // 0=CrossDissolve, 1=WipeLeft, 2=WipeRight, 3=WipeUp, 4=WipeDown, 5=DipToBlack, 6=DipToWhite
 }
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
@@ -983,3 +1120,107 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "
 );
+
+const SHADER_TRANSITION: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    progress: f32,
+    kind_id: u32,
+}
+
+@group(0) @binding(0) var<storage, read> from_buf: array<u32>;
+@group(0) @binding(1) var<storage, read> to_buf: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+fn unpack(v: u32) -> vec4<f32> {
+    return vec4<f32>(
+        f32(v & 0xFFu),
+        f32((v >> 8u) & 0xFFu),
+        f32((v >> 16u) & 0xFFu),
+        f32((v >> 24u) & 0xFFu),
+    );
+}
+
+fn pack(v: vec4<f32>) -> u32 {
+    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
+    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
+}
+
+fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
+    return a * (1.0 - t) + b * t;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let y = idx / params.width;
+    let x = idx % params.width;
+    let p = params.progress;
+
+    let from_px = unpack(from_buf[idx]);
+    let to_px = unpack(to_buf[idx]);
+
+    var result: vec4<f32>;
+
+    if params.kind_id == 0u {
+        // Cross Dissolve
+        result = lerp_pixel(from_px, to_px, p);
+    } else if params.kind_id == 1u {
+        // Wipe Left (reveals to-frame from left to right)
+        let threshold = p * f32(params.width);
+        if f32(x) < threshold {
+            result = to_px;
+        } else {
+            result = from_px;
+        }
+    } else if params.kind_id == 2u {
+        // Wipe Right (reveals to-frame from right to left)
+        let threshold = (1.0 - p) * f32(params.width);
+        if f32(x) >= threshold {
+            result = to_px;
+        } else {
+            result = from_px;
+        }
+    } else if params.kind_id == 3u {
+        // Wipe Up (reveals to-frame from top to bottom)
+        let threshold = p * f32(params.height);
+        if f32(y) < threshold {
+            result = to_px;
+        } else {
+            result = from_px;
+        }
+    } else if params.kind_id == 4u {
+        // Wipe Down (reveals to-frame from bottom to top)
+        let threshold = (1.0 - p) * f32(params.height);
+        if f32(y) >= threshold {
+            result = to_px;
+        } else {
+            result = from_px;
+        }
+    } else if params.kind_id == 5u {
+        // Dip to Black
+        let black = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+        if p < 0.5 {
+            result = lerp_pixel(from_px, black, p * 2.0);
+        } else {
+            result = lerp_pixel(black, to_px, (p - 0.5) * 2.0);
+        }
+    } else if params.kind_id == 6u {
+        // Dip to White
+        let white = vec4<f32>(255.0, 255.0, 255.0, 255.0);
+        if p < 0.5 {
+            result = lerp_pixel(from_px, white, p * 2.0);
+        } else {
+            result = lerp_pixel(white, to_px, (p - 0.5) * 2.0);
+        }
+    } else {
+        result = lerp_pixel(from_px, to_px, p);
+    }
+
+    output[idx] = pack(result);
+}
+";

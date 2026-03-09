@@ -222,6 +222,12 @@ pub enum AppCommand {
     LiftEdit,
     ExtractEdit,
 
+    // Transitions
+    AddTransition { track_index: usize, clip_a_id: ClipId, clip_b_id: ClipId, kind_id: u8, duration_frames: u32 },
+    RemoveTransition { track_index: usize, transition_id: crate::id::TransitionId },
+    SetTransitionDuration { track_index: usize, transition_id: crate::id::TransitionId, duration_frames: u32 },
+    SetTransitionKind { track_index: usize, transition_id: crate::id::TransitionId, kind_id: u8 },
+
     // Linked clips
     ImportMediaLinked { media_id: MediaId },
     UnlinkClip { clip_id: ClipId },
