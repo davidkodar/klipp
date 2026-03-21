@@ -8,11 +8,12 @@ use tracing::info;
 pub struct ColorSettings {
     pub global_lut_path: Option<std::path::PathBuf>,
     pub global_lut_opacity: f32,
+    pub track_header_width: f32,
 }
 
 impl Default for ColorSettings {
     fn default() -> Self {
-        Self { global_lut_path: None, global_lut_opacity: 1.0 }
+        Self { global_lut_path: None, global_lut_opacity: 1.0, track_header_width: 160.0 }
     }
 }
 
@@ -107,6 +108,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
         out_point: seq.out_point.as_ref().map(timecode_to_json),
         global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
         global_lut_opacity: color.global_lut_opacity,
+        track_header_width: color.track_header_width,
         markers: seq.markers.iter().map(|m| {
             MarkerJson {
                 id: m.id.to_string(),
@@ -129,6 +131,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 solo: t.solo,
                 visible: t.visible,
                 pan: t.pan,
+                locked: t.locked,
                 transitions: t.transitions.iter().map(|tr| {
                     TransitionJson {
                         id: tr.id.to_string(),
@@ -166,6 +169,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                             serde_json::to_value(&c.builtin_effects).ok()
                         },
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
+                        group_id: c.group_id.map(|id| id.to_string()),
                     }
                 }).collect(),
             }
@@ -217,6 +221,7 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             background: serde_json::to_value(&data.background).unwrap_or_default(),
             shadow: serde_json::to_value(&data.shadow).unwrap_or_default(),
         },
+        ClipKind::Gap => ClipKindJson::Gap,
     }
 }
 
@@ -237,5 +242,9 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         proxy_ready: item.proxy_ready,
         default_source_in: item.default_source_in.as_ref().map(timecode_to_json),
         default_source_out: item.default_source_out.as_ref().map(timecode_to_json),
+        rating: item.rating,
+        tags: item.tags.clone(),
+        user_notes: item.user_notes.clone(),
+        bin: item.bin.clone(),
     }
 }

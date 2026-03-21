@@ -1,0 +1,201 @@
+use crate::events::{ExportAudioCodec, ExportFormat, ExportVideoCodec};
+use crate::types::Resolution;
+use crate::time::Fps;
+use serde::{Deserialize, Serialize};
+
+pub type PresetId = String;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportPreset {
+    pub id: PresetId,
+    pub name: String,
+    pub built_in: bool,
+    pub settings: ExportPresetSettings,
+}
+
+/// Export settings without output_path — path is chosen at export time, not stored in preset.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportPresetSettings {
+    pub format: ExportFormat,
+    pub video_codec: ExportVideoCodec,
+    pub resolution: Option<Resolution>,
+    pub fps: Option<Fps>,
+    pub crf: u32,
+    pub audio_codec: ExportAudioCodec,
+    pub audio_bitrate_kbps: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProxyResolution {
+    Quarter,
+    #[default]
+    Half,
+    W960,
+    W1280,
+}
+
+impl ProxyResolution {
+    pub fn ffmpeg_scale_arg(&self) -> &'static str {
+        match self {
+            Self::Quarter => "scale=iw/4:-2",
+            Self::Half => "scale=iw/2:-2",
+            Self::W960 => "scale=960:-2",
+            Self::W1280 => "scale=1280:-2",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Quarter => "Quarter resolution (÷4)",
+            Self::Half => "Half resolution (÷2)",
+            Self::W960 => "960px wide",
+            Self::W1280 => "1280px wide",
+        }
+    }
+}
+
+/// Returns the 10 built-in presets with deterministic UUIDs.
+pub fn builtin_presets() -> Vec<ExportPreset> {
+    vec![
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000001".into(),
+            name: "YouTube 1080p".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                fps: None,
+                crf: 18,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 192,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000002".into(),
+            name: "YouTube 4K".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H265,
+                resolution: Some(Resolution { width: 3840, height: 2160 }),
+                fps: None,
+                crf: 20,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 256,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000003".into(),
+            name: "Vimeo 1080p".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                fps: None,
+                crf: 16,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 256,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000004".into(),
+            name: "Twitter/X".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1280, height: 720 }),
+                fps: None,
+                crf: 23,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 128,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000005".into(),
+            name: "Instagram Square".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1080, height: 1080 }),
+                fps: None,
+                crf: 20,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 192,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000006".into(),
+            name: "Instagram Vertical".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1080, height: 1920 }),
+                fps: None,
+                crf: 20,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 192,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000007".into(),
+            name: "ProRes 422".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mov,
+                video_codec: ExportVideoCodec::ProRes,
+                resolution: None,
+                fps: None,
+                crf: 0,
+                audio_codec: ExportAudioCodec::Copy,
+                audio_bitrate_kbps: 0,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000008".into(),
+            name: "DNxHD 115".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mov,
+                video_codec: ExportVideoCodec::ProRes,
+                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                fps: None,
+                crf: 0,
+                audio_codec: ExportAudioCodec::Copy,
+                audio_bitrate_kbps: 0,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000009".into(),
+            name: "H.265 4K".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H265,
+                resolution: Some(Resolution { width: 3840, height: 2160 }),
+                fps: None,
+                crf: 22,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: 256,
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000a".into(),
+            name: "Audio Only MP3".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: None,
+                fps: None,
+                crf: 28,
+                audio_codec: ExportAudioCodec::Mp3,
+                audio_bitrate_kbps: 320,
+            },
+        },
+    ]
+}

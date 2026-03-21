@@ -1,0 +1,122 @@
+use crate::theme::KlippTheme;
+
+/// Toast notification state — stored in AppState.
+#[derive(Default)]
+pub struct ToastState {
+    message: Option<String>,
+    appear_time: Option<std::time::Instant>,
+}
+
+const TOAST_VISIBLE_DURATION: f64 = 2.2; // seconds
+const TOAST_FADE_IN: f64 = 0.15;
+const TOAST_FADE_OUT: f64 = 0.2;
+
+impl ToastState {
+    /// Show a new toast message. Replaces any existing toast.
+    pub fn show(&mut self, message: impl Into<String>) {
+        self.message = Some(message.into());
+        self.appear_time = Some(std::time::Instant::now());
+    }
+
+    /// Render the toast if active. Call every frame from the top-level update.
+    pub fn render(&self, ctx: &egui::Context, theme: &KlippTheme) {
+        let (msg, appear) = match (&self.message, self.appear_time) {
+            (Some(m), Some(t)) => (m, t),
+            _ => return,
+        };
+
+        let elapsed = appear.elapsed().as_secs_f64();
+        let total_duration = TOAST_FADE_IN + TOAST_VISIBLE_DURATION + TOAST_FADE_OUT;
+        if elapsed > total_duration {
+            return;
+        }
+
+        // Calculate alpha
+        let alpha = if elapsed < TOAST_FADE_IN {
+            // Fade in
+            (elapsed / TOAST_FADE_IN) as f32
+        } else if elapsed < TOAST_FADE_IN + TOAST_VISIBLE_DURATION {
+            // Fully visible
+            1.0
+        } else {
+            // Fade out
+            let fade_elapsed = elapsed - TOAST_FADE_IN - TOAST_VISIBLE_DURATION;
+            1.0 - (fade_elapsed / TOAST_FADE_OUT) as f32
+        }
+        .clamp(0.0, 1.0);
+
+        // Slide-up offset during fade in
+        let y_offset = if elapsed < TOAST_FADE_IN {
+            10.0 * (1.0 - elapsed / TOAST_FADE_IN) as f32
+        } else {
+            0.0
+        };
+
+        egui::Area::new(egui::Id::new("klipp_toast"))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                egui::vec2(0.0, -40.0 - y_offset),
+            )
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let bg = egui::Color32::from_rgba_premultiplied(
+                    0x1e,
+                    0x1e,
+                    0x26,
+                    (255.0 * alpha) as u8,
+                );
+                let border = egui::Color32::from_rgba_premultiplied(
+                    theme.accent_dim.r(),
+                    theme.accent_dim.g(),
+                    theme.accent_dim.b(),
+                    (255.0 * alpha) as u8,
+                );
+                let text_color = egui::Color32::from_rgba_premultiplied(
+                    theme.text_primary.r(),
+                    theme.text_primary.g(),
+                    theme.text_primary.b(),
+                    (255.0 * alpha) as u8,
+                );
+
+                egui::Frame::none()
+                    .fill(bg)
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .rounding(8.0)
+                    .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                    .shadow(egui::Shadow {
+                        spread: 0.0,
+                        blur: 20.0,
+                        offset: egui::vec2(0.0, 4.0),
+                        color: egui::Color32::from_rgba_premultiplied(
+                            0,
+                            0,
+                            0,
+                            (128.0 * alpha) as u8,
+                        ),
+                    })
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(msg.as_str())
+                                .size(12.0)
+                                .color(text_color),
+                        );
+                    });
+            });
+
+        // Request repaint while toast is animating
+        if elapsed < total_duration {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Clear expired toast messages.
+    pub fn cleanup(&mut self) {
+        if let Some(appear) = self.appear_time {
+            let total = TOAST_FADE_IN + TOAST_VISIBLE_DURATION + TOAST_FADE_OUT;
+            if appear.elapsed().as_secs_f64() > total {
+                self.message = None;
+                self.appear_time = None;
+            }
+        }
+    }
+}

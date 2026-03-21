@@ -34,8 +34,11 @@ pub struct SequenceJson {
     pub global_lut_opacity: f32,
     #[serde(default)]
     pub markers: Vec<MarkerJson>,
+    #[serde(default = "default_header_width")]
+    pub track_header_width: f32,
 }
 
+fn default_header_width() -> f32 { 160.0 }
 fn default_lut_opacity() -> f32 { 1.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +79,8 @@ pub struct TrackJson {
     pub visible: bool,
     #[serde(default)]
     pub pan: f32,
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,6 +121,8 @@ pub struct ClipJson {
     pub builtin_effects: Option<serde_json::Value>,
     #[serde(default)]
     pub linked_clip_id: Option<String>,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +150,7 @@ pub enum ClipKindJson {
         #[serde(default)]
         shadow: serde_json::Value,
     },
+    Gap,
 }
 
 fn default_font_size() -> f32 { 72.0 }
@@ -214,6 +222,14 @@ pub struct MediaItemJson {
     pub default_source_in: Option<TimecodeJson>,
     #[serde(default)]
     pub default_source_out: Option<TimecodeJson>,
+    #[serde(default)]
+    pub rating: u8,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub user_notes: String,
+    #[serde(default)]
+    pub bin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

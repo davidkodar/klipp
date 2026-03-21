@@ -17,6 +17,9 @@ egui = { workspace = true }
 eframe = { workspace = true }
 wgpu = { workspace = true }
 crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 rfd = "0.15"
 dirs = { workspace = true }

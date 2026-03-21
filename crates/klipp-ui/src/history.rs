@@ -3,29 +3,30 @@ use klipp_timeline::Clip;
 
 #[derive(Debug, Clone)]
 pub enum EditCommand {
-    AppendClip {
+    // === LEGACY (Free tracks only — existing behaviour unchanged) ===
+    LegacyAppendClip {
         clip: Clip,
         track_index: usize,
     },
-    RemoveClip {
+    LegacyRemoveClip {
         clip: Clip,
         track_index: usize,
         position: usize,
     },
-    RippleRemove {
+    LegacyRippleRemove {
         removed_clip: Clip,
         track_index: usize,
         position: usize,
         shifted_clips: Vec<(ClipId, RationalTime, RationalTime)>,
     },
-    MoveClip {
+    LegacyMoveClip {
         clip_id: ClipId,
         old_timeline_in: RationalTime,
         old_timeline_out: RationalTime,
         new_timeline_in: RationalTime,
         new_timeline_out: RationalTime,
     },
-    TrimClip {
+    LegacyTrimClip {
         clip_id: ClipId,
         old_source_in: RationalTime,
         old_source_out: RationalTime,
@@ -36,25 +37,25 @@ pub enum EditCommand {
         new_timeline_in: RationalTime,
         new_timeline_out: RationalTime,
     },
-    BladeClip {
+    LegacyBladeClip {
         track_index: usize,
         original_clip: Clip,
         clip_a: Clip,
         clip_b: Clip,
         position: usize,
     },
-    CutClip {
+    LegacyCutClip {
         clip: Clip,
         media_item: klipp_media::MediaItem,
         track_index: usize,
         position: usize,
         shifted_clips: Vec<(ClipId, RationalTime, RationalTime)>,
     },
-    PasteClip {
+    LegacyPasteClip {
         clip: Clip,
         track_index: usize,
     },
-    MoveClipToTrack {
+    LegacyMoveClipToTrack {
         clip: Clip,
         old_timeline_in: RationalTime,
         old_timeline_out: RationalTime,
@@ -62,18 +63,22 @@ pub enum EditCommand {
         from_track: usize,
         to_track: usize,
     },
+
+    // === MAGNETIC (Primary/Connected tracks) ===
+    Magnetic(klipp_timeline::magnetic_commands::MagneticEditCommand),
 }
 
 impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
-            EditCommand::AppendClip { .. } => "Append Clip",
-            EditCommand::RemoveClip { .. } | EditCommand::RippleRemove { .. } => "Remove Clip",
-            EditCommand::MoveClip { .. } | EditCommand::MoveClipToTrack { .. } => "Move Clip",
-            EditCommand::TrimClip { .. } => "Trim Clip",
-            EditCommand::BladeClip { .. } => "Blade Clip",
-            EditCommand::CutClip { .. } => "Cut Clip",
-            EditCommand::PasteClip { .. } => "Paste Clip",
+            EditCommand::LegacyAppendClip { .. } => "Append Clip",
+            EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
+            EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
+            EditCommand::LegacyTrimClip { .. } => "Trim Clip",
+            EditCommand::LegacyBladeClip { .. } => "Blade Clip",
+            EditCommand::LegacyCutClip { .. } => "Cut Clip",
+            EditCommand::LegacyPasteClip { .. } => "Paste Clip",
+            EditCommand::Magnetic(cmd) => cmd.label(),
         }
     }
 }

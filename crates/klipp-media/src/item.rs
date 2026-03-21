@@ -24,6 +24,18 @@ pub struct MediaItem {
     pub default_source_in: Option<Timecode>,
     #[serde(default)]
     pub default_source_out: Option<Timecode>,
+    /// User rating (0–5 stars)
+    #[serde(default)]
+    pub rating: u8,
+    /// User tags
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// User notes
+    #[serde(default)]
+    pub user_notes: String,
+    /// Bin name (None = root/unassigned)
+    #[serde(default)]
+    pub bin: Option<String>,
     /// Waveform min/max pairs for timeline display. Generated in background.
     #[serde(skip)]
     pub waveform_data: Option<Vec<(f32, f32)>>,

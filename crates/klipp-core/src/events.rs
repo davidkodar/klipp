@@ -1,4 +1,4 @@
-use crate::id::{ClipId, MarkerId, MediaId, TrackId};
+use crate::id::{ClipId, GroupId, MarkerId, MediaId, TrackId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ pub struct ExportSettings {
     pub audio_bitrate_kbps: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportFormat {
     Mp4,
     Mkv,
@@ -40,7 +40,7 @@ impl ExportFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportVideoCodec {
     H264,
     H265,
@@ -65,7 +65,7 @@ impl ExportVideoCodec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportAudioCodec {
     Aac,
     Mp3,
@@ -171,6 +171,7 @@ pub enum AppCommand {
 
     // Proxy
     GenerateProxy { media_id: MediaId },
+    CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
 
@@ -254,10 +255,32 @@ pub enum AppCommand {
     RemoveTrack { track_id: TrackId },
     RenameTrack { track_id: TrackId, name: String },
 
+    // Media pool management
+    RemoveFromPool { media_id: MediaId },
+    ConfirmRemoveFromPool { media_id: MediaId },
+    SetMediaRating { media_id: MediaId, rating: u8 },
+
+    SetMediaTags { media_id: MediaId, tags: Vec<String> },
+    RevealInFileManager { path: PathBuf },
+
+    // Bins
+    CreateBin { name: String },
+    DeleteBin { name: String },
+    MoveItemToBin { media_id: MediaId, bin: Option<String> },
+
     // UI
     SetViewerMode(ViewerMode),
     SetActiveTool(Tool),
     ToggleFullscreen,
+    ShowPreferences,
+
+    // Track locking
+    SetTrackLocked { track_id: TrackId, locked: bool },
+
+    // Clip grouping
+    GroupClips { clip_ids: Vec<ClipId> },
+    UngroupClips { group_id: GroupId },
+    UngroupClip { clip_id: ClipId },
 
     // Application
     Quit,

@@ -1,7 +1,45 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{ClipId, Fps, GroupId, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
+
+// ═══════════════════════════════════════════════════════════════════
+// Magnetic Timeline Types
+// ═══════════════════════════════════════════════════════════════════
+
+/// Magnetic role of a track — determines how clips are positioned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TrackRole {
+    /// Traditional free placement. No magnetic behaviour. (default)
+    #[default]
+    Free,
+    /// The primary storyline. Always gapless. Exactly one per Sequence.
+    Primary,
+    /// Connected lane. Individual clips may have magnetic_anchor set.
+    Connected,
+    /// Connected Storyline. The whole track is anchored as one unit.
+    ConnectedStoryline,
+}
+
+/// Anchor alignment mode for connected clips.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnchorAlignment {
+    /// clip.timeline_in = anchor.timeline_in + offset (most common)
+    StartAligned,
+    /// clip.timeline_out = anchor.timeline_in + offset
+    EndAligned,
+}
+
+/// Connection from a clip (or storyline) to an anchor point on the primary storyline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MagneticAnchor {
+    /// Which primary clip this is anchored to.
+    pub anchor_clip_id: ClipId,
+    /// Time offset from the anchor clip's timeline_in.
+    pub offset: RationalTime,
+    /// Whether the offset is measured from the start or end of the connected clip.
+    pub alignment: AnchorAlignment,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sequence {
@@ -25,11 +63,16 @@ impl Sequence {
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
-            tracks: vec![
-                Track::new("Video 2", TrackKind::Video),
-                Track::new("Video 1", TrackKind::Video),
-                Track::new("Audio 1", TrackKind::Audio),
-            ],
+            tracks: {
+                let mut tracks = vec![
+                    Track::new("Video 2", TrackKind::Video),
+                    Track::new("Video 1", TrackKind::Video),
+                    Track::new("Audio 1", TrackKind::Audio),
+                ];
+                tracks[1].magnetic_role = TrackRole::Primary;
+                tracks[2].magnetic_role = TrackRole::Connected;
+                tracks
+            },
             in_point: None,
             out_point: None,
             markers: Vec::new(),
@@ -108,6 +151,73 @@ impl Sequence {
         Ok(())
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Magnetic Timeline Helpers
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Find the index of the Primary track. Returns None if no primary track set.
+    pub fn primary_track_index(&self) -> Option<usize> {
+        self.tracks.iter().position(|t| t.magnetic_role == TrackRole::Primary)
+    }
+
+    /// Find the single Primary track.
+    pub fn primary_track(&self) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.magnetic_role == TrackRole::Primary)
+    }
+
+    /// Find the single Primary track mutably.
+    pub fn primary_track_mut(&mut self) -> Option<&mut Track> {
+        self.tracks.iter_mut().find(|t| t.magnetic_role == TrackRole::Primary)
+    }
+
+    /// Find a clip by id across all tracks. Returns (track_index, clip_index).
+    pub fn find_clip(&self, id: ClipId) -> Option<(usize, usize)> {
+        for (ti, track) in self.tracks.iter().enumerate() {
+            for (ci, clip) in track.clips.iter().enumerate() {
+                if clip.id == id {
+                    return Some((ti, ci));
+                }
+            }
+        }
+        None
+    }
+
+    /// Set a clip's absolute position directly (used by undo/redo restore).
+    pub fn set_clip_position(&mut self, id: ClipId, new_in: RationalTime, new_out: RationalTime) {
+        if let Some((ti, ci)) = self.find_clip(id) {
+            self.tracks[ti].clips[ci].timeline_in = new_in;
+            self.tracks[ti].clips[ci].timeline_out = new_out;
+        }
+    }
+
+    /// Iterator over all clips in all tracks.
+    pub fn all_clips(&self) -> impl Iterator<Item = &Clip> {
+        self.tracks.iter().flat_map(|t| t.clips.iter())
+    }
+
+    /// Mutable iterator over all clips in all tracks.
+    pub fn all_clips_mut(&mut self) -> impl Iterator<Item = &mut Clip> {
+        self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut())
+    }
+
+    /// Enforce primary invariant: primary track has no gaps.
+    /// Call this after every magnetic edit as a debug assertion.
+    #[cfg(debug_assertions)]
+    pub fn assert_primary_gapless(&self) {
+        if let Some(primary) = self.primary_track() {
+            let mut expected = RationalTime::ZERO;
+            for clip in &primary.clips {
+                let clip_in = clip.timeline_in.rescale_to(expected.rate);
+                assert_eq!(
+                    clip_in, expected,
+                    "Primary storyline gap detected before clip {:?} (expected {:?}, got {:?})",
+                    clip.id, expected, clip.timeline_in
+                );
+                expected = clip.timeline_out.rescale_to(expected.rate);
+            }
+        }
+    }
+
     /// Generate the next auto-increment name for a track kind (e.g. "Video 3", "Audio 2").
     pub fn next_track_name(&self, kind: TrackKind) -> String {
         let prefix = match kind {
@@ -138,6 +248,14 @@ pub struct Track {
     pub visible: bool,
     #[serde(default)]
     pub pan: f32,
+    #[serde(default)]
+    pub locked: bool,
+    /// Magnetic role of this track. Defaults to Free — backward compatible.
+    #[serde(default)]
+    pub magnetic_role: TrackRole,
+    /// If this track is a Connected Storyline, its anchor on the primary.
+    #[serde(default)]
+    pub storyline_anchor: Option<MagneticAnchor>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -158,6 +276,9 @@ impl Track {
             solo: false,
             visible: true,
             pan: 0.0,
+            locked: false,
+            magnetic_role: TrackRole::Free,
+            storyline_anchor: None,
         }
     }
 
@@ -186,6 +307,8 @@ impl Track {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             linked_clip_id: None,
+            group_id: None,
+            magnetic_anchor: None,
         });
         clip_id
     }
@@ -290,6 +413,8 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
+            group_id: clip.group_id,
+            magnetic_anchor: clip.magnetic_anchor.clone(),
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -302,6 +427,8 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
+            group_id: clip.group_id,
+            magnetic_anchor: None, // right half gets no anchor
         };
 
         self.clips.remove(pos);
@@ -383,20 +510,25 @@ pub struct Clip {
     pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
+    #[serde(default)]
+    pub group_id: Option<GroupId>,
+    /// If Some, this clip is connected to an anchor on the primary storyline.
+    #[serde(default)]
+    pub magnetic_anchor: Option<MagneticAnchor>,
 }
 
 impl Clip {
     pub fn media_id(&self) -> Option<MediaId> {
         match &self.kind {
             ClipKind::Media { media_id } => Some(*media_id),
-            ClipKind::Title(_) => None,
+            _ => None,
         }
     }
 
     pub fn title_data(&self) -> Option<&crate::clip_kind::TitleData> {
         match &self.kind {
             ClipKind::Title(data) => Some(data),
-            ClipKind::Media { .. } => None,
+            _ => None,
         }
     }
 
@@ -406,5 +538,53 @@ impl Clip {
 
     pub fn source_duration(&self) -> Timecode {
         self.source_out - self.source_in
+    }
+
+    /// Create a gap placeholder clip with the given timeline extent.
+    /// Rescales timeline_out to match timeline_in's rate if they differ.
+    pub fn gap(timeline_in: Timecode, timeline_out: Timecode) -> Self {
+        let timeline_out = if timeline_out.rate != timeline_in.rate {
+            timeline_out.rescale_to(timeline_in.rate)
+        } else {
+            timeline_out
+        };
+        Self {
+            id: ClipId::new(),
+            kind: ClipKind::Gap,
+            timeline_in,
+            timeline_out,
+            source_in: Timecode { value: 0, rate: timeline_in.rate },
+            source_out: timeline_out - timeline_in,
+            color_grade: ClipColorGrade::default(),
+            effects: Vec::new(),
+            builtin_effects: Vec::new(),
+            linked_clip_id: None,
+            group_id: None,
+            magnetic_anchor: None,
+        }
+    }
+
+    /// Create a media clip with the given source and timeline extents.
+    pub fn media(
+        media_id: MediaId,
+        timeline_in: Timecode,
+        timeline_out: Timecode,
+        source_in: Timecode,
+        source_out: Timecode,
+    ) -> Self {
+        Self {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in,
+            timeline_out,
+            source_in,
+            source_out,
+            color_grade: ClipColorGrade::default(),
+            effects: Vec::new(),
+            builtin_effects: Vec::new(),
+            linked_clip_id: None,
+            group_id: None,
+            magnetic_anchor: None,
+        }
     }
 }

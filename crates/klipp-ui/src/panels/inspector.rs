@@ -267,8 +267,78 @@ impl InspectorPanel {
         ui.separator();
         ui.add_space(4.0);
 
+        let is_generating = state.proxy_generating.contains(&media.id);
+
         if media.proxy_ready {
-            ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Ready");
+            ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "\u{2713} Ready");
+            if let Some(proxy_path) = &media.proxy_path {
+                // Show proxy file details
+                let file_size = std::fs::metadata(proxy_path).map(|m| m.len()).unwrap_or(0);
+                egui::Grid::new("inspector_proxy_info")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Size:");
+                        ui.label(format!("{:.1} MB", file_size as f64 / (1024.0 * 1024.0)));
+                        ui.end_row();
+
+                        ui.label("Path:");
+                        let path_str = proxy_path.to_string_lossy();
+                        ui.label(
+                            egui::RichText::new(path_str.as_ref())
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(100, 100, 110)),
+                        );
+                        ui.end_row();
+                    });
+
+                // Use proxies toggle status
+                ui.add_space(4.0);
+                if state.use_proxies {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(80, 160, 220),
+                        "Using proxy for playback",
+                    );
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(100, 100, 110),
+                        "Proxy available (Use Proxies is off)",
+                    );
+                }
+            }
+        } else if is_generating {
+            let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
+            let eta_str = if progress > 0.01 {
+                if let Some(start) = state.proxy_start_times.get(&media.id) {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    let remaining = (elapsed / progress as f64) - elapsed;
+                    let rem_secs = remaining as u64;
+                    if rem_secs >= 60 {
+                        format!(" — ~{}m {:02}s left", rem_secs / 60, rem_secs % 60)
+                    } else {
+                        format!(" — ~{}s left", rem_secs)
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 180, 60),
+                    format!("Generating proxy — {:.0}%{}", progress * 100.0, eta_str),
+                );
+            });
+            ui.add_space(2.0);
+            let bar = egui::ProgressBar::new(progress)
+                .desired_width(ui.available_width());
+            ui.add(bar);
+            ui.add_space(4.0);
+            if ui.small_button("Cancel").clicked() {
+                cmds.push(AppCommand::CancelProxy { media_id: media.id });
+            }
+            ui.ctx().request_repaint();
         } else {
             ui.horizontal(|ui| {
                 ui.label("Not generated");
