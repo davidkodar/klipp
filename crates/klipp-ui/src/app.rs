@@ -1,6 +1,9 @@
 use crate::history::EditCommand;
+use crate::layout_state::LayoutState;
 use crate::panels::inspector::InspectorPanel;
 use crate::panels::markers::MarkersPanel;
+use crate::browser::BrowserPanel;
+use crate::inspector::NewInspectorPanel;
 use crate::panels::media_panel::MediaPanel;
 use crate::panels::preferences::PreferencesPanel;
 use crate::panels::timeline::TimelinePanel;
@@ -8,6 +11,8 @@ use crate::panels::toolbar::ToolbarPanel;
 use crate::panels::transport::TransportBar;
 use crate::panels::viewer::ViewerPanel;
 use crate::state::{AppState, ClipboardContent, UnsavedAction};
+use crate::theme::{self, KlippTheme};
+use crate::widgets::resizer;
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
     AppCommand, AppEvent, ClipId, GroupId, ExportAudioCodec, ExportFormat, ExportPreset,
@@ -91,9 +96,11 @@ pub struct KlippApp {
     state: AppState,
     toolbar: ToolbarPanel,
     viewer: ViewerPanel,
-    inspector: InspectorPanel,
+    #[allow(dead_code)]
+    inspector: InspectorPanel, // kept for potential fallback; old code fully superseded by new_inspector
     markers: MarkersPanel,
-    media_panel: MediaPanel,
+    #[allow(dead_code)]
+    media_panel: MediaPanel, // kept for potential fallback; old code fully superseded by browser
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
@@ -119,6 +126,13 @@ pub struct KlippApp {
     proxy_progress_rx: Receiver<(MediaId, f32)>,
     // Auto-save
     last_autosave: std::time::Instant,
+    // GUI redesign
+    theme: KlippTheme,
+    layout: LayoutState,
+    layout_dirty: bool,
+    browser: BrowserPanel,
+    new_inspector: NewInspectorPanel,
+    new_timeline: crate::timeline::NewTimelinePanel,
 }
 
 impl KlippApp {
@@ -135,17 +149,10 @@ impl KlippApp {
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
         let (proxy_progress_tx, proxy_progress_rx) = crossbeam_channel::unbounded();
-        let mut visuals = egui::Visuals::dark();
-        visuals.window_fill = egui::Color32::from_rgb(8, 8, 13);
-        visuals.panel_fill = egui::Color32::from_rgb(28, 28, 32);
-        visuals.faint_bg_color = egui::Color32::from_rgb(22, 22, 26);
-        visuals.extreme_bg_color = egui::Color32::from_rgb(15, 15, 18);
-        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(28, 28, 32);
-        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(40, 40, 48);
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 55, 65);
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 70, 85);
-        visuals.selection.bg_fill = egui::Color32::from_rgb(50, 90, 160);
-        cc.egui_ctx.set_visuals(visuals);
+        let theme = KlippTheme::default();
+        theme.apply_to_egui(&cc.egui_ctx);
+        theme.apply_fonts(&cc.egui_ctx);
+        let layout = LayoutState::load();
 
         let mut app = Self {
             cmd_tx,
@@ -161,7 +168,11 @@ impl KlippApp {
             media_panel: MediaPanel::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
-            timeline: TimelinePanel::default(),
+            timeline: {
+                let mut tl = TimelinePanel::default();
+                tl.embedded = true;
+                tl
+            },
             thumb_tx,
             thumb_rx,
             filmstrip_tx,
@@ -178,6 +189,12 @@ impl KlippApp {
             proxy_progress_tx,
             proxy_progress_rx,
             last_autosave: std::time::Instant::now(),
+            theme,
+            layout,
+            layout_dirty: false,
+            browser: BrowserPanel::default(),
+            new_inspector: NewInspectorPanel,
+            new_timeline: crate::timeline::NewTimelinePanel,
         };
         // Discover OFX plugins at startup
         let mut ofx_host = klipp_plugin::OfxHost::new();
@@ -3373,76 +3390,244 @@ impl eframe::App for KlippApp {
                 all_cmds.extend(cmds);
             });
         } else {
-            // 5. Toolbar (top)
-            egui::TopBottomPanel::top("toolbar")
-                .exact_height(40.0)
+            // ── Manual rect layout ──
+            // Use CentralPanel as the container, then compute rects manually.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(self.theme.bg_void))
                 .show(ctx, |ui| {
-                    ui.painter().rect_filled(
-                        ui.available_rect_before_wrap(),
-                        0.0,
-                        egui::Color32::from_rgb(32, 32, 35),
+                    let full = ui.available_rect_before_wrap();
+                    let theme = &self.theme;
+
+                    // ── Toolbar (top 44px) ──
+                    let toolbar_rect = egui::Rect::from_min_size(
+                        full.min,
+                        egui::vec2(full.width(), theme::TOOLBAR_HEIGHT),
                     );
-                    let recent = self.prefs.general.recent_projects.clone();
-                    let cmds = self.toolbar.show(ui, &mut self.state, &recent);
-                    all_cmds.extend(cmds);
-                });
 
-            // 6. Timeline (bottom-most)
-            let available_height = ctx.available_rect().height();
-            let timeline_height = (available_height * (1.0 - self.state.upper_timeline_split))
-                .max(180.0);
-
-            egui::TopBottomPanel::bottom("timeline")
-                .exact_height(timeline_height)
-                .show(ctx, |ui| {
-                    let cmds = self.timeline.show(ui, &mut self.state);
-                    all_cmds.extend(cmds);
-                });
-
-            // 7. Transport bar (above timeline)
-            egui::TopBottomPanel::bottom("transport")
-                .exact_height(48.0)
-                .show(ctx, |ui| {
-                    ui.painter().rect_filled(
-                        ui.available_rect_before_wrap(),
-                        0.0,
-                        egui::Color32::from_rgb(28, 28, 32),
+                    // ── Status bar (bottom 26px) ──
+                    let statusbar_rect = egui::Rect::from_min_size(
+                        egui::pos2(full.min.x, full.max.y - theme::STATUSBAR_HEIGHT),
+                        egui::vec2(full.width(), theme::STATUSBAR_HEIGHT),
                     );
-                    let cmds = self.transport.show(ui, &mut self.state);
-                    all_cmds.extend(cmds);
-                });
 
-            // 7b. Media Panel (left side panel, optional)
-            if self.state.show_media_panel {
-                egui::SidePanel::left("media_panel")
-                    .default_width(240.0)
-                    .min_width(180.0)
-                    .max_width(400.0)
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        ui.heading(egui::RichText::new("Media").size(13.0));
-                        ui.separator();
-                        let cmds = self.media_panel.show(ui, &mut self.state);
+                    // ── Main row (between toolbar and status bar) ──
+                    let main_top = toolbar_rect.max.y;
+                    let main_bottom = statusbar_rect.min.y;
+                    let main_height = main_bottom - main_top;
+
+                    // Browser (left)
+                    let browser_w = self.layout.browser_width;
+                    let browser_rect = egui::Rect::from_min_size(
+                        egui::pos2(full.min.x, main_top),
+                        egui::vec2(browser_w, main_height),
+                    );
+
+                    // Left resizer
+                    let left_resizer_rect = egui::Rect::from_min_size(
+                        egui::pos2(full.min.x + browser_w, main_top),
+                        egui::vec2(theme::RESIZER_THICKNESS, main_height),
+                    );
+
+                    // Inspector (right) — clamp to available space
+                    let max_inspector_w = (full.width() - browser_w - theme::RESIZER_THICKNESS * 2.0 - 100.0).max(theme::INSPECTOR_MIN_W);
+                    let inspector_w = self.layout.inspector_width.min(max_inspector_w);
+                    let inspector_rect = egui::Rect::from_min_size(
+                        egui::pos2(full.max.x - inspector_w, main_top),
+                        egui::vec2(inspector_w, main_height),
+                    );
+
+                    // Right resizer
+                    let right_resizer_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            full.max.x - inspector_w - theme::RESIZER_THICKNESS,
+                            main_top,
+                        ),
+                        egui::vec2(theme::RESIZER_THICKNESS, main_height),
+                    );
+
+                    // Center column (between left resizer and right resizer)
+                    let center_left = left_resizer_rect.max.x;
+                    let center_right = right_resizer_rect.min.x;
+                    let center_w = (center_right - center_left).max(100.0);
+
+                    // Timeline (bottom of center)
+                    let max_timeline_h = main_height * theme::TIMELINE_MAX_H_PCT;
+                    let timeline_h = self
+                        .layout
+                        .timeline_height
+                        .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
+
+                    let timeline_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, main_bottom - timeline_h),
+                        egui::vec2(center_w, timeline_h),
+                    );
+
+                    // Horizontal resizer (between viewer and timeline)
+                    let h_resizer_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            center_left,
+                            timeline_rect.min.y - theme::RESIZER_THICKNESS,
+                        ),
+                        egui::vec2(center_w, theme::RESIZER_THICKNESS),
+                    );
+
+                    // Viewer (top of center, above horizontal resizer)
+                    let viewer_rect = egui::Rect::from_min_max(
+                        egui::pos2(center_left, main_top),
+                        egui::pos2(center_left + center_w, h_resizer_rect.min.y),
+                    );
+
+                    // ── Draw resizers ──
+                    let left_delta =
+                        resizer::vertical_resizer(ui, left_resizer_rect, theme);
+                    let right_delta =
+                        resizer::vertical_resizer(ui, right_resizer_rect, theme);
+                    let h_delta =
+                        resizer::horizontal_resizer(ui, h_resizer_rect, theme);
+
+                    // Apply resizer deltas
+                    if left_delta != 0.0 {
+                        self.layout.browser_width = (self.layout.browser_width
+                            + left_delta)
+                            .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
+                    }
+                    if right_delta != 0.0 {
+                        // Dragging right shrinks inspector, dragging left grows it
+                        self.layout.inspector_width = (self.layout.inspector_width
+                            - right_delta)
+                            .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
+                    }
+                    if h_delta != 0.0 {
+                        // Dragging up increases timeline height
+                        self.layout.timeline_height = (self.layout.timeline_height
+                            - h_delta)
+                            .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
+                    }
+
+                    // Track layout dirty for persistence
+                    let resizer_active = left_delta != 0.0
+                        || right_delta != 0.0
+                        || h_delta != 0.0;
+                    if resizer_active {
+                        self.layout_dirty = true;
+                    }
+                    if self.layout_dirty
+                        && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
+                    {
+                        self.layout.save();
+                        self.layout_dirty = false;
+                    }
+
+                    // ── Render panels into their rects ──
+
+                    // Toolbar
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
+                        ui.set_min_size(toolbar_rect.size());
+                        ui.painter().rect_filled(
+                            toolbar_rect,
+                            0.0,
+                            theme.bg_deep,
+                        );
+                        // Bottom border
+                        ui.painter().hline(
+                            toolbar_rect.x_range(),
+                            toolbar_rect.max.y,
+                            egui::Stroke::new(1.0, theme.border),
+                        );
+                        let recent = self.prefs.general.recent_projects.clone();
+                        let cmds = self.toolbar.show(
+                            ui,
+                            &mut self.state,
+                            &recent,
+                            &self.theme,
+                            &mut self.layout.active_tool,
+                        );
                         all_cmds.extend(cmds);
                     });
-            }
 
-            // 8. Inspector (right side panel)
-            let inspector_width = ctx.available_rect().width()
-                * (1.0 - self.state.viewer_inspector_split);
-            egui::SidePanel::right("inspector")
-                .exact_width(inspector_width)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    let cmds = self.inspector.show(ui, &self.state);
-                    all_cmds.extend(cmds);
+                    // Transport (rendered below toolbar, overlapping for now —
+                    // will be merged into toolbar in Phase 3)
+                    // For now, render transport inside a thin strip at the
+                    // bottom of the toolbar area.
+                    // (Transport is currently 48px; we compress it into toolbar for now.)
+
+                    // Status bar
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(statusbar_rect), |ui| {
+                        ui.set_min_size(statusbar_rect.size());
+                        ui.painter()
+                            .rect_filled(statusbar_rect, 0.0, theme.bg_void);
+                        ui.painter().hline(
+                            statusbar_rect.x_range(),
+                            statusbar_rect.min.y,
+                            egui::Stroke::new(1.0, theme.border),
+                        );
+                        crate::panels::status_bar::show(ui, &self.state, &self.theme);
+                    });
+
+                    // Browser (left panel)
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(browser_rect), |ui| {
+                        ui.set_min_size(browser_rect.size());
+                        ui.painter()
+                            .rect_filled(browser_rect, 0.0, theme.bg_panel);
+                        let cmds = self.browser.show(
+                            ui,
+                            &mut self.state,
+                            &self.theme,
+                            &mut self.layout.active_browser_tab,
+                        );
+                        all_cmds.extend(cmds);
+                    });
+
+                    // Inspector (right panel)
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inspector_rect), |ui| {
+                        ui.set_min_size(inspector_rect.size());
+                        ui.painter()
+                            .rect_filled(inspector_rect, 0.0, theme.bg_panel);
+                        let cmds = self.new_inspector.show(
+                            ui,
+                            &self.state,
+                            &self.theme,
+                            &mut self.layout.active_inspector_tab,
+                        );
+                        all_cmds.extend(cmds);
+                    });
+
+                    // Viewer (center top) — pure black, absolutely no border
+                    // Paint black fill slightly expanded to cover any sub-pixel gaps
+                    ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(viewer_rect), |ui| {
+                        // Zero out ALL spacing and strokes for borderless viewer
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                        ui.spacing_mut().window_margin = egui::Margin::ZERO;
+                        {
+                            let v = &mut ui.style_mut().visuals;
+                            v.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+                            v.widgets.noninteractive.fg_stroke = egui::Stroke::NONE;
+                            v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                            v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                            v.widgets.active.bg_stroke = egui::Stroke::NONE;
+                            v.window_stroke = egui::Stroke::NONE;
+                            v.window_shadow = egui::Shadow::NONE;
+                        }
+                        let cmds = self.viewer.show(ui, &self.state, &self.theme);
+                        all_cmds.extend(cmds);
+                    });
+
+                    // Timeline (center bottom)
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(timeline_rect), |ui| {
+                        ui.set_min_size(timeline_rect.size());
+                        let cmds = self.new_timeline.show(
+                            ui,
+                            &mut self.state,
+                            &self.theme,
+                            &mut self.timeline,
+                        );
+                        all_cmds.extend(cmds);
+                    });
+
+                    // Transport is now integrated into the toolbar (P1-2).
+                    // Keyboard shortcuts still handled by self.transport.handle_keyboard().
                 });
-
-            // 9. Viewer (central panel)
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let cmds = self.viewer.show(ui, &self.state);
-                all_cmds.extend(cmds);
-            });
         }
 
         // Markers panel
@@ -3544,6 +3729,11 @@ impl eframe::App for KlippApp {
         // 10. Process quit
         let has_quit = all_cmds.iter().any(|c| matches!(c, AppCommand::Quit));
 
+        // Save layout state on quit
+        if has_quit {
+            self.layout.save();
+        }
+
         // 11. Send all commands
         self.send_commands(all_cmds);
 
@@ -3554,6 +3744,11 @@ impl eframe::App for KlippApp {
             ));
             self.state.fullscreen_changed = false;
         }
+
+        // 11c. Toast notifications + drag-drop cleanup
+        self.state.toast.render(ctx, &self.theme);
+        self.state.toast.cleanup();
+        self.state.drag_drop.frame_start();
 
         // 12. Filmstrip generation toast
         if self.state.filmstrip_generating && !self.state.filmstrip_toast_dismissed {

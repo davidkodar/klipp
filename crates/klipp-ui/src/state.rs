@@ -83,6 +83,11 @@ pub struct AppState {
     // Phase 4: Media pool drag-and-drop
     pub dragging_media: Option<MediaId>,
 
+    // GUI redesign
+    pub skimming_enabled: bool,
+    pub toast: crate::widgets::toast::ToastState,
+    pub drag_drop: crate::drag_drop::DragDropState,
+
     // Phase 5: Performance overlay
     pub show_perf_overlay: bool,
     pub perf_fps: f64,
@@ -253,6 +258,9 @@ impl Default for AppState {
             fullscreen_overlay_visible: false,
             fullscreen_overlay_timer: 0.0,
             dragging_media: None,
+            skimming_enabled: false,
+            toast: crate::widgets::toast::ToastState::default(),
+            drag_drop: crate::drag_drop::DragDropState::default(),
             show_perf_overlay: false,
             perf_fps: 0.0,
             perf_frame_count: 0,

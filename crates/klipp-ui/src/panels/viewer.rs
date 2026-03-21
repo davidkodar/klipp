@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ViewerMode};
 use klipp_engine::PlaybackState;
 
@@ -12,44 +13,87 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
+        theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        // Use max_rect to get the FULL allocated rect — no insets from cursor/spacing
+        let panel_rect = ui.max_rect();
 
-        // Viewer tabs
-        ui.horizontal(|ui| {
-            let source_color = if state.viewer_mode == ViewerMode::Source {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::from_rgb(100, 100, 110)
-            };
-            let program_color = if state.viewer_mode == ViewerMode::Program {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::from_rgb(100, 100, 110)
-            };
+        // Zero out spacing so nothing insets the content
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-            if ui.add(egui::Button::new(
-                egui::RichText::new("Source").color(source_color).size(11.0)
-            ).frame(false)).clicked() {
-                cmds.push(AppCommand::SetViewerMode(ViewerMode::Source));
-            }
-            if ui.add(egui::Button::new(
-                egui::RichText::new("Program").color(program_color).size(11.0)
-            ).frame(false)).clicked() {
+        // Background: pure black, painted to the full rect
+        ui.painter().rect_filled(panel_rect, 0.0, egui::Color32::BLACK);
+        ui.advance_cursor_after_rect(panel_rect);
+
+        // Scrub bar height
+        let scrub_h = 3.0;
+        let viewer_rect = egui::Rect::from_min_max(
+            panel_rect.min,
+            egui::pos2(panel_rect.max.x, panel_rect.max.y - scrub_h),
+        );
+
+        // Source/Program toggle (top-left of viewer)
+        {
+            let toggle_y = panel_rect.min.y + 4.0;
+            let toggle_x = panel_rect.min.x + 8.0;
+
+            let prog_active = state.viewer_mode == ViewerMode::Program;
+            let src_active = state.viewer_mode == ViewerMode::Source;
+
+            // Program button
+            let prog_rect = egui::Rect::from_min_size(
+                egui::pos2(toggle_x, toggle_y),
+                egui::vec2(60.0, 18.0),
+            );
+            let prog_resp = ui.allocate_rect(prog_rect, egui::Sense::click());
+            let prog_color = if prog_active { theme.text_accent } else { theme.text_dim };
+            ui.painter().text(
+                prog_rect.center(), egui::Align2::CENTER_CENTER,
+                "Program", egui::FontId::proportional(10.0), prog_color,
+            );
+            if prog_resp.clicked() {
                 cmds.push(AppCommand::SetViewerMode(ViewerMode::Program));
             }
-        });
 
-        ui.separator();
+            // Source button
+            let src_rect = egui::Rect::from_min_size(
+                egui::pos2(toggle_x + 64.0, toggle_y),
+                egui::vec2(50.0, 18.0),
+            );
+            let src_resp = ui.allocate_rect(src_rect, egui::Sense::click());
+            let src_color = if src_active { theme.text_accent } else { theme.text_dim };
+            ui.painter().text(
+                src_rect.center(), egui::Align2::CENTER_CENTER,
+                "Source", egui::FontId::proportional(10.0), src_color,
+            );
+            if src_resp.clicked() {
+                cmds.push(AppCommand::SetViewerMode(ViewerMode::Source));
+            }
+
+            // Underline active tab
+            if prog_active {
+                ui.painter().hline(prog_rect.x_range(), prog_rect.max.y, egui::Stroke::new(2.0, theme.accent));
+            } else {
+                ui.painter().hline(src_rect.x_range(), src_rect.max.y, egui::Stroke::new(2.0, theme.accent));
+            }
+        }
 
         match state.viewer_mode {
             ViewerMode::Program => {
-                self.show_program_viewer(ui, state, &mut cmds);
+                self.show_program_viewer(ui, state, theme, viewer_rect, &mut cmds);
             }
             ViewerMode::Source => {
-                self.show_source_viewer(ui, state, &mut cmds);
+                self.show_source_viewer(ui, state, viewer_rect, &mut cmds);
             }
         }
+
+        // ── Scrub bar (bottom 3px) ──
+        let scrub_rect = egui::Rect::from_min_size(
+            egui::pos2(panel_rect.min.x, panel_rect.max.y - scrub_h),
+            egui::vec2(panel_rect.width(), scrub_h),
+        );
+        self.draw_scrub_bar(ui, state, theme, scrub_rect, &mut cmds);
 
         cmds
     }
@@ -89,7 +133,7 @@ impl ViewerPanel {
             }
         }
 
-        // Mouse movement shows overlay, timer hides it after 3 seconds
+        // Mouse movement shows overlay
         let dt = ui.input(|i| i.unstable_dt) as f64;
         if resp.hovered() && ui.input(|i| i.pointer.velocity().length() > 1.0) {
             state.fullscreen_overlay_visible = true;
@@ -103,7 +147,6 @@ impl ViewerPanel {
             }
         }
 
-        // Transport overlay (bottom bar)
         if state.fullscreen_overlay_visible {
             let bar_h = 48.0;
             let bar_rect = egui::Rect::from_min_size(
@@ -111,12 +154,9 @@ impl ViewerPanel {
                 egui::vec2(panel_rect.width(), bar_h),
             );
             ui.painter().rect_filled(
-                bar_rect,
-                0.0,
+                bar_rect, 0.0,
                 egui::Color32::from_rgba_premultiplied(0, 0, 0, 180),
             );
-
-            // Timecode
             let tc_text = state.playhead.to_timecode_string();
             ui.painter().text(
                 egui::pos2(bar_rect.left() + 16.0, bar_rect.center().y),
@@ -125,8 +165,6 @@ impl ViewerPanel {
                 egui::FontId::monospace(16.0),
                 egui::Color32::from_rgba_premultiplied(255, 255, 255, 220),
             );
-
-            // Playback state
             let playback_text = match state.playback {
                 PlaybackState::Playing => "\u{25B6} Playing",
                 PlaybackState::Paused => "\u{23F8} Paused",
@@ -139,16 +177,12 @@ impl ViewerPanel {
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_rgba_premultiplied(200, 200, 210, 200),
             );
-
             ui.ctx().request_repaint();
         }
 
-        // Escape exits fullscreen (F is handled by global shortcuts)
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             cmds.push(AppCommand::ToggleFullscreen);
         }
-
-        // Always request repaint during fullscreen so playback frames update
         if state.playback == PlaybackState::Playing {
             ui.ctx().request_repaint();
         }
@@ -160,41 +194,45 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
-        _cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        viewer_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
     ) {
-        // Update perf FPS from egui's frame time
-        let _dt = ui.input(|i| i.unstable_dt);
+        let _ = cmds;
 
-        let available = ui.available_size();
-
-        // Find topmost video clip at playhead (check all video tracks, top-down)
-        let current_media = state
-            .sequence
-            .tracks
-            .iter()
+        let current_media = state.sequence.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clip_at_timecode(state.playhead))
             .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
         let has_content = state.playback != PlaybackState::Idle || current_media.is_some();
+        let lb_h = viewer_rect.height() * 0.08;
 
         if !has_content {
-            let rect = ui.allocate_rect(
-                egui::Rect::from_min_size(ui.cursor().min, available),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect_filled(
-                rect.rect,
-                0.0,
-                egui::Color32::from_rgb(15, 15, 18),
-            );
+            // Empty state: Klipp shield + text at 40% opacity
+            let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
+            let center = viewer_rect.center();
+            let shield_pts = vec![
+                egui::pos2(center.x - 12.0, center.y - 24.0),
+                egui::pos2(center.x, center.y - 30.0),
+                egui::pos2(center.x + 12.0, center.y - 24.0),
+                egui::pos2(center.x + 12.0, center.y - 8.0),
+                egui::pos2(center.x, center.y),
+                egui::pos2(center.x - 12.0, center.y - 8.0),
+            ];
+            ui.painter().add(egui::Shape::convex_polygon(
+                shield_pts,
+                egui::Color32::TRANSPARENT,
+                egui::Stroke::new(1.5, logo_color),
+            ));
             ui.painter().text(
-                rect.rect.center(),
+                egui::pos2(center.x, center.y + 16.0),
                 egui::Align2::CENTER_CENTER,
-                "Drop a video file or use File > Open",
-                egui::FontId::proportional(14.0),
-                egui::Color32::from_rgb(80, 80, 90),
+                "Klipp",
+                egui::FontId::proportional(16.0),
+                logo_color,
             );
+            // Empty state: no letterbox, no safe area — just clean black + logo
             return;
         }
 
@@ -203,28 +241,22 @@ impl ViewerPanel {
             .map(|m| (m.resolution.width as f32, m.resolution.height as f32))
             .unwrap_or((1920.0, 1080.0));
 
-        if video_w == 0.0 || video_h == 0.0 {
-            return;
-        }
+        if video_w == 0.0 || video_h == 0.0 { return; }
 
         let video_aspect = video_w / video_h;
-        let panel_aspect = available.x / available.y;
+        let panel_aspect = viewer_rect.width() / viewer_rect.height();
         let (display_w, display_h) = if video_aspect > panel_aspect {
-            (available.x, available.x / video_aspect)
+            (viewer_rect.width(), viewer_rect.width() / video_aspect)
         } else {
-            (available.y * video_aspect, available.y)
+            (viewer_rect.height() * video_aspect, viewer_rect.height())
         };
 
-        let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
         let image_rect = egui::Rect::from_center_size(
-            panel_rect.center(),
+            viewer_rect.center(),
             egui::vec2(display_w, display_h),
         );
 
-        let bg_resp = ui.allocate_rect(panel_rect, egui::Sense::hover());
-        ui.painter()
-            .rect_filled(bg_resp.rect, 0.0, egui::Color32::BLACK);
-
+        // Draw video frame
         if let Some(tex) = &self.video_texture {
             ui.painter().image(
                 tex.id(),
@@ -234,94 +266,121 @@ impl ViewerPanel {
             );
         }
 
-        // Timecode overlay
-        let tc_text = state.playhead.to_timecode_string();
-        let tc_font = egui::FontId::monospace(13.0);
-        let tc_galley =
-            ui.painter()
-                .layout_no_wrap(tc_text, tc_font.clone(), egui::Color32::WHITE);
-        let tc_size = tc_galley.size();
-        let tc_pos = egui::pos2(
-            image_rect.left() + 4.0,
-            image_rect.bottom() - tc_size.y - 4.0,
-        );
-        let tc_bg_rect = egui::Rect::from_min_size(
-            egui::pos2(tc_pos.x - 4.0, tc_pos.y - 4.0),
-            egui::vec2(tc_size.x + 8.0, tc_size.y + 8.0),
+        // ── Letterbox bars (drawn ON TOP of video frame) ──
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(viewer_rect.min, egui::vec2(viewer_rect.width(), lb_h)),
+            0.0, egui::Color32::BLACK,
         );
         ui.painter().rect_filled(
-            tc_bg_rect,
-            0.0,
-            egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+            egui::Rect::from_min_size(
+                egui::pos2(viewer_rect.min.x, viewer_rect.max.y - lb_h),
+                egui::vec2(viewer_rect.width(), lb_h),
+            ),
+            0.0, egui::Color32::BLACK,
         );
-        ui.painter().galley(tc_pos, tc_galley, egui::Color32::WHITE);
 
-        // Resolution overlay
-        if let Some(media) = current_media.or_else(|| state.media_pool.all().next()) {
-            let res_text = format!(
-                "{}x{}  {:.3} fps",
-                media.resolution.width,
-                media.resolution.height,
-                state.fps.as_f64()
+        // Safe area overlay removed — it looked like a viewer border
+
+        // ── Viewer overlay (bottom, above letterbox) ──
+        let overlay_y = viewer_rect.max.y - lb_h;
+        // Subtle gradient background
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(viewer_rect.min.x, overlay_y - 24.0),
+                egui::vec2(viewer_rect.width(), 24.0),
+            ),
+            0.0,
+            egui::Color32::from_rgba_premultiplied(0, 0, 0, 80),
+        );
+
+        // Timecode (left)
+        let tc_str = {
+            let s = state.playhead_smooth_secs;
+            let hh = (s / 3600.0) as u32;
+            let mm = ((s % 3600.0) / 60.0) as u32;
+            let ss = (s % 60.0) as u32;
+            let ff = ((s % 1.0) * state.fps.rate() as f64) as u32;
+            format!("{hh:02}:{mm:02}:{ss:02}:{ff:02}")
+        };
+        ui.painter().text(
+            egui::pos2(viewer_rect.min.x + 12.0, overlay_y - 12.0),
+            egui::Align2::LEFT_CENTER,
+            &tc_str,
+            egui::FontId::monospace(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 140),
+        );
+
+        // Zoom level (right)
+        ui.painter().text(
+            egui::pos2(viewer_rect.max.x - 12.0, overlay_y - 12.0),
+            egui::Align2::RIGHT_CENTER,
+            "100%",
+            egui::FontId::monospace(10.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 89),
+        );
+
+        // Proxy badge
+        if state.use_proxies && current_media.is_some_and(|m| m.proxy_ready) {
+            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
+            ui.painter().text(
+                badge_pos,
+                egui::Align2::RIGHT_TOP,
+                "PROXY",
+                egui::FontId::monospace(9.0),
+                theme.accent,
             );
-            let res_font = egui::FontId::monospace(13.0);
-            let res_galley =
-                ui.painter()
-                    .layout_no_wrap(res_text, res_font, egui::Color32::WHITE);
-            let res_size = res_galley.size();
-            let res_pos = egui::pos2(
-                image_rect.right() - res_size.x - 4.0,
-                image_rect.bottom() - res_size.y - 4.0,
-            );
-            let res_bg_rect = egui::Rect::from_min_size(
-                egui::pos2(res_pos.x - 4.0, res_pos.y - 4.0),
-                egui::vec2(res_size.x + 8.0, res_size.y + 8.0),
-            );
-            ui.painter().rect_filled(
-                res_bg_rect,
-                0.0,
-                egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
-            );
-            ui.painter()
-                .galley(res_pos, res_galley, egui::Color32::WHITE);
         }
 
-        // Proxy badge — show when proxy mode is active and current clip has a proxy
-        if state.use_proxies {
-            let proxy_active = current_media.is_some_and(|m| m.proxy_ready);
-            if proxy_active {
-                let badge_text = " PROXY ";
-                let badge_font = egui::FontId::monospace(11.0);
-                let badge_galley = ui.painter().layout_no_wrap(
-                    badge_text.to_string(),
-                    badge_font,
-                    egui::Color32::from_rgb(30, 30, 35),
-                );
-                let badge_size = badge_galley.size();
-                let badge_pos = egui::pos2(
-                    image_rect.right() - badge_size.x - 8.0,
-                    image_rect.top() + 8.0,
-                );
-                let badge_rect = egui::Rect::from_min_size(
-                    egui::pos2(badge_pos.x - 2.0, badge_pos.y - 2.0),
-                    egui::vec2(badge_size.x + 4.0, badge_size.y + 4.0),
-                );
-                ui.painter().rect_filled(
-                    badge_rect,
-                    3.0,
-                    egui::Color32::from_rgb(220, 170, 40),
-                );
-                ui.painter().galley(
-                    badge_pos,
-                    badge_galley,
-                    egui::Color32::from_rgb(30, 30, 35),
-                );
-            }
-        }
-
-        // Performance overlay (toggle with P key or via menu)
+        // Performance overlay
         if state.show_perf_overlay {
             self.draw_perf_overlay(ui, state, image_rect);
+        }
+    }
+
+    fn draw_scrub_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        theme: &KlippTheme,
+        rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+
+        // Track background
+        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+
+        // Progress fill
+        let dur_secs = state.sequence_duration().to_secs_f64();
+        let progress = if dur_secs > 0.0 {
+            (state.playhead_smooth_secs / dur_secs).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+
+        let fill_w = progress * rect.width();
+        if fill_w > 0.0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height())),
+                0.0,
+                theme.accent,
+            );
+        }
+
+        // Playhead head (11x11 circle)
+        let head_x = rect.min.x + fill_w;
+        let head_center = egui::pos2(head_x, rect.center().y);
+        ui.painter().circle_filled(head_center, 7.0, theme.accent_glow);
+        ui.painter().circle_filled(head_center, 5.5, theme.accent);
+
+        // Scrub interaction
+        if resp.dragged() || resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let t = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0) as f64;
+                let target_secs = t * dur_secs;
+                let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, state.fps.rate());
+                cmds.push(AppCommand::SeekTo(target_tc));
+            }
         }
     }
 
@@ -353,13 +412,11 @@ impl ViewerPanel {
             format!("Mem:    {:.0} MB", state.perf_memory_mb),
         ];
 
-        let max_w = lines
-            .iter()
+        let max_w = lines.iter()
             .map(|l| {
                 ui.painter()
                     .layout_no_wrap(l.clone(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
+                    .size().x
             })
             .fold(0.0f32, f32::max);
 
@@ -369,18 +426,17 @@ impl ViewerPanel {
         let box_rect = egui::Rect::from_min_size(box_pos, egui::vec2(box_w, box_h));
 
         ui.painter().rect_filled(
-            box_rect,
-            4.0,
+            box_rect, 4.0,
             egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
         );
 
         for (i, line) in lines.iter().enumerate() {
             let color = if i == 4 && state.perf_dropped_frames > 0 {
-                egui::Color32::from_rgb(255, 100, 100) // red drops
+                egui::Color32::from_rgb(255, 100, 100)
             } else if i == 1 && state.perf_hw_decode {
-                egui::Color32::from_rgb(100, 255, 100) // green VAAPI
+                egui::Color32::from_rgb(100, 255, 100)
             } else if i == 5 && state.perf_cpu_percent > 80.0 {
-                egui::Color32::from_rgb(255, 180, 80) // orange high CPU
+                egui::Color32::from_rgb(255, 180, 80)
             } else {
                 egui::Color32::from_rgb(220, 220, 230)
             };
@@ -398,22 +454,15 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
+        viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let available = ui.available_size();
-
         let media = state.source_media_id
             .and_then(|mid| state.media_pool.get(&mid));
 
         if let Some(media) = media {
-            // Show media info and insert button
-            let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
-            let bg = ui.allocate_rect(panel_rect, egui::Sense::hover());
-            ui.painter().rect_filled(bg.rect, 0.0, egui::Color32::from_rgb(15, 15, 18));
-
-            // Source info — filename
-            let cx = panel_rect.center().x;
-            let cy = panel_rect.center().y;
+            let cx = viewer_rect.center().x;
+            let cy = viewer_rect.center().y;
             let dim = egui::Color32::from_rgb(120, 120, 130);
             let label_col = egui::Color32::from_rgb(180, 180, 190);
             let val_col = egui::Color32::from_rgb(210, 210, 220);
@@ -426,12 +475,9 @@ impl ViewerPanel {
                 label_col,
             );
 
-            // Resolution, FPS, duration line
             let dur_secs = if media.duration.rate > 0 {
                 media.duration.value as f64 / media.duration.rate as f64
-            } else {
-                0.0
-            };
+            } else { 0.0 };
             let dur_m = (dur_secs / 60.0) as u32;
             let dur_s = dur_secs % 60.0;
             let fps_str = if media.fps.den == 1 {
@@ -451,7 +497,6 @@ impl ViewerPanel {
                 val_col,
             );
 
-            // Codec + file size line
             let size_mb = media.file_size_bytes as f64 / (1024.0 * 1024.0);
             let size_str = if size_mb >= 1024.0 {
                 format!("{:.1} GB", size_mb / 1024.0)
@@ -475,7 +520,6 @@ impl ViewerPanel {
                 dim,
             );
 
-            // In/Out display
             let in_str = media.default_source_in
                 .map(|t| t.to_timecode_string())
                 .unwrap_or_else(|| "00:00:00:00".to_string());
@@ -490,16 +534,8 @@ impl ViewerPanel {
                 egui::Color32::from_rgb(200, 160, 80),
             );
 
-            // Edit buttons row
-            let btn_w = 90.0;
-            let btn_h = 24.0;
-            let btn_gap = 6.0;
-            let total_w = btn_w * 4.0 + btn_gap * 3.0;
-            let btn_y = cy + 34.0;
-            let btn_x_start = cx - total_w / 2.0;
-
+            // Edit buttons
             let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
-
             let edit_buttons: &[(&str, AppCommand, bool)] = &[
                 ("Insert (,)", AppCommand::InsertEdit, true),
                 ("Overwrite (.)", AppCommand::OverwriteEdit, true),
@@ -507,11 +543,17 @@ impl ViewerPanel {
                 ("Extract (')", AppCommand::ExtractEdit, has_in_out),
             ];
 
+            let btn_w = 90.0;
+            let btn_gap = 6.0;
+            let total_w = btn_w * 4.0 + btn_gap * 3.0;
+            let btn_y = cy + 34.0;
+            let btn_x_start = cx - total_w / 2.0;
+
             for (i, (label, cmd, enabled)) in edit_buttons.iter().enumerate() {
                 let bx = btn_x_start + (btn_w + btn_gap) * i as f32;
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bx, btn_y),
-                    egui::vec2(btn_w, btn_h),
+                    egui::vec2(btn_w, 24.0),
                 );
                 let resp = ui.allocate_rect(rect, if *enabled { egui::Sense::click() } else { egui::Sense::hover() });
                 let fill = if !enabled {
@@ -539,13 +581,10 @@ impl ViewerPanel {
                 }
             }
         } else {
-            let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
-            let bg = ui.allocate_rect(panel_rect, egui::Sense::hover());
-            ui.painter().rect_filled(bg.rect, 0.0, egui::Color32::from_rgb(15, 15, 18));
             ui.painter().text(
-                panel_rect.center(),
+                viewer_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Click a media item in the pool to load it here",
+                "Click a media item to load it here",
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_rgb(80, 80, 90),
             );

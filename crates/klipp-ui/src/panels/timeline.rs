@@ -6,8 +6,8 @@ use klipp_timeline::TrackKind;
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
-const VIDEO_TRACK_HEIGHT: f32 = 56.0;
-const AUDIO_TRACK_HEIGHT: f32 = 60.0;
+const VIDEO_TRACK_HEIGHT: f32 = 50.0; // matches theme::TRACK_VIDEO_H
+const AUDIO_TRACK_HEIGHT: f32 = 34.0; // matches theme::TRACK_AUDIO_H
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
@@ -35,6 +35,8 @@ fn clip_color_bright(index: usize) -> egui::Color32 {
 
 #[derive(Default)]
 pub struct TimelinePanel {
+    /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
+    pub embedded: bool,
     dragging_clip: Option<DragState>,
     trimming_clip: Option<TrimState>,
     snap_line_x: Option<f32>,
@@ -138,64 +140,63 @@ impl TimelinePanel {
             egui::pos2(full_rect.right(), status_rect.top()),
         );
 
-        let bg_painter = ui.painter_at(panel_rect);
+        // Intersect painter clip with UI clip to prevent bleed
+        let effective_clip = panel_rect.intersect(ui.clip_rect());
+        let bg_painter = ui.painter_at(effective_clip);
 
         // Background
         bg_painter.rect_filled(panel_rect, 0.0, egui::Color32::from_rgb(25, 25, 30));
 
-        // Track header area
-        let header_rect = egui::Rect::from_min_size(
-            panel_rect.min,
-            egui::vec2(state.track_header_width, available.y),
-        );
-        bg_painter.rect_filled(header_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
-
-        // Separator line between header and content
-        bg_painter.line_segment(
-            [
-                egui::pos2(header_rect.right(), header_rect.top()),
-                egui::pos2(header_rect.right(), header_rect.bottom()),
-            ],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)),
-        );
-
-        // Track header resize handle (4px wide at right edge)
-        let handle_rect = egui::Rect::from_min_size(
-            egui::pos2(header_rect.right() - 2.0, panel_rect.top()),
-            egui::vec2(4.0, panel_rect.height()),
-        );
-        let handle_response = ui.interact(
-            handle_rect,
-            ui.id().with("header_resize"),
-            egui::Sense::drag(),
-        );
-        if handle_response.dragged() {
-            state.track_header_width = (state.track_header_width + handle_response.drag_delta().x)
-                .clamp(TRACK_HEADER_MIN_WIDTH, TRACK_HEADER_MAX_WIDTH);
-        }
-        if handle_response.hovered() || handle_response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            // Highlight handle on hover
-            bg_painter.line_segment(
-                [
-                    egui::pos2(header_rect.right() - 1.0, panel_rect.top()),
-                    egui::pos2(header_rect.right() - 1.0, panel_rect.bottom()),
-                ],
-                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 80, 100)),
+        // Track header area — skip when embedded (new track_headers.rs handles it)
+        let header_rect = if self.embedded {
+            // In embedded mode, use zero-width header (content fills full width)
+            egui::Rect::from_min_size(panel_rect.min, egui::vec2(0.0, available.y))
+        } else {
+            let rect = egui::Rect::from_min_size(
+                panel_rect.min,
+                egui::vec2(state.track_header_width, available.y),
             );
-        }
+            bg_painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
+            bg_painter.line_segment(
+                [egui::pos2(rect.right(), rect.top()), egui::pos2(rect.right(), rect.bottom())],
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)),
+            );
+            // Track header resize handle
+            let handle_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 2.0, panel_rect.top()),
+                egui::vec2(4.0, panel_rect.height()),
+            );
+            let handle_response = ui.interact(handle_rect, ui.id().with("header_resize"), egui::Sense::drag());
+            if handle_response.dragged() {
+                state.track_header_width = (state.track_header_width + handle_response.drag_delta().x)
+                    .clamp(TRACK_HEADER_MIN_WIDTH, TRACK_HEADER_MAX_WIDTH);
+            }
+            if handle_response.hovered() || handle_response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                bg_painter.line_segment(
+                    [egui::pos2(rect.right() - 1.0, panel_rect.top()), egui::pos2(rect.right() - 1.0, panel_rect.bottom())],
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 80, 100)),
+                );
+            }
+            rect
+        };
 
-        // Timeline content area
+        // Timeline content area — starts after header (0px in embedded mode)
+        let content_left = if self.embedded {
+            panel_rect.left()
+        } else {
+            panel_rect.left() + state.track_header_width
+        };
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(panel_rect.left() + state.track_header_width, panel_rect.top()),
+            egui::pos2(content_left, panel_rect.top()),
             panel_rect.max,
         );
         state.last_timeline_content_width = content_rect.width();
-        let painter = bg_painter.with_clip_rect(content_rect);
+        let painter = bg_painter.with_clip_rect(content_rect.intersect(ui.clip_rect()));
 
-        // Overview / minimap bar (above ruler)
-        let overview_height = if state.show_overview_bar { OVERVIEW_BAR_HEIGHT } else { 0.0 };
-        if state.show_overview_bar {
+        // Overview / minimap bar (above ruler) — skip when embedded
+        let overview_height = if state.show_overview_bar && !self.embedded { OVERVIEW_BAR_HEIGHT } else { 0.0 };
+        if state.show_overview_bar && !self.embedded {
             let overview_rect = egui::Rect::from_min_size(
                 content_rect.min,
                 egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
@@ -242,77 +243,77 @@ impl TimelinePanel {
             }
         }
 
-        // Time ruler
+        // Time ruler — skip when embedded (new ruler.rs handles it)
+        let ruler_height_used = if self.embedded { 0.0 } else { RULER_HEIGHT };
         let ruler_rect = egui::Rect::from_min_size(
             egui::pos2(content_rect.left(), content_rect.top() + overview_height),
-            egui::vec2(content_rect.width(), RULER_HEIGHT),
+            egui::vec2(content_rect.width(), ruler_height_used),
         );
-        painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
-        self.draw_ruler_ticks(&painter, &ruler_rect, state);
+        if !self.embedded {
+            painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
+            self.draw_ruler_ticks(&painter, &ruler_rect, state);
+            self.draw_in_out_markers(&painter, &ruler_rect, &content_rect, state);
+        }
 
-        // In/Out markers on ruler
-        self.draw_in_out_markers(&painter, &ruler_rect, &content_rect, state);
+        // Sequence markers + ruler click — skip when embedded
+        if !self.embedded {
+            let zoom = state.timeline_zoom;
+            let scroll = state.timeline_scroll_x;
+            for marker in &state.sequence.markers {
+                let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
+                if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
+                    let (r, g, b) = marker.color.to_rgb();
+                    let color = egui::Color32::from_rgb(r, g, b);
+                    let top = ruler_rect.bottom() - 10.0;
+                    let bot = ruler_rect.bottom() - 1.0;
+                    let half_w = 4.0;
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            egui::pos2(x - half_w, top),
+                            egui::pos2(x + half_w, top),
+                            egui::pos2(x, bot),
+                        ],
+                        color,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
 
-        // Sequence markers on ruler
-        let zoom = state.timeline_zoom;
-        let scroll = state.timeline_scroll_x;
-        for marker in &state.sequence.markers {
-            let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
-            if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
-                let (r, g, b) = marker.color.to_rgb();
-                let color = egui::Color32::from_rgb(r, g, b);
-                // Small downward-pointing triangle
-                let top = ruler_rect.bottom() - 10.0;
-                let bot = ruler_rect.bottom() - 1.0;
-                let half_w = 4.0;
-                painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(x - half_w, top),
-                        egui::pos2(x + half_w, top),
-                        egui::pos2(x, bot),
-                    ],
-                    color,
-                    egui::Stroke::NONE,
-                ));
+            let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
+            if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
+                if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                    let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
+                    let secs = x_in_content / state.timeline_zoom;
+                    let tc = RationalTime::from_secs_f64(secs as f64, state.fps.rate());
+                    let dur = state.sequence_duration();
+                    let clamped = if dur.value > 0 {
+                        RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
+                    } else {
+                        RationalTime { value: tc.value.max(0), rate: tc.rate }
+                    };
+                    cmds.push(AppCommand::SeekTo(clamped));
+                }
             }
         }
 
-        // Ruler click to seek (skip if overview bar consumed the event)
-        let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
-        if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
-            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
-                let secs = x_in_content / state.timeline_zoom;
-                let tc = RationalTime::from_secs_f64(secs as f64, state.fps.rate());
-                let dur = state.sequence_duration();
-                let clamped = if dur.value > 0 {
-                    RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
-                } else {
-                    RationalTime { value: tc.value.max(0), rate: tc.rate }
-                };
-                cmds.push(AppCommand::SeekTo(clamped));
-            }
+        // Media pool, zoom buttons, toggle buttons — skip when embedded
+        if !self.embedded {
+            let pool_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
+                egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
+            );
+            painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
+            self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
+            self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state);
+            self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
         }
-
-        // Media pool bar (below ruler, above tracks)
-        let pool_rect = egui::Rect::from_min_size(
-            egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
-            egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
-        );
-        painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
-        self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
-
-        // Zoom buttons in header ruler row
-        self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state);
-
-        // Snap/Ripple toggle buttons in header area
-        self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
 
         // Reset snap line
         self.snap_line_x = None;
 
         // Draw tracks: Video 2, Video 1, Audio 1
-        let tracks_start_y = content_rect.top() + overview_height + RULER_HEIGHT + MEDIA_POOL_HEIGHT;
+        let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
+        let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
         let mut track_y = tracks_start_y;
 
         let track_count = state.sequence.tracks.len();
@@ -344,7 +345,8 @@ impl TimelinePanel {
                 TrackKind::Audio => AUDIO_TRACK_HEIGHT,
             };
 
-            // Draw track header label and controls
+            // Draw track header label and controls — skip when embedded
+            if !self.embedded {
             let label_color = match track_kind {
                 TrackKind::Video => egui::Color32::from_rgb(140, 140, 150),
                 TrackKind::Audio => egui::Color32::from_rgb(100, 150, 110),
@@ -716,14 +718,17 @@ impl TimelinePanel {
                 egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 35, 40)),
             );
 
+            } // end if !self.embedded (track header controls)
+
             let track_rect = egui::Rect::from_min_size(
                 egui::pos2(content_rect.left(), track_y),
                 egui::vec2(content_rect.width(), track_height),
             );
 
-            // Draw clips for this track
+            // Draw clips for this track (clipped to lane rect)
+            let lane_painter = painter.with_clip_rect(track_rect);
             self.draw_track_clips(
-                ui, &painter, &track_rect, &content_rect,
+                ui, &lane_painter, &track_rect, &content_rect,
                 state, &mut cmds, track_idx, true,
             );
 
@@ -835,7 +840,8 @@ impl TimelinePanel {
             }
         }
 
-        // --- Status bar ---
+        // --- Status bar --- (skip when embedded)
+        if self.embedded { return cmds; }
         let status_painter = ui.painter_at(status_rect);
         status_painter.rect_filled(status_rect, 0.0, egui::Color32::from_rgb(18, 18, 22));
         status_painter.line_segment(
