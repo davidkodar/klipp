@@ -89,7 +89,7 @@ impl ToolbarPanel {
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, false);
         draw_scopes_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Scopes", Some("W"));
+        styled_tooltip(&resp, theme, "Scopes", None);
 
         rx -= 2.0;
 
@@ -188,6 +188,47 @@ impl ToolbarPanel {
                             EditTool::Trim | EditTool::Zoom => Tool::Select,
                         };
                         cmds.push(AppCommand::SetActiveTool(engine_tool));
+                    }
+                }
+
+                sep(ui, theme);
+
+                // Insert/Overwrite mode toggle
+                {
+                    let mode_text = match state.edit_mode {
+                        klipp_timeline::magnetic::EditMode::Insert => "INS",
+                        klipp_timeline::magnetic::EditMode::Overwrite => "OVR",
+                    };
+                    let mode_color = match state.edit_mode {
+                        klipp_timeline::magnetic::EditMode::Insert => egui::Color32::from_rgb(232, 160, 32),
+                        klipp_timeline::magnetic::EditMode::Overwrite => egui::Color32::from_rgb(60, 120, 220),
+                    };
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(36.0, 20.0),
+                        egui::Sense::click(),
+                    );
+                    let bg = mode_color.linear_multiply(0.25);
+                    let border = mode_color.linear_multiply(0.6);
+                    ui.painter().rect_filled(rect, 3.0, bg);
+                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border));
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        mode_text,
+                        egui::FontId::monospace(10.0),
+                        mode_color,
+                    );
+                    let tip = if matches!(state.edit_mode, klipp_timeline::magnetic::EditMode::Insert) {
+                        "Edit Mode: Insert (W to toggle)"
+                    } else {
+                        "Edit Mode: Overwrite (W to toggle)"
+                    };
+                    styled_tooltip(&resp, theme, tip, Some("W"));
+                    if resp.clicked() {
+                        state.edit_mode = match state.edit_mode {
+                            klipp_timeline::magnetic::EditMode::Insert => klipp_timeline::magnetic::EditMode::Overwrite,
+                            klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
+                        };
                     }
                 }
 

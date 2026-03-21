@@ -3029,11 +3029,36 @@ impl KlippApp {
                 return;
             }
 
-            // Delete/Backspace — remove selected clip
-            if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
+            // Shift+Delete — Lift (leave gap, no ripple) on magnetic tracks
+            if i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let track_idx = self.state.sequence.tracks.iter()
+                        .position(|t| t.clips.iter().any(|c| c.id == clip_id));
+                    if let Some(ti) = track_idx {
+                        if self.is_magnetic_track(ti) {
+                            let result = klipp_timeline::magnetic::MagneticEditor::lift(
+                                &mut self.state.sequence, clip_id);
+                            self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                            self.state.selected_clip = None;
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                }
+            }
+            // Delete/Backspace — remove selected clip (plain, no shift)
+            else if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 }
+            }
+
+            // W — Toggle Insert/Overwrite mode
+            if i.key_pressed(egui::Key::W) {
+                self.state.edit_mode = match self.state.edit_mode {
+                    klipp_timeline::magnetic::EditMode::Insert => klipp_timeline::magnetic::EditMode::Overwrite,
+                    klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
+                };
             }
             // Ctrl+X — Cut
             if i.modifiers.ctrl && i.key_pressed(egui::Key::X) {

@@ -561,14 +561,17 @@ impl MagneticEditor {
             .primary_track_index()
             .expect("append_primary requires a primary track");
 
+        // Duration comes from source range, not timeline (caller may pass placeholder timeline values)
+        let clip_dur = new_clip.source_out - new_clip.source_in;
+        let source_rate = clip_dur.rate;
+
         let track = &sequence.tracks[primary_idx];
         let end = track
             .clips
             .last()
-            .map(|c| c.timeline_out)
-            .unwrap_or(RationalTime::from_frames(0, new_clip.timeline_in.rate));
+            .map(|c| c.timeline_out.rescale_to(source_rate))
+            .unwrap_or(RationalTime::from_frames(0, source_rate));
 
-        let clip_dur = new_clip.timeline_out - new_clip.timeline_in;
         new_clip.timeline_in = end;
         new_clip.timeline_out = end + clip_dur;
 

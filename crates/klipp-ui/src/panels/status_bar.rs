@@ -61,6 +61,39 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         );
         status_item(ui, theme, &res_str);
 
+        // Edit mode indicator
+        {
+            let (mode_label, mode_color) = match state.edit_mode {
+                klipp_timeline::magnetic::EditMode::Insert => (
+                    "INSERT",
+                    egui::Color32::from_rgb(232, 160, 32),
+                ),
+                klipp_timeline::magnetic::EditMode::Overwrite => (
+                    "OVERWRITE",
+                    egui::Color32::from_rgb(60, 120, 220),
+                ),
+            };
+            let (badge_rect, _) =
+                ui.allocate_exact_size(egui::vec2(56.0, 14.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                badge_rect,
+                3.0,
+                mode_color.linear_multiply(0.18),
+            );
+            ui.painter().rect_stroke(
+                badge_rect,
+                3.0,
+                egui::Stroke::new(1.0, mode_color.linear_multiply(0.4)),
+            );
+            ui.painter().text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                mode_label,
+                egui::FontId::monospace(8.5),
+                mode_color,
+            );
+        }
+
         // Right group
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(10.0);

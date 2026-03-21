@@ -52,6 +52,8 @@ pub struct AppState {
     pub viewer_mode: ViewerMode,
     pub snap_enabled: bool,
     pub ripple_enabled: bool,
+    /// Magnetic timeline edit mode: Insert (ripple) or Overwrite (replace)
+    pub edit_mode: klipp_timeline::magnetic::EditMode,
     pub fullscreen_viewer: bool,
     pub fullscreen_changed: bool,
 
@@ -244,6 +246,7 @@ impl Default for AppState {
             viewer_mode: ViewerMode::Program,
             snap_enabled: true,
             ripple_enabled: true,
+            edit_mode: klipp_timeline::magnetic::EditMode::default(),
             fullscreen_viewer: false,
             fullscreen_changed: false,
             clipboard: None,

@@ -205,8 +205,9 @@ impl TimelinePanel {
         }
 
         // Overview bar interaction — raw pointer (ui.interact doesn't work in manual layout)
+        // Skip when embedded — the new timeline shell handles its own overview
         let mut overview_bar_consumed = false;
-        if state.show_overview_bar {
+        if state.show_overview_bar && !self.embedded {
             let overview_rect = egui::Rect::from_min_size(
                 content_rect.min,
                 egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
@@ -789,19 +790,19 @@ impl TimelinePanel {
             let playhead_secs = state.playhead_smooth_secs as f32;
             let view_width = content_rect.width();
 
-            // Auto-scroll based on follow mode
-            match state.playhead_follow {
-                PlayheadFollow::Page => {
-                    let playhead_x_abs = playhead_secs * state.timeline_zoom;
-                    let view_end = state.timeline_scroll_x + view_width;
-                    if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
-                        // Jump one page so playhead is at ~10% from left
-                        state.timeline_scroll_x =
-                            (playhead_x_abs - view_width * 0.1).max(0.0);
+            // Auto-scroll based on follow mode — only during playback, not on user clicks
+            if state.playback == PlaybackState::Playing {
+                match state.playhead_follow {
+                    PlayheadFollow::Page => {
+                        let playhead_x_abs = playhead_secs * state.timeline_zoom;
+                        let view_end = state.timeline_scroll_x + view_width;
+                        if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
+                            // Jump one page so playhead is at ~10% from left
+                            state.timeline_scroll_x =
+                                (playhead_x_abs - view_width * 0.1).max(0.0);
+                        }
                     }
-                }
-                PlayheadFollow::Smooth => {
-                    if state.playback == PlaybackState::Playing {
+                    PlayheadFollow::Smooth => {
                         // Keep playhead at ~25% from left edge during playback
                         let target_scroll =
                             (playhead_secs * state.timeline_zoom - view_width * 0.25).max(0.0);
@@ -809,8 +810,8 @@ impl TimelinePanel {
                         state.timeline_scroll_x +=
                             (target_scroll - state.timeline_scroll_x) * 0.15;
                     }
+                    PlayheadFollow::Off => {}
                 }
-                PlayheadFollow::Off => {}
             }
 
             let playhead_x =
@@ -948,6 +949,69 @@ impl TimelinePanel {
                 || clip_rect.left() > content_rect.right()
             {
                 continue;
+            }
+
+            // Gap clip rendering — hatched pattern with duration label
+            if clip.kind.is_gap() {
+                let gap_bg = egui::Color32::from_rgb(0x0a, 0x0a, 0x0c);
+                painter.rect_filled(clip_rect, 3.0, gap_bg);
+
+                // Diagonal hatched stripes
+                let stripe_color = egui::Color32::from_rgba_unmultiplied(232, 160, 32, 25);
+                let stripe_spacing = 8.0_f32;
+                let clip_painter = painter.with_clip_rect(clip_rect);
+                let mut sx = clip_rect.min.x - clip_rect.height();
+                while sx < clip_rect.max.x {
+                    let p1 = egui::pos2(sx, clip_rect.max.y);
+                    let p2 = egui::pos2(sx + clip_rect.height(), clip_rect.min.y);
+                    clip_painter.line_segment([p1, p2], egui::Stroke::new(1.0, stripe_color));
+                    sx += stripe_spacing;
+                }
+
+                // Amber dashed border
+                painter.rect_stroke(
+                    clip_rect,
+                    3.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 80)),
+                );
+
+                // Duration label centered
+                let dur = clip.duration();
+                let secs = dur.to_secs_f64();
+                let label = if secs >= 1.0 {
+                    format!("{:.1}s", secs)
+                } else {
+                    format!("{:.0}f", dur.value as f64)
+                };
+                painter.text(
+                    clip_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &label,
+                    egui::FontId::monospace(9.0),
+                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120),
+                );
+
+                // Gap clips ARE selectable — handle click
+                if let Some(pos) = pointer_pos {
+                    if clip_rect.contains(pos) && pointer_released {
+                        state.selected_clip = Some(clip.id);
+                        state.hovered_clip = Some(clip.id);
+                    }
+                    if clip_rect.contains(pos) {
+                        state.hovered_clip = Some(clip.id);
+                    }
+                }
+
+                // Selection highlight
+                if state.selected_clip == Some(clip.id) {
+                    painter.rect_stroke(
+                        clip_rect,
+                        3.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 160, 240)),
+                    );
+                }
+
+                continue; // skip normal clip rendering
             }
 
             let is_selected = state.selected_clip == Some(clip.id);
@@ -1765,11 +1829,9 @@ impl TimelinePanel {
         // Click handling
         if track_response.clicked() {
             if let Some(pos) = track_response.interact_pointer_pos {
-                // Always move playhead to click position (standard NLE behavior)
                 let x_in_content = pos.x - content_rect.left() + scroll;
                 let click_secs = (x_in_content as f64 / zoom as f64).max(0.0);
                 let click_tc = RationalTime::from_secs_f64(click_secs, fps.rate());
-                cmds.push(AppCommand::SeekTo(click_tc));
 
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     if state.active_tool == Tool::Blade {
@@ -1844,7 +1906,8 @@ impl TimelinePanel {
                         cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                     }
                 } else {
-                    // Clicked empty area — deselect
+                    // Clicked empty area — move playhead and deselect
+                    cmds.push(AppCommand::SeekTo(click_tc));
                     if self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                         state.selected_clips.clear();
                         cmds.push(AppCommand::SelectClip(None));

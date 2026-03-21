@@ -541,11 +541,13 @@ impl Clip {
     }
 
     /// Create a gap placeholder clip with the given timeline extent.
+    /// Rescales timeline_out to match timeline_in's rate if they differ.
     pub fn gap(timeline_in: Timecode, timeline_out: Timecode) -> Self {
-        debug_assert_eq!(
-            timeline_in.rate, timeline_out.rate,
-            "gap clip: timeline_in and timeline_out must have same rate"
-        );
+        let timeline_out = if timeline_out.rate != timeline_in.rate {
+            timeline_out.rescale_to(timeline_in.rate)
+        } else {
+            timeline_out
+        };
         Self {
             id: ClipId::new(),
             kind: ClipKind::Gap,
