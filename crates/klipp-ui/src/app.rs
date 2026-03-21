@@ -3029,6 +3029,91 @@ impl KlippApp {
                 return;
             }
 
+            // G (no modifiers) — Connect selected clip to nearest primary clip
+            if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::G) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let clip_track = self.state.sequence.tracks.iter()
+                        .position(|t| t.clips.iter().any(|c| c.id == clip_id));
+                    if let Some(ti) = clip_track {
+                        if self.state.sequence.tracks[ti].magnetic_role != klipp_timeline::TrackRole::Primary {
+                            let clip_in = self.state.sequence.tracks[ti].clips.iter()
+                                .find(|c| c.id == clip_id)
+                                .map(|c| c.timeline_in);
+                            if let Some(clip_in) = clip_in {
+                                if let Some(primary_idx) = self.state.sequence.primary_track_index() {
+                                    let best_anchor = self.state.sequence.tracks[primary_idx].clips.iter()
+                                        .filter(|c| !c.kind.is_gap())
+                                        .min_by_key(|c| (c.timeline_in - clip_in).abs().value.unsigned_abs());
+                                    if let Some(anchor) = best_anchor {
+                                        let anchor_id = anchor.id;
+                                        let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
+                                            &mut self.state.sequence,
+                                            clip_id,
+                                            anchor_id,
+                                            klipp_timeline::AnchorAlignment::StartAligned,
+                                        );
+                                        self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                                        self.sync_sequence_to_engine();
+                                        self.state.dirty = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Shift+G (no ctrl) — Disconnect selected clip
+            if !i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::G) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let has_anchor = self.state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .any(|c| c.id == clip_id && c.magnetic_anchor.is_some());
+                    if has_anchor {
+                        let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
+                            &mut self.state.sequence, clip_id);
+                        self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                        self.sync_sequence_to_engine();
+                        self.state.dirty = true;
+                    }
+                }
+            }
+
+            // Shift+S (no ctrl) — Promote track to Connected Storyline / Break apart
+            if !i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let clip_track = self.state.sequence.tracks.iter()
+                        .position(|t| t.clips.iter().any(|c| c.id == clip_id));
+                    if let Some(ti) = clip_track {
+                        if self.state.sequence.tracks[ti].magnetic_role == klipp_timeline::TrackRole::Connected {
+                            if let Some(primary_idx) = self.state.sequence.primary_track_index() {
+                                let first_clip_in = self.state.sequence.tracks[ti].clips.first()
+                                    .map(|c| c.timeline_in);
+                                if let Some(clip_in) = first_clip_in {
+                                    let best_anchor = self.state.sequence.tracks[primary_idx].clips.iter()
+                                        .filter(|c| !c.kind.is_gap())
+                                        .min_by_key(|c| (c.timeline_in - clip_in).abs().value.unsigned_abs());
+                                    if let Some(anchor) = best_anchor {
+                                        let anchor_id = anchor.id;
+                                        let result = klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(
+                                            &mut self.state.sequence, ti, anchor_id);
+                                        self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                                        self.sync_sequence_to_engine();
+                                        self.state.dirty = true;
+                                    }
+                                }
+                            }
+                        } else if self.state.sequence.tracks[ti].magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline {
+                            let result = klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(
+                                &mut self.state.sequence, ti);
+                            self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                }
+            }
+
             // Shift+Delete — Lift (leave gap, no ripple) on magnetic tracks
             if i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let Some(clip_id) = self.state.selected_clip {

@@ -1540,6 +1540,99 @@ impl TimelinePanel {
             }
         }
 
+        // Draw anchor connection lines for connected clips
+        for clip in &clips {
+            if let Some(ref anchor) = clip.magnetic_anchor {
+                if let Some(primary_idx) = state.sequence.primary_track_index() {
+                    let anchor_clip = state.sequence.tracks[primary_idx].clips.iter()
+                        .find(|c| c.id == anchor.anchor_clip_id);
+                    if let Some(ac) = anchor_clip {
+                        let anchor_x = content_rect.left()
+                            + (ac.timeline_in.to_secs_f64() as f32 + anchor.offset.to_secs_f64() as f32) * zoom
+                            - scroll;
+
+                        // Only draw if visible
+                        if anchor_x >= content_rect.left() - 10.0 && anchor_x <= content_rect.right() + 10.0 {
+                            let _clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let clip_top = track_rect.top();
+
+                            // Find primary track rect for the bottom of the line
+                            let primary_bottom = self.track_rects.iter()
+                                .find(|(idx, _, _)| *idx == primary_idx)
+                                .map(|(_, _, r)| r.bottom())
+                                .unwrap_or(track_rect.bottom());
+
+                            let line_color = egui::Color32::from_rgba_unmultiplied(232, 160, 32, 160);
+
+                            // Dashed vertical line
+                            let dash_len = 5.0_f32;
+                            let gap_len = 3.0_f32;
+                            let start_y = clip_top.min(primary_bottom);
+                            let end_y = clip_top.max(primary_bottom);
+                            let mut y = start_y;
+                            while y < end_y {
+                                let dash_end = (y + dash_len).min(end_y);
+                                painter.line_segment(
+                                    [egui::pos2(anchor_x, y), egui::pos2(anchor_x, dash_end)],
+                                    egui::Stroke::new(1.0, line_color),
+                                );
+                                y += dash_len + gap_len;
+                            }
+
+                            // Anchor dot on the primary track
+                            painter.circle_filled(
+                                egui::pos2(anchor_x, primary_bottom),
+                                3.0,
+                                line_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw collision indicators for overlapping clips on connected tracks
+        if state.sequence.tracks.get(track_idx).is_some_and(|t| {
+            t.magnetic_role == klipp_timeline::TrackRole::Connected
+                || t.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline
+        }) {
+            for (ci, clip) in clips.iter().enumerate() {
+                if clip.kind.is_gap() { continue; }
+                for (oi, other) in clips.iter().enumerate() {
+                    if ci >= oi { continue; }
+                    if other.kind.is_gap() { continue; }
+                    // Check overlap
+                    if clip.timeline_in < other.timeline_out && clip.timeline_out > other.timeline_in {
+                        let overlap_start = if clip.timeline_in > other.timeline_in { clip.timeline_in } else { other.timeline_in };
+                        let overlap_end = if clip.timeline_out < other.timeline_out { clip.timeline_out } else { other.timeline_out };
+                        let ox = content_rect.left() + overlap_start.to_secs_f64() as f32 * zoom - scroll;
+                        let ow = (overlap_end - overlap_start).to_secs_f64() as f32 * zoom;
+                        let overlap_rect = egui::Rect::from_min_size(
+                            egui::pos2(ox, track_rect.top() + 2.0),
+                            egui::vec2(ow, track_rect.height() - 4.0),
+                        );
+                        if overlap_rect.right() < content_rect.left() || overlap_rect.left() > content_rect.right() {
+                            continue;
+                        }
+                        // Amber striped overlay
+                        let stripe_color = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 80);
+                        let stripe_spacing = 6.0_f32;
+                        let clip_painter = painter.with_clip_rect(overlap_rect);
+                        let mut sx = overlap_rect.min.x - overlap_rect.height();
+                        while sx < overlap_rect.max.x {
+                            let p1 = egui::pos2(sx, overlap_rect.max.y);
+                            let p2 = egui::pos2(sx + overlap_rect.height(), overlap_rect.min.y);
+                            clip_painter.line_segment([p1, p2], egui::Stroke::new(1.5, stripe_color));
+                            sx += stripe_spacing;
+                        }
+                        // Amber border
+                        painter.rect_stroke(overlap_rect, 2.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(0xff, 0xc8, 0x00)));
+                    }
+                }
+            }
+        }
+
         // Trim handle hover highlight — edge-first detection
         if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.dragging_clip.is_none() {
             if let Some(pos) = pointer_pos {
@@ -1811,7 +1904,43 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Magnetic connect/disconnect
+                ui.separator();
+                let is_on_primary = state.sequence.tracks.get(track_idx)
+                    .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
+                if !is_on_primary {
+                    let clip_data = state.sequence.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id);
+                    if let Some(cd) = clip_data {
+                        if cd.magnetic_anchor.is_some() {
+                            ui.label("\u{26D3} Connected to Primary");
+                            if ui.button("Disconnect (Shift+G)").clicked() {
+                                ui.close_menu();
+                            }
+                        } else if ui.button("Connect to Primary (G)").clicked() {
+                            ui.close_menu();
+                        }
+                    }
+                    // Storyline promotion
+                    let track_role = state.sequence.tracks.get(track_idx)
+                        .map(|t| t.magnetic_role.clone());
+                    if let Some(role) = track_role {
+                        if role == klipp_timeline::TrackRole::Connected {
+                            if ui.button("Promote to Storyline (Shift+S)").clicked() {
+                                ui.close_menu();
+                            }
+                        } else if role == klipp_timeline::TrackRole::ConnectedStoryline {
+                            ui.label("\u{1F517} Connected Storyline");
+                            if ui.button("Break Apart Storyline (Shift+S)").clicked() {
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                }
+
                 // Lock Track
+                ui.separator();
                 let track_locked = state.sequence.tracks.get(track_idx).is_some_and(|t| t.locked);
                 let lock_label = if track_locked { "Unlock Track" } else { "Lock Track" };
                 if ui.button(lock_label).clicked() {

@@ -106,6 +106,29 @@ pub fn show(
             theme.text_secondary,
         );
 
+        // Magnetic role badge (small pill after track name)
+        let role_badge = match track.magnetic_role {
+            klipp_timeline::TrackRole::Primary => Some(("P", egui::Color32::from_rgb(60, 130, 220))),
+            klipp_timeline::TrackRole::Connected => Some(("C", egui::Color32::from_rgb(200, 150, 40))),
+            klipp_timeline::TrackRole::ConnectedStoryline => Some(("CS", egui::Color32::from_rgb(180, 120, 200))),
+            klipp_timeline::TrackRole::Free => None,
+        };
+        if let Some((label, color)) = role_badge {
+            let badge_w = if label.len() > 1 { 18.0 } else { 14.0 };
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(name_x + 2.0, track_rect.center().y + 6.0),
+                egui::vec2(badge_w, 10.0),
+            );
+            ui.painter().rect_filled(badge_rect, 3.0, color);
+            ui.painter().text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(7.0),
+                egui::Color32::WHITE,
+            );
+        }
+
         // Mute button (right side, 16x16)
         let btn_size = 16.0;
         let mute_rect = egui::Rect::from_min_size(
