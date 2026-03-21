@@ -853,7 +853,7 @@ impl KlippApp {
                         if let Some(track) = self.state.sequence.tracks.get_mut(track_index) {
                             let clip_id = track.append_clip(*media_id, duration);
                             let clip = track.find_clip(clip_id).unwrap().clone();
-                            self.state.history.push(EditCommand::AppendClip {
+                            self.state.history.push(EditCommand::LegacyAppendClip {
                                 clip,
                                 track_index,
                             });
@@ -870,7 +870,7 @@ impl KlippApp {
                         if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                             let clip_id = track.append_clip(*media_id, duration);
                             let clip = track.find_clip(clip_id).unwrap().clone();
-                            self.state.history.push(EditCommand::AppendClip {
+                            self.state.history.push(EditCommand::LegacyAppendClip {
                                 clip,
                                 track_index: *track_index,
                             });
@@ -949,7 +949,7 @@ impl KlippApp {
                                 .map(|c| (c.id, c.timeline_in, c.timeline_out))
                                 .collect();
                             if let Some(removed) = track.ripple_remove(*clip_id) {
-                                self.state.history.push(EditCommand::RippleRemove {
+                                self.state.history.push(EditCommand::LegacyRippleRemove {
                                     removed_clip: removed,
                                     track_index,
                                     position: pos,
@@ -973,7 +973,7 @@ impl KlippApp {
                                     .map(|c| (c.id, c.timeline_in, c.timeline_out))
                                     .collect();
                                 if let Some(removed) = track.ripple_remove(lid) {
-                                    self.state.history.push(EditCommand::RippleRemove {
+                                    self.state.history.push(EditCommand::LegacyRippleRemove {
                                         removed_clip: removed,
                                         track_index: lti,
                                         position: pos,
@@ -1014,7 +1014,7 @@ impl KlippApp {
                             let dur = clip.duration();
                             clip.timeline_in = *new_timeline_in;
                             clip.timeline_out = *new_timeline_in + dur;
-                            self.state.history.push(EditCommand::MoveClip {
+                            self.state.history.push(EditCommand::LegacyMoveClip {
                                 clip_id: *clip_id,
                                 old_timeline_in: old_in,
                                 old_timeline_out: old_out,
@@ -1065,7 +1065,7 @@ impl KlippApp {
                                 dst_track.sort_clips();
                             }
 
-                            self.state.history.push(EditCommand::MoveClipToTrack {
+                            self.state.history.push(EditCommand::LegacyMoveClipToTrack {
                                 clip: moved_clip,
                                 old_timeline_in: old_in,
                                 old_timeline_out: old_out,
@@ -1101,7 +1101,7 @@ impl KlippApp {
                         .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                     {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            self.state.history.push(EditCommand::TrimClip {
+                            self.state.history.push(EditCommand::LegacyTrimClip {
                                 clip_id: *clip_id,
                                 old_source_in: clip.source_in,
                                 old_source_out: clip.source_out,
@@ -1530,6 +1530,7 @@ impl KlippApp {
                         effects: Vec::new(),
                         linked_clip_id: None,
                         group_id: None,
+                        magnetic_anchor: None,
                     };
                     if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -1631,7 +1632,7 @@ impl KlippApp {
                         let position = track.clips.iter().position(|c| c.id == cid);
                         if let (Some(original), Some(pos)) = (original, position) {
                             if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
-                                self.state.history.push(EditCommand::BladeClip {
+                                self.state.history.push(EditCommand::LegacyBladeClip {
                                     track_index: ti,
                                     original_clip: original,
                                     clip_a,
@@ -1663,7 +1664,7 @@ impl KlippApp {
                                     source_track_index: track_index,
                                 });
                                 track.ripple_remove(cid);
-                                self.state.history.push(EditCommand::CutClip {
+                                self.state.history.push(EditCommand::LegacyCutClip {
                                     clip,
                                     media_item: media,
                                     track_index,
@@ -1717,9 +1718,10 @@ impl KlippApp {
                                     builtin_effects: clip.builtin_effects.clone(),
                                     linked_clip_id: None,
                                     group_id: None,
+                                    magnetic_anchor: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
-                                self.state.history.push(EditCommand::PasteClip {
+                                self.state.history.push(EditCommand::LegacyPasteClip {
                                     clip: new_clip,
                                     track_index,
                                 });
@@ -1815,6 +1817,7 @@ impl KlippApp {
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
                                     group_id: None,
+                                    magnetic_anchor: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -1872,6 +1875,7 @@ impl KlippApp {
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
                                     group_id: None,
+                                    magnetic_anchor: None,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -2320,18 +2324,18 @@ impl KlippApp {
 
     fn apply_edit_inverse(&mut self, cmd: &EditCommand) {
         match cmd {
-            EditCommand::AppendClip { clip, track_index } => {
+            EditCommand::LegacyAppendClip { clip, track_index } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.remove_clip(clip.id);
                 }
             }
-            EditCommand::RemoveClip { clip, track_index, position } => {
+            EditCommand::LegacyRemoveClip { clip, track_index, position } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     let pos = (*position).min(track.clips.len());
                     track.clips.insert(pos, clip.clone());
                 }
             }
-            EditCommand::RippleRemove { removed_clip, track_index, position, shifted_clips } => {
+            EditCommand::LegacyRippleRemove { removed_clip, track_index, position, shifted_clips } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     // Restore shifted clips to their original positions
                     for (cid, old_in, old_out) in shifted_clips {
@@ -2346,7 +2350,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::MoveClip { clip_id, old_timeline_in, old_timeline_out, .. } => {
+            EditCommand::LegacyMoveClip { clip_id, old_timeline_in, old_timeline_out, .. } => {
                 if let Some(track) = self.state.sequence.tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                 {
@@ -2357,7 +2361,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::TrimClip {
+            EditCommand::LegacyTrimClip {
                 clip_id,
                 old_source_in, old_source_out,
                 old_timeline_in, old_timeline_out, ..
@@ -2373,7 +2377,7 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::BladeClip { track_index, original_clip, clip_a, clip_b, position } => {
+            EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     // Undo: remove clip_a and clip_b, insert original
                     track.clips.retain(|c| c.id != clip_a.id && c.id != clip_b.id);
@@ -2382,7 +2386,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::CutClip { clip, track_index, position, shifted_clips, .. } => {
+            EditCommand::LegacyCutClip { clip, track_index, position, shifted_clips, .. } => {
                 // Undo cut = re-insert clip + restore shifted positions
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     for (cid, old_in, old_out) in shifted_clips {
@@ -2396,13 +2400,13 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::PasteClip { clip, track_index } => {
+            EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Undo paste = remove the pasted clip
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.remove_clip(clip.id);
                 }
             }
-            EditCommand::MoveClipToTrack { clip, old_timeline_in, old_timeline_out, from_track, to_track, .. } => {
+            EditCommand::LegacyMoveClipToTrack { clip, old_timeline_in, old_timeline_out, from_track, to_track, .. } => {
                 // Undo: move clip back from to_track to from_track with original position
                 if let Some(dst) = self.state.sequence.tracks.get_mut(*to_track) {
                     dst.remove_clip(clip.id);
@@ -2415,32 +2419,35 @@ impl KlippApp {
                     src.sort_clips();
                 }
             }
+            EditCommand::Magnetic(_cmd) => {
+                // TODO Phase 3: delegate to MagneticEditor::apply_inverse
+            }
         }
     }
 
     fn apply_edit_forward(&mut self, cmd: &EditCommand) {
         match cmd {
-            EditCommand::AppendClip { clip, track_index } => {
+            EditCommand::LegacyAppendClip { clip, track_index } => {
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.clips.push(clip.clone());
                     track.sort_clips();
                 }
             }
-            EditCommand::RemoveClip { clip, .. } => {
+            EditCommand::LegacyRemoveClip { clip, .. } => {
                 if let Some(track) = self.state.sequence.tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == clip.id))
                 {
                     track.remove_clip(clip.id);
                 }
             }
-            EditCommand::RippleRemove { removed_clip, .. } => {
+            EditCommand::LegacyRippleRemove { removed_clip, .. } => {
                 if let Some(track) = self.state.sequence.tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == removed_clip.id))
                 {
                     track.ripple_remove(removed_clip.id);
                 }
             }
-            EditCommand::MoveClip { clip_id, new_timeline_in, new_timeline_out, .. } => {
+            EditCommand::LegacyMoveClip { clip_id, new_timeline_in, new_timeline_out, .. } => {
                 if let Some(track) = self.state.sequence.tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                 {
@@ -2451,7 +2458,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::TrimClip {
+            EditCommand::LegacyTrimClip {
                 clip_id,
                 new_source_in, new_source_out,
                 new_timeline_in, new_timeline_out, ..
@@ -2467,7 +2474,7 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::BladeClip { track_index, original_clip, clip_a, clip_b, .. } => {
+            EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, .. } => {
                 // Redo blade: remove original, insert clip_a and clip_b
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.remove_clip(original_clip.id);
@@ -2476,7 +2483,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::CutClip { clip, .. } => {
+            EditCommand::LegacyCutClip { clip, .. } => {
                 // Redo cut = ripple remove
                 if let Some(track) = self.state.sequence.tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == clip.id))
@@ -2484,14 +2491,14 @@ impl KlippApp {
                     track.ripple_remove(clip.id);
                 }
             }
-            EditCommand::PasteClip { clip, track_index } => {
+            EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Redo paste = re-insert
                 if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
                     track.clips.push(clip.clone());
                     track.sort_clips();
                 }
             }
-            EditCommand::MoveClipToTrack { clip, from_track, to_track, new_timeline_in, .. } => {
+            EditCommand::LegacyMoveClipToTrack { clip, from_track, to_track, new_timeline_in, .. } => {
                 // Redo: move from from_track to to_track at new position
                 if let Some(src) = self.state.sequence.tracks.get_mut(*from_track) {
                     src.remove_clip(clip.id);
@@ -2504,6 +2511,9 @@ impl KlippApp {
                     dst.clips.push(moved);
                     dst.sort_clips();
                 }
+            }
+            EditCommand::Magnetic(_cmd) => {
+                // TODO Phase 3: delegate to MagneticEditor::apply_forward
             }
         }
     }
@@ -2570,6 +2580,7 @@ impl KlippApp {
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
+                magnetic_anchor: None,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -2652,6 +2663,7 @@ impl KlippApp {
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
+                magnetic_anchor: None,
             };
             track.clips.insert(i + 1, right_clip);
         }

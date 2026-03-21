@@ -150,6 +150,7 @@ pub enum ClipKindJson {
         #[serde(default)]
         shadow: serde_json::Value,
     },
+    Gap,
 }
 
 fn default_font_size() -> f32 { 72.0 }

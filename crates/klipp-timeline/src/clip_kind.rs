@@ -8,6 +8,14 @@ pub enum ClipKind {
     Media { media_id: MediaId },
     /// A synthetic clip that generates its own frames — no source file.
     Title(TitleData),
+    /// A gap placeholder — no media, no rendering. Pure timing spacer.
+    Gap,
+}
+
+impl ClipKind {
+    pub fn is_gap(&self) -> bool {
+        matches!(self, ClipKind::Gap)
+    }
 }
 
 impl Default for ClipKind {

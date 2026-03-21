@@ -146,6 +146,7 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
                     group_id: c.group_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(GroupId)
                     }),
+                    magnetic_anchor: None,
                 }
             }).collect();
             track
@@ -225,6 +226,7 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     shadow: sh,
                 })
             }
+            ClipKindJson::Gap => ClipKind::Gap,
         };
     }
 

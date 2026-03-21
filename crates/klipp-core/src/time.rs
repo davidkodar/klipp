@@ -55,8 +55,19 @@ pub struct RationalTime {
 }
 
 impl RationalTime {
+    /// Zero time with rate=1. Safe for comparisons and as an accumulator starting point.
+    /// WARNING: Do NOT use as a clip's timeline_in — clips must inherit rate from source media.
+    pub const ZERO: Self = Self { value: 0, rate: 1 };
+
+    /// Returns zero time with rate=1.
+    /// **Prefer `ZERO` const for clarity. Never use as clip timeline_in.**
     pub fn zero() -> Self {
-        Self { value: 0, rate: 1 }
+        Self::ZERO
+    }
+
+    /// Absolute value — preserves rate, negates negative values.
+    pub fn abs(self) -> Self {
+        Self { value: self.value.abs(), rate: self.rate }
     }
 
     pub fn from_frames(frames: i64, rate: u32) -> Self {

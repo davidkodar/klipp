@@ -221,6 +221,7 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             background: serde_json::to_value(&data.background).unwrap_or_default(),
             shadow: serde_json::to_value(&data.shadow).unwrap_or_default(),
         },
+        ClipKind::Gap => ClipKindJson::Gap,
     }
 }
 
