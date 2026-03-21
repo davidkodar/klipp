@@ -3227,6 +3227,10 @@ impl KlippApp {
             if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
+            // N — Toggle snap
+            if i.key_pressed(egui::Key::N) && !i.modifiers.ctrl {
+                self.state.snap_enabled = !self.state.snap_enabled;
+            }
             // I/O — In/Out markers (context-dependent on viewer mode)
             if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {
                 if i.modifiers.shift {

@@ -784,6 +784,79 @@ impl TimelinePanel {
             state.dragging_media = None;
         }
 
+        // Draw media drag ghost — a translucent clip preview following the cursor
+        if let Some(drag_media_id) = state.dragging_media {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let item_name = state.media_pool.get(&drag_media_id)
+                    .map(|m| m.filename.clone())
+                    .unwrap_or_default();
+                let item_dur = state.media_pool.get(&drag_media_id)
+                    .map(|m| m.duration.to_secs_f64() as f32)
+                    .unwrap_or(1.0);
+
+                let ghost_w = (item_dur * state.timeline_zoom).clamp(60.0, 300.0);
+                let ghost_h = 36.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                // Use a top-level painter so the ghost draws above everything
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("drag_ghost"),
+                ));
+
+                // Clip background
+                ghost_painter.rect_filled(ghost_rect, 4.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
+                ghost_painter.rect_stroke(ghost_rect, 4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)));
+
+                // Thumbnail if available
+                if let Some(tex) = state.thumbnail_textures.get(&drag_media_id) {
+                    let thumb_rect = egui::Rect::from_min_size(
+                        ghost_rect.min + egui::vec2(3.0, 3.0),
+                        egui::vec2(ghost_h - 6.0, ghost_h - 6.0),
+                    );
+                    ghost_painter.image(
+                        tex.id(),
+                        thumb_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // Filename label
+                let label_x = ghost_rect.left() + ghost_h + 2.0;
+                let truncated = if item_name.len() > 20 {
+                    format!("{}...", &item_name[..17])
+                } else {
+                    item_name
+                };
+                ghost_painter.text(
+                    egui::pos2(label_x, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Duration label
+                let dur_label = format!("{:.1}s", item_dur);
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.right() - 4.0, ghost_rect.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &dur_label,
+                    egui::FontId::monospace(9.0),
+                    egui::Color32::from_rgb(180, 180, 200),
+                );
+
+                // Request repaint during drag for smooth following
+                ui.ctx().request_repaint();
+            }
+        }
+
         // Playhead line + follow mode
         let seq_dur = state.sequence_duration();
         if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
@@ -828,15 +901,48 @@ impl TimelinePanel {
             }
         }
 
-        // Snap indicator line (yellow)
+        // Snap indicator line (amber, full height, with timecode label)
         if let Some(snap_x) = self.snap_line_x {
             if snap_x >= content_rect.left() && snap_x <= content_rect.right() {
+                let snap_color = egui::Color32::from_rgb(232, 160, 32);
+                // Thick amber line spanning full track area
                 painter.line_segment(
                     [
                         egui::pos2(snap_x, tracks_start_y),
                         egui::pos2(snap_x, content_rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 220, 60)),
+                    egui::Stroke::new(2.0, snap_color),
+                );
+                // Glow effect — wider translucent line behind
+                painter.line_segment(
+                    [
+                        egui::pos2(snap_x, tracks_start_y),
+                        egui::pos2(snap_x, content_rect.bottom()),
+                    ],
+                    egui::Stroke::new(6.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 50)),
+                );
+                // Timecode label with background pill at top of snap line
+                let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom;
+                let snap_tc = RationalTime::from_secs_f64(snap_secs as f64, state.fps.rate());
+                let label = snap_tc.to_timecode_string();
+                let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
+                // Background pill for readability
+                let text_galley = painter.layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(9.0),
+                    snap_color,
+                );
+                let pill_rect = egui::Rect::from_min_size(
+                    egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
+                    egui::vec2(text_galley.size().x + 4.0, text_galley.size().y + 2.0),
+                );
+                painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.text(
+                    label_pos,
+                    egui::Align2::LEFT_TOP,
+                    &label,
+                    egui::FontId::monospace(9.0),
+                    snap_color,
                 );
             }
         }
@@ -1021,6 +1127,8 @@ impl TimelinePanel {
             let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
+            let is_being_dragged = self.dragging_clip.as_ref()
+                .is_some_and(|d| d.clip_id == clip.id);
 
             let base_color = if is_title {
                 egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
@@ -1043,7 +1151,11 @@ impl TimelinePanel {
                 }
             };
 
-            let (fill, border_color, border_width) = if is_selected {
+            let (fill, border_color, border_width) = if is_being_dragged {
+                // Semi-transparent when being dragged so clips underneath are visible
+                let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
+                (f, egui::Color32::from_rgb(232, 160, 32), 2.0)
+            } else if is_selected {
                 (bright_color, egui::Color32::from_rgb(120, 160, 240), 2.0)
             } else if is_multi_selected {
                 (bright_color, egui::Color32::from_rgb(80, 130, 220), 1.5)
@@ -1051,6 +1163,13 @@ impl TimelinePanel {
                 (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
             } else {
                 (base_color, bright_color, 1.0)
+            };
+
+            // Apply drag transparency to filmstrip images
+            let filmstrip_tint = if is_being_dragged {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140)
+            } else {
+                egui::Color32::WHITE
             };
 
             // Draw thumbnail/filmstrip background for video clips
@@ -1145,7 +1264,7 @@ impl TimelinePanel {
                                     egui::pos2(0.0, 0.0),
                                     egui::pos2(1.0, 1.0),
                                 ),
-                                egui::Color32::WHITE,
+                                filmstrip_tint,
                             );
                             // Subtle bottom gradient to lift dark frames
                             let grad_h = 4.0;
@@ -1212,7 +1331,7 @@ impl TimelinePanel {
                             tex.id(),
                             clip_rect,
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
+                            filmstrip_tint,
                         );
                         let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];
                         painter.rect_filled(
@@ -2394,29 +2513,137 @@ impl TimelinePanel {
                         final_in.value = 0;
                     }
 
-                    let delta = final_in - drag.original_timeline_in;
+                    let is_primary = state.sequence.tracks.get(drag.track_idx)
+                        .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
 
-                    if let Some(track) = state.sequence.tracks.get_mut(drag.track_idx) {
-                        if let Some(clip) = track.find_clip_mut(drag.clip_id) {
-                            let dur = clip.duration();
-                            clip.timeline_in = final_in;
-                            clip.timeline_out = clip.timeline_in + dur;
+                    if is_primary {
+                        // PRIMARY TRACK: Don't move clip in sequence.
+                        // Keep it at original position. Draw a floating ghost + insertion indicator.
+                        let clip_dur = state.sequence.tracks.get(drag.track_idx)
+                            .and_then(|t| t.find_clip(drag.clip_id))
+                            .map(|c| c.duration().to_secs_f64() as f32)
+                            .unwrap_or(1.0);
+
+                        // Ghost clip following cursor (drawn on tooltip layer so it's above everything)
+                        let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
+                        let ghost_w = clip_dur * zoom;
+                        let ghost_rect = egui::Rect::from_min_size(
+                            egui::pos2(ghost_x, track_rect.top() + 2.0),
+                            egui::vec2(ghost_w, track_rect.height() - 4.0),
+                        );
+
+                        // Draw ghost with semi-transparency
+                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(60, 80, 140, 100);
+                        let ghost_border = egui::Color32::from_rgba_unmultiplied(120, 160, 240, 180);
+                        painter.rect_filled(ghost_rect, 3.0, ghost_fill);
+                        painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
+
+                        // Draw filmstrip in ghost if available
+                        if let Some(media_id) = state.sequence.tracks.get(drag.track_idx)
+                            .and_then(|t| t.find_clip(drag.clip_id))
+                            .and_then(|c| c.media_id())
+                        {
+                            if let Some(tex) = state.thumbnail_textures.get(&media_id) {
+                                let thumb_painter = painter.with_clip_rect(ghost_rect);
+                                thumb_painter.image(
+                                    tex.id(),
+                                    ghost_rect,
+                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+                                );
+                            }
                         }
-                    }
 
-                    // Move linked partner by same delta (absolute from its original position)
-                    if let (Some(lid), Some(orig_in)) = (drag.linked_clip_id, drag.linked_original_in) {
-                        for track in &mut state.sequence.tracks {
-                            if let Some(lclip) = track.find_clip_mut(lid) {
-                                let dur = lclip.duration();
-                                let new_in = orig_in + delta;
-                                lclip.timeline_in = if new_in.value < 0 {
-                                    RationalTime { value: 0, rate: new_in.rate }
-                                } else {
-                                    new_in
-                                };
-                                lclip.timeline_out = lclip.timeline_in + dur;
-                                break;
+                        // Insertion indicator: find where the clip would land between existing clips
+                        let target_secs = final_in.to_secs_f64();
+                        if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
+                            // Find insertion point (between which clips)
+                            let mut insert_x = content_rect.left() - scroll; // before all clips
+                            for c in &track.clips {
+                                if c.id == drag.clip_id { continue; }
+                                let c_mid = (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0;
+                                if target_secs > c_mid {
+                                    insert_x = content_rect.left() + c.timeline_out.to_secs_f64() as f32 * zoom - scroll;
+                                }
+                            }
+                            // Draw amber insertion line
+                            let insert_color = egui::Color32::from_rgb(232, 160, 32);
+                            painter.line_segment(
+                                [egui::pos2(insert_x, track_rect.top()), egui::pos2(insert_x, track_rect.bottom())],
+                                egui::Stroke::new(3.0, insert_color),
+                            );
+                            // Small triangles at top and bottom of insertion line
+                            let tri_size = 5.0;
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(insert_x, track_rect.top()),
+                                    egui::pos2(insert_x - tri_size, track_rect.top() - tri_size),
+                                    egui::pos2(insert_x + tri_size, track_rect.top() - tri_size),
+                                ],
+                                insert_color, egui::Stroke::NONE,
+                            ));
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(insert_x, track_rect.bottom()),
+                                    egui::pos2(insert_x - tri_size, track_rect.bottom() + tri_size),
+                                    egui::pos2(insert_x + tri_size, track_rect.bottom() + tri_size),
+                                ],
+                                insert_color, egui::Stroke::NONE,
+                            ));
+                        }
+
+                        // Store final_in for use on drop (stash in a field we can read later)
+                        // We use the fact that on drop, we read the clip's current timeline_in
+                        // but we DON'T move it during drag for Primary. So on drop, we need
+                        // to pass the target time. Store it via a small mutation:
+                        // Actually, we store the drag target in the snap_line area or recompute on drop.
+                        // For now, store final_in by setting it on drop (see pointer_released block).
+
+                    } else {
+                        // NON-PRIMARY: Legacy free movement
+                        let delta = final_in - drag.original_timeline_in;
+
+                        if let Some(track) = state.sequence.tracks.get_mut(drag.track_idx) {
+                            if let Some(clip) = track.find_clip_mut(drag.clip_id) {
+                                let dur = clip.duration();
+                                clip.timeline_in = final_in;
+                                clip.timeline_out = clip.timeline_in + dur;
+                            }
+                        }
+
+                        // Move linked partner by same delta (absolute from its original position)
+                        if let (Some(lid), Some(orig_in)) = (drag.linked_clip_id, drag.linked_original_in) {
+                            for track in &mut state.sequence.tracks {
+                                if let Some(lclip) = track.find_clip_mut(lid) {
+                                    let dur = lclip.duration();
+                                    let new_in = orig_in + delta;
+                                    lclip.timeline_in = if new_in.value < 0 {
+                                        RationalTime { value: 0, rate: new_in.rate }
+                                    } else {
+                                        new_in
+                                    };
+                                    lclip.timeline_out = lclip.timeline_in + dur;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Drop zone highlight — amber glow around the clip when snapped (non-primary only)
+                        if snapped {
+                            if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
+                                if let Some(clip) = track.find_clip(drag.clip_id) {
+                                    let dur_secs = clip.duration().to_secs_f64() as f32;
+                                    let drop_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                    let drop_w = dur_secs * zoom;
+                                    let drop_rect = egui::Rect::from_min_size(
+                                        egui::pos2(drop_x - 1.0, track_rect.top() + 1.0),
+                                        egui::vec2(drop_w + 2.0, track_rect.height() - 2.0),
+                                    );
+                                    painter.rect_stroke(drop_rect, 4.0,
+                                        egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 80)));
+                                    painter.rect_stroke(drop_rect, 4.0,
+                                        egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
+                                }
                             }
                         }
                     }
@@ -2483,13 +2710,37 @@ impl TimelinePanel {
                             }
                         }
                     } else {
-                        // Same track — normal move
-                        if let Some(track) = state.sequence.tracks.get(from_track) {
-                            if let Some(clip) = track.find_clip(clip_id) {
-                                cmds.push(AppCommand::MoveClip {
-                                    clip_id,
-                                    new_timeline_in: clip.timeline_in,
-                                });
+                        // Same track move
+                        let is_primary = state.sequence.tracks.get(from_track)
+                            .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
+                        if is_primary {
+                            // Magnetic: reorder within primary (index-based move)
+                            // Compute target time from pointer position (clip wasn't moved during drag)
+                            let target_time = pointer_pos.map(|pos| {
+                                let x_in_content = pos.x - content_rect.left() + scroll;
+                                let secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                                RationalTime::from_secs_f64(secs, fps.rate())
+                            });
+                            if let Some(target_time) = target_time {
+                                // Clip is already at original position (we didn't move it during drag)
+                                if let Some(track) = state.sequence.tracks.get_mut(from_track) {
+                                    track.sort_clips();
+                                }
+                                let result = klipp_timeline::magnetic::MagneticEditor::move_primary(
+                                    &mut state.sequence, clip_id, target_time);
+                                state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                                state.dirty = true;
+                                cmds.push(AppCommand::SequenceUpdated);
+                            }
+                        } else {
+                            // Legacy: free move
+                            if let Some(track) = state.sequence.tracks.get(from_track) {
+                                if let Some(clip) = track.find_clip(clip_id) {
+                                    cmds.push(AppCommand::MoveClip {
+                                        clip_id,
+                                        new_timeline_in: clip.timeline_in,
+                                    });
+                                }
                             }
                         }
                     }
