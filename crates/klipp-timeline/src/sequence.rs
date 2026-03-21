@@ -63,11 +63,16 @@ impl Sequence {
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
-            tracks: vec![
-                Track::new("Video 2", TrackKind::Video),
-                Track::new("Video 1", TrackKind::Video),
-                Track::new("Audio 1", TrackKind::Audio),
-            ],
+            tracks: {
+                let mut tracks = vec![
+                    Track::new("Video 2", TrackKind::Video),
+                    Track::new("Video 1", TrackKind::Video),
+                    Track::new("Audio 1", TrackKind::Audio),
+                ];
+                tracks[1].magnetic_role = TrackRole::Primary;
+                tracks[2].magnetic_role = TrackRole::Connected;
+                tracks
+            },
             in_point: None,
             out_point: None,
             markers: Vec::new(),

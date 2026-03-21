@@ -867,16 +867,40 @@ impl KlippApp {
                 AppCommand::AppendClipToTrack { media_id, track_index } => {
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
-                        if let Some(track) = self.state.sequence.tracks.get_mut(*track_index) {
-                            let clip_id = track.append_clip(*media_id, duration);
-                            let clip = track.find_clip(clip_id).unwrap().clone();
-                            self.state.history.push(EditCommand::LegacyAppendClip {
-                                clip,
-                                track_index: *track_index,
-                            });
-                            self.sync_sequence_to_engine();
-                            self.state.selected_clip = Some(clip_id);
-                            self.state.dirty = true;
+                        if let Some(track) = self.state.sequence.tracks.get(*track_index) {
+                            if track.magnetic_role == klipp_timeline::TrackRole::Primary {
+                                // Magnetic path: append via MagneticEditor
+                                let source_in = klipp_core::RationalTime { value: 0, rate: duration.rate };
+                                let source_out = duration;
+                                let clip = klipp_timeline::Clip::media(
+                                    *media_id,
+                                    klipp_core::RationalTime::ZERO, // will be set by append_primary
+                                    klipp_core::RationalTime::ZERO,
+                                    source_in,
+                                    source_out,
+                                );
+                                let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
+                                    &mut self.state.sequence, clip);
+                                // Get the clip id from the result
+                                if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref appended_clip, .. } = result.command {
+                                    self.state.selected_clip = Some(appended_clip.id);
+                                }
+                                self.state.history.push(EditCommand::Magnetic(result.command));
+                                self.sync_sequence_to_engine();
+                                self.state.dirty = true;
+                            } else {
+                                // Legacy path for Free tracks
+                                let track = self.state.sequence.tracks.get_mut(*track_index).unwrap();
+                                let clip_id = track.append_clip(*media_id, duration);
+                                let clip = track.find_clip(clip_id).unwrap().clone();
+                                self.state.history.push(EditCommand::LegacyAppendClip {
+                                    clip,
+                                    track_index: *track_index,
+                                });
+                                self.sync_sequence_to_engine();
+                                self.state.selected_clip = Some(clip_id);
+                                self.state.dirty = true;
+                            }
                         }
                     }
                     continue;
@@ -932,59 +956,73 @@ impl KlippApp {
                 }
                 AppCommand::RemoveClip { clip_id } => {
                     if self.clip_track_is_locked(clip_id) { continue; }
-                    // Get linked partner before removing
-                    let linked_id = self.state.sequence.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == *clip_id)
-                        .and_then(|c| c.linked_clip_id);
 
-                    // Remove main clip
+                    // Check if this clip is on a magnetic track
                     let track_index = self.state.sequence.tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == *clip_id));
-                    if let Some(track_index) = track_index {
-                        let track = &mut self.state.sequence.tracks[track_index];
-                        let pos = track.clips.iter().position(|c| c.id == *clip_id);
-                        if let Some(pos) = pos {
-                            let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                                .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                .collect();
-                            if let Some(removed) = track.ripple_remove(*clip_id) {
-                                self.state.history.push(EditCommand::LegacyRippleRemove {
-                                    removed_clip: removed,
-                                    track_index,
-                                    position: pos,
-                                    shifted_clips: shifted,
-                                });
+
+                    if let Some(ti) = track_index {
+                        if self.is_magnetic_track(ti) {
+                            // Magnetic path: ripple delete
+                            let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
+                                &mut self.state.sequence, *clip_id);
+                            self.state.history.push(EditCommand::Magnetic(result.command));
+                            if self.state.selected_clip == Some(*clip_id) {
+                                self.state.selected_clip = None;
                             }
-                        }
-                        if self.state.selected_clip == Some(*clip_id) {
-                            self.state.selected_clip = None;
-                        }
-                    }
-                    // Also remove linked partner
-                    if let Some(lid) = linked_id {
-                        let ltrack_index = self.state.sequence.tracks.iter()
-                            .position(|t| t.clips.iter().any(|c| c.id == lid));
-                        if let Some(lti) = ltrack_index {
-                            let track = &mut self.state.sequence.tracks[lti];
-                            let pos = track.clips.iter().position(|c| c.id == lid);
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        } else {
+                            // Legacy path (existing code)
+                            let linked_id = self.state.sequence.tracks.iter()
+                                .flat_map(|t| t.clips.iter())
+                                .find(|c| c.id == *clip_id)
+                                .and_then(|c| c.linked_clip_id);
+
+                            let track = &mut self.state.sequence.tracks[ti];
+                            let pos = track.clips.iter().position(|c| c.id == *clip_id);
                             if let Some(pos) = pos {
                                 let shifted: Vec<_> = track.clips[pos + 1..].iter()
                                     .map(|c| (c.id, c.timeline_in, c.timeline_out))
                                     .collect();
-                                if let Some(removed) = track.ripple_remove(lid) {
+                                if let Some(removed) = track.ripple_remove(*clip_id) {
                                     self.state.history.push(EditCommand::LegacyRippleRemove {
                                         removed_clip: removed,
-                                        track_index: lti,
+                                        track_index: ti,
                                         position: pos,
                                         shifted_clips: shifted,
                                     });
                                 }
                             }
+                            if self.state.selected_clip == Some(*clip_id) {
+                                self.state.selected_clip = None;
+                            }
+                            // Also remove linked partner
+                            if let Some(lid) = linked_id {
+                                let ltrack_index = self.state.sequence.tracks.iter()
+                                    .position(|t| t.clips.iter().any(|c| c.id == lid));
+                                if let Some(lti) = ltrack_index {
+                                    let track = &mut self.state.sequence.tracks[lti];
+                                    let pos = track.clips.iter().position(|c| c.id == lid);
+                                    if let Some(pos) = pos {
+                                        let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                                            .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                            .collect();
+                                        if let Some(removed) = track.ripple_remove(lid) {
+                                            self.state.history.push(EditCommand::LegacyRippleRemove {
+                                                removed_clip: removed,
+                                                track_index: lti,
+                                                position: pos,
+                                                shifted_clips: shifted,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
                         }
                     }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::MoveClip {
@@ -1626,20 +1664,29 @@ impl KlippApp {
                     let ti = *track_index;
                     let cid = *clip_id;
                     let cut = *cut_at;
-                    if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
-                        // Find original clip before blade
-                        let original = track.find_clip(cid).cloned();
-                        let position = track.clips.iter().position(|c| c.id == cid);
-                        if let (Some(original), Some(pos)) = (original, position) {
-                            if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
-                                self.state.history.push(EditCommand::LegacyBladeClip {
-                                    track_index: ti,
-                                    original_clip: original,
-                                    clip_a,
-                                    clip_b,
-                                    position: pos,
-                                });
-                                self.state.dirty = true;
+
+                    if self.is_magnetic_track(ti) {
+                        // Magnetic blade
+                        let result = klipp_timeline::magnetic::MagneticEditor::blade(
+                            &mut self.state.sequence, cid, cut);
+                        self.state.history.push(EditCommand::Magnetic(result.command));
+                        self.state.dirty = true;
+                    } else {
+                        // Legacy blade (existing code)
+                        if let Some(track) = self.state.sequence.tracks.get_mut(ti) {
+                            let original = track.find_clip(cid).cloned();
+                            let position = track.clips.iter().position(|c| c.id == cid);
+                            if let (Some(original), Some(pos)) = (original, position) {
+                                if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
+                                    self.state.history.push(EditCommand::LegacyBladeClip {
+                                        track_index: ti,
+                                        original_clip: original,
+                                        clip_a,
+                                        clip_b,
+                                        position: pos,
+                                    });
+                                    self.state.dirty = true;
+                                }
                             }
                         }
                     }
@@ -2419,8 +2466,9 @@ impl KlippApp {
                     src.sort_clips();
                 }
             }
-            EditCommand::Magnetic(_cmd) => {
-                // TODO Phase 3: delegate to MagneticEditor::apply_inverse
+            EditCommand::Magnetic(cmd) => {
+                klipp_timeline::magnetic::MagneticEditor::apply_inverse(
+                    &mut self.state.sequence, cmd);
             }
         }
     }
@@ -2512,8 +2560,9 @@ impl KlippApp {
                     dst.sort_clips();
                 }
             }
-            EditCommand::Magnetic(_cmd) => {
-                // TODO Phase 3: delegate to MagneticEditor::apply_forward
+            EditCommand::Magnetic(cmd) => {
+                klipp_timeline::magnetic::MagneticEditor::apply_forward(
+                    &mut self.state.sequence, cmd);
             }
         }
     }
@@ -3913,6 +3962,14 @@ impl KlippApp {
         self.state.sequence.tracks.iter()
             .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
             .is_some_and(|t| t.locked)
+    }
+
+    /// Check if a track uses magnetic editing (Primary, Connected, or ConnectedStoryline).
+    fn is_magnetic_track(&self, track_index: usize) -> bool {
+        matches!(
+            self.state.sequence.tracks.get(track_index).map(|t| &t.magnetic_role),
+            Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
+        )
     }
 
     fn drain_proxy_events(&mut self) {
