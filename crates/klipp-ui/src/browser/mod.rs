@@ -15,6 +15,10 @@ pub struct BrowserPanel {
     pub media_sort_by: media_tab::SortBy,
     pub media_sort_ascending: bool,
     pub media_selected_bin: Option<String>,
+    pub browser_view_mode: media_tab::BrowserViewMode,
+    // Bin management state
+    pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
+    pub creating_bin: Option<String>,             // new bin name being typed
     // Effects tab state
     pub effects_category: effects_tab::EffectCategory,
 }
@@ -26,6 +30,9 @@ impl Default for BrowserPanel {
             media_sort_by: media_tab::SortBy::Name,
             media_sort_ascending: true,
             media_selected_bin: None,
+            browser_view_mode: media_tab::BrowserViewMode::List,
+            renaming_bin: None,
+            creating_bin: None,
             effects_category: effects_tab::EffectCategory::All,
         }
     }
@@ -126,9 +133,79 @@ impl BrowserPanel {
             BrowserTab::Transitions => "Search transitions\u{2026}",
         };
 
-        // Styled search input: bg_raised, border, accent_dim on focus
+        // Styled search input + view mode toggle (for Media tab)
         ui.horizontal(|ui| {
             ui.add_space(8.0);
+
+            // View mode toggle (only on Media tab)
+            if *active_tab == BrowserTab::Media {
+                let list_active = self.browser_view_mode == media_tab::BrowserViewMode::List;
+                let grid_active = self.browser_view_mode == media_tab::BrowserViewMode::Grid;
+
+                // List button
+                let list_color = if list_active { theme.text_accent } else { theme.text_dim };
+                let list_resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{2261}").size(14.0).color(list_color), // ≡
+                    )
+                    .min_size(egui::vec2(24.0, 24.0))
+                    .frame(false),
+                );
+                if list_resp.clicked() {
+                    self.browser_view_mode = media_tab::BrowserViewMode::List;
+                }
+
+                // Grid button
+                let grid_color = if grid_active { theme.text_accent } else { theme.text_dim };
+                let grid_resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{229e}").size(14.0).color(grid_color), // ⊞
+                    )
+                    .min_size(egui::vec2(24.0, 24.0))
+                    .frame(false),
+                );
+                if grid_resp.clicked() {
+                    self.browser_view_mode = media_tab::BrowserViewMode::Grid;
+                }
+
+                // Sort dropdown
+                let sort_label = match self.media_sort_by {
+                    media_tab::SortBy::Name => "Name",
+                    media_tab::SortBy::Duration => "Duration",
+                    media_tab::SortBy::Rating => "Rating",
+                    media_tab::SortBy::Codec => "Codec",
+                    media_tab::SortBy::FileSize => "Size",
+                    media_tab::SortBy::DateAdded => "Date",
+                };
+                egui::ComboBox::from_id_salt("browser_sort")
+                    .selected_text(
+                        egui::RichText::new(sort_label).size(10.0).color(theme.text_secondary),
+                    )
+                    .width(55.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Name, "Name");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Duration, "Duration");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::DateAdded, "Date Added");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::FileSize, "File Size");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Rating, "Rating");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Codec, "Codec");
+                    });
+
+                // Sort direction toggle
+                let arrow = if self.media_sort_ascending { "\u{25B2}" } else { "\u{25BC}" };
+                if ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(arrow).size(10.0).color(theme.text_dim),
+                    )
+                    .min_size(egui::vec2(16.0, 24.0))
+                    .frame(false),
+                ).clicked() {
+                    self.media_sort_ascending = !self.media_sort_ascending;
+                }
+
+                ui.add_space(4.0);
+            }
+
             egui::Frame::none()
                 .fill(theme.bg_raised)
                 .stroke(egui::Stroke::new(1.0, theme.border))
@@ -143,7 +220,6 @@ impl BrowserPanel {
                         .frame(false);
                     let resp = ui.add(search);
                     if resp.has_focus() {
-                        // Redraw frame border with accent on focus
                         let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
                         ui.painter().rect_stroke(
                             frame_rect,
@@ -166,6 +242,9 @@ impl BrowserPanel {
                     &mut self.media_sort_by,
                     &mut self.media_sort_ascending,
                     &mut self.media_selected_bin,
+                    &self.browser_view_mode,
+                    &mut self.renaming_bin,
+                    &mut self.creating_bin,
                 );
                 cmds.extend(tab_cmds);
             }

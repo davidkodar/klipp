@@ -5,6 +5,13 @@ use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub struct BrowserClipSelection {
+    pub media_id: MediaId,
+    pub range_in_secs: f64,
+    pub range_out_secs: f64,
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -89,6 +96,21 @@ pub struct AppState {
     pub skimming_enabled: bool,
     pub toast: crate::widgets::toast::ToastState,
     pub drag_drop: crate::drag_drop::DragDropState,
+
+    // Browser skimming
+    pub browser_skim_texture: Option<egui::TextureHandle>,
+    pub browser_skim_media_id: Option<MediaId>,
+    pub skim_transcoding: std::collections::HashSet<MediaId>,
+    /// Pending skim frame RGBA to upload as texture (media_id, rgba, width, height)
+    pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32)>,
+    /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
+    pub browser_skim_active_this_frame: bool,
+    /// Media IDs that need skim transcode started (queued during drain_events)
+    pub pending_skim_transcodes: Vec<MediaId>,
+
+    // Browser range selection (filmstrip drag-to-select in grid view)
+    pub browser_range_selection: Option<BrowserClipSelection>,
+    pub browser_drag_start: Option<(egui::Pos2, std::time::Instant)>,
 
     // Phase 5: Performance overlay
     pub show_perf_overlay: bool,
@@ -261,9 +283,17 @@ impl Default for AppState {
             fullscreen_overlay_visible: false,
             fullscreen_overlay_timer: 0.0,
             dragging_media: None,
-            skimming_enabled: false,
+            skimming_enabled: true,
             toast: crate::widgets::toast::ToastState::default(),
             drag_drop: crate::drag_drop::DragDropState::default(),
+            browser_skim_texture: None,
+            browser_skim_media_id: None,
+            skim_transcoding: std::collections::HashSet::new(),
+            browser_skim_pending: None,
+            browser_skim_active_this_frame: false,
+            pending_skim_transcodes: Vec::new(),
+            browser_range_selection: None,
+            browser_drag_start: None,
             show_perf_overlay: false,
             perf_fps: 0.0,
             perf_frame_count: 0,

@@ -71,7 +71,11 @@ impl ToolbarPanel {
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_skimming_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Skimming On/Off", Some("S"));
-        if resp.clicked() { state.skimming_enabled = !state.skimming_enabled; }
+        if resp.clicked() {
+            state.skimming_enabled = !state.skimming_enabled;
+            let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
+            state.toast.show(msg);
+        }
 
         rx -= 2.0;
 

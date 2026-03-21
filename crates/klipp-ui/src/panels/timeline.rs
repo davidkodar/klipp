@@ -1518,6 +1518,53 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 if clip_rect.contains(pos) {
                     state.hovered_clip = Some(clip.id);
+
+                    // Timeline skimming: show frame at hover position in viewer
+                    if state.skimming_enabled {
+                        if let Some(media_id) = clip.media_id() {
+                            state.browser_skim_active_this_frame = true;
+
+                            // Map hover X to source time
+                            let frac = ((pos.x - clip_rect.min.x) / clip_rect.width()).clamp(0.0, 1.0);
+                            let clip_dur = clip.duration().to_secs_f64();
+                            let source_in_secs = clip.source_in.to_secs_f64();
+                            let skim_time = source_in_secs + clip_dur * frac as f64;
+
+                            // Check if skim file exists for this media
+                            let has_skim_file = state.media_pool.get(&media_id)
+                                .and_then(|m| m.skim_file.as_ref())
+                                .is_some_and(|p| p.exists());
+
+                            if has_skim_file && state.browser_skim_pending.is_none() {
+                                cmds.push(AppCommand::BrowserSkimFrame {
+                                    media_id,
+                                    time_secs: skim_time,
+                                });
+                            }
+
+                            // Fallback: poster thumbnail
+                            if state.browser_skim_texture.is_none() {
+                                if let Some(tex) = state.thumbnail_textures.get(&media_id) {
+                                    state.browser_skim_texture = Some(tex.clone());
+                                    state.browser_skim_media_id = Some(media_id);
+                                }
+                            } else {
+                                state.browser_skim_media_id = Some(media_id);
+                            }
+
+                            state.viewer_mode = klipp_core::ViewerMode::Source;
+                            state.source_media_id = Some(media_id);
+
+                            // Draw skim position indicator on clip
+                            painter.line_segment(
+                                [
+                                    egui::Pos2::new(pos.x, clip_rect.min.y),
+                                    egui::Pos2::new(pos.x, clip_rect.max.y),
+                                ],
+                                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                            );
+                        }
+                    }
                 }
             }
 

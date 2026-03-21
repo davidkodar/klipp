@@ -36,6 +36,12 @@ pub struct MediaItem {
     /// Bin name (None = root/unassigned)
     #[serde(default)]
     pub bin: Option<String>,
+    /// Unix epoch seconds when item was added to the project (0 for pre-existing items)
+    #[serde(default)]
+    pub added_at: u64,
+    /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
+    #[serde(default)]
+    pub skim_file: Option<PathBuf>,
     /// Waveform min/max pairs for timeline display. Generated in background.
     #[serde(skip)]
     pub waveform_data: Option<Vec<(f32, f32)>>,

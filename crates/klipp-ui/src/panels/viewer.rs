@@ -457,6 +457,42 @@ impl ViewerPanel {
         viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
+        // If a skim texture is available, show it as the video frame (letterboxed)
+        if let Some(tex) = &state.browser_skim_texture {
+            let tex_size = tex.size_vec2();
+            if tex_size.x > 0.0 && tex_size.y > 0.0 {
+                let video_aspect = tex_size.x / tex_size.y;
+                let panel_aspect = viewer_rect.width() / viewer_rect.height();
+                let (dw, dh) = if video_aspect > panel_aspect {
+                    (viewer_rect.width(), viewer_rect.width() / video_aspect)
+                } else {
+                    (viewer_rect.height() * video_aspect, viewer_rect.height())
+                };
+                let image_rect = egui::Rect::from_center_size(
+                    viewer_rect.center(),
+                    egui::vec2(dw, dh),
+                );
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+
+                // Show filename overlay in top-left
+                if let Some(media) = state.source_media_id.and_then(|mid| state.media_pool.get(&mid)) {
+                    ui.painter().text(
+                        egui::pos2(viewer_rect.min.x + 12.0, viewer_rect.min.y + 28.0),
+                        egui::Align2::LEFT_TOP,
+                        &media.filename,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_rgba_premultiplied(200, 200, 210, 180),
+                    );
+                }
+                return;
+            }
+        }
+
         let media = state.source_media_id
             .and_then(|mid| state.media_pool.get(&mid));
 

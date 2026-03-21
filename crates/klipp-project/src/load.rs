@@ -55,6 +55,8 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             tags: item_json.tags.clone(),
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
+            added_at: item_json.added_at.unwrap_or(0),
+            skim_file: None, // Will be detected from cache on load
             waveform_data: None,
             audio_cache: None,
         };

@@ -230,6 +230,8 @@ pub struct MediaItemJson {
     pub user_notes: String,
     #[serde(default)]
     pub bin: Option<String>,
+    #[serde(default)]
+    pub added_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

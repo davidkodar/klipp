@@ -4,7 +4,6 @@ use crate::panels::inspector::InspectorPanel;
 use crate::panels::markers::MarkersPanel;
 use crate::browser::BrowserPanel;
 use crate::inspector::NewInspectorPanel;
-use crate::panels::media_panel::MediaPanel;
 use crate::panels::preferences::PreferencesPanel;
 use crate::panels::timeline::TimelinePanel;
 use crate::panels::toolbar::ToolbarPanel;
@@ -99,8 +98,6 @@ pub struct KlippApp {
     #[allow(dead_code)]
     inspector: InspectorPanel, // kept for potential fallback; old code fully superseded by new_inspector
     markers: MarkersPanel,
-    #[allow(dead_code)]
-    media_panel: MediaPanel, // kept for potential fallback; old code fully superseded by browser
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
@@ -165,7 +162,6 @@ impl KlippApp {
             viewer: ViewerPanel::default(),
             inspector: InspectorPanel::default(),
             markers: MarkersPanel::default(),
-            media_panel: MediaPanel::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
             timeline: {
@@ -332,6 +328,11 @@ impl KlippApp {
                         tags: Vec::new(),
                         user_notes: String::new(),
                         bin: None,
+                        added_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                        skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
                     };
@@ -347,13 +348,16 @@ impl KlippApp {
                         self.state.pending_media_path = None;
                     }
 
-                    // Start thumbnail + filmstrip generation + audio conforming
+                    // Start thumbnail + filmstrip generation + audio conforming + skim transcode
                     self.spawn_thumbnail(media_id, path.clone(), duration);
                     self.spawn_filmstrip(media_id, path.clone(), duration);
                     if has_audio {
-                        self.spawn_audio_conform(media_id, path);
+                        self.spawn_audio_conform(media_id, path.clone());
                     }
                     self.state.filmstrip_generating = true;
+
+                    // Auto-start skim transcode for instant hover skimming
+                    self.state.pending_skim_transcodes.push(media_id);
                     self.state.filmstrip_generate_start = std::time::Instant::now();
                     self.state.filmstrip_toast_dismissed = false;
 
@@ -414,6 +418,10 @@ impl KlippApp {
                     self.state.master_peak_left = self.state.master_peak_left.max(left);
                     self.state.master_peak_right = self.state.master_peak_right.max(right);
                 }
+                // Skim events come through proxy_event_rx, handled in drain_proxy_events
+                AppEvent::SkimTranscodeComplete { .. }
+                | AppEvent::SkimTranscodeFailed { .. }
+                | AppEvent::BrowserSkimFrameReady { .. } => {}
             }
         }
     }
@@ -907,22 +915,51 @@ impl KlippApp {
                 }
                 AppCommand::ImportMediaLinked { media_id } => {
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
-                        let duration = item.duration;
+                        // Check for browser range selection (trimmed source in/out)
+                        let range = self.state.browser_range_selection.take()
+                            .filter(|r| r.media_id == *media_id);
+
+                        let (use_duration, source_in_override, source_out_override) = if let Some(ref sel) = range {
+                            let rate = item.fps.num;
+                            let src_in = klipp_core::RationalTime {
+                                value: (sel.range_in_secs * rate as f64).round() as i64,
+                                rate,
+                            };
+                            let src_out = klipp_core::RationalTime {
+                                value: (sel.range_out_secs * rate as f64).round() as i64,
+                                rate,
+                            };
+                            let dur = src_out - src_in;
+                            (dur, Some(src_in), Some(src_out))
+                        } else {
+                            (item.duration, None, None)
+                        };
+
                         let has_video = !item.video_codec.is_empty();
                         let has_audio = item.has_audio;
 
+                        // Helper closure to apply range override to a clip
+                        let apply_range = |track: &mut klipp_timeline::Track, clip_id: klipp_core::ClipId| {
+                            if let (Some(si), Some(so)) = (source_in_override, source_out_override) {
+                                if let Some(c) = track.find_clip_mut(clip_id) {
+                                    c.source_in = si;
+                                    c.source_out = so;
+                                }
+                            }
+                        };
+
                         if has_video && has_audio {
-                            // Create linked V+A pair
                             let video_track_idx = self.state.sequence.tracks.iter()
                                 .position(|t| t.kind == klipp_timeline::TrackKind::Video);
                             let audio_track_idx = self.state.sequence.tracks.iter()
                                 .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
 
                             if let (Some(vi), Some(ai)) = (video_track_idx, audio_track_idx) {
-                                let video_clip_id = self.state.sequence.tracks[vi].append_clip(*media_id, duration);
-                                let audio_clip_id = self.state.sequence.tracks[ai].append_clip(*media_id, duration);
+                                let video_clip_id = self.state.sequence.tracks[vi].append_clip(*media_id, use_duration);
+                                apply_range(&mut self.state.sequence.tracks[vi], video_clip_id);
+                                let audio_clip_id = self.state.sequence.tracks[ai].append_clip(*media_id, use_duration);
+                                apply_range(&mut self.state.sequence.tracks[ai], audio_clip_id);
 
-                                // Link them
                                 if let Some(vc) = self.state.sequence.tracks[vi].find_clip_mut(video_clip_id) {
                                     vc.linked_clip_id = Some(audio_clip_id);
                                 }
@@ -935,7 +972,6 @@ impl KlippApp {
                                 self.state.dirty = true;
                             }
                         } else {
-                            // Single-stream: just append to matching track
                             let target_kind = if has_video {
                                 klipp_timeline::TrackKind::Video
                             } else {
@@ -945,7 +981,8 @@ impl KlippApp {
                                 .position(|t| t.kind == target_kind)
                                 .unwrap_or(0);
                             if let Some(track) = self.state.sequence.tracks.get_mut(track_idx) {
-                                let clip_id = track.append_clip(*media_id, duration);
+                                let clip_id = track.append_clip(*media_id, use_duration);
+                                apply_range(track, clip_id);
                                 self.state.selected_clip = Some(clip_id);
                                 self.sync_sequence_to_engine();
                                 self.state.dirty = true;
@@ -2075,6 +2112,56 @@ impl KlippApp {
                     }
                     continue;
                 }
+                AppCommand::RenameBin { old_name, new_name } => {
+                    let ids: Vec<MediaId> = self.state.media_pool.all()
+                        .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
+                        .map(|m| m.id)
+                        .collect();
+                    for id in ids {
+                        if let Some(item) = self.state.media_pool.get_mut(&id) {
+                            item.bin = Some(new_name.clone());
+                        }
+                    }
+                    // Record in history for atomic undo
+                    self.state.history.push(crate::history::EditCommand::RenameBin {
+                        old_name: old_name.clone(),
+                        new_name: new_name.clone(),
+                    });
+                    self.state.dirty = true;
+                    tracing::info!("Bin renamed: {} -> {}", old_name, new_name);
+                    continue;
+                }
+                AppCommand::StartSkimTranscode { media_id } => {
+                    self.handle_skim_transcode(*media_id);
+                    continue;
+                }
+                AppCommand::BrowserSkimFrame { media_id, time_secs } => {
+                    // Decode a frame from the skim file at the given time
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
+                            let path = skim_path.clone();
+                            let mid = *media_id;
+                            let t = *time_secs;
+                            let event_tx = self.proxy_event_tx.clone();
+                            std::thread::spawn(move || {
+                                match klipp_engine::generate_thumbnail_at_size(&path, t, 960) {
+                                    Ok((rgba, w, h)) => {
+                                        let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
+                                            media_id: mid,
+                                            rgba,
+                                            width: w,
+                                            height: h,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Skim frame decode failed: {}", e);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    continue;
+                }
                 // Phase 4: Snap & Ripple toggles
                 AppCommand::SetSnapEnabled(enabled) => {
                     self.state.snap_enabled = *enabled;
@@ -2470,6 +2557,18 @@ impl KlippApp {
                 klipp_timeline::magnetic::MagneticEditor::apply_inverse(
                     &mut self.state.sequence, cmd);
             }
+            EditCommand::RenameBin { old_name, new_name } => {
+                // Undo: rename back from new_name to old_name
+                let ids: Vec<MediaId> = self.state.media_pool.all()
+                    .filter(|m| m.bin.as_deref() == Some(new_name.as_str()))
+                    .map(|m| m.id)
+                    .collect();
+                for id in ids {
+                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        item.bin = Some(old_name.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -2563,6 +2662,18 @@ impl KlippApp {
             EditCommand::Magnetic(cmd) => {
                 klipp_timeline::magnetic::MagneticEditor::apply_forward(
                     &mut self.state.sequence, cmd);
+            }
+            EditCommand::RenameBin { old_name, new_name } => {
+                // Redo: rename from old_name to new_name
+                let ids: Vec<MediaId> = self.state.media_pool.all()
+                    .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
+                    .map(|m| m.id)
+                    .collect();
+                for id in ids {
+                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        item.bin = Some(new_name.clone());
+                    }
+                }
             }
         }
     }
@@ -3029,6 +3140,13 @@ impl KlippApp {
                 return;
             }
 
+            // S (no modifiers) — Toggle skimming
+            if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
+                self.state.skimming_enabled = !self.state.skimming_enabled;
+                let msg = if self.state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
+                self.state.toast.show(msg);
+            }
+
             // G (no modifiers) — Connect selected clip to nearest primary clip
             if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::G) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -3435,6 +3553,27 @@ impl eframe::App for KlippApp {
 
         // Update thumbnails: convert ready thumbnails to textures
         self.update_thumbnail_textures(ctx);
+
+        // Reset skim flag for this frame (set by browser or timeline hover)
+        self.state.browser_skim_active_this_frame = false;
+
+        // Process pending skim transcodes (queued during drain_events)
+        let pending_skims: Vec<MediaId> = self.state.pending_skim_transcodes.drain(..).collect();
+        for mid in pending_skims {
+            // Re-use the command processing path
+            self.handle_skim_transcode(mid);
+        }
+
+        // Upload pending skim frame texture
+        if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &rgba,
+            );
+            let tex = ctx.load_texture("browser_skim", image, egui::TextureOptions::LINEAR);
+            self.state.browser_skim_texture = Some(tex);
+            self.state.browser_skim_media_id = Some(media_id);
+        }
 
         let mut all_cmds = Vec::new();
 
@@ -3912,6 +4051,13 @@ impl eframe::App for KlippApp {
         // 11. Send all commands
         self.send_commands(all_cmds);
 
+        // 11a. Skim cleanup: if no panel set the skim flag this frame, clear skim state
+        if !self.state.browser_skim_active_this_frame && self.state.browser_skim_media_id.is_some() {
+            self.state.browser_skim_texture = None;
+            self.state.browser_skim_media_id = None;
+            self.state.viewer_mode = ViewerMode::Program;
+        }
+
         // 11b. Handle fullscreen viewport transition (send only once)
         if self.state.fullscreen_changed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
@@ -4086,6 +4232,92 @@ impl KlippApp {
         )
     }
 
+    fn handle_skim_transcode(&mut self, media_id: MediaId) {
+        if self.state.skim_transcoding.contains(&media_id) {
+            return;
+        }
+        if let Some(item) = self.state.media_pool.get(&media_id) {
+            if item.skim_file.as_ref().is_some_and(|p| p.exists()) {
+                return;
+            }
+            let source_path = item.path.clone();
+            self.state.skim_transcoding.insert(media_id);
+
+            let skim_dir = dirs::cache_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("klipp")
+                .join("skim");
+            let _ = std::fs::create_dir_all(&skim_dir);
+            let skim_path = skim_dir.join(format!("{}.mkv", media_id));
+
+            let event_tx = self.proxy_event_tx.clone();
+            std::thread::spawn(move || {
+                // Try NVENC first (GPU), fall back to libx264 (CPU)
+                let result = std::process::Command::new("ffmpeg")
+                    .args([
+                        "-y",
+                        "-hwaccel", "cuda",
+                        "-i", source_path.to_str().unwrap_or(""),
+                        "-c:v", "h264_nvenc",
+                        "-g", "1",
+                        "-preset", "p1",       // fastest NVENC preset
+                        "-rc", "constqp",
+                        "-qp", "18",
+                        "-an",
+                        "-vf", "scale_cuda=960:-2",
+                        skim_path.to_str().unwrap_or(""),
+                    ])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+
+                // If NVENC failed (no GPU, unsupported codec), retry with CPU
+                let result = match &result {
+                    Ok(status) if status.success() => result,
+                    _ => {
+                        tracing::info!("NVENC skim transcode failed, falling back to libx264");
+                        std::process::Command::new("ffmpeg")
+                            .args([
+                                "-y", "-i",
+                                source_path.to_str().unwrap_or(""),
+                                "-c:v", "libx264",
+                                "-g", "1",
+                                "-crf", "18",
+                                "-preset", "ultrafast",
+                                "-an",
+                                "-vf", "scale=960:-2",
+                                skim_path.to_str().unwrap_or(""),
+                            ])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                    }
+                };
+
+                match result {
+                    Ok(status) if status.success() => {
+                        let _ = event_tx.send(AppEvent::SkimTranscodeComplete {
+                            media_id,
+                            path: skim_path,
+                        });
+                    }
+                    Ok(status) => {
+                        let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                            media_id,
+                            error: format!("ffmpeg exited with {}", status),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                            media_id,
+                            error: format!("Failed to run ffmpeg: {}", e),
+                        });
+                    }
+                }
+            });
+        }
+    }
+
     fn drain_proxy_events(&mut self) {
         while let Ok(event) = self.proxy_event_rx.try_recv() {
             match event {
@@ -4136,6 +4368,26 @@ impl KlippApp {
                         format!("Proxy failed for {}: {}", filename, error),
                         std::time::Instant::now(),
                     ));
+                }
+                AppEvent::SkimTranscodeComplete { media_id, path } => {
+                    self.state.skim_transcoding.remove(&media_id);
+                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                        item.skim_file = Some(path.clone());
+                    }
+                    let filename = self.state.media_pool.get(&media_id)
+                        .map(|m| m.filename.clone())
+                        .unwrap_or_default();
+                    tracing::info!("Skim transcode complete for {}: {}", filename, path.display());
+                }
+                AppEvent::SkimTranscodeFailed { media_id, error } => {
+                    self.state.skim_transcoding.remove(&media_id);
+                    let filename = self.state.media_pool.get(&media_id)
+                        .map(|m| m.filename.clone())
+                        .unwrap_or_default();
+                    tracing::warn!("Skim transcode failed for {}: {}", filename, error);
+                }
+                AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height } => {
+                    self.state.browser_skim_pending = Some((media_id, rgba, width, height));
                 }
                 _ => {}
             }

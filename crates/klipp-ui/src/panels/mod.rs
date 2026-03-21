@@ -1,6 +1,5 @@
 pub mod inspector;
 pub mod markers;
-pub mod media_panel;
 pub mod preferences;
 pub mod status_bar;
 pub mod timeline;

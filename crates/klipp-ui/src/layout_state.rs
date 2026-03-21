@@ -24,7 +24,7 @@ impl Default for LayoutState {
             active_browser_tab: BrowserTab::Media,
             active_inspector_tab: InspectorTab::Video,
             active_tool: EditTool::Select,
-            skimming_enabled: false,
+            skimming_enabled: true,
             snap_enabled: true,
         }
     }

@@ -55,7 +55,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
         ui.painter().rect_filled(rect, 5.0, bg);
         draw_tl_skim_icon(ui.painter(), rect, skim_fg);
         styled_tooltip(&resp, theme, "Skimming", Some("S"));
-        if resp.clicked() { state.skimming_enabled = !state.skimming_enabled; }
+        if resp.clicked() {
+            state.skimming_enabled = !state.skimming_enabled;
+            let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
+            state.toast.show(msg);
+        }
 
         // ── Add Marker ──
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());

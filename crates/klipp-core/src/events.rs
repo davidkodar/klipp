@@ -267,6 +267,11 @@ pub enum AppCommand {
     CreateBin { name: String },
     DeleteBin { name: String },
     MoveItemToBin { media_id: MediaId, bin: Option<String> },
+    RenameBin { old_name: String, new_name: String },
+
+    // Browser skimming
+    StartSkimTranscode { media_id: MediaId },
+    BrowserSkimFrame { media_id: MediaId, time_secs: f64 },
 
     // UI
     SetViewerMode(ViewerMode),
@@ -411,4 +416,11 @@ pub enum AppEvent {
 
     // Performance stats
     EngineStats { dropped_frames: u64, hw_decode: bool },
+
+    // Skim transcode
+    SkimTranscodeComplete { media_id: MediaId, path: PathBuf },
+    SkimTranscodeFailed { media_id: MediaId, error: String },
+
+    // Browser skim frame
+    BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
 }

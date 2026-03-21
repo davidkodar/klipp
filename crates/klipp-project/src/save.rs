@@ -246,5 +246,6 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         tags: item.tags.clone(),
         user_notes: item.user_notes.clone(),
         bin: item.bin.clone(),
+        added_at: if item.added_at > 0 { Some(item.added_at) } else { None },
     }
 }

@@ -66,6 +66,12 @@ pub enum EditCommand {
 
     // === MAGNETIC (Primary/Connected tracks) ===
     Magnetic(klipp_timeline::magnetic_commands::MagneticEditCommand),
+
+    // === MEDIA POOL ===
+    RenameBin {
+        old_name: String,
+        new_name: String,
+    },
 }
 
 impl EditCommand {
@@ -79,6 +85,7 @@ impl EditCommand {
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::Magnetic(cmd) => cmd.label(),
+            EditCommand::RenameBin { .. } => "Rename Bin",
         }
     }
 }

@@ -12,6 +12,6 @@ pub mod types;
 pub mod video_decoder;
 
 pub use composite::{composite_layers, CompositeLayer};
-pub use engine::{generate_filmstrip_incremental, generate_thumbnail, PlaybackEngine, PlaybackState};
+pub use engine::{generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, PlaybackEngine, PlaybackState};
 pub use texture::{FrameBuffer, SharedFrameBuffer};
 pub use types::{AudioRingBuf, DecodedFrame, FrameData, FrameQueue, SharedFrameQueue};

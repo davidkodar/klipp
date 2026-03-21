@@ -2212,6 +2212,89 @@ pub fn generate_thumbnail(
     Ok((rgba, dst_w, dst_h))
 }
 
+/// Generate a thumbnail at a specific max width (for viewer-quality poster frames).
+pub fn generate_thumbnail_at_size(
+    path: &std::path::Path,
+    seek_secs: f64,
+    max_width: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    use ffmpeg_next::software::scaling;
+
+    let mut format_ctx = ffmpeg_next::format::input(path)
+        .map_err(|e| format!("ffmpeg open: {e}"))?;
+
+    let video_stream = format_ctx
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or("No video stream")?;
+    let stream_index = video_stream.index();
+    let params = video_stream.parameters();
+
+    let codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
+        .map_err(|e| format!("codec context: {e}"))?;
+    let mut decoder = codec_ctx.decoder().video()
+        .map_err(|e| format!("video decoder: {e}"))?;
+
+    if seek_secs > 0.1 {
+        let ts = (seek_secs * 1_000_000.0) as i64;
+        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
+    }
+
+    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+    let mut got_frame = false;
+
+    for (stream, packet) in format_ctx.packets() {
+        if stream.index() != stream_index {
+            continue;
+        }
+        decoder.send_packet(&packet).map_err(|e| format!("send_packet: {e}"))?;
+        if decoder.receive_frame(&mut decoded_frame).is_ok() {
+            got_frame = true;
+            break;
+        }
+    }
+
+    if !got_frame {
+        return Err("No frame decoded".to_string());
+    }
+
+    let src_w = decoded_frame.width();
+    let src_h = decoded_frame.height();
+    let scale = (max_width as f64 / src_w as f64).min(1.0);
+    let dst_w = ((src_w as f64 * scale) as u32).max(1);
+    let dst_h = ((src_h as f64 * scale) as u32).max(1);
+
+    let mut scaler = scaling::Context::get(
+        decoded_frame.format(),
+        src_w,
+        src_h,
+        ffmpeg_next::format::Pixel::RGBA,
+        dst_w,
+        dst_h,
+        scaling::Flags::BILINEAR,
+    )
+    .map_err(|e| format!("scaler: {e}"))?;
+
+    let mut rgba_frame = ffmpeg_next::frame::Video::empty();
+    scaler
+        .run(&decoded_frame, &mut rgba_frame)
+        .map_err(|e| format!("scale: {e}"))?;
+
+    let stride = rgba_frame.stride(0);
+    let expected = dst_w as usize * 4;
+    let rgba = if stride == expected {
+        rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
+    } else {
+        let mut buf = Vec::with_capacity(expected * dst_h as usize);
+        for row in 0..dst_h as usize {
+            let start = row * stride;
+            buf.extend_from_slice(&rgba_frame.data(0)[start..start + expected]);
+        }
+        buf
+    };
+    Ok((rgba, dst_w, dst_h))
+}
+
 /// Generate filmstrip thumbnails incrementally with throttling.
 /// Calls `on_frame` for each generated frame, sleeping between frames to avoid
 /// starving the playback decode thread. Returns the total number of frames generated.
