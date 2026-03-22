@@ -88,6 +88,9 @@ pub struct OfxPlugin {
     pub category: OfxCategory,
     pub description: String,
     pub grouping: String,
+    /// The premultiplication string this plugin uses (detected during Describe).
+    /// Standard OFX uses "OfxImageUnPreMultiplied", Natron builds use "OfxImageAlphaUnPremultiplied".
+    pub premult_string: String,
     /// Raw plugin pointer — valid for the lifetime of _lib.
     raw: *const ffi::OfxPluginRaw,
     _lib: Arc<libloading::Library>,
@@ -313,6 +316,7 @@ impl OfxHostRuntime {
                 category: OfxCategory::Filter,
                 description: String::new(),
                 grouping: String::new(),
+                premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
                 raw,
                 _lib: lib.clone(),
                 initialized: false,
@@ -349,6 +353,7 @@ impl OfxHostRuntime {
             category: OfxCategory::Filter,
             description: String::new(),
             grouping: String::new(),
+            premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
             raw: raw_ptr,
             _lib: lib,
             initialized: false,
@@ -398,7 +403,7 @@ impl OfxHostRuntime {
 
         // Set context on the descriptor so plugins can query it
         property::with_propset(desc_inst.props_handle, |ps| {
-            ps.set_string("OfxImageEffectPropContext", 0, "OfxImageEffectContextFilter");
+            ps.set_string("OfxImageEffectPropContext", 0, crate::constants::kOfxImageEffectContextFilter);
         });
 
         instance::register_instance(desc_inst);
@@ -420,7 +425,7 @@ impl OfxHostRuntime {
 
         // 5. kOfxImageEffectActionDescribeInContext — most plugins define params here
         let mut dic_args = PropertySet::default();
-        dic_args.set_string("OfxImageEffectPropContext", 0, "OfxImageEffectContextFilter");
+        dic_args.set_string("OfxImageEffectPropContext", 0, crate::constants::kOfxImageEffectContextFilter);
         let dic_args_handle = property::register_propset(dic_args);
 
         let status = self.call_action_raw(
@@ -456,9 +461,23 @@ impl OfxHostRuntime {
         .flatten()
         .unwrap_or_default();
 
+        // Detect premultiplication string variant by reading what the plugin wrote
+        // on its Output clip. Natron-built plugins use "OfxImageAlphaUnPremultiplied",
+        // standard OFX uses "OfxImageUnPreMultiplied".
+        let premult_str = instance::with_instance(desc_handle, |inst| {
+            inst.clips.get("Output").and_then(|clip| {
+                property::with_propset(clip.props_handle, |ps| {
+                    ps.get_string_lossy("OfxImageEffectPropPreMultiplication", 0)
+                })
+            }).flatten()
+        }).flatten().unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
+
         let plugin = &mut self.plugins[plugin_idx];
         plugin.param_descriptors = descriptors;
         plugin.grouping = grouping;
+        if !premult_str.is_empty() {
+            plugin.premult_string = premult_str;
+        }
         plugin.initialized = true;
         plugin.descriptor_handle = desc_handle;
         plugin.descriptor_param_set = desc_param_set;
@@ -473,15 +492,16 @@ impl OfxHostRuntime {
         plugin_idx: usize,
     ) -> Result<ffi::OfxImageEffectHandle, PluginError> {
         let mut inst = PluginInstance::new(plugin_idx);
+        inst.premult_string = self.plugins[plugin_idx].premult_string.clone();
         inst.add_clip("Source");
         inst.add_clip("Output");
 
         // Set up instance properties — must include project properties because
         // the OFX C++ support library reads them in the ImageEffect constructor.
         property::with_propset(inst.props_handle, |ps| {
-            ps.set_string("OfxImageEffectPropContext", 0, "OfxImageEffectContextFilter");
-            ps.set_string("OfxImageEffectPropPixelDepth", 0, "OfxBitDepthByte");
-            ps.set_string("OfxImageEffectPropComponents", 0, "OfxImageComponentRGBA");
+            ps.set_string("OfxImageEffectPropContext", 0, crate::constants::kOfxImageEffectContextFilter);
+            ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+            ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
             // Project properties — needed by ImageEffect constructor
             ps.set_double("OfxImageEffectPropProjectSize", 0, 1920.0);
             ps.set_double("OfxImageEffectPropProjectSize", 1, 1080.0);
@@ -496,17 +516,20 @@ impl OfxHostRuntime {
             ps.set_int("OfxImageEffectInstancePropSequentialRender", 0, 0);
             ps.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 0);
             ps.set_int("OfxImageEffectPropSupportsTiles", 0, 0);
+            ps.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
+            ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
         });
 
         // Set up clip properties — constructor reads these via fetchClip
+        let premult = self.plugins[plugin_idx].premult_string.clone();
         for (clip_name, clip) in &inst.clips {
             instance::register_clip_mapping(clip.handle, inst.handle, clip_name);
             property::with_propset(clip.props_handle, |ps| {
-                ps.set_string("OfxImageEffectPropPixelDepth", 0, "OfxBitDepthByte");
-                ps.set_string("OfxImageEffectPropComponents", 0, "OfxImageComponentRGBA");
-                ps.set_string("OfxImageEffectPropSupportedComponents", 0, "OfxImageComponentRGBA");
-                ps.set_string("OfxImageClipPropSupportedComponents", 0, "OfxImageComponentRGBA");
-                ps.set_string("OfxImageEffectPropSupportedPixelDepths", 0, "OfxBitDepthByte");
+                ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                ps.set_string("OfxImageEffectPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                ps.set_string("OfxImageClipPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                ps.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
                 ps.set_int("OfxImageClipPropConnected", 0, if clip_name == "Source" || clip_name == "Output" { 1 } else { 0 });
                 ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                 ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
@@ -514,11 +537,14 @@ impl OfxHostRuntime {
                 ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
                 ps.set_double("OfxImageEffectPropUnmappedFrameRange", 0, 0.0);
                 ps.set_double("OfxImageEffectPropUnmappedFrameRange", 1, 1000.0);
-                ps.set_string("OfxImageClipPropFieldOrder", 0, "OfxImageFieldNone");
-                ps.set_string("OfxImageEffectPropPreMultiplication", 0, "OfxImageUnPreMultiplied");
+                ps.set_string("OfxImageClipPropFieldOrder", 0, crate::constants::kOfxFieldNone);
+                ps.set_string("OfxImageEffectPropPreMultiplication", 0, &premult);
                 ps.set_int("OfxImageClipPropContinuousSamples", 0, 0);
                 ps.set_int("OfxImageClipPropIsMask", 0, if clip_name == "Mask" { 1 } else { 0 });
                 ps.set_int("OfxImageClipPropOptional", 0, if clip_name == "Source" || clip_name == "Output" { 0 } else { 1 });
+                // Unmapped (pre-negotiation) format — required by OFX C++ support library
+                ps.set_string("OfxImageClipPropUnmappedComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, crate::constants::kOfxBitDepthByte);
             });
         }
 
@@ -730,28 +756,95 @@ impl OfxHostRuntime {
                 ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                 ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
                 ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
+                ps.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
+                ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
             });
 
             // Clip properties
-            for clip in inst.clips.values() {
+            for (clip_name, clip) in &inst.clips {
                 property::with_propset(clip.props_handle, |ps| {
-                    ps.set_string("OfxImageEffectPropPixelDepth", 0, "OfxBitDepthByte");
-                    ps.set_string("OfxImageEffectPropComponents", 0, "OfxImageComponentRGBA");
-                    ps.set_int("OfxImageClipPropConnected", 0, 1);
+                    ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                    // Only Source and Output are connected — optional clips like Mask are not
+                    ps.set_int("OfxImageClipPropConnected", 0,
+                        if clip_name == "Source" || clip_name == "Output" { 1 } else { 0 });
                     ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                     ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
                     ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
                     ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
                     ps.set_double("OfxImageEffectPropUnmappedFrameRange", 0, 0.0);
                     ps.set_double("OfxImageEffectPropUnmappedFrameRange", 1, 1000.0);
-                    ps.set_string("OfxImageClipPropFieldOrder", 0, "OfxImageFieldNone");
+                    ps.set_string("OfxImageClipPropFieldOrder", 0, crate::constants::kOfxFieldNone);
                 });
             }
         });
 
+        // Call GetClipPreferences once per instance — plugin negotiates output format
+        let needs_clip_prefs = instance::with_instance(inst_handle, |inst| !inst.clip_prefs_fetched)
+            .unwrap_or(false);
+        if needs_clip_prefs {
+            let clip_pref_out = PropertySet::default();
+            let clip_pref_out_handle = property::register_propset(clip_pref_out);
+
+            let cp_status = self.call_action_raw(
+                plugin_idx,
+                b"OfxImageEffectActionGetClipPreferences\0",
+                inst_handle,
+                std::ptr::null_mut(),
+                clip_pref_out_handle,
+            );
+
+            if cp_status == ffi::K_OFX_STAT_OK {
+                // Read back negotiated preferences and update clip properties
+                instance::with_instance(inst_handle, |inst| {
+                    for clip_name in ["Source", "Output"] {
+                        if let Some(clip) = inst.clips.get(clip_name) {
+                            let components_key = format!("OfxImageClipPropComponents_{clip_name}");
+                            let depth_key = format!("OfxImageEffectPropPixelDepth_{clip_name}");
+
+                            let components = property::with_propset(clip_pref_out_handle, |ps| {
+                                ps.get_string_lossy(&components_key, 0)
+                            }).flatten();
+                            let depth = property::with_propset(clip_pref_out_handle, |ps| {
+                                ps.get_string_lossy(&depth_key, 0)
+                            }).flatten();
+
+                            property::with_propset(clip.props_handle, |ps| {
+                                if let Some(ref c) = components {
+                                    if !c.is_empty() {
+                                        ps.set_string("OfxImageEffectPropComponents", 0, c);
+                                    }
+                                }
+                                if let Some(ref d) = depth {
+                                    if !d.is_empty() {
+                                        ps.set_string("OfxImageEffectPropPixelDepth", 0, d);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+
+            if cp_status != ffi::K_OFX_STAT_OK && cp_status != ffi::K_OFX_STAT_REPLY_DEFAULT {
+                debug!(
+                    "OFX GetClipPreferences returned status={} for '{}'",
+                    cp_status, effect.plugin_name
+                );
+            }
+
+            property::remove_propset(clip_pref_out_handle);
+            instance::with_instance(inst_handle, |inst| inst.clip_prefs_fetched = true);
+        }
+
         // Create input and output images
-        let input_image = OfxImage::from_rgba(input.to_vec(), width, height);
-        let output_image = OfxImage::from_rgba(vec![0u8; input.len()], width, height);
+        let premult = instance::with_instance(inst_handle, |inst| inst.premult_string.clone())
+            .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
+        let input_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+        // Initialize output with input data — plugins only write to unmasked pixels,
+        // leaving masked pixels unchanged. A zero-filled buffer causes black output
+        // when no mask is connected (all pixels treated as masked).
+        let output_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
 
         let input_img_handle = image_effect::register_image(input_image);
         let output_img_handle = image_effect::register_image(output_image);
@@ -786,11 +879,14 @@ impl OfxHostRuntime {
             bsr_handle,
             std::ptr::null_mut(),
         );
-        if bsr_status != ffi::K_OFX_STAT_OK && bsr_status != ffi::K_OFX_STAT_REPLY_DEFAULT {
-            debug!(
-                "OFX BeginSequenceRender returned status={} for '{}'",
-                bsr_status, effect.plugin_name
-            );
+        if bsr_status == ffi::K_OFX_STAT_FAILED {
+            property::remove_propset(bsr_handle);
+            // Clean up images
+            image_effect::release_image(input_img_handle);
+            image_effect::release_image(output_img_handle);
+            return Err(PluginError::ActionFailed(format!(
+                "BeginSequenceRender returned {bsr_status}"
+            )));
         }
         property::remove_propset(bsr_handle);
 
@@ -803,7 +899,7 @@ impl OfxHostRuntime {
         in_args.set_int("OfxImageEffectPropRenderWindow", 3, height as i32);
         in_args.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
         in_args.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
-        in_args.set_string("OfxImageEffectPropFieldToRender", 0, "OfxImageFieldNone");
+        in_args.set_string("OfxImageEffectPropFieldToRender", 0, crate::constants::kOfxFieldNone);
         in_args.set_int("OfxPropIsInteractive", 0, 0);
         in_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         in_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
@@ -861,38 +957,17 @@ impl OfxHostRuntime {
 
         // Read output image data
         let result = if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
-            // Try output first, then check if plugin wrote to source (in-place rendering)
             let output_data = image_effect::take_image(output_img_handle);
-            let source_data = image_effect::take_image(input_img_handle);
-
-            if let Some(out) = output_data {
-                if out.data != vec![0u8; out.data.len()] {
-                    // Plugin wrote to output
-                    out.data
-                } else if let Some(src) = source_data {
-                    // Output is all zeros — plugin may have written to source (in-place)
-                    if src.data != input {
-                        src.data
-                    } else {
-                        input.to_vec()
-                    }
-                } else {
-                    input.to_vec()
-                }
-            } else if let Some(src) = source_data {
-                if src.data != input {
-                    src.data
-                } else {
-                    input.to_vec()
-                }
-            } else {
-                input.to_vec()
-            }
+            let _source_data = image_effect::take_image(input_img_handle);
+            output_data.map(|o| o.data).unwrap_or_else(|| input.to_vec())
         } else {
             debug!(
                 "OFX render returned {status} for '{}'",
                 effect.plugin_name
             );
+            // Clean up images on failure
+            image_effect::take_image(output_img_handle);
+            image_effect::take_image(input_img_handle);
             input.to_vec()
         };
 

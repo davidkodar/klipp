@@ -172,7 +172,11 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
-            ofx_host: klipp_plugin::OfxHost::new(),
+            ofx_host: {
+                let mut h = klipp_plugin::OfxHost::new();
+                h.discover_plugins();
+                h
+            },
             gpu_effects: klipp_effects::gpu::GpuEffectsPipeline::new(),
             transition_decoder: None,
             transition_clip_id: None,

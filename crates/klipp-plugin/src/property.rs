@@ -132,6 +132,10 @@ impl PropertySet {
         }
     }
 
+    pub fn has_property(&self, name: &str) -> bool {
+        self.props.contains_key(name)
+    }
+
     pub fn reset(&mut self, name: &str) {
         self.props.remove(name);
     }
@@ -328,14 +332,18 @@ unsafe extern "C" fn prop_get_string_fn(
 ) -> OfxStatus {
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
-        ps.get_string(&name, index as usize)
-            .map(|cs| cs.as_ptr())
+        let has = ps.has_property(&name);
+        let val = ps.get_string(&name, index as usize).map(|cs| cs.as_ptr());
+        (has, val)
     }) {
-        Some(Some(ptr)) => {
+        Some((_, Some(ptr))) => {
             *out = ptr;
             K_OFX_STAT_OK
         }
-        Some(None) => {
+        Some((has, None)) => {
+            if !has {
+                tracing::debug!("[OFX] prop miss: '{}' idx {} → default \"\"", name, index);
+            }
             *out = EMPTY_CSTR.as_ptr() as *const c_char;
             K_OFX_STAT_OK
         }
@@ -353,12 +361,19 @@ unsafe extern "C" fn prop_get_double_fn(
     out: *mut c_double,
 ) -> OfxStatus {
     let name = CStr::from_ptr(name).to_string_lossy();
-    match with_propset(handle, |ps| ps.get_double(&name, index as usize)) {
-        Some(Some(val)) => {
+    match with_propset(handle, |ps| {
+        let has = ps.has_property(&name);
+        let val = ps.get_double(&name, index as usize);
+        (has, val)
+    }) {
+        Some((_, Some(val))) => {
             *out = val;
             K_OFX_STAT_OK
         }
-        Some(None) => {
+        Some((has, None)) => {
+            if !has {
+                tracing::debug!("[OFX] prop miss: '{}' idx {} → default 0.0", name, index);
+            }
             *out = 0.0;
             K_OFX_STAT_OK
         }
@@ -376,12 +391,19 @@ unsafe extern "C" fn prop_get_int_fn(
     out: *mut c_int,
 ) -> OfxStatus {
     let name = CStr::from_ptr(name).to_string_lossy();
-    match with_propset(handle, |ps| ps.get_int(&name, index as usize)) {
-        Some(Some(val)) => {
+    match with_propset(handle, |ps| {
+        let has = ps.has_property(&name);
+        let val = ps.get_int(&name, index as usize);
+        (has, val)
+    }) {
+        Some((_, Some(val))) => {
             *out = val;
             K_OFX_STAT_OK
         }
-        Some(None) => {
+        Some((has, None)) => {
+            if !has {
+                tracing::debug!("[OFX] prop miss: '{}' idx {} → default 0", name, index);
+            }
             *out = 0;
             K_OFX_STAT_OK
         }
@@ -544,13 +566,13 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     props.set_int("OfxParamHostPropMaxPages", 0, 0);
 
     // Supported pixel depths: 8-bit only
-    props.set_string("OfxImageEffectPropSupportedPixelDepths", 0, "OfxBitDepthByte");
+    props.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
 
     // Supported contexts: filter only
-    props.set_string("OfxImageEffectPropSupportedContexts", 0, "OfxImageEffectContextFilter");
+    props.set_string("OfxImageEffectPropSupportedContexts", 0, crate::constants::kOfxImageEffectContextFilter);
 
     // Supported pixel components: RGBA only
-    props.set_string("OfxImageEffectPropSupportedComponents", 0, "OfxImageComponentRGBA");
+    props.set_string("OfxImageEffectPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
 
     // Sequential render
     props.set_int("OfxImageEffectInstancePropSequentialRender", 0, 0);

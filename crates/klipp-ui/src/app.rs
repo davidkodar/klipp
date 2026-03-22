@@ -257,6 +257,7 @@ impl KlippApp {
         app.state.available_plugins = ofx_host.plugin_infos();
         app.state.effect_registry.merge_ofx_plugins(&app.state.available_plugins);
         tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
+        drop(ofx_host); // UI doesn't need the host — engine has its own
         app
     }
 
@@ -4080,6 +4081,7 @@ impl eframe::App for KlippApp {
         }
 
         // Upload pending skim frame texture
+        // TODO: apply clip effects during skim (requires stable OFX render on UI thread)
         if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [width as usize, height as usize],

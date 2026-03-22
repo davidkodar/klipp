@@ -479,7 +479,18 @@ unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void
             let _ = cstr;
         }
         ParamValue::None => {
-            // Return default if available
+            // Value not set — use the descriptor's default
+            let default = &pi.descriptor.default;
+            match default {
+                ParamValue::Double(v) => { *(out as *mut f64) = *v; }
+                ParamValue::Int(v) => { *(out as *mut i32) = *v; }
+                ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
+                ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
+                _ => {
+                    // Last resort: write 0
+                    *(out as *mut i32) = 0;
+                }
+            }
             return K_OFX_STAT_OK;
         }
     }

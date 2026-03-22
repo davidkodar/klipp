@@ -28,9 +28,12 @@ unsafe impl Send for OfxImage {}
 
 impl OfxImage {
     /// Create an image from an RGBA buffer, registering all required OFX properties.
-    pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
+    pub fn from_rgba(data: Vec<u8>, width: u32, height: u32, frame_time: f64, premult: &str) -> Self {
         let mut props = PropertySet::default();
         let row_bytes = width as i32 * 4;
+
+        // Required by OFX C++ support library's validateImageBaseProperties()
+        props.set_string("OfxPropType", 0, "OfxTypeImage");
 
         props.set_pointer(
             "OfxImagePropData",
@@ -46,16 +49,13 @@ impl OfxImage {
         props.set_int("OfxImagePropRegionOfDefinition", 2, width as i32);
         props.set_int("OfxImagePropRegionOfDefinition", 3, height as i32);
         props.set_int("OfxImagePropRowBytes", 0, row_bytes);
-        props.set_string("OfxImageEffectPropPixelDepth", 0, "OfxBitDepthByte");
-        props.set_string("OfxImageEffectPropComponents", 0, "OfxImageComponentRGBA");
-        props.set_string(
-            "OfxImageEffectPropPreMultiplication",
-            0,
-            "OfxImageUnPreMultiplied",
-        );
+        props.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+        props.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
+        props.set_string("OfxImageEffectPropPreMultiplication", 0, premult);
         props.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
-        props.set_string("OfxImagePropField", 0, "OfxImageFieldNone");
-        props.set_string("OfxImagePropUniqueIdentifier", 0, "klipp_frame");
+        props.set_double("OfxImagePropPixelAspectRatio", 0, 1.0);
+        props.set_string("OfxImagePropField", 0, crate::constants::kOfxFieldNone);
+        props.set_string("OfxImagePropUniqueIdentifier", 0, &format!("klipp_{:.6}", frame_time));
         props.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
         props.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
 
@@ -202,9 +202,15 @@ unsafe extern "C" fn clip_get_handle_fn(
                 // Mark as disconnected
                 crate::property::with_propset(clip.props_handle, |ps| {
                     ps.set_int("OfxImageClipPropConnected", 0, 0);
-                    ps.set_string("OfxImageEffectPropPixelDepth", 0, "OfxBitDepthByte");
-                    ps.set_string("OfxImageEffectPropComponents", 0, "OfxImageComponentRGBA");
+                    ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                     ps.set_int("OfxImageClipPropOptional", 0, 1);
+                    ps.set_string("OfxImageClipPropUnmappedComponents", 0, crate::constants::kOfxImageComponentRGBA);
+                    ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageClipPropFieldOrder", 0, crate::constants::kOfxFieldNone);
+                    ps.set_string("OfxImageEffectPropPreMultiplication", 0, crate::constants::kOfxImageAlphaUnPremultiplied);
+                    ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
+                    ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                 });
                 (clip.handle, clip.props_handle)
             });
@@ -264,7 +270,7 @@ unsafe extern "C" fn clip_get_image_fn(
         inst.clips.get(&clip_name).and_then(|c| c.current_image)
     }) {
         Some(Some(img_handle)) => {
-            tracing::debug!("[OFX] clipGetImage: clip='{}' -> image={:?}", clip_name, img_handle);
+            tracing::debug!("[OFX] clipGetImage: clip='{}' -> {:?}", clip_name, img_handle);
             *img_props_out = img_handle;
             K_OFX_STAT_OK
         }

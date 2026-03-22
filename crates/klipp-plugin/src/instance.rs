@@ -24,6 +24,10 @@ pub struct PluginInstance {
     pub clips: HashMap<String, ClipInstance>,
     /// Whether kOfxActionCreateInstance has been called.
     pub created: bool,
+    /// Whether kOfxImageEffectActionGetClipPreferences has been called.
+    pub clip_prefs_fetched: bool,
+    /// The premultiplication string this plugin expects.
+    pub premult_string: String,
     /// Plugin index in OfxHostRuntime.plugins.
     pub plugin_idx: usize,
 }
@@ -63,6 +67,8 @@ impl PluginInstance {
             param_values: HashMap::new(),
             clips: HashMap::new(),
             created: false,
+            clip_prefs_fetched: false,
+            premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
             plugin_idx,
         }
     }

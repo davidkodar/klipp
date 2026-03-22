@@ -13,8 +13,9 @@ unsafe extern "C" fn multithread_fn(
     _n_threads: c_uint,
     custom_arg: *mut c_void,
 ) -> OfxStatus {
-    // Single-threaded: call once with thread_count=1, thread_index=0
-    func(custom_arg, 1, 0);
+    // Single-threaded: call once with threadIndex=0, threadMax=1
+    // OFX spec: func(customArg, threadIndex, threadMax)
+    func(custom_arg, 0, 1);
     K_OFX_STAT_OK
 }
 

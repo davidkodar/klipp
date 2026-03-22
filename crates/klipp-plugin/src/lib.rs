@@ -1,3 +1,4 @@
+pub mod constants;
 pub mod ffi;
 pub mod host;
 pub mod image_effect;
