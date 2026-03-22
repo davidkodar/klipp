@@ -157,33 +157,21 @@ impl AudioOutput {
                         // NO clock update — master clock is external
                     });
 
-                    // Mix in skim audio (independent of playback state)
+                    // Mix in skim audio (independent of playback state).
+                    // Uses thread-local buffer to avoid heap allocation in real-time callback.
                     if let Ok(mut skim_guard) = skim_consumer_flag.try_lock() {
                         if let Some(ref mut skim_cons) = *skim_guard {
-                            // Buffer must cover the entire cpal callback (can be >2048)
-                            let mut skim_buf = vec![0.0f32; data.len()];
-                            let read = skim_cons.pop_slice(&mut skim_buf);
-                            if read > 0 {
-                                // Log once per ~500 callbacks (~2.5s at typical buffer sizes)
-                                thread_local! {
-                                    static SKIM_LOG_CTR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-                                }
-                                SKIM_LOG_CTR.with(|c| {
-                                    let v = c.get();
-                                    if v % 500 == 0 {
-                                        let peak = skim_buf[..read].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-                                        tracing::debug!(
-                                            "cpal skim: read={read}, data.len={}, peak={peak:.4}, first4={:?}",
-                                            data.len(),
-                                            &skim_buf[..4.min(read)]
-                                        );
-                                    }
-                                    c.set(v.wrapping_add(1));
-                                });
-                                for i in 0..read {
-                                    data[i] = (data[i] + skim_buf[i]).clamp(-1.0, 1.0);
-                                }
+                            thread_local! {
+                                static SKIM_BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
                             }
+                            SKIM_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.resize(data.len(), 0.0);
+                                let read = skim_cons.pop_slice(&mut buf[..data.len()]);
+                                for i in 0..read {
+                                    data[i] = (data[i] + buf[i]).clamp(-1.0, 1.0);
+                                }
+                            });
                         }
                     }
                 },
