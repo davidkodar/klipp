@@ -1,4 +1,5 @@
 pub mod inspector;
+pub mod launch_screen;
 pub mod markers;
 pub mod preferences;
 pub mod status_bar;

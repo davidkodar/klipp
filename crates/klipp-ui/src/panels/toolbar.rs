@@ -1,10 +1,10 @@
 use crate::layout_state::EditTool;
+use crate::prefs::RecentProject;
 use crate::state::{AppState, PlayheadFollow};
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::{AppCommand, Tool};
 use klipp_engine::PlaybackState;
-use std::path::PathBuf;
 
 pub struct ToolbarPanel;
 
@@ -13,7 +13,7 @@ impl ToolbarPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
-        recent_projects: &[PathBuf],
+        recent_projects: &[RecentProject],
         theme: &KlippTheme,
         layout_tool: &mut EditTool,
     ) -> Vec<AppCommand> {
@@ -310,11 +310,26 @@ impl ToolbarPanel {
             });
     }
 
-    fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, _state: &mut AppState, recent: &[PathBuf]) {
+    fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, _state: &mut AppState, recent: &[RecentProject]) {
         ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
             if ui.button("New Project").clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.button("Open Project...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
-            if !recent.is_empty() { ui.menu_button("Recent Projects", |ui| { for p in recent { let l = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.to_string_lossy().to_string()); if ui.button(&l).clicked() { cmds.push(AppCommand::OpenProject { path: p.clone() }); ui.close_menu(); } } }); }
+            if !recent.is_empty() {
+                ui.menu_button("Recent Projects", |ui| {
+                    for rp in recent {
+                        let suffix = rp.last_saved.as_deref().unwrap_or("");
+                        let label = if suffix.is_empty() {
+                            rp.name.clone()
+                        } else {
+                            format!("{}  {}", rp.name, suffix)
+                        };
+                        if ui.button(&label).clicked() {
+                            cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
             if ui.button("Import Media...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().add_filter("Video", &["mp4","mkv","mov","avi","webm","m4v","mts"]).pick_file() { cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() }); } }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }

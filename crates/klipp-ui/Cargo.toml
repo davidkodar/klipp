@@ -22,5 +22,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 rfd = "0.15"
+png = "0.17"
 dirs = { workspace = true }
 walkdir = { workspace = true }

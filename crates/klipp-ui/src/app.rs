@@ -134,6 +134,8 @@ pub struct KlippApp {
     skim_consumer: klipp_engine::audio_output::SkimConsumer,
     /// cpal device sample rate (for skim audio resampling)
     cpal_sample_rate: u32,
+    // Launch screen
+    launch_screen: crate::panels::launch_screen::LaunchScreen,
 }
 
 impl KlippApp {
@@ -198,6 +200,7 @@ impl KlippApp {
             new_timeline: crate::timeline::NewTimelinePanel,
             skim_consumer,
             cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
+            launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
@@ -2296,6 +2299,23 @@ impl KlippApp {
                     self.do_open_project(path);
                     continue;
                 }
+                AppCommand::RemoveRecentProject { path } => {
+                    self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
+                    self.prefs_dirty = true;
+                    continue;
+                }
+                AppCommand::DeleteProject { path } => {
+                    if path.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(path) {
+                            tracing::error!("Failed to delete project: {e}");
+                        } else {
+                            tracing::info!("Deleted project {:?}", path);
+                        }
+                    }
+                    self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
+                    self.prefs_dirty = true;
+                    continue;
+                }
                 AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
                     // Spawn a targeted filmstrip pass for the requested range
                     if let Some(item) = self.state.media_pool.get(media_id) {
@@ -2931,7 +2951,27 @@ impl KlippApp {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 tracing::info!("Project saved to {:?}", path);
-                self.prefs.add_recent_project(path.to_path_buf());
+                let rp = crate::prefs::RecentProject {
+                    path: path.to_path_buf(),
+                    name: self.state.sequence.name.clone(),
+                    last_saved: Some(crate::app::iso8601_now()),
+                    duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
+                    fps: {
+                        let f = self.state.sequence.fps;
+                        if f.den == 1 {
+                            Some(format!("{}fps", f.num))
+                        } else {
+                            Some(format!("{:.3}fps", f.num as f64 / f.den as f64))
+                        }
+                    },
+                    resolution: Some(format!(
+                        "{}×{}",
+                        self.state.sequence.resolution.width,
+                        self.state.sequence.resolution.height
+                    )),
+                    thumbnail_path: generate_poster_frame(&self.frame_buffer, path),
+                };
+                self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
                 // Delete autosave file on clean save
                 let autosave = autosave_path_for(path);
@@ -2992,7 +3032,27 @@ impl KlippApp {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.selected_clip = None;
-                self.prefs.add_recent_project(path.to_path_buf());
+                let rp = crate::prefs::RecentProject {
+                    path: path.to_path_buf(),
+                    name: self.state.sequence.name.clone(),
+                    last_saved: None,
+                    duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
+                    fps: {
+                        let f = self.state.sequence.fps;
+                        if f.den == 1 {
+                            Some(format!("{}fps", f.num))
+                        } else {
+                            Some(format!("{:.3}fps", f.num as f64 / f.den as f64))
+                        }
+                    },
+                    resolution: Some(format!(
+                        "{}×{}",
+                        self.state.sequence.resolution.width,
+                        self.state.sequence.resolution.height
+                    )),
+                    thumbnail_path: None,
+                };
+                self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
                 self.state.playback = PlaybackState::Idle;
                 self.state.playhead = Timecode::zero();
@@ -3811,7 +3871,16 @@ impl eframe::App for KlippApp {
         }
 
         // Handle fullscreen toggle
-        if self.state.fullscreen_viewer {
+        if self.state.project_path.is_none() {
+            // Launch screen: no project open
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .show(ctx, |ui| {
+                    let recent = self.prefs.general.recent_projects.clone();
+                    let cmds = self.launch_screen.show(ctx, ui, &recent, &self.theme);
+                    all_cmds.extend(cmds);
+                });
+        } else if self.state.fullscreen_viewer {
             // Fullscreen viewer: just show the video frame
             egui::CentralPanel::default().show(ctx, |ui| {
                 let cmds = self.viewer.show_fullscreen(ui, &mut self.state);
@@ -4988,6 +5057,104 @@ fn media_usage_count(media_id: MediaId, sequence: &Sequence) -> usize {
 fn autosave_path_for(project_path: &Path) -> PathBuf {
     let stem = project_path.file_stem().unwrap_or_default().to_string_lossy();
     project_path.with_file_name(format!("{stem}_autosave.klipp"))
+}
+
+/// Generate an ISO 8601 UTC timestamp string.
+pub fn iso8601_now() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    // Simple UTC date-time without external crate
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+    // Days since 1970-01-01
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    let mut year = 1970u64;
+    loop {
+        let days_in_year = if is_leap(year) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
+    }
+    (year, month, days + 1)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+}
+
+/// Generate a poster frame thumbnail and save as PNG.
+/// Returns the path to the saved thumbnail, or None if no frame available.
+fn generate_poster_frame(
+    frame_buffer: &klipp_engine::SharedFrameBuffer,
+    project_path: &std::path::Path,
+) -> Option<PathBuf> {
+    let fb = frame_buffer.lock().ok()?;
+    if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+        return None;
+    }
+
+    // Downsample to 320×180 using nearest neighbor
+    let dst_w: u32 = 320;
+    let dst_h: u32 = 180;
+    let src_w = fb.width;
+    let src_h = fb.height;
+    let mut rgb_data = vec![0u8; (dst_w * dst_h * 3) as usize];
+
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            let sx = (dx as u64 * src_w as u64 / dst_w as u64) as u32;
+            let sy = (dy as u64 * src_h as u64 / dst_h as u64) as u32;
+            let src_idx = ((sy * src_w + sx) * 4) as usize;
+            let dst_idx = ((dy * dst_w + dx) * 3) as usize;
+            if src_idx + 2 < fb.data.len() && dst_idx + 2 < rgb_data.len() {
+                rgb_data[dst_idx] = fb.data[src_idx];
+                rgb_data[dst_idx + 1] = fb.data[src_idx + 1];
+                rgb_data[dst_idx + 2] = fb.data[src_idx + 2];
+            }
+        }
+    }
+
+    // Determine output path
+    let cache_dir = dirs::cache_dir()?.join("klipp").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let stem = project_path.file_stem()?.to_string_lossy();
+    let out_path = cache_dir.join(format!("{stem}.png"));
+
+    // Write PNG
+    let file = std::fs::File::create(&out_path).ok()?;
+    let w = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, dst_w, dst_h);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(&rgb_data).ok()?;
+
+    Some(out_path)
 }
 
 fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {

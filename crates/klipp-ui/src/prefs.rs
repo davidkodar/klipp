@@ -12,13 +12,69 @@ pub struct Preferences {
     pub proxy: ProxyPrefs,
 }
 
+/// Rich recent project entry with cached metadata for the launch screen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: PathBuf,
+    pub name: String,
+    #[serde(default)]
+    pub last_saved: Option<String>,
+    #[serde(default)]
+    pub duration_secs: Option<f64>,
+    #[serde(default)]
+    pub fps: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<String>,
+    #[serde(default)]
+    pub thumbnail_path: Option<PathBuf>,
+}
+
+impl RecentProject {
+    /// Create a minimal entry from just a path (used for migration from old format).
+    pub fn from_path(path: PathBuf) -> Self {
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".into());
+        Self {
+            path,
+            name,
+            last_saved: None,
+            duration_secs: None,
+            fps: None,
+            resolution: None,
+            thumbnail_path: None,
+        }
+    }
+}
+
+/// Custom deserializer that handles both the new Vec<RecentProject> format
+/// and the old Vec<PathBuf> format for backward compatibility.
+fn deserialize_recent_projects<'de, D>(deserializer: D) -> Result<Vec<RecentProject>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
+    // Try new format first
+    if let Ok(projects) = serde_json::from_value::<Vec<RecentProject>>(value.clone()) {
+        return Ok(projects);
+    }
+    // Fall back to old Vec<PathBuf> format
+    if let Ok(paths) = serde_json::from_value::<Vec<PathBuf>>(value) {
+        return Ok(paths.into_iter().map(RecentProject::from_path).collect());
+    }
+    // If neither works, return empty
+    Ok(Vec::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralPrefs {
     /// Auto-save interval in seconds. 0 = disabled. Default 300 (5 min).
     pub auto_save_interval_secs: u32,
     pub default_project_dir: Option<PathBuf>,
-    /// Most-recent first, max 10 entries.
-    pub recent_projects: Vec<PathBuf>,
+    /// Most-recent first, max 20 entries.
+    #[serde(deserialize_with = "deserialize_recent_projects")]
+    pub recent_projects: Vec<RecentProject>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,10 +183,10 @@ impl Preferences {
         Ok(())
     }
 
-    /// Add a project path to the recent projects list (most recent first, max 10).
-    pub fn add_recent_project(&mut self, path: PathBuf) {
-        self.general.recent_projects.retain(|p| p != &path);
-        self.general.recent_projects.insert(0, path);
-        self.general.recent_projects.truncate(10);
+    /// Add a project to the recent projects list (most recent first, max 20).
+    pub fn add_recent_project(&mut self, project: RecentProject) {
+        self.general.recent_projects.retain(|p| p.path != project.path);
+        self.general.recent_projects.insert(0, project);
+        self.general.recent_projects.truncate(20);
     }
 }

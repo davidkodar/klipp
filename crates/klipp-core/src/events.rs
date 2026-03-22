@@ -129,6 +129,8 @@ pub enum AppCommand {
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },
+    RemoveRecentProject { path: PathBuf },
+    DeleteProject { path: PathBuf },
 
     // Edit
     Undo,
