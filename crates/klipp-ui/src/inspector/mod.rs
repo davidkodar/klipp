@@ -8,7 +8,12 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
-pub struct NewInspectorPanel;
+#[derive(Default)]
+pub struct NewInspectorPanel {
+    show_add_builtin: bool,
+    show_add_ofx: bool,
+}
+
 
 impl NewInspectorPanel {
     pub fn show(
@@ -151,7 +156,7 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Effects => {
                     if let Some((_, clip)) = clip_info {
-                        effects_tab::show(ui, theme, clip, &mut cmds);
+                        effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx);
                     } else {
                         no_selection(ui, theme);
                     }

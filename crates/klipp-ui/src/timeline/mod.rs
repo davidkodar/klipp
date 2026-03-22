@@ -98,6 +98,23 @@ impl NewTimelinePanel {
         let ruler_painter = ui.painter().with_clip_rect(ruler_rect);
         ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
 
+        // Ruler click/drag → seek playhead
+        let ruler_resp = ui.interact(ruler_rect, ui.id().with("new_ruler_seek"), egui::Sense::click_and_drag());
+        if ruler_resp.clicked() || ruler_resp.dragged() {
+            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let x_in_content = pos.x - ruler_rect.left() + scroll_x;
+                let secs = (x_in_content / pps) as f64;
+                let tc = klipp_core::RationalTime::from_secs_f64(secs, state.fps.rate());
+                let dur = state.sequence_duration();
+                let clamped = if dur.value > 0 {
+                    klipp_core::RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
+                } else {
+                    klipp_core::RationalTime { value: tc.value.max(0), rate: tc.rate }
+                };
+                cmds.push(AppCommand::SeekTo(clamped));
+            }
+        }
+
         // ── Track lanes + clips (delegate to old timeline below the ruler) ──
         let tracks_rect = egui::Rect::from_min_max(
             egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h),

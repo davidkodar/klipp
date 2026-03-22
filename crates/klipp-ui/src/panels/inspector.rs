@@ -838,6 +838,192 @@ impl InspectorPanel {
                     }
                 });
             });
+
+            // Parameter controls — look up descriptors from the plugin
+            if let Some(plugin_info) = state.available_plugins.iter().find(|p| p.name == effect.plugin_name) {
+                if !plugin_info.parameters.is_empty() {
+                    let id = egui::Id::new(("ofx_params", clip_id, i));
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new("Parameters").size(10.0).color(egui::Color32::from_rgb(140, 140, 150))
+                    )
+                        .id_salt(id)
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for desc in &plugin_info.parameters {
+                                if desc.secret {
+                                    continue;
+                                }
+                                match desc.param_type {
+                                    klipp_plugin::ParamType::Group | klipp_plugin::ParamType::Page => continue,
+                                    _ => {}
+                                }
+
+                                let current_value = effect.param_values.get(&desc.name);
+
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&desc.label)
+                                            .size(11.0)
+                                            .color(egui::Color32::from_rgb(160, 160, 170)),
+                                    );
+                                    ui.add_space(4.0);
+
+                                    match desc.param_type {
+                                        klipp_plugin::ParamType::Double => {
+                                            let mut v = current_value
+                                                .and_then(|cv| cv.as_double())
+                                                .or(match &desc.default { klipp_plugin::ParamValue::Double(d) => Some(*d), _ => None })
+                                                .unwrap_or(0.0) as f32;
+                                            let dmin = desc.display_min.as_ref()
+                                                .and_then(|m| match m { klipp_plugin::ParamValue::Double(d) => Some(*d as f32), _ => None })
+                                                .unwrap_or(0.0);
+                                            let dmax = desc.display_max.as_ref()
+                                                .and_then(|m| match m { klipp_plugin::ParamValue::Double(d) => Some(*d as f32), _ => None })
+                                                .unwrap_or(1.0);
+                                            if ui.add(egui::Slider::new(&mut v, dmin..=dmax).step_by(0.01_f64)).changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::Double(v as f64),
+                                                });
+                                            }
+                                            ui.label(egui::RichText::new(format!("{v:.2}")).size(10.0).color(egui::Color32::from_rgb(120, 120, 130)));
+                                        }
+                                        klipp_plugin::ParamType::Int => {
+                                            let mut v = current_value
+                                                .and_then(|cv| cv.as_int())
+                                                .or(match &desc.default { klipp_plugin::ParamValue::Int(i) => Some(*i), _ => None })
+                                                .unwrap_or(0);
+                                            let imin = desc.min.as_ref()
+                                                .and_then(|m| match m { klipp_plugin::ParamValue::Int(i) => Some(*i), _ => None })
+                                                .unwrap_or(0);
+                                            let imax = desc.max.as_ref()
+                                                .and_then(|m| match m { klipp_plugin::ParamValue::Int(i) => Some(*i), _ => None })
+                                                .unwrap_or(100);
+                                            if ui.add(egui::DragValue::new(&mut v).range(imin..=imax).speed(1)).changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::Int(v),
+                                                });
+                                            }
+                                        }
+                                        klipp_plugin::ParamType::Bool => {
+                                            let mut v = current_value
+                                                .and_then(|cv| cv.as_bool())
+                                                .or(match &desc.default { klipp_plugin::ParamValue::Bool(b) => Some(*b), _ => None })
+                                                .unwrap_or(false);
+                                            if ui.checkbox(&mut v, "").changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::Bool(v),
+                                                });
+                                            }
+                                        }
+                                        klipp_plugin::ParamType::Choice => {
+                                            let mut v = current_value
+                                                .and_then(|cv| cv.as_int())
+                                                .or(match &desc.default { klipp_plugin::ParamValue::Choice(c) => Some(*c), _ => None })
+                                                .unwrap_or(0);
+                                            let selected_text = desc.choices.get(v as usize)
+                                                .map(|s| s.as_str())
+                                                .unwrap_or("");
+                                            egui::ComboBox::from_id_salt(egui::Id::new(("ofx_choice", clip_id, i, &desc.name)))
+                                                .selected_text(selected_text)
+                                                .show_ui(ui, |ui| {
+                                                    for (ci, choice) in desc.choices.iter().enumerate() {
+                                                        if ui.selectable_value(&mut v, ci as i32, choice).changed() {
+                                                            cmds.push(AppCommand::SetEffectParam {
+                                                                clip_id,
+                                                                effect_index: i,
+                                                                param_name: desc.name.clone(),
+                                                                value: klipp_plugin::OfxValue::Choice(v),
+                                                            });
+                                                        }
+                                                    }
+                                                });
+                                        }
+                                        klipp_plugin::ParamType::Rgba => {
+                                            let (r, g, b, a) = match current_value {
+                                                Some(klipp_plugin::OfxValue::Rgba(r, g, b, a)) => (*r, *g, *b, *a),
+                                                _ => match &desc.default {
+                                                    klipp_plugin::ParamValue::Rgba(r, g, b, a) => (*r, *g, *b, *a),
+                                                    _ => (1.0, 1.0, 1.0, 1.0),
+                                                },
+                                            };
+                                            let mut color = egui::Color32::from_rgba_unmultiplied(
+                                                (r * 255.0) as u8, (g * 255.0) as u8,
+                                                (b * 255.0) as u8, (a * 255.0) as u8,
+                                            );
+                                            if ui.color_edit_button_srgba(&mut color).changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::Rgba(
+                                                        color.r() as f64 / 255.0,
+                                                        color.g() as f64 / 255.0,
+                                                        color.b() as f64 / 255.0,
+                                                        color.a() as f64 / 255.0,
+                                                    ),
+                                                });
+                                            }
+                                        }
+                                        klipp_plugin::ParamType::Rgb => {
+                                            let (r, g, b) = match current_value {
+                                                Some(klipp_plugin::OfxValue::Rgb(r, g, b)) => (*r, *g, *b),
+                                                _ => match &desc.default {
+                                                    klipp_plugin::ParamValue::Rgb(r, g, b) => (*r, *g, *b),
+                                                    _ => (1.0, 1.0, 1.0),
+                                                },
+                                            };
+                                            let mut color = egui::Color32::from_rgb(
+                                                (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
+                                            );
+                                            if ui.color_edit_button_srgba(&mut color).changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::Rgb(
+                                                        color.r() as f64 / 255.0,
+                                                        color.g() as f64 / 255.0,
+                                                        color.b() as f64 / 255.0,
+                                                    ),
+                                                });
+                                            }
+                                        }
+                                        klipp_plugin::ParamType::String => {
+                                            let mut v = match current_value {
+                                                Some(klipp_plugin::OfxValue::String(s)) => s.clone(),
+                                                _ => match &desc.default {
+                                                    klipp_plugin::ParamValue::String(s) => s.clone(),
+                                                    _ => String::new(),
+                                                },
+                                            };
+                                            if ui.text_edit_singleline(&mut v).changed() {
+                                                cmds.push(AppCommand::SetEffectParam {
+                                                    clip_id,
+                                                    effect_index: i,
+                                                    param_name: desc.name.clone(),
+                                                    value: klipp_plugin::OfxValue::String(v),
+                                                });
+                                            }
+                                        }
+                                        _ => {
+                                            ui.label(egui::RichText::new(format!("{:?}", desc.param_type)).size(10.0).color(egui::Color32::from_rgb(100, 100, 110)));
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                }
+            }
+
             ui.add_space(2.0);
         }
 

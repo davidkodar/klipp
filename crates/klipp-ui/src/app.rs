@@ -198,7 +198,7 @@ impl KlippApp {
             layout,
             layout_dirty: false,
             browser: BrowserPanel::default(),
-            new_inspector: NewInspectorPanel,
+            new_inspector: NewInspectorPanel::default(),
             new_timeline: crate::timeline::NewTimelinePanel,
             skim_consumer,
             cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
@@ -231,8 +231,9 @@ impl KlippApp {
 
                 if let Some(media_path) = first_media {
                     if media_path.exists() {
-                        // Extract a frame at 1 second (or start) and save as PNG
-                        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&media_path, 1.0, 320) {
+                        // Extract a non-black frame and save as PNG
+                        let est_duration = rp.duration_secs.unwrap_or(60.0);
+                        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, 1.0, est_duration, 320) {
                             let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
                             let out_path = cache_dir.join(format!("{stem}.png"));
                             if save_rgba_as_png(&rgba, w, h, &out_path) {
@@ -254,7 +255,8 @@ impl KlippApp {
         let mut ofx_host = klipp_plugin::OfxHost::new();
         let count = ofx_host.discover_plugins();
         app.state.available_plugins = ofx_host.plugin_infos();
-        tracing::info!("OFX: discovered {} plugin(s)", count);
+        app.state.effect_registry.merge_ofx_plugins(&app.state.available_plugins);
+        tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
         app
     }
 
@@ -495,7 +497,7 @@ impl KlippApp {
         let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
         std::thread::spawn(move || {
-            match klipp_engine::generate_thumbnail(&path, seek_secs) {
+            match klipp_engine::generate_thumbnail_non_black(&path, seek_secs, duration_secs) {
                 Ok((rgba, w, h)) => {
                     let _ = tx.send(ThumbnailResult {
                         media_id,
@@ -822,6 +824,18 @@ impl KlippApp {
         }
     }
 
+    fn poll_effect_thumbnails(&mut self, ctx: &egui::Context) {
+        // Render built-in effect thumbnails when reference frame changes
+        if let Some(ref_frame) = &self.state.effect_registry.reference_frame {
+            let effects: Vec<_> = self.state.effect_registry.effects.iter()
+                .map(|e| (e.name.clone(), e.source.clone()))
+                .collect();
+            self.state.effect_thumbnails.generate_builtins_if_needed(ref_frame, &effects);
+        }
+        // Poll completed thumbnails (both built-in and on-demand OFX)
+        self.state.effect_thumbnails.poll_and_upload(ctx);
+    }
+
     fn upload_frame_to_egui(&mut self, ctx: &egui::Context) {
         let t_total = std::time::Instant::now();
         let mut fb = self.frame_buffer.lock().unwrap();
@@ -835,6 +849,19 @@ impl KlippApp {
         if fb.data.len() != w * h * 4 {
             fb.dirty = false;
             return;
+        }
+
+        // Capture reference frame for effect thumbnails (before we take ownership).
+        // Skip all-black frames (common at clip start) — check a few sample pixels.
+        let has_content = fb.data.len() >= 64 && {
+            let mid = fb.data.len() / 2;
+            let q1 = fb.data.len() / 4;
+            let q3 = 3 * fb.data.len() / 4;
+            // Check R channel at several points
+            fb.data[q1] > 0 || fb.data[mid] > 0 || fb.data[q3] > 0
+        };
+        if has_content {
+            self.state.effect_registry.set_reference_frame(&fb.data, fb.width, fb.height);
         }
 
         // Zero-copy: RGBA [u8;4] has the same layout as egui::Color32.
@@ -1520,6 +1547,19 @@ impl KlippApp {
                             if from < clip.effects.len() && to < clip.effects.len() {
                                 let effect = clip.effects.remove(from);
                                 clip.effects.insert(to, effect);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+
+                AppCommand::SetEffectParam { clip_id, effect_index, ref param_name, ref value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                                effect.param_values.insert(param_name.clone(), value.clone());
                             }
                             break;
                         }
@@ -3956,6 +3996,7 @@ impl eframe::App for KlippApp {
         self.drain_proxy_progress();
         self.poll_render_queue();
         self.upload_frame_to_egui(ctx);
+        self.poll_effect_thumbnails(ctx);
 
         // Window title with project name and dirty indicator
         {

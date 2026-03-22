@@ -1,4 +1,6 @@
 pub mod media_tab;
+pub mod effect_registry;
+pub mod effect_thumbnails;
 pub mod effects_tab;
 pub mod audio_fx_tab;
 pub mod titles_tab;

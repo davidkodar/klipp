@@ -1,0 +1,200 @@
+//! Unified effect registry — merges built-in effects and OFX plugins into one browseable list.
+
+use crate::browser::effects_tab::EffectCategory;
+
+/// Whether an effect is built-in or from an OFX plugin.
+#[derive(Debug, Clone)]
+pub enum EffectSource {
+    Builtin(klipp_effects::BuiltinEffect),
+    Ofx(String), // plugin identifier
+}
+
+/// A single entry in the effects browser.
+#[derive(Debug, Clone)]
+pub struct EffectEntry {
+    pub name: String,
+    pub category: EffectCategory,
+    pub source: EffectSource,
+    pub source_label: &'static str,
+    pub grouping: String,
+}
+
+/// A downscaled reference frame used as source for effect thumbnails.
+#[derive(Clone)]
+pub struct ReferenceFrame {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct EffectRegistry {
+    pub effects: Vec<EffectEntry>,
+    /// The current reference frame for thumbnail generation.
+    pub reference_frame: Option<ReferenceFrame>,
+}
+
+impl Default for EffectRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EffectRegistry {
+    pub fn new() -> Self {
+        let effects = vec![
+            EffectEntry {
+                name: "Opacity".into(),
+                category: EffectCategory::Color,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Opacity { value: 1.0 }),
+                source_label: "Built-in",
+                grouping: "Color".into(),
+            },
+            EffectEntry {
+                name: "Gaussian Blur".into(),
+                category: EffectCategory::Blur,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.0 }),
+                source_label: "Built-in",
+                grouping: "Blur".into(),
+            },
+            EffectEntry {
+                name: "Sharpen".into(),
+                category: EffectCategory::Blur,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 }),
+                source_label: "Built-in",
+                grouping: "Blur".into(),
+            },
+            EffectEntry {
+                name: "Crop".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Crop {
+                    left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+                }),
+                source_label: "Built-in",
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
+                name: "Transform".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Transform {
+                    position_x: 0.0, position_y: 0.0,
+                    scale_x: 1.0, scale_y: 1.0,
+                    rotation: 0.0,
+                    anchor_x: 0.5, anchor_y: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
+                name: "Chroma Key".into(),
+                category: EffectCategory::Keying,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaKey {
+                    key_color: [0, 255, 0],
+                    tolerance: 0.2,
+                    spill_suppression: 0.1,
+                }),
+                source_label: "Built-in",
+                grouping: "Keying".into(),
+            },
+        ];
+
+        Self { effects, reference_frame: None }
+    }
+
+    /// Merge discovered OFX plugins into the registry.
+    pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
+        for plugin in plugins {
+            let display_name = format_ofx_name(&plugin.name);
+            let category = category_from_grouping(&plugin.grouping);
+
+            self.effects.push(EffectEntry {
+                name: display_name,
+                category,
+                source: EffectSource::Ofx(plugin.name.clone()),
+                source_label: "OFX",
+                grouping: plugin.grouping.clone(),
+            });
+        }
+    }
+
+    /// Set the reference frame from a full-resolution RGBA buffer.
+    /// Downscales to thumbnail size (192x108) using nearest-neighbor.
+    pub fn set_reference_frame(&mut self, rgba: &[u8], src_w: u32, src_h: u32) {
+        const THUMB_W: u32 = 192;
+        const THUMB_H: u32 = 108;
+
+        if rgba.len() != (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
+            return;
+        }
+
+        let mut thumb = vec![0u8; (THUMB_W * THUMB_H * 4) as usize];
+        for ty in 0..THUMB_H {
+            for tx in 0..THUMB_W {
+                let sx = (tx as f32 / THUMB_W as f32 * src_w as f32) as u32;
+                let sy = (ty as f32 / THUMB_H as f32 * src_h as f32) as u32;
+                let si = ((sy * src_w + sx) * 4) as usize;
+                let di = ((ty * THUMB_W + tx) * 4) as usize;
+                thumb[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+            }
+        }
+
+        self.reference_frame = Some(ReferenceFrame {
+            rgba: thumb,
+            width: THUMB_W,
+            height: THUMB_H,
+        });
+    }
+
+    /// Filter effects by category and search query.
+    pub fn filtered(&self, category: EffectCategory, search: &str) -> Vec<&EffectEntry> {
+        let search_lower = search.to_lowercase();
+        self.effects
+            .iter()
+            .filter(|e| {
+                (category == EffectCategory::All || e.category == category)
+                    && (search_lower.is_empty()
+                        || e.name.to_lowercase().contains(&search_lower)
+                        || e.grouping.to_lowercase().contains(&search_lower))
+            })
+            .collect()
+    }
+}
+
+/// Convert an OFX plugin identifier to a human-readable name.
+/// "net.sf.openfx.GaussianBlur" → "Gaussian Blur"
+/// "net.sf.cimg.CImgBloom" → "CImg Bloom"
+fn format_ofx_name(identifier: &str) -> String {
+    let last = identifier.rsplit_once('.').map(|(_, n)| n).unwrap_or(identifier);
+    // Insert spaces before uppercase letters (CamelCase → Camel Case)
+    let mut result = String::with_capacity(last.len() + 4);
+    for (i, c) in last.chars().enumerate() {
+        if i > 0 && c.is_uppercase() {
+            // Don't insert space if previous char was also uppercase (e.g. "CImg")
+            let prev = last.as_bytes()[i - 1] as char;
+            if prev.is_lowercase() {
+                result.push(' ');
+            }
+        }
+        result.push(c);
+    }
+    result
+}
+
+/// Map an OFX grouping string to an EffectCategory.
+fn category_from_grouping(grouping: &str) -> EffectCategory {
+    let g = grouping.to_lowercase();
+    if g.contains("blur") || g.contains("sharpen") || g.contains("soften") || g.contains("denoise") {
+        EffectCategory::Blur
+    } else if g.contains("color") || g.contains("colour") || g.contains("grade") || g.contains("correct")
+        || g.contains("saturation") || g.contains("hue")
+    {
+        EffectCategory::Color
+    } else if g.contains("key") {
+        EffectCategory::Keying
+    } else if g.contains("distort") || g.contains("warp") || g.contains("transform") || g.contains("lens") {
+        EffectCategory::Distort
+    } else if g.contains("light") || g.contains("glow") || g.contains("flare") || g.contains("bloom") {
+        EffectCategory::Light
+    } else {
+        EffectCategory::Stylize
+    }
+}

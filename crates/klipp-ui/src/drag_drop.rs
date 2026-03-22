@@ -4,7 +4,12 @@ use klipp_core::MediaId;
 #[derive(Debug, Clone)]
 pub enum DragPayload {
     /// Dragging an effect from the effects browser tab.
-    Effect { name: String },
+    Effect {
+        name: String,
+        is_builtin: bool,
+        /// OFX plugin identifier (if OFX), or empty for built-in.
+        plugin_id: String,
+    },
     /// Dragging a transition from the transitions browser tab.
     Transition { name: String },
     /// Dragging a media item from the media browser tab.

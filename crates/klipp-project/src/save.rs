@@ -173,9 +173,16 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
         param_values: effect.param_values.iter().map(|(k, v): (&String, &klipp_plugin::OfxValue)| {
             let json_val = match v {
                 klipp_plugin::OfxValue::Double(d) => OfxValueJson::Double(*d),
-                klipp_plugin::OfxValue::Int(i) => OfxValueJson::Double(*i as f64),
+                klipp_plugin::OfxValue::Double2(a, b) => OfxValueJson::Double2([*a, *b]),
+                klipp_plugin::OfxValue::Double3(a, b, c) => OfxValueJson::Double3([*a, *b, *c]),
+                klipp_plugin::OfxValue::Int(i) => OfxValueJson::Int(*i),
+                klipp_plugin::OfxValue::Int2(a, b) => OfxValueJson::Int2([*a, *b]),
+                klipp_plugin::OfxValue::Int3(a, b, c) => OfxValueJson::Int3([*a, *b, *c]),
                 klipp_plugin::OfxValue::Bool(b) => OfxValueJson::Bool(*b),
+                klipp_plugin::OfxValue::Choice(c) => OfxValueJson::Choice(*c),
                 klipp_plugin::OfxValue::String(s) => OfxValueJson::String(s.clone()),
+                klipp_plugin::OfxValue::Rgba(r, g, b, a) => OfxValueJson::Rgba([*r, *g, *b, *a]),
+                klipp_plugin::OfxValue::Rgb(r, g, b) => OfxValueJson::Rgb([*r, *g, *b]),
             };
             (k.clone(), json_val)
         }).collect(),

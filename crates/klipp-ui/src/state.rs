@@ -153,6 +153,10 @@ pub struct AppState {
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
+    // Unified effects registry (built-in + OFX merged)
+    pub effect_registry: crate::browser::effect_registry::EffectRegistry,
+    pub effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer,
+
     // Render queue
     pub render_queue: klipp_export::RenderQueue,
     pub show_render_queue: bool,
@@ -344,6 +348,8 @@ impl Default for AppState {
             global_lut_path: None,
             global_lut_opacity: 1.0,
             available_plugins: Vec::new(),
+            effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
+            effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
             render_queue: klipp_export::RenderQueue::new(),
             show_render_queue: false,
             filmstrip_generating: false,

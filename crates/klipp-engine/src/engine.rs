@@ -1906,8 +1906,9 @@ impl PlaybackEngine {
         let t2 = std::time::Instant::now();
 
         // 2. OFX effects chain
+        let frame_time = self.playhead.to_secs_f64();
         let rgba = if !ofx_effects.is_empty() {
-            self.ofx_host.apply_effects_chain(&ofx_effects, &rgba, width, height)
+            self.ofx_host.apply_effects_chain(&ofx_effects, &rgba, width, height, frame_time)
         } else { rgba };
         let t3 = std::time::Instant::now();
 
@@ -2311,6 +2312,95 @@ pub fn generate_thumbnail_at_size(
         buf
     };
     Ok((rgba, dst_w, dst_h))
+}
+
+/// Check if an RGBA frame is effectively black (< 5% average brightness).
+/// Samples ~64 evenly spaced pixels for speed.
+pub fn is_frame_black(rgba: &[u8], width: u32, height: u32) -> bool {
+    let total_pixels = (width * height) as usize;
+    if total_pixels == 0 || rgba.len() < total_pixels * 4 {
+        return true;
+    }
+    let step = (total_pixels / 64).max(1);
+    let mut brightness_sum: u64 = 0;
+    let mut samples = 0u64;
+    for i in (0..total_pixels).step_by(step) {
+        let idx = i * 4;
+        brightness_sum += rgba[idx] as u64 + rgba[idx + 1] as u64 + rgba[idx + 2] as u64;
+        samples += 1;
+    }
+    if samples == 0 {
+        return true;
+    }
+    // Average brightness per channel (0-255). Threshold: 13 (~5% of 255)
+    let avg = brightness_sum / (samples * 3);
+    avg < 13
+}
+
+/// Generate a thumbnail, skipping black frames by trying progressively later positions.
+/// Tries the initial seek, then 5%, 10%, 20%, 30% of duration.
+pub fn generate_thumbnail_non_black(
+    path: &std::path::Path,
+    initial_seek_secs: f64,
+    duration_secs: f64,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let positions = [
+        initial_seek_secs,
+        duration_secs * 0.05,
+        duration_secs * 0.10,
+        duration_secs * 0.20,
+        duration_secs * 0.30,
+    ];
+    let mut last_result = None;
+    for &secs in &positions {
+        if secs < 0.0 {
+            continue;
+        }
+        match generate_thumbnail(path, secs) {
+            Ok((rgba, w, h)) => {
+                if !is_frame_black(&rgba, w, h) {
+                    return Ok((rgba, w, h));
+                }
+                last_result = Some((rgba, w, h));
+            }
+            Err(e) => {
+                if last_result.is_none() {
+                    last_result = Some(generate_thumbnail(path, 0.0).map_err(|_| e)?);
+                }
+            }
+        }
+    }
+    // All positions were black — return the last one anyway
+    last_result.ok_or_else(|| "No frame decoded".to_string())
+}
+
+/// Same as generate_thumbnail_non_black but at a specific max width.
+pub fn generate_thumbnail_at_size_non_black(
+    path: &std::path::Path,
+    initial_seek_secs: f64,
+    duration_secs: f64,
+    max_width: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let positions = [
+        initial_seek_secs,
+        duration_secs * 0.05,
+        duration_secs * 0.10,
+        duration_secs * 0.20,
+        duration_secs * 0.30,
+    ];
+    let mut last_result = None;
+    for &secs in &positions {
+        if secs < 0.0 {
+            continue;
+        }
+        if let Ok((rgba, w, h)) = generate_thumbnail_at_size(path, secs, max_width) {
+            if !is_frame_black(&rgba, w, h) {
+                return Ok((rgba, w, h));
+            }
+            last_result = Some((rgba, w, h));
+        }
+    }
+    last_result.ok_or_else(|| "No non-black frame found".to_string())
 }
 
 /// Generate filmstrip thumbnails incrementally with throttling.

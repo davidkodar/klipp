@@ -171,9 +171,16 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                             param_values: e.param_values.iter().map(|(k, v)| {
                                 let val = match v {
                                     OfxValueJson::Double(d) => klipp_plugin::OfxValue::Double(*d),
-                                    OfxValueJson::Int(i) => klipp_plugin::OfxValue::Double(*i as f64),
+                                    OfxValueJson::Double2([a, b]) => klipp_plugin::OfxValue::Double2(*a, *b),
+                                    OfxValueJson::Double3([a, b, c]) => klipp_plugin::OfxValue::Double3(*a, *b, *c),
+                                    OfxValueJson::Int(i) => klipp_plugin::OfxValue::Int(*i),
+                                    OfxValueJson::Int2([a, b]) => klipp_plugin::OfxValue::Int2(*a, *b),
+                                    OfxValueJson::Int3([a, b, c]) => klipp_plugin::OfxValue::Int3(*a, *b, *c),
                                     OfxValueJson::Bool(b) => klipp_plugin::OfxValue::Bool(*b),
+                                    OfxValueJson::Choice(c) => klipp_plugin::OfxValue::Choice(*c),
                                     OfxValueJson::String(s) => klipp_plugin::OfxValue::String(s.clone()),
+                                    OfxValueJson::Rgba([r, g, b, a]) => klipp_plugin::OfxValue::Rgba(*r, *g, *b, *a),
+                                    OfxValueJson::Rgb([r, g, b]) => klipp_plugin::OfxValue::Rgb(*r, *g, *b),
                                 };
                                 (k.clone(), val)
                             }).collect::<HashMap<_, _>>(),

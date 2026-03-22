@@ -216,6 +216,7 @@ pub enum AppCommand {
     RemoveEffect { clip_id: ClipId, effect_index: usize },
     SetEffectEnabled { clip_id: ClipId, effect_index: usize, enabled: bool },
     ReorderEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+    SetEffectParam { clip_id: ClipId, effect_index: usize, param_name: String, value: crate::OfxValue },
 
     // Built-in effects
     AddBuiltinEffect { clip_id: ClipId, effect: klipp_effects::BuiltinEffect },
