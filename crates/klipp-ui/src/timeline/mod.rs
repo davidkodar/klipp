@@ -3,6 +3,7 @@ pub mod track_headers;
 pub mod ruler;
 pub mod playhead;
 pub mod skimmer;
+pub mod sequence_tabs;
 pub mod time_utils;
 
 use crate::state::AppState;
@@ -43,9 +44,19 @@ impl NewTimelinePanel {
             toolbar::show(ui, state, theme);
         });
 
-        // Content area below toolbar
-        let content_rect = egui::Rect::from_min_max(
+        // ── Sequence tabs (24px) ──
+        let tabs_rect = egui::Rect::from_min_size(
             egui::pos2(full_rect.min.x, toolbar_rect.max.y),
+            egui::vec2(full_rect.width(), sequence_tabs::HEIGHT),
+        );
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
+            let tab_cmds = sequence_tabs::show(ui, state, theme);
+            cmds.extend(tab_cmds);
+        });
+
+        // Content area below tabs
+        let content_rect = egui::Rect::from_min_max(
+            egui::pos2(full_rect.min.x, tabs_rect.max.y),
             full_rect.max,
         );
 

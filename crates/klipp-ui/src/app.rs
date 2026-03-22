@@ -2377,6 +2377,119 @@ impl KlippApp {
                     tracing::info!("Created new project at {:?}", project_dir);
                     continue;
                 }
+                AppCommand::SetActiveSequence { sequence_idx } => {
+                    if *sequence_idx < self.state.sequences.len()
+                        && *sequence_idx != self.state.active_sequence_idx
+                    {
+                        // Save current playhead to outgoing sequence
+                        let playhead_rt = klipp_core::RationalTime {
+                            value: self.state.playhead.value,
+                            rate: self.state.playhead.rate,
+                        };
+                        self.state.sequences[self.state.active_sequence_idx].last_playhead =
+                            Some(playhead_rt);
+                        // Switch
+                        self.state.active_sequence_idx = *sequence_idx;
+                        // Restore playhead from incoming sequence
+                        let restored = self.state.sequences[*sequence_idx]
+                            .last_playhead
+                            .map(|rt| Timecode { value: rt.value, rate: rt.rate })
+                            .unwrap_or(Timecode::zero());
+                        self.state.playhead = restored;
+                        self.state.playhead_smooth_secs = restored.to_secs_f64();
+                        self.state.playhead_anchor = restored;
+                        self.state.playhead_anchor_wall = std::time::Instant::now();
+                        self.state.playhead_speed = 1.0;
+                        // Sync fps
+                        self.state.fps = self.state.sequences[*sequence_idx].fps;
+                        // Stop playback
+                        self.cmd_tx.send(AppCommand::Stop).ok();
+                        self.sync_sequence_to_engine();
+                        // Clear selection
+                        self.state.selected_clip = None;
+                        self.state.selected_clips.clear();
+                        self.state.hovered_clip = None;
+                    }
+                    continue;
+                }
+                AppCommand::AddSequence { name, fps_num, fps_den, width, height } => {
+                    let seq = klipp_timeline::Sequence {
+                        id: klipp_core::SequenceId::new(),
+                        name: name.clone(),
+                        fps: klipp_core::Fps::new(*fps_num, *fps_den),
+                        resolution: klipp_core::Resolution { width: *width, height: *height },
+                        tracks: {
+                            let mut tracks = vec![
+                                klipp_timeline::Track::new("Video 2", klipp_timeline::TrackKind::Video),
+                                klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
+                                klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
+                            ];
+                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Primary;
+                            tracks[2].magnetic_role = klipp_timeline::TrackRole::Connected;
+                            tracks
+                        },
+                        in_point: None,
+                        out_point: None,
+                        markers: Vec::new(),
+                        last_playhead: None,
+                    };
+                    self.state.sequences.push(seq);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::DuplicateSequence { sequence_idx, new_name } => {
+                    if *sequence_idx < self.state.sequences.len() {
+                        let mut dup = self.state.sequences[*sequence_idx].clone();
+                        dup.id = klipp_core::SequenceId::new();
+                        dup.name = new_name.clone();
+                        self.state.sequences.push(dup);
+                        self.state.dirty = true;
+                    }
+                    continue;
+                }
+                AppCommand::RenameSequence { sequence_idx, new_name } => {
+                    if *sequence_idx < self.state.sequences.len() {
+                        self.state.sequences[*sequence_idx].name = new_name.clone();
+                        self.state.dirty = true;
+                    }
+                    continue;
+                }
+                AppCommand::DeleteSequence { sequence_idx } => {
+                    if self.state.sequences.len() > 1 && *sequence_idx < self.state.sequences.len() {
+                        self.state.sequences.remove(*sequence_idx);
+                        // Adjust active index
+                        if self.state.active_sequence_idx >= self.state.sequences.len() {
+                            self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        } else if self.state.active_sequence_idx > *sequence_idx {
+                            self.state.active_sequence_idx -= 1;
+                        }
+                        self.state.fps = self.state.sequences[self.state.active_sequence_idx].fps;
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                    }
+                    continue;
+                }
+                AppCommand::ReorderSequences { from_idx, to_idx } => {
+                    let len = self.state.sequences.len();
+                    if *from_idx < len && *to_idx < len && from_idx != to_idx {
+                        let seq = self.state.sequences.remove(*from_idx);
+                        self.state.sequences.insert(*to_idx, seq);
+                        // Adjust active index
+                        if self.state.active_sequence_idx == *from_idx {
+                            self.state.active_sequence_idx = *to_idx;
+                        } else if *from_idx < self.state.active_sequence_idx
+                            && *to_idx >= self.state.active_sequence_idx
+                        {
+                            self.state.active_sequence_idx -= 1;
+                        } else if *from_idx > self.state.active_sequence_idx
+                            && *to_idx <= self.state.active_sequence_idx
+                        {
+                            self.state.active_sequence_idx += 1;
+                        }
+                        self.state.dirty = true;
+                    }
+                    continue;
+                }
                 AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
                     // Spawn a targeted filmstrip pass for the requested range
                     if let Some(item) = self.state.media_pool.get(media_id) {

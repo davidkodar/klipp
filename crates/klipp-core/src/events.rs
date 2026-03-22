@@ -141,6 +141,14 @@ pub enum AppCommand {
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
 
+    // Sequences
+    AddSequence { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
+    DuplicateSequence { sequence_idx: usize, new_name: String },
+    SetActiveSequence { sequence_idx: usize },
+    RenameSequence { sequence_idx: usize, new_name: String },
+    DeleteSequence { sequence_idx: usize },
+    ReorderSequences { from_idx: usize, to_idx: usize },
+
     // Edit
     Undo,
     Redo,

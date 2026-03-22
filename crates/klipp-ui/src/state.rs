@@ -192,6 +192,10 @@ pub struct AppState {
     // New Project dialog
     pub show_new_project_dialog: bool,
 
+    // Sequence tab rename
+    pub renaming_sequence_idx: Option<usize>,
+    pub rename_sequence_buf: String,
+
     // Auto-save recovery dialog
     pub show_autosave_recovery: bool,
     pub autosave_recovery_path: Option<PathBuf>,
@@ -356,6 +360,8 @@ impl Default for AppState {
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_new_project_dialog: false,
+            renaming_sequence_idx: None,
+            rename_sequence_buf: String::new(),
             show_autosave_recovery: false,
             autosave_recovery_path: None,
             autosave_original_path: None,
