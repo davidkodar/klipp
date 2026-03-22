@@ -103,6 +103,10 @@ pub struct AppState {
     pub browser_skim_texture: Option<egui::TextureHandle>,
     pub browser_skim_media_id: Option<MediaId>,
     pub skim_transcoding: std::collections::HashSet<MediaId>,
+    /// Active skim transcode progress: (filename, progress 0.0..1.0)
+    pub skim_transcode_status: Option<(String, f32)>,
+    /// When the last skim transcode finished (for "Done" display)
+    pub skim_transcode_done_at: Option<std::time::Instant>,
     /// Pending skim frame RGBA to upload as texture (media_id, rgba, width, height)
     pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
@@ -323,6 +327,8 @@ impl Default for AppState {
             browser_skim_texture: None,
             browser_skim_media_id: None,
             skim_transcoding: std::collections::HashSet::new(),
+            skim_transcode_status: None,
+            skim_transcode_done_at: None,
             browser_skim_pending: None,
             browser_skim_active_this_frame: false,
             pending_skim_transcodes: Vec::new(),

@@ -457,6 +457,7 @@ pub enum AppEvent {
     EngineStats { dropped_frames: u64, hw_decode: bool },
 
     // Skim transcode
+    SkimTranscodeProgress { media_id: MediaId, progress: f32 },
     SkimTranscodeComplete { media_id: MediaId, path: PathBuf },
     SkimTranscodeFailed { media_id: MediaId, error: String },
 

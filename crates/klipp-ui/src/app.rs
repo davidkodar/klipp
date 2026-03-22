@@ -480,7 +480,8 @@ impl KlippApp {
                     self.state.master_peak_right = self.state.master_peak_right.max(right);
                 }
                 // Skim events come through proxy_event_rx, handled in drain_proxy_events
-                AppEvent::SkimTranscodeComplete { .. }
+                AppEvent::SkimTranscodeProgress { .. }
+                | AppEvent::SkimTranscodeComplete { .. }
                 | AppEvent::SkimTranscodeFailed { .. }
                 | AppEvent::BrowserSkimFrameReady { .. } => {}
             }
@@ -4876,7 +4877,10 @@ impl KlippApp {
                 return;
             }
             let source_path = item.path.clone();
+            let duration_secs = item.duration.to_secs_f64();
+            let filename = item.filename.clone();
             self.state.skim_transcoding.insert(media_id);
+            self.state.skim_transcode_status = Some((filename, 0.0));
 
             let skim_dir = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
@@ -4887,45 +4891,61 @@ impl KlippApp {
 
             let event_tx = self.proxy_event_tx.clone();
             std::thread::spawn(move || {
-                // Try NVENC first (GPU), fall back to libx264 (CPU)
-                let result = std::process::Command::new("ffmpeg")
-                    .args([
-                        "-y",
-                        "-hwaccel", "cuda",
-                        "-i", source_path.to_str().unwrap_or(""),
-                        "-c:v", "h264_nvenc",
-                        "-g", "1",
-                        "-preset", "p1",       // fastest NVENC preset
-                        "-rc", "constqp",
-                        "-qp", "18",
-                        "-an",
-                        "-vf", "scale_cuda=960:-2",
-                        skim_path.to_str().unwrap_or(""),
-                    ])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+                let run_ffmpeg = |args: &[&str]| -> Result<std::process::ExitStatus, std::io::Error> {
+                    use std::io::BufRead;
+                    // Use -progress pipe:1 for clean key=value progress on stdout
+                    let mut full_args: Vec<&str> = args.to_vec();
+                    full_args.extend_from_slice(&["-progress", "pipe:1"]);
 
-                // If NVENC failed (no GPU, unsupported codec), retry with CPU
+                    let mut child = std::process::Command::new("ffmpeg")
+                        .args(&full_args)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()?;
+
+                    // Parse stdout for progress lines: "out_time_us=12345678"
+                    if let Some(stdout) = child.stdout.take() {
+                        let reader = std::io::BufReader::new(stdout);
+                        for line in reader.lines().map_while(Result::ok) {
+                            if let Some(val) = line.strip_prefix("out_time_us=") {
+                                if let Ok(us) = val.parse::<i64>() {
+                                    if duration_secs > 0.0 && us > 0 {
+                                        let secs = us as f64 / 1_000_000.0;
+                                        let progress = (secs / duration_secs).clamp(0.0, 1.0) as f32;
+                                        let _ = event_tx.send(AppEvent::SkimTranscodeProgress {
+                                            media_id,
+                                            progress,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    child.wait()
+                };
+
+                let src = source_path.to_str().unwrap_or("");
+                let dst = skim_path.to_str().unwrap_or("");
+
+                // Try NVENC first (GPU), fall back to libx264 (CPU)
+                let result = run_ffmpeg(&[
+                    "-y", "-hwaccel", "cuda",
+                    "-i", src,
+                    "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
+                    "-rc", "constqp", "-qp", "18",
+                    "-an", "-vf", "scale_cuda=960:-2", dst,
+                ]);
+
                 let result = match &result {
                     Ok(status) if status.success() => result,
                     _ => {
                         tracing::info!("NVENC skim transcode failed, falling back to libx264");
-                        std::process::Command::new("ffmpeg")
-                            .args([
-                                "-y", "-i",
-                                source_path.to_str().unwrap_or(""),
-                                "-c:v", "libx264",
-                                "-g", "1",
-                                "-crf", "18",
-                                "-preset", "ultrafast",
-                                "-an",
-                                "-vf", "scale=960:-2",
-                                skim_path.to_str().unwrap_or(""),
-                            ])
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status()
+                        run_ffmpeg(&[
+                            "-y", "-i", src,
+                            "-c:v", "libx264", "-g", "1", "-crf", "18",
+                            "-preset", "ultrafast",
+                            "-an", "-vf", "scale=960:-2", dst,
+                        ])
                     }
                 };
 
@@ -5004,8 +5024,18 @@ impl KlippApp {
                         std::time::Instant::now(),
                     ));
                 }
+                AppEvent::SkimTranscodeProgress { media_id, progress } => {
+                    let filename = self.state.media_pool.get(&media_id)
+                        .map(|m| m.filename.clone())
+                        .unwrap_or_default();
+                    self.state.skim_transcode_status = Some((filename, progress));
+                }
                 AppEvent::SkimTranscodeComplete { media_id, path } => {
                     self.state.skim_transcoding.remove(&media_id);
+                    if self.state.skim_transcoding.is_empty() {
+                        self.state.skim_transcode_status = None;
+                        self.state.skim_transcode_done_at = Some(std::time::Instant::now());
+                    }
                     if let Some(item) = self.state.media_pool.get_mut(&media_id) {
                         item.skim_file = Some(path.clone());
                     }
@@ -5016,6 +5046,9 @@ impl KlippApp {
                 }
                 AppEvent::SkimTranscodeFailed { media_id, error } => {
                     self.state.skim_transcoding.remove(&media_id);
+                    if self.state.skim_transcoding.is_empty() {
+                        self.state.skim_transcode_status = None;
+                    }
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();

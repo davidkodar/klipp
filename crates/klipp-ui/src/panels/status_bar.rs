@@ -111,6 +111,73 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             // Audio info
             status_item(ui, theme, "PipeWire \u{00b7} 48kHz");
 
+            // Skim pre-render progress (active or recently completed)
+            let skim_done_fade = state.skim_transcode_done_at.map(|t| {
+                let elapsed = t.elapsed().as_secs_f32();
+                (1.0 - elapsed / 3.0).clamp(0.0, 1.0) // fade over 3 seconds
+            });
+            let show_skim_active = state.skim_transcode_status.is_some();
+            let show_skim_done = skim_done_fade.is_some_and(|f| f > 0.0);
+
+            if show_skim_active || show_skim_done {
+                let (label_text, progress, alpha) = if show_skim_active {
+                    let (ref filename, prog) = state.skim_transcode_status.as_ref().unwrap();
+                    let short = if filename.len() > 20 {
+                        format!("{}...", &filename[..17])
+                    } else {
+                        filename.clone()
+                    };
+                    (format!("Pre-rendering: {short}"), *prog, 1.0_f32)
+                } else {
+                    let fade = skim_done_fade.unwrap();
+                    ("Pre-render complete".to_string(), 1.0, fade)
+                };
+
+                let pct = (progress * 100.0) as u32;
+                let text_alpha = (alpha * 255.0) as u8;
+                let bar_color = if show_skim_active {
+                    egui::Color32::from_rgb(0x70, 0xb0, 0x90)
+                } else {
+                    egui::Color32::from_rgb(0x50, 0xd0, 0x70) // green for done
+                };
+
+                ui.label(
+                    egui::RichText::new(format!("{pct}%"))
+                        .size(10.0)
+                        .monospace()
+                        .color(theme.text_secondary.linear_multiply(alpha)),
+                );
+
+                // Progress bar
+                let bar_w = 60.0;
+                let bar_h = 3.0;
+                let (bar_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+                ui.painter().rect_filled(bar_rect, 2.0, theme.bg_raised.linear_multiply(alpha));
+                let fill_w = (progress * bar_w).clamp(0.0, bar_w);
+                if fill_w > 0.0 {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            bar_rect.left_top(),
+                            egui::vec2(fill_w, bar_h),
+                        ),
+                        2.0,
+                        bar_color.linear_multiply(alpha),
+                    );
+                }
+
+                ui.label(
+                    egui::RichText::new(&label_text)
+                        .size(10.0)
+                        .monospace()
+                        .color(egui::Color32::from_rgba_premultiplied(
+                            theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), text_alpha,
+                        )),
+                );
+
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            }
+
             // Render progress (if active)
             if let Some((label, progress)) = state.render_queue.active_job_progress() {
                 let pct = (progress * 100.0) as u32;
