@@ -346,7 +346,7 @@ impl ToolbarPanel {
             if ui.add_enabled(state.history.can_undo(), egui::Button::new(state.history.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text("Ctrl+Z")).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
             if ui.add_enabled(state.history.can_redo(), egui::Button::new(state.history.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Y")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             ui.separator();
-            if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() { let ph = state.playhead; for (ti, t) in state.sequence.tracks.iter().enumerate() { if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); } } ui.close_menu(); }
+            if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() { let ph = state.playhead; for (ti, t) in state.sequence().tracks.iter().enumerate() { if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); } } ui.close_menu(); }
         });
     }
     fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {

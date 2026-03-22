@@ -11,10 +11,17 @@ pub struct ProjectJson {
     /// ISO 8601 timestamp of when the project was saved.
     #[serde(default)]
     pub saved_at: Option<String>,
+    /// ISO 8601 timestamp of when the project was first created.
+    #[serde(default)]
+    pub created_at: Option<String>,
     /// Platform that saved the project (e.g. "linux-x86_64").
     #[serde(default)]
     pub platform: Option<String>,
-    pub sequence: SequenceJson,
+    /// All sequences in this project. Always at least one.
+    pub sequences: Vec<SequenceJson>,
+    /// Which sequence was active when the project was last saved.
+    #[serde(default)]
+    pub active_sequence_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,6 +43,8 @@ pub struct SequenceJson {
     pub markers: Vec<MarkerJson>,
     #[serde(default = "default_header_width")]
     pub track_header_width: f32,
+    #[serde(default)]
+    pub last_playhead: Option<TimecodeJson>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

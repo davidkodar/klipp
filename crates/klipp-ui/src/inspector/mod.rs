@@ -24,7 +24,7 @@ impl NewInspectorPanel {
         let clip_id = state.selected_clip;
         let clip_info = clip_id.and_then(|cid| {
             state
-                .sequence
+                .sequence()
                 .tracks
                 .iter()
                 .enumerate()

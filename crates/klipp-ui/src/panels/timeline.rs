@@ -212,7 +212,7 @@ impl TimelinePanel {
                 content_rect.min,
                 egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
             );
-            let dur_secs = state.sequence.total_duration().to_secs_f64() as f32;
+            let dur_secs = state.sequence().total_duration().to_secs_f64() as f32;
             if dur_secs > 0.0 {
                 let px_per_sec = overview_rect.width() / dur_secs;
                 let zoom = state.timeline_zoom;
@@ -260,7 +260,7 @@ impl TimelinePanel {
         if !self.embedded {
             let zoom = state.timeline_zoom;
             let scroll = state.timeline_scroll_x;
-            for marker in &state.sequence.markers {
+            for marker in &state.sequence().markers {
                 let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
                 if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
                     let (r, g, b) = marker.color.to_rgb();
@@ -317,14 +317,14 @@ impl TimelinePanel {
         let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
         let mut track_y = tracks_start_y;
 
-        let track_count = state.sequence.tracks.len();
+        let track_count = state.sequence().tracks.len();
 
         // Pre-compute all track rects so cross-track drag can find any track
         self.track_rects.clear();
         {
             let mut pre_y = tracks_start_y;
             for ti in 0..track_count {
-                let tk = state.sequence.tracks[ti].kind;
+                let tk = state.sequence().tracks[ti].kind;
                 let th = match tk {
                     TrackKind::Video => VIDEO_TRACK_HEIGHT,
                     TrackKind::Audio => AUDIO_TRACK_HEIGHT,
@@ -339,8 +339,8 @@ impl TimelinePanel {
         }
 
         for track_idx in 0..track_count {
-            let track_kind = state.sequence.tracks[track_idx].kind;
-            let track_name = state.sequence.tracks[track_idx].name.clone();
+            let track_kind = state.sequence().tracks[track_idx].kind;
+            let track_name = state.sequence().tracks[track_idx].name.clone();
             let track_height = match track_kind {
                 TrackKind::Video => VIDEO_TRACK_HEIGHT,
                 TrackKind::Audio => AUDIO_TRACK_HEIGHT,
@@ -352,7 +352,7 @@ impl TimelinePanel {
                 TrackKind::Video => egui::Color32::from_rgb(140, 140, 150),
                 TrackKind::Audio => egui::Color32::from_rgb(100, 150, 110),
             };
-            let track_locked = state.sequence.tracks[track_idx].locked;
+            let track_locked = state.sequence().tracks[track_idx].locked;
 
             // Lock state read above — button placed in track controls block to avoid context menu overlap
 
@@ -375,7 +375,7 @@ impl TimelinePanel {
 
             // Track control buttons
             {
-                let track = &state.sequence.tracks[track_idx];
+                let track = &state.sequence().tracks[track_idx];
                 match track_kind {
                     TrackKind::Video => {
                         // [L] lock toggle
@@ -396,7 +396,7 @@ impl TimelinePanel {
                             egui::FontId::proportional(9.0),
                             if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
                         if l_resp.clicked() {
-                            let track_id = state.sequence.tracks[track_idx].id;
+                            let track_id = state.sequence().tracks[track_idx].id;
                             cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
                         }
 
@@ -487,7 +487,7 @@ impl TimelinePanel {
                             egui::FontId::proportional(9.0),
                             if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
                         if al_resp.clicked() {
-                            let track_id = state.sequence.tracks[track_idx].id;
+                            let track_id = state.sequence().tracks[track_idx].id;
                             cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
                         }
 
@@ -675,7 +675,7 @@ impl TimelinePanel {
                     ui.id().with(("track_hdr_ctx", track_idx)),
                     egui::Sense::click(),
                 );
-                let track_id = state.sequence.tracks[track_idx].id;
+                let track_id = state.sequence().tracks[track_idx].id;
                 hdr_resp.context_menu(|ui| {
                     ui.set_min_width(160.0);
                     if track_kind == TrackKind::Video
@@ -694,7 +694,7 @@ impl TimelinePanel {
                         ui.close_menu();
                     }
                     ui.separator();
-                    let has_clips = !state.sequence.tracks[track_idx].clips.is_empty();
+                    let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
                     let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
                     if !has_clips && remove_resp.clicked() {
                         cmds.push(AppCommand::RemoveTrack { track_id });
@@ -963,11 +963,11 @@ impl TimelinePanel {
         let cy = status_rect.center().y;
 
         // Left side: clip count + selected clip info
-        let total_clips: usize = state.sequence.tracks.iter().map(|t| t.clips.len()).sum();
+        let total_clips: usize = state.sequence().tracks.iter().map(|t| t.clips.len()).sum();
         let mut left_text = format!("{} clip{}", total_clips, if total_clips != 1 { "s" } else { "" });
 
         if let Some(clip_id) = state.selected_clip {
-            if let Some(clip) = state.sequence.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
+            if let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
                 if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     left_text += &format!("{sep}{}", media.filename);
                 }
@@ -994,7 +994,7 @@ impl TimelinePanel {
         } else if view_secs >= 1.0 {
             format!("{:.0}s", view_secs)
         } else {
-            let fps = state.sequence.fps.num as f32 / state.sequence.fps.den as f32;
+            let fps = state.sequence().fps.num as f32 / state.sequence().fps.den as f32;
             format!("{:.0}f", view_secs * fps)
         };
         let mut right_text = format!("Zoom: {zoom_label} visible");
@@ -1027,8 +1027,8 @@ impl TimelinePanel {
         track_idx: usize,
         interactive: bool,
     ) {
-        let track_kind = state.sequence.tracks[track_idx].kind;
-        let clips: Vec<_> = state.sequence.tracks[track_idx].clips.clone();
+        let track_kind = state.sequence().tracks[track_idx].kind;
+        let clips: Vec<_> = state.sequence().tracks[track_idx].clips.clone();
 
         let zoom = state.timeline_zoom;
         let scroll = state.timeline_scroll_x;
@@ -1537,7 +1537,7 @@ impl TimelinePanel {
             }
 
             // Locked track overlay: semi-transparent dark with diagonal lines
-            if state.sequence.tracks[track_idx].locked {
+            if state.sequence().tracks[track_idx].locked {
                 painter.rect_filled(
                     clip_rect,
                     3.0,
@@ -1675,7 +1675,7 @@ impl TimelinePanel {
                                 best_secs = ph_secs;
                             }
                             // All clip edges
-                            for track in &state.sequence.tracks {
+                            for track in &state.sequence().tracks {
                                 for c in &track.clips {
                                     for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
                                         let d = (raw_secs - edge_secs).abs();
@@ -1687,14 +1687,14 @@ impl TimelinePanel {
                                 }
                             }
                             // In/out markers
-                            if let Some(inp) = state.sequence.in_point {
+                            if let Some(inp) = state.sequence().in_point {
                                 let d = (raw_secs - inp.to_secs_f64()).abs();
                                 if d < snap_thresh_secs && d < best_dist {
                                     best_dist = d;
                                     best_secs = inp.to_secs_f64();
                                 }
                             }
-                            if let Some(outp) = state.sequence.out_point {
+                            if let Some(outp) = state.sequence().out_point {
                                 let d = (raw_secs - outp.to_secs_f64()).abs();
                                 if d < snap_thresh_secs && d < best_dist {
                                     best_secs = outp.to_secs_f64();
@@ -1727,7 +1727,7 @@ impl TimelinePanel {
         }
 
         // Draw transition indicators between clips
-        if let Some(track) = state.sequence.tracks.get(track_idx) {
+        if let Some(track) = state.sequence().tracks.get(track_idx) {
             for transition in &track.transitions {
                 // Find clip_b (the incoming clip) to determine the transition position
                 let clip_b = track.find_clip(transition.clip_b_id);
@@ -1792,8 +1792,8 @@ impl TimelinePanel {
         // Draw anchor connection lines for connected clips
         for clip in &clips {
             if let Some(ref anchor) = clip.magnetic_anchor {
-                if let Some(primary_idx) = state.sequence.primary_track_index() {
-                    let anchor_clip = state.sequence.tracks[primary_idx].clips.iter()
+                if let Some(primary_idx) = state.sequence().primary_track_index() {
+                    let anchor_clip = state.sequence().tracks[primary_idx].clips.iter()
                         .find(|c| c.id == anchor.anchor_clip_id);
                     if let Some(ac) = anchor_clip {
                         let anchor_x = content_rect.left()
@@ -1841,7 +1841,7 @@ impl TimelinePanel {
         }
 
         // Draw collision indicators for overlapping clips on connected tracks
-        if state.sequence.tracks.get(track_idx).is_some_and(|t| {
+        if state.sequence().tracks.get(track_idx).is_some_and(|t| {
             t.magnetic_role == klipp_timeline::TrackRole::Connected
                 || t.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline
         }) {
@@ -1994,7 +1994,7 @@ impl TimelinePanel {
                 }
 
                 // Link/Unlink
-                let clip_info = state.sequence.tracks.iter()
+                let clip_info = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id);
                 if let Some(clip) = clip_info {
@@ -2005,7 +2005,7 @@ impl TimelinePanel {
                         }
                     } else {
                         // Find a candidate clip on another track at the same position
-                        let candidate = state.sequence.tracks.iter().flat_map(|t| t.clips.iter())
+                        let candidate = state.sequence().tracks.iter().flat_map(|t| t.clips.iter())
                             .find(|c| {
                                 c.id != clip_id
                                     && c.linked_clip_id.is_none()
@@ -2025,7 +2025,7 @@ impl TimelinePanel {
 
                 // Three-point edit operations
                 let has_source = state.source_media_id.is_some();
-                let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
+                let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
                 if ui.add_enabled(has_source, egui::Button::new("Insert (,)")).clicked() {
                     cmds.push(AppCommand::InsertEdit);
                     ui.close_menu();
@@ -2046,7 +2046,7 @@ impl TimelinePanel {
                 // Transitions
                 ui.separator();
                 // Find adjacent clip pairs involving the selected clip
-                if let Some(track) = state.sequence.tracks.get(track_idx) {
+                if let Some(track) = state.sequence().tracks.get(track_idx) {
                     let clip_pos = track.clips.iter().position(|c| c.id == clip_id);
                     if let Some(pos) = clip_pos {
                         // Check if there's a clip after this one (transition at the cut point)
@@ -2142,7 +2142,7 @@ impl TimelinePanel {
                     cmds.push(AppCommand::GroupClips { clip_ids: ids });
                     ui.close_menu();
                 }
-                let clip_group = state.sequence.tracks.iter()
+                let clip_group = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| Some(c.id) == state.selected_clip)
                     .and_then(|c| c.group_id);
@@ -2155,10 +2155,10 @@ impl TimelinePanel {
 
                 // Magnetic connect/disconnect
                 ui.separator();
-                let is_on_primary = state.sequence.tracks.get(track_idx)
+                let is_on_primary = state.sequence().tracks.get(track_idx)
                     .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
                 if !is_on_primary {
-                    let clip_data = state.sequence.tracks.iter()
+                    let clip_data = state.sequence().tracks.iter()
                         .flat_map(|t| t.clips.iter())
                         .find(|c| c.id == clip_id);
                     if let Some(cd) = clip_data {
@@ -2172,7 +2172,7 @@ impl TimelinePanel {
                         }
                     }
                     // Storyline promotion
-                    let track_role = state.sequence.tracks.get(track_idx)
+                    let track_role = state.sequence().tracks.get(track_idx)
                         .map(|t| t.magnetic_role.clone());
                     if let Some(role) = track_role {
                         if role == klipp_timeline::TrackRole::Connected {
@@ -2190,10 +2190,10 @@ impl TimelinePanel {
 
                 // Lock Track
                 ui.separator();
-                let track_locked = state.sequence.tracks.get(track_idx).is_some_and(|t| t.locked);
+                let track_locked = state.sequence().tracks.get(track_idx).is_some_and(|t| t.locked);
                 let lock_label = if track_locked { "Unlock Track" } else { "Lock Track" };
                 if ui.button(lock_label).clicked() {
-                    let track_id = state.sequence.tracks[track_idx].id;
+                    let track_id = state.sequence().tracks[track_idx].id;
                     cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
                     ui.close_menu();
                 }
@@ -2227,7 +2227,7 @@ impl TimelinePanel {
                                 cut_secs = ph_secs;
                             }
                             // Clip edges
-                            for track in &state.sequence.tracks {
+                            for track in &state.sequence().tracks {
                                 for c in &track.clips {
                                     for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
                                         let d = (click_secs - edge_secs).abs();
@@ -2239,14 +2239,14 @@ impl TimelinePanel {
                                 }
                             }
                             // In/out markers
-                            if let Some(inp) = state.sequence.in_point {
+                            if let Some(inp) = state.sequence().in_point {
                                 let d = (click_secs - inp.to_secs_f64()).abs();
                                 if d < snap_thresh_secs && d < best_dist {
                                     best_dist = d;
                                     cut_secs = inp.to_secs_f64();
                                 }
                             }
-                            if let Some(outp) = state.sequence.out_point {
+                            if let Some(outp) = state.sequence().out_point {
                                 let d = (click_secs - outp.to_secs_f64()).abs();
                                 if d < snap_thresh_secs && d < best_dist {
                                     cut_secs = outp.to_secs_f64();
@@ -2272,7 +2272,7 @@ impl TimelinePanel {
                         } else {
                             // If clip is grouped, select all group members
                             if let Some(gid) = hit_clip.group_id {
-                                state.selected_clips = state.sequence.tracks.iter()
+                                state.selected_clips = state.sequence().tracks.iter()
                                     .flat_map(|t| t.clips.iter())
                                     .filter(|c| c.group_id == Some(gid))
                                     .map(|c| c.id)
@@ -2330,7 +2330,7 @@ impl TimelinePanel {
                     if state.active_tool == Tool::Select {
                         let linked_id = hit_clip.linked_clip_id;
                         let linked_orig = linked_id.and_then(|lid| {
-                            state.sequence.tracks.iter()
+                            state.sequence().tracks.iter()
                                 .flat_map(|t| t.clips.iter())
                                 .find(|c| c.id == lid)
                                 .map(|c| c.timeline_in)
@@ -2354,7 +2354,7 @@ impl TimelinePanel {
         // Collect all snap points: (time_secs, RationalTime) for each clip edge + playhead + zero
         let snap_targets: Vec<(f64, RationalTime, Option<ClipId>)> = {
             let mut targets = Vec::new();
-            for track in &state.sequence.tracks {
+            for track in &state.sequence().tracks {
                 for clip in &track.clips {
                     targets.push((clip.timeline_in.to_secs_f64(), clip.timeline_in, Some(clip.id)));
                     targets.push((clip.timeline_out.to_secs_f64(), clip.timeline_out, Some(clip.id)));
@@ -2363,10 +2363,10 @@ impl TimelinePanel {
             targets.push((state.playhead.to_secs_f64(), state.playhead, None));
             targets.push((0.0, RationalTime { value: 0, rate: fps.rate() }, None));
             // Snap to in/out markers if set
-            if let Some(inp) = state.sequence.in_point {
+            if let Some(inp) = state.sequence().in_point {
                 targets.push((inp.to_secs_f64(), inp, None));
             }
-            if let Some(outp) = state.sequence.out_point {
+            if let Some(outp) = state.sequence().out_point {
                 targets.push((outp.to_secs_f64(), outp, None));
             }
             targets
@@ -2395,7 +2395,7 @@ impl TimelinePanel {
                     let dt_secs = dx as f64 / zoom as f64;
                     let dt_frames = RationalTime::from_secs_f64(dt_secs, fps.rate());
 
-                    let media_duration = state.sequence.tracks.get(trim.track_idx)
+                    let media_duration = state.sequence().tracks.get(trim.track_idx)
                         .and_then(|t| t.find_clip(trim.clip_id))
                         .and_then(|c| c.media_id())
                         .and_then(|mid| state.media_pool.get(&mid))
@@ -2437,7 +2437,7 @@ impl TimelinePanel {
                                 let final_delta = new_timeline_in - trim.original_timeline_in;
                                 let final_source_in = trim.original_source_in + final_delta;
 
-                                if let Some(track) = state.sequence.tracks.get_mut(trim.track_idx) {
+                                if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
                                     if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                         c.source_in = final_source_in;
                                         c.timeline_in = new_timeline_in;
@@ -2482,7 +2482,7 @@ impl TimelinePanel {
                                 let final_timeline_out = trim.original_timeline_in + final_duration;
                                 let ripple_delta = final_timeline_out - trim.original_timeline_out;
 
-                                if let Some(track) = state.sequence.tracks.get_mut(trim.track_idx) {
+                                if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
                                     if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                         c.source_in = clamped_source_in;
                                         // timeline_in stays at original
@@ -2533,7 +2533,7 @@ impl TimelinePanel {
                             let final_delta = new_timeline_out - trim.original_timeline_out;
                             let final_source_out = trim.original_source_out + final_delta;
 
-                            if let Some(track) = state.sequence.tracks.get_mut(trim.track_idx) {
+                            if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
                                 if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                     c.source_out = final_source_out;
                                     c.timeline_out = new_timeline_out;
@@ -2565,7 +2565,7 @@ impl TimelinePanel {
             }
 
             if pointer_released && trim.track_idx == track_idx {
-                if let Some(track) = state.sequence.tracks.get(trim.track_idx) {
+                if let Some(track) = state.sequence().tracks.get(trim.track_idx) {
                     if let Some(c) = track.find_clip(trim.clip_id) {
                         cmds.push(AppCommand::TrimClip {
                             clip_id: trim.clip_id,
@@ -2608,7 +2608,7 @@ impl TimelinePanel {
                     let mut final_in = new_timeline_in;
                     let mut snapped = false;
 
-                    if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
+                    if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
                         if let Some(clip) = track.find_clip(drag.clip_id) {
                             let dur = clip.duration();
                             let new_out = new_timeline_in + dur;
@@ -2643,13 +2643,13 @@ impl TimelinePanel {
                         final_in.value = 0;
                     }
 
-                    let is_primary = state.sequence.tracks.get(drag.track_idx)
+                    let is_primary = state.sequence().tracks.get(drag.track_idx)
                         .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
 
                     if is_primary {
                         // PRIMARY TRACK: Don't move clip in sequence.
                         // Keep it at original position. Draw a floating ghost + insertion indicator.
-                        let clip_dur = state.sequence.tracks.get(drag.track_idx)
+                        let clip_dur = state.sequence().tracks.get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .map(|c| c.duration().to_secs_f64() as f32)
                             .unwrap_or(1.0);
@@ -2669,7 +2669,7 @@ impl TimelinePanel {
                         painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
 
                         // Draw filmstrip in ghost if available
-                        if let Some(media_id) = state.sequence.tracks.get(drag.track_idx)
+                        if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .and_then(|c| c.media_id())
                         {
@@ -2686,7 +2686,7 @@ impl TimelinePanel {
 
                         // Insertion indicator: find where the clip would land between existing clips
                         let target_secs = final_in.to_secs_f64();
-                        if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
+                        if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
                             // Find insertion point (between which clips)
                             let mut insert_x = content_rect.left() - scroll; // before all clips
                             for c in &track.clips {
@@ -2733,7 +2733,7 @@ impl TimelinePanel {
                         // NON-PRIMARY: Legacy free movement
                         let delta = final_in - drag.original_timeline_in;
 
-                        if let Some(track) = state.sequence.tracks.get_mut(drag.track_idx) {
+                        if let Some(track) = state.sequence_mut().tracks.get_mut(drag.track_idx) {
                             if let Some(clip) = track.find_clip_mut(drag.clip_id) {
                                 let dur = clip.duration();
                                 clip.timeline_in = final_in;
@@ -2743,7 +2743,7 @@ impl TimelinePanel {
 
                         // Move linked partner by same delta (absolute from its original position)
                         if let (Some(lid), Some(orig_in)) = (drag.linked_clip_id, drag.linked_original_in) {
-                            for track in &mut state.sequence.tracks {
+                            for track in &mut state.sequence_mut().tracks {
                                 if let Some(lclip) = track.find_clip_mut(lid) {
                                     let dur = lclip.duration();
                                     let new_in = orig_in + delta;
@@ -2760,7 +2760,7 @@ impl TimelinePanel {
 
                         // Drop zone highlight — amber glow around the clip when snapped (non-primary only)
                         if snapped {
-                            if let Some(track) = state.sequence.tracks.get(drag.track_idx) {
+                            if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
                                 if let Some(clip) = track.find_clip(drag.clip_id) {
                                     let dur_secs = clip.duration().to_secs_f64() as f32;
                                     let drop_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -2781,9 +2781,9 @@ impl TimelinePanel {
                     // Highlight target track if different from source
                     if let Some(target_idx) = hover_track_idx {
                         if target_idx != drag.track_idx {
-                            let source_kind = state.sequence.tracks.get(drag.track_idx)
+                            let source_kind = state.sequence().tracks.get(drag.track_idx)
                                 .map(|t| t.kind);
-                            let target_kind = state.sequence.tracks.get(target_idx)
+                            let target_kind = state.sequence().tracks.get(target_idx)
                                 .map(|t| t.kind);
                             if source_kind == target_kind {
                                 if let Some((_, _, rect)) = self.track_rects.iter()
@@ -2815,11 +2815,11 @@ impl TimelinePanel {
 
                 if let Some(to_track) = target_track {
                     if to_track != from_track {
-                        let source_kind = state.sequence.tracks.get(from_track).map(|t| t.kind);
-                        let target_kind = state.sequence.tracks.get(to_track).map(|t| t.kind);
+                        let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
+                        let target_kind = state.sequence().tracks.get(to_track).map(|t| t.kind);
                         if source_kind == target_kind {
                             // Cross-track move
-                            if let Some(track) = state.sequence.tracks.get(from_track) {
+                            if let Some(track) = state.sequence().tracks.get(from_track) {
                                 if let Some(clip) = track.find_clip(clip_id) {
                                     cmds.push(AppCommand::MoveClipToTrack {
                                         clip_id,
@@ -2831,7 +2831,7 @@ impl TimelinePanel {
                             }
                         } else {
                             // Incompatible track type — revert position
-                            if let Some(track) = state.sequence.tracks.get_mut(from_track) {
+                            if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
                                 if let Some(clip) = track.find_clip_mut(clip_id) {
                                     let dur = clip.duration();
                                     clip.timeline_in = drag.original_timeline_in;
@@ -2841,7 +2841,7 @@ impl TimelinePanel {
                         }
                     } else {
                         // Same track move
-                        let is_primary = state.sequence.tracks.get(from_track)
+                        let is_primary = state.sequence().tracks.get(from_track)
                             .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
                         if is_primary {
                             // Magnetic: reorder within primary (index-based move)
@@ -2853,18 +2853,18 @@ impl TimelinePanel {
                             });
                             if let Some(target_time) = target_time {
                                 // Clip is already at original position (we didn't move it during drag)
-                                if let Some(track) = state.sequence.tracks.get_mut(from_track) {
+                                if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
                                     track.sort_clips();
                                 }
                                 let result = klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                    &mut state.sequence, clip_id, target_time);
-                                state.history.push(crate::history::EditCommand::Magnetic(result.command));
+                                    state.sequence_mut(), clip_id, target_time);
+                                state.history.push(crate::history::HistoryEntry { sequence_idx: state.active_sequence_idx, command: crate::history::EditCommand::Magnetic(result.command) });
                                 state.dirty = true;
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
                         } else {
                             // Legacy: free move
-                            if let Some(track) = state.sequence.tracks.get(from_track) {
+                            if let Some(track) = state.sequence().tracks.get(from_track) {
                                 if let Some(clip) = track.find_clip(clip_id) {
                                     cmds.push(AppCommand::MoveClip {
                                         clip_id,
@@ -3208,7 +3208,7 @@ impl TimelinePanel {
         let scroll = state.timeline_scroll_x;
         let marker_color = egui::Color32::from_rgb(220, 160, 60);
 
-        if let Some(in_pt) = state.sequence.in_point {
+        if let Some(in_pt) = state.sequence().in_point {
             let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
             if x >= ruler_rect.left() && x <= ruler_rect.right() {
                 painter.text(
@@ -3221,7 +3221,7 @@ impl TimelinePanel {
             }
         }
 
-        if let Some(out_pt) = state.sequence.out_point {
+        if let Some(out_pt) = state.sequence().out_point {
             let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
             if x >= ruler_rect.left() && x <= ruler_rect.right() {
                 painter.text(
@@ -3235,7 +3235,7 @@ impl TimelinePanel {
         }
 
         // Highlight region between in and out
-        if let (Some(in_pt), Some(out_pt)) = (state.sequence.in_point, state.sequence.out_point) {
+        if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point) {
             let x1 = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
             let x2 = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
             let x1 = x1.max(ruler_rect.left());
@@ -3272,7 +3272,7 @@ impl TimelinePanel {
         );
 
         // Compute total sequence duration
-        let dur_secs = state.sequence.total_duration().to_secs_f64() as f32;
+        let dur_secs = state.sequence().total_duration().to_secs_f64() as f32;
         if dur_secs <= 0.0 {
             return;
         }
@@ -3290,12 +3290,12 @@ impl TimelinePanel {
         let vp_x1 = (rect.left() + view_end_secs * px_per_sec).min(rect.right());
 
         // Draw clips as tiny colored rectangles with lane gaps
-        let track_count = state.sequence.tracks.len().max(1) as f32;
+        let track_count = state.sequence().tracks.len().max(1) as f32;
         let lane_gap = 1.0_f32;
         let total_gap = lane_gap * (track_count - 1.0).max(0.0);
         let lane_h = ((rect.height() - 4.0 - total_gap) / track_count).max(2.0);
 
-        for (track_idx, track) in state.sequence.tracks.iter().enumerate() {
+        for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
             let lane_y = rect.top() + 2.0 + track_idx as f32 * (lane_h + lane_gap);
 
             for clip in &track.clips {

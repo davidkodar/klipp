@@ -90,10 +90,23 @@ impl EditCommand {
     }
 }
 
+/// Wraps an EditCommand with the sequence index it targets.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub sequence_idx: usize,
+    pub command: EditCommand,
+}
+
+impl HistoryEntry {
+    pub fn label(&self) -> &'static str {
+        self.command.label()
+    }
+}
+
 #[derive(Default)]
 pub struct CommandHistory {
-    undo_stack: Vec<EditCommand>,
-    redo_stack: Vec<EditCommand>,
+    undo_stack: Vec<HistoryEntry>,
+    redo_stack: Vec<HistoryEntry>,
     max_size: usize,
 }
 
@@ -106,24 +119,24 @@ impl CommandHistory {
         }
     }
 
-    pub fn push(&mut self, cmd: EditCommand) {
-        self.undo_stack.push(cmd);
+    pub fn push(&mut self, entry: HistoryEntry) {
+        self.undo_stack.push(entry);
         self.redo_stack.clear();
         if self.undo_stack.len() > self.max_size {
             self.undo_stack.remove(0);
         }
     }
 
-    pub fn undo(&mut self) -> Option<EditCommand> {
-        let cmd = self.undo_stack.pop()?;
-        self.redo_stack.push(cmd.clone());
-        Some(cmd)
+    pub fn undo(&mut self) -> Option<HistoryEntry> {
+        let entry = self.undo_stack.pop()?;
+        self.redo_stack.push(entry.clone());
+        Some(entry)
     }
 
-    pub fn redo(&mut self) -> Option<EditCommand> {
-        let cmd = self.redo_stack.pop()?;
-        self.undo_stack.push(cmd.clone());
-        Some(cmd)
+    pub fn redo(&mut self) -> Option<HistoryEntry> {
+        let entry = self.redo_stack.pop()?;
+        self.undo_stack.push(entry.clone());
+        Some(entry)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -135,10 +148,10 @@ impl CommandHistory {
     }
 
     pub fn undo_label(&self) -> Option<&'static str> {
-        self.undo_stack.last().map(|c| c.label())
+        self.undo_stack.last().map(|e| e.label())
     }
 
     pub fn redo_label(&self) -> Option<&'static str> {
-        self.redo_stack.last().map(|c| c.label())
+        self.redo_stack.last().map(|e| e.label())
     }
 }

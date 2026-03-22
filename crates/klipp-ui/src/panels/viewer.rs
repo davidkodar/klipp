@@ -200,7 +200,7 @@ impl ViewerPanel {
     ) {
         let _ = cmds;
 
-        let current_media = state.sequence.tracks.iter()
+        let current_media = state.sequence().tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clip_at_timecode(state.playhead))
             .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)));
@@ -571,7 +571,7 @@ impl ViewerPanel {
             );
 
             // Edit buttons
-            let has_in_out = state.sequence.in_point.is_some() && state.sequence.out_point.is_some();
+            let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
             let edit_buttons: &[(&str, AppCommand, bool)] = &[
                 ("Insert (,)", AppCommand::InsertEdit, true),
                 ("Overwrite (.)", AppCommand::OverwriteEdit, true),

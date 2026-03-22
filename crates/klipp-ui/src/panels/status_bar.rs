@@ -57,7 +57,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         let fps = state.fps.as_f64() as u32;
         let res_str = format!(
             "{}x{} \u{00b7} {}fps",
-            state.sequence.resolution.width, state.sequence.resolution.height, fps
+            state.sequence().resolution.width, state.sequence().resolution.height, fps
         );
         status_item(ui, theme, &res_str);
 

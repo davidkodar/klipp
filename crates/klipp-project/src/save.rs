@@ -19,17 +19,19 @@ impl Default for ColorSettings {
 
 pub fn save_project(
     dir: &Path,
-    sequence: &Sequence,
+    sequences: &[Sequence],
     media_pool: &MediaPool,
 ) -> Result<(), String> {
-    save_project_with_color(dir, sequence, media_pool, &ColorSettings::default())
+    save_project_with_color(dir, sequences, media_pool, &ColorSettings::default(), None, None)
 }
 
 pub fn save_project_with_color(
     dir: &Path,
-    sequence: &Sequence,
+    sequences: &[Sequence],
     media_pool: &MediaPool,
     color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
 ) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
@@ -70,8 +72,10 @@ pub fn save_project_with_color(
         klipp_version_min: "0.1.0".to_string(),
         klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         saved_at: Some(now),
+        created_at: created_at.map(|s| s.to_string()),
         platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
-        sequence: sequence_to_json(sequence, color),
+        sequences: sequences.iter().map(|s| sequence_to_json(s, color)).collect(),
+        active_sequence_id: active_sequence_id.map(|s| s.to_string()),
     };
 
     let project_json = serde_json::to_string_pretty(&project)
@@ -109,6 +113,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
         global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
         global_lut_opacity: color.global_lut_opacity,
         track_header_width: color.track_header_width,
+        last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {
                 id: m.id.to_string(),

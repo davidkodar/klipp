@@ -19,9 +19,11 @@ pub struct AppState {
     pub playback_speed: f64,
 
     // Project
-    pub sequence: Sequence,
+    pub sequences: Vec<Sequence>,
+    pub active_sequence_idx: usize,
     pub media_pool: MediaPool,
     pub project_path: Option<PathBuf>,
+    pub created_at: Option<String>,
     pub dirty: bool,
     pub history: CommandHistory,
 
@@ -259,9 +261,11 @@ impl Default for AppState {
             playhead: Timecode::zero(),
             fps: Fps::film_24(),
             playback_speed: 1.0,
-            sequence: Sequence::new_default(),
+            sequences: vec![Sequence::new_default()],
+            active_sequence_idx: 0,
             media_pool: MediaPool::new(),
             project_path: None,
+            created_at: None,
             dirty: false,
             history: CommandHistory::new(),
             viewer_inspector_split: 0.6,
@@ -365,7 +369,13 @@ impl Default for AppState {
 }
 
 impl AppState {
+    pub fn sequence(&self) -> &Sequence {
+        &self.sequences[self.active_sequence_idx]
+    }
+    pub fn sequence_mut(&mut self) -> &mut Sequence {
+        &mut self.sequences[self.active_sequence_idx]
+    }
     pub fn sequence_duration(&self) -> Timecode {
-        self.sequence.total_duration()
+        self.sequence().total_duration()
     }
 }

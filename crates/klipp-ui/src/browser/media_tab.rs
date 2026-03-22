@@ -143,7 +143,7 @@ fn format_fps(fps: &klipp_core::Fps) -> String {
 /// Check if a media item is used in the timeline.
 fn is_media_used(state: &AppState, media_id: MediaId) -> bool {
     state
-        .sequence
+        .sequence()
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter())

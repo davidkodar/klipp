@@ -34,7 +34,7 @@ impl MarkersPanel {
                 // Marker list
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut remove_id = None;
-                    let markers: Vec<_> = state.sequence.markers.iter().map(|m| {
+                    let markers: Vec<_> = state.sequence().markers.iter().map(|m| {
                         (m.id, m.position, m.label.clone(), m.color)
                     }).collect();
 

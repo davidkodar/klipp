@@ -36,7 +36,7 @@ pub fn show(
     let mut toggle_mute: Option<usize> = None;
     let mut toggle_lock: Option<usize> = None;
 
-    for (track_idx, track) in state.sequence.tracks.iter().enumerate() {
+    for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
         let track_h = match track.kind {
             TrackKind::Video => crate::theme::TRACK_VIDEO_H,
             TrackKind::Audio => crate::theme::TRACK_AUDIO_H,
@@ -191,9 +191,11 @@ pub fn show(
 
     // Apply deferred toggles
     if let Some(idx) = toggle_mute {
-        state.sequence.tracks[idx].muted = !state.sequence.tracks[idx].muted;
+        let muted = state.sequence().tracks[idx].muted;
+        state.sequence_mut().tracks[idx].muted = !muted;
     }
     if let Some(idx) = toggle_lock {
-        state.sequence.tracks[idx].locked = !state.sequence.tracks[idx].locked;
+        let locked = state.sequence().tracks[idx].locked;
+        state.sequence_mut().tracks[idx].locked = !locked;
     }
 }

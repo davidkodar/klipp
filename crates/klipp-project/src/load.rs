@@ -10,14 +10,31 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::ColorSettings), String> {
+/// Result of loading a project: sequences, media pool, color settings, active sequence ID, created_at.
+pub type LoadResult = (Vec<Sequence>, MediaPool, crate::save::ColorSettings, Option<String>, Option<String>);
+
+pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
     let manifest_path = dir.join("media").join("manifest.json");
 
     let project_str = std::fs::read_to_string(&project_path)
         .map_err(|e| format!("Failed to read project.json: {e}"))?;
-    let project: ProjectJson = serde_json::from_str(&project_str)
+
+    // Two-step deserialization: handle old singular "sequence" vs new plural "sequences"
+    let mut value: serde_json::Value = serde_json::from_str(&project_str)
         .map_err(|e| format!("Failed to parse project.json: {e}"))?;
+
+    if value.get("sequences").is_none() {
+        if let Some(seq) = value.get("sequence").cloned() {
+            let obj = value.as_object_mut().unwrap();
+            obj.insert("sequences".to_string(), serde_json::Value::Array(vec![seq]));
+            obj.remove("sequence");
+            info!("Migrated old single-sequence project format");
+        }
+    }
+
+    let project: ProjectJson = serde_json::from_value(value)
+        .map_err(|e| format!("Failed to deserialize project: {e}"))?;
 
     let manifest_str = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
@@ -56,16 +73,36 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
             added_at: item_json.added_at.unwrap_or(0),
-            skim_file: None, // Will be detected from cache on load
+            skim_file: None,
             waveform_data: None,
             audio_cache: None,
         };
         media_pool.add(media_item);
     }
 
-    // Reconstruct sequence
-    let seq_json = &project.sequence;
-    let sequence = Sequence {
+    // Reconstruct all sequences
+    let sequences: Vec<Sequence> = project.sequences.iter()
+        .filter_map(|seq_json| load_sequence_from_json(seq_json).ok())
+        .collect();
+
+    if sequences.is_empty() {
+        return Err("Project contains no valid sequences".into());
+    }
+
+    // Use color settings from the first sequence (global LUT is project-wide)
+    let first = &project.sequences[0];
+    let color_settings = crate::save::ColorSettings {
+        global_lut_path: first.global_lut_path.as_ref().map(PathBuf::from),
+        global_lut_opacity: first.global_lut_opacity,
+        track_header_width: first.track_header_width,
+    };
+
+    info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
+    Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at))
+}
+
+fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> {
+    Ok(Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
         fps: Fps::new(seq_json.fps.num, seq_json.fps.den),
@@ -172,16 +209,8 @@ pub fn load_project(dir: &Path) -> Result<(Sequence, MediaPool, crate::save::Col
                 color,
             })
         }).collect(),
-    };
-
-    let color_settings = crate::save::ColorSettings {
-        global_lut_path: seq_json.global_lut_path.as_ref().map(PathBuf::from),
-        global_lut_opacity: seq_json.global_lut_opacity,
-        track_header_width: seq_json.track_header_width,
-    };
-
-    info!("Project loaded from {:?}", dir);
-    Ok((sequence, media_pool, color_settings))
+        last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+    })
 }
 
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.

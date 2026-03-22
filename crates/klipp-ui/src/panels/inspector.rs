@@ -37,7 +37,7 @@ impl InspectorPanel {
 
         let clip_id = state.selected_clip;
         let clip_info = clip_id.and_then(|cid| {
-            state.sequence.tracks.iter().enumerate().find_map(|(ti, t)| {
+            state.sequence().tracks.iter().enumerate().find_map(|(ti, t)| {
                 t.find_clip(cid).map(|c| (ti, c))
             })
         });
@@ -218,7 +218,7 @@ impl InspectorPanel {
                 ui.end_row();
 
                 ui.label("Track:");
-                if let Some(track) = state.sequence.tracks.get(track_idx) {
+                if let Some(track) = state.sequence().tracks.get(track_idx) {
                     ui.label(&track.name);
                 }
                 ui.end_row();

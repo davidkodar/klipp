@@ -54,6 +54,9 @@ pub struct Sequence {
     pub out_point: Option<Timecode>,
     #[serde(default)]
     pub markers: Vec<Marker>,
+    /// Remembered playhead position for multi-sequence tab switching.
+    #[serde(default)]
+    pub last_playhead: Option<RationalTime>,
 }
 
 impl Sequence {
@@ -76,6 +79,7 @@ impl Sequence {
             in_point: None,
             out_point: None,
             markers: Vec::new(),
+            last_playhead: None,
         }
     }
 

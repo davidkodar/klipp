@@ -78,7 +78,7 @@ pub fn show(
     section_header(ui, theme, "Timeline");
     info_row(ui, theme, "In", &clip.timeline_in.to_timecode_string());
     info_row(ui, theme, "Out", &clip.timeline_out.to_timecode_string());
-    if let Some(track) = state.sequence.tracks.get(track_idx) {
+    if let Some(track) = state.sequence().tracks.get(track_idx) {
         info_row(ui, theme, "Track", &track.name);
     }
 }
