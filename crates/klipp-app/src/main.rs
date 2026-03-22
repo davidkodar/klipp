@@ -34,6 +34,10 @@ fn main() -> Result<()> {
     let sequence = Arc::new(RwLock::new(Sequence::new_default()));
     let media_pool = Arc::new(RwLock::new(MediaPool::new()));
 
+    // Skim audio consumer — shared between engine (cpal callback) and app (UI thread)
+    let skim_consumer: klipp_engine::audio_output::SkimConsumer =
+        Arc::new(Mutex::new(None));
+
     let engine = PlaybackEngine::new(
         cmd_rx,
         event_tx,
@@ -41,6 +45,7 @@ fn main() -> Result<()> {
         sequence.clone(),
         media_pool.clone(),
         Box::new(|| {}),
+        skim_consumer.clone(),
     )
     .map_err(|e| anyhow::anyhow!("Failed to create playback engine: {e}"))?;
 
@@ -63,6 +68,7 @@ fn main() -> Result<()> {
     let fb_clone = frame_buffer.clone();
     let seq_clone = sequence.clone();
     let pool_clone = media_pool.clone();
+    let skim_clone = skim_consumer;
 
     eframe::run_native(
         "Klipp",
@@ -75,6 +81,7 @@ fn main() -> Result<()> {
                 fb_clone,
                 seq_clone,
                 pool_clone,
+                skim_clone,
             )))
         }),
     )

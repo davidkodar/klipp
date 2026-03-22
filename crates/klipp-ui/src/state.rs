@@ -108,6 +108,20 @@ pub struct AppState {
     /// Media IDs that need skim transcode started (queued during drain_events)
     pub pending_skim_transcodes: Vec<MediaId>,
 
+    // Audio skimming (Shift+S toggle, independent of video skimming)
+    /// Whether audio plays during skimming. Independent of skimming_enabled.
+    pub audio_skimming_enabled: bool,
+    /// Current skim speed in pixels per second (for mode selection).
+    pub skim_speed_px_per_sec: f32,
+    /// Time of last skim position update (for speed calculation).
+    pub skim_last_update: std::time::Instant,
+    /// Last skim x position in screen pixels (for speed calculation).
+    pub skim_last_x: f32,
+    /// The active skim audio session. Some() while hovering a skimmable clip.
+    pub skim_audio_session: Option<klipp_engine::skim_audio::SkimAudioSession>,
+    /// Time of last audio skim decode dispatch (throttle to prevent starvation).
+    pub skim_last_audio_dispatch: std::time::Instant,
+
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
     pub browser_drag_start: Option<(egui::Pos2, std::time::Instant)>,
@@ -292,6 +306,12 @@ impl Default for AppState {
             browser_skim_pending: None,
             browser_skim_active_this_frame: false,
             pending_skim_transcodes: Vec::new(),
+            audio_skimming_enabled: true,
+            skim_speed_px_per_sec: 0.0,
+            skim_last_update: std::time::Instant::now(),
+            skim_last_x: 0.0,
+            skim_audio_session: None,
+            skim_last_audio_dispatch: std::time::Instant::now(),
             browser_range_selection: None,
             browser_drag_start: None,
             show_perf_overlay: false,

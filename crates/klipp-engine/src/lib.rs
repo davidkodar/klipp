@@ -5,6 +5,7 @@ pub mod composite;
 pub mod engine;
 pub mod mix_thread;
 pub mod pcm_reader;
+pub mod skim_audio;
 pub mod sync;
 pub mod texture;
 pub mod transition;

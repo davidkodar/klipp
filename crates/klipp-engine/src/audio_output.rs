@@ -2,8 +2,38 @@ use crate::audio_decoder::AudioConsumer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::Consumer;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{error, info};
+
+/// Consumer side of the skim audio ring buffer, shared with the cpal callback.
+pub type SkimConsumer = Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>;
+
+/// Flush all samples from a skim consumer (drains to silence).
+pub fn flush_skim_consumer(skim: &SkimConsumer) {
+    if let Ok(mut guard) = skim.lock() {
+        if let Some(ref mut cons) = *guard {
+            let mut discard = [0.0f32; 4096];
+            while cons.pop_slice(&mut discard) > 0 {}
+        }
+    }
+}
+
+/// Replace the skim consumer contents (None disconnects, Some connects a new consumer).
+pub fn set_skim_consumer(skim: &SkimConsumer, consumer: Option<ringbuf::HeapCons<f32>>) {
+    if let Ok(mut guard) = skim.lock() {
+        *guard = consumer;
+    }
+}
+
+/// Probe the default cpal output device sample rate. Returns 48000 if unavailable.
+pub fn probe_sample_rate() -> u32 {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    host.default_output_device()
+        .and_then(|d| d.default_output_config().ok())
+        .map(|c| c.sample_rate().0)
+        .unwrap_or(48000)
+}
 
 pub struct AudioOutput {
     _stream: cpal::Stream,
@@ -19,12 +49,16 @@ pub struct AudioOutput {
     chirp_active: Arc<AtomicBool>,
     /// Master volume applied in the cpal callback (lock-free, instant response).
     master_volume: Arc<AtomicU32>,
+    /// Consumer side of the skim audio ring buffer.
+    /// Mixed into the cpal callback output alongside playback audio.
+    skim_consumer: SkimConsumer,
 }
 
 impl AudioOutput {
     /// Create a cpal output stream that reads from the ring buffer consumer.
     /// Pure consumer — no clock duties. The master clock is external.
-    pub fn new(mut consumer: AudioConsumer) -> Result<Self, AudioOutputError> {
+    /// `skim_consumer` is shared with the app layer so it can inject skim audio.
+    pub fn new(mut consumer: AudioConsumer, skim_consumer: SkimConsumer) -> Result<Self, AudioOutputError> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -58,6 +92,7 @@ impl AudioOutput {
         let chirp_flag = chirp_active.clone();
         let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let master_vol_flag = master_volume.clone();
+        let skim_consumer_flag = skim_consumer.clone();
 
         let stream = device
             .build_output_stream(
@@ -121,6 +156,36 @@ impl AudioOutput {
                         }
                         // NO clock update — master clock is external
                     });
+
+                    // Mix in skim audio (independent of playback state)
+                    if let Ok(mut skim_guard) = skim_consumer_flag.try_lock() {
+                        if let Some(ref mut skim_cons) = *skim_guard {
+                            // Buffer must cover the entire cpal callback (can be >2048)
+                            let mut skim_buf = vec![0.0f32; data.len()];
+                            let read = skim_cons.pop_slice(&mut skim_buf);
+                            if read > 0 {
+                                // Log once per ~500 callbacks (~2.5s at typical buffer sizes)
+                                thread_local! {
+                                    static SKIM_LOG_CTR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+                                }
+                                SKIM_LOG_CTR.with(|c| {
+                                    let v = c.get();
+                                    if v % 500 == 0 {
+                                        let peak = skim_buf[..read].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                                        tracing::debug!(
+                                            "cpal skim: read={read}, data.len={}, peak={peak:.4}, first4={:?}",
+                                            data.len(),
+                                            &skim_buf[..4.min(read)]
+                                        );
+                                    }
+                                    c.set(v.wrapping_add(1));
+                                });
+                                for i in 0..read {
+                                    data[i] = (data[i] + skim_buf[i]).clamp(-1.0, 1.0);
+                                }
+                            }
+                        }
+                    }
                 },
                 move |err| {
                     error!("cpal stream error: {err}");
@@ -142,6 +207,7 @@ impl AudioOutput {
             seek_gen,
             chirp_active,
             master_volume,
+            skim_consumer,
         })
     }
 
@@ -173,6 +239,24 @@ impl AudioOutput {
     /// Set master volume (applied instantly in cpal callback, no buffer lag).
     pub fn set_master_volume(&self, vol: f32) {
         self.master_volume.store(f32::to_bits(vol), Ordering::Relaxed);
+    }
+
+    /// Wire a skim audio consumer into the cpal callback for mixing.
+    pub fn set_skim_consumer(&self, consumer: Option<ringbuf::HeapCons<f32>>) {
+        if let Ok(mut guard) = self.skim_consumer.lock() {
+            *guard = consumer;
+        }
+    }
+
+    /// Flush (drain) the skim ring buffer — called when skim position changes
+    /// or session ends, to prevent stale audio from playing.
+    pub fn flush_skim_buffer(&self) {
+        if let Ok(mut guard) = self.skim_consumer.lock() {
+            if let Some(ref mut cons) = *guard {
+                let mut discard = [0.0f32; 4096];
+                while cons.pop_slice(&mut discard) > 0 {}
+            }
+        }
     }
 }
 

@@ -90,6 +90,8 @@ pub struct PlaybackEngine {
     last_peak_time: std::time::Instant,
     // Proxy: when true, decode from proxy files instead of originals
     use_proxies: bool,
+    // Skim audio — shared with app layer for browser hover audio
+    skim_consumer: crate::audio_output::SkimConsumer,
 }
 
 impl PlaybackEngine {
@@ -100,6 +102,7 @@ impl PlaybackEngine {
         sequence: Arc<RwLock<Sequence>>,
         media_pool: Arc<RwLock<MediaPool>>,
         repaint_cb: Box<dyn Fn() + Send>,
+        skim_consumer: crate::audio_output::SkimConsumer,
     ) -> Result<Self, klipp_core::KlippError> {
         info!("PlaybackEngine: initializing (ffmpeg-next backend)");
 
@@ -122,6 +125,20 @@ impl PlaybackEngine {
         };
         info!("PlaybackEngine: VAAPI available = {use_hw_decode}");
 
+        // Create audio output eagerly so skim audio works without playing a clip first.
+        let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
+        let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone());
+        let audio_output = match AudioOutput::new(main_consumer, skim_consumer.clone()) {
+            Ok(output) => {
+                info!("PlaybackEngine: audio output created eagerly");
+                Some(SendAudioOutput(output))
+            }
+            Err(e) => {
+                warn!("Failed to create audio output: {e}");
+                None
+            }
+        };
+
         Ok(Self {
             cmd_rx,
             event_tx,
@@ -142,9 +159,9 @@ impl PlaybackEngine {
             current_clip_v2: None,
             v2_frame_cache: None,
             audio_sources: Vec::new(),
-            audio_output: None,
-            mix_thread: None,
-            mixer: std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0))),
+            audio_output,
+            mix_thread: Some(mix_thread),
+            mixer,
             cpal_sample_rate,
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
@@ -163,6 +180,7 @@ impl PlaybackEngine {
             title_renderer: klipp_title::TitleRenderer::new(),
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
+            skim_consumer,
         })
     }
 
@@ -829,7 +847,7 @@ impl PlaybackEngine {
         if self.mix_thread.is_none() {
             let (mt, main_consumer) =
                 MixThread::new(self.cpal_sample_rate, self.mixer.clone());
-            match AudioOutput::new(main_consumer) {
+            match AudioOutput::new(main_consumer, self.skim_consumer.clone()) {
                 Ok(output) => {
                     self.audio_output = Some(SendAudioOutput(output));
                 }

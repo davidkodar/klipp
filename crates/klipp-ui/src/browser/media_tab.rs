@@ -694,6 +694,16 @@ fn handle_hover_skim(
     };
     state.browser_skim_active_this_frame = true;
 
+    // Calculate skim speed (px/sec) for audio mode selection
+    let now = std::time::Instant::now();
+    let dt = now.duration_since(state.skim_last_update).as_secs_f32();
+    let dx = (hover_pos.x - state.skim_last_x).abs();
+    // EMA-smooth to avoid jitter (alpha=0.3)
+    let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+    state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+    state.skim_last_x = hover_pos.x;
+    state.skim_last_update = now;
+
     let fraction = ((hover_pos.x - skim_rect.min.x) / skim_rect.width()).clamp(0.0, 1.0);
     let dur_secs = if item.duration.rate > 0 {
         item.duration.value as f64 / item.duration.rate as f64
@@ -755,6 +765,28 @@ fn handle_hover_skim(
         ],
         egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
     );
+
+    // Audio skimming: dispatch Start or Update (throttled)
+    if state.audio_skimming_enabled {
+        let is_new_session = state.skim_audio_session.is_none();
+        // Throttle updates: 80ms minimum between dispatches
+        let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
+
+        if is_new_session {
+            state.skim_last_audio_dispatch = std::time::Instant::now();
+            cmds.push(AppCommand::BrowserSkimAudioStart {
+                media_id: item.id,
+                source_path: item.path.clone(),
+                time_secs: skim_time,
+            });
+        } else if elapsed >= 16 {
+            state.skim_last_audio_dispatch = std::time::Instant::now();
+            cmds.push(AppCommand::BrowserSkimAudioUpdate {
+                media_id: item.id,
+                time_secs: skim_time,
+            });
+        }
+    }
 
     true
 }

@@ -1563,6 +1563,38 @@ impl TimelinePanel {
                                 ],
                                 egui::Stroke::new(1.5, egui::Color32::WHITE),
                             );
+
+                            // Audio skimming on timeline hover
+                            if state.audio_skimming_enabled {
+                                // Speed calculation
+                                let now = std::time::Instant::now();
+                                let dt = now.duration_since(state.skim_last_update).as_secs_f32();
+                                let dx = (pos.x - state.skim_last_x).abs();
+                                let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+                                state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+                                state.skim_last_x = pos.x;
+                                state.skim_last_update = now;
+
+                                if let Some(source_path) = state.media_pool.get(&media_id).map(|m| m.path.clone()) {
+                                    let is_new = state.skim_audio_session.is_none();
+                                    let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
+
+                                    if is_new {
+                                        state.skim_last_audio_dispatch = std::time::Instant::now();
+                                        cmds.push(AppCommand::BrowserSkimAudioStart {
+                                            media_id,
+                                            source_path,
+                                            time_secs: skim_time,
+                                        });
+                                    } else if elapsed >= 16 {
+                                        state.skim_last_audio_dispatch = std::time::Instant::now();
+                                        cmds.push(AppCommand::BrowserSkimAudioUpdate {
+                                            media_id,
+                                            time_secs: skim_time,
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }

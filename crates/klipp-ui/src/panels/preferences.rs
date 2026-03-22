@@ -198,6 +198,12 @@ impl PreferencesPanel {
         {
             *dirty = true;
         }
+        if ui
+            .checkbox(&mut prefs.playback.skim_audio, "Audio during skimming (Shift+S)")
+            .changed()
+        {
+            *dirty = true;
+        }
 
         ui.add_space(8.0);
         ui.label("JKL audio mute threshold");

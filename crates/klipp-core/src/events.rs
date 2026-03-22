@@ -273,6 +273,21 @@ pub enum AppCommand {
     StartSkimTranscode { media_id: MediaId },
     BrowserSkimFrame { media_id: MediaId, time_secs: f64 },
 
+    // Browser audio skimming
+    /// Begin an audio skim session for a media item (mouse enters skimmable clip).
+    BrowserSkimAudioStart {
+        media_id: MediaId,
+        source_path: PathBuf,
+        time_secs: f64,
+    },
+    /// Update audio skim position (mouse moves while skimming).
+    BrowserSkimAudioUpdate {
+        media_id: MediaId,
+        time_secs: f64,
+    },
+    /// End the audio skim session (mouse leaves clip or skimming disabled).
+    BrowserSkimAudioEnd,
+
     // UI
     SetViewerMode(ViewerMode),
     SetActiveTool(Tool),

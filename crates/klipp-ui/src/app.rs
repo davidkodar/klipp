@@ -130,6 +130,10 @@ pub struct KlippApp {
     browser: BrowserPanel,
     new_inspector: NewInspectorPanel,
     new_timeline: crate::timeline::NewTimelinePanel,
+    // Skim audio — shared with engine's cpal callback
+    skim_consumer: klipp_engine::audio_output::SkimConsumer,
+    /// cpal device sample rate (for skim audio resampling)
+    cpal_sample_rate: u32,
 }
 
 impl KlippApp {
@@ -140,6 +144,7 @@ impl KlippApp {
         frame_buffer: SharedFrameBuffer,
         sequence: Arc<RwLock<Sequence>>,
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
+        skim_consumer: klipp_engine::audio_output::SkimConsumer,
     ) -> Self {
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
@@ -191,7 +196,12 @@ impl KlippApp {
             browser: BrowserPanel::default(),
             new_inspector: NewInspectorPanel,
             new_timeline: crate::timeline::NewTimelinePanel,
+            skim_consumer,
+            cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
         };
+        // Sync preferences to state
+        app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
+
         // Discover OFX plugins at startup
         let mut ofx_host = klipp_plugin::OfxHost::new();
         let count = ofx_host.discover_plugins();
@@ -2059,6 +2069,15 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::ConfirmRemoveFromPool { media_id } => {
+                    // End audio skim if the removed media might be active
+                    if self.state.skim_audio_session.is_some() {
+                        if let Some(ref session) = self.state.skim_audio_session {
+                            session.stop();
+                        }
+                        klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                        klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                        self.state.skim_audio_session = None;
+                    }
                     self.state.media_pool.remove(media_id);
                     self.state.show_remove_media_confirm = None;
                     self.sync_media_pool_to_engine();
@@ -2160,6 +2179,59 @@ impl KlippApp {
                             });
                         }
                     }
+                    continue;
+                }
+                // Audio skimming — continuous PCM feeder
+                AppCommand::BrowserSkimAudioStart { media_id, source_path, time_secs } => {
+                    // Stop any existing session
+                    if let Some(ref session) = self.state.skim_audio_session {
+                        session.stop();
+                    }
+                    self.state.skim_audio_session = None;
+
+                    // Try to open PCM cache for this media
+                    let cache_dir = dirs::cache_dir()
+                        .unwrap_or_else(|| PathBuf::from("/tmp"))
+                        .join("klipp")
+                        .join("audio-cache");
+                    let pcm_path = cache_dir.join(format!("{}.pcm", media_id));
+
+                    if let Some(session) = klipp_engine::skim_audio::SkimAudioSession::new(
+                        &pcm_path,
+                        source_path.clone(),
+                        self.cpal_sample_rate,
+                        self.skim_consumer.clone(),
+                        self.state.master_volume,
+                    ) {
+                        session.seek_and_play(*time_secs);
+                        self.state.skim_audio_session = Some(session);
+                    }
+                    continue;
+                }
+                AppCommand::BrowserSkimAudioUpdate { time_secs, .. } => {
+                    if let Some(ref session) = self.state.skim_audio_session {
+                        // Update volume dynamically
+                        let vol = if self.state.master_muted { 0.0 } else { self.state.master_volume };
+                        session.set_volume(vol);
+
+                        let mode = klipp_engine::skim_audio::determine_skim_mode(self.state.skim_speed_px_per_sec);
+                        if mode == klipp_engine::skim_audio::SkimMode::Playing {
+                            session.seek_and_play(*time_secs);
+                        } else {
+                            session.silence();
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::BrowserSkimAudioEnd => {
+                    if let Some(ref session) = self.state.skim_audio_session {
+                        session.stop();
+                    }
+                    // Disconnect skim consumer from cpal callback
+                    klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                    klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                    self.state.skim_audio_session = None;
+                    self.state.skim_speed_px_per_sec = 0.0;
                     continue;
                 }
                 // Phase 4: Snap & Ripple toggles
@@ -3143,6 +3215,16 @@ impl KlippApp {
             // S (no modifiers) — Toggle skimming
             if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
                 self.state.skimming_enabled = !self.state.skimming_enabled;
+                // End audio skim session when disabling all skimming
+                if !self.state.skimming_enabled {
+                    if let Some(ref session) = self.state.skim_audio_session {
+                        session.stop();
+                    }
+                    klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                    klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                    self.state.skim_audio_session = None;
+                    self.state.skim_speed_px_per_sec = 0.0;
+                }
                 let msg = if self.state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
                 self.state.toast.show(msg);
             }
@@ -3197,8 +3279,9 @@ impl KlippApp {
                 }
             }
 
-            // Shift+S (no ctrl) — Promote track to Connected Storyline / Break apart
+            // Shift+S (no ctrl) — Promote/Break storyline OR toggle audio skimming
             if !i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S) {
+                let mut handled_storyline = false;
                 if let Some(clip_id) = self.state.selected_clip {
                     let clip_track = self.state.sequence.tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
@@ -3218,6 +3301,7 @@ impl KlippApp {
                                         self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
                                         self.sync_sequence_to_engine();
                                         self.state.dirty = true;
+                                        handled_storyline = true;
                                     }
                                 }
                             }
@@ -3227,8 +3311,31 @@ impl KlippApp {
                             self.state.history.push(crate::history::EditCommand::Magnetic(result.command));
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
+                            handled_storyline = true;
                         }
                     }
+                }
+                // If no storyline action applied, toggle audio skimming
+                if !handled_storyline {
+                    self.state.audio_skimming_enabled = !self.state.audio_skimming_enabled;
+                    self.prefs.playback.skim_audio = self.state.audio_skimming_enabled;
+                    self.prefs_dirty = true;
+                    // End active session when disabling
+                    if !self.state.audio_skimming_enabled {
+                        if let Some(ref session) = self.state.skim_audio_session {
+                            session.stop();
+                        }
+                        klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                        klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                        self.state.skim_audio_session = None;
+                        self.state.skim_speed_px_per_sec = 0.0;
+                    }
+                    let msg = if self.state.audio_skimming_enabled {
+                        "Audio Skimming On"
+                    } else {
+                        "Audio Skimming Off (video only)"
+                    };
+                    self.state.toast.show(msg);
                 }
             }
 
@@ -3691,6 +3798,13 @@ impl eframe::App for KlippApp {
                 &mut self.prefs_dirty,
             );
             all_cmds.extend(pref_cmds);
+            // Sync skim_audio pref → state (checkbox may have changed)
+            if self.state.audio_skimming_enabled != self.prefs.playback.skim_audio {
+                self.state.audio_skimming_enabled = self.prefs.playback.skim_audio;
+                if !self.state.audio_skimming_enabled && self.state.skim_audio_session.is_some() {
+                    all_cmds.push(AppCommand::BrowserSkimAudioEnd);
+                }
+            }
             if !still_open {
                 self.state.show_preferences = false;
             }
@@ -4052,10 +4166,17 @@ impl eframe::App for KlippApp {
         self.send_commands(all_cmds);
 
         // 11a. Skim cleanup: if no panel set the skim flag this frame, clear skim state
-        if !self.state.browser_skim_active_this_frame && self.state.browser_skim_media_id.is_some() {
-            self.state.browser_skim_texture = None;
-            self.state.browser_skim_media_id = None;
-            self.state.viewer_mode = ViewerMode::Program;
+        let lost_focus = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if (!self.state.browser_skim_active_this_frame && self.state.browser_skim_media_id.is_some()) || lost_focus {
+            if self.state.browser_skim_media_id.is_some() {
+                self.state.browser_skim_texture = None;
+                self.state.browser_skim_media_id = None;
+                self.state.viewer_mode = ViewerMode::Program;
+            }
+            // End audio skim session when mouse leaves or app loses focus
+            if self.state.skim_audio_session.is_some() {
+                self.send_commands(vec![AppCommand::BrowserSkimAudioEnd]);
+            }
         }
 
         // 11b. Handle fullscreen viewport transition (send only once)

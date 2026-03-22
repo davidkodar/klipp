@@ -2,6 +2,8 @@ use klipp_core::{ExportPreset, ProxyResolution};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Preferences {
     pub general: GeneralPrefs,
@@ -22,6 +24,9 @@ pub struct GeneralPrefs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackPrefs {
     pub scrub_audio: bool,
+    /// Whether audio plays during hover skimming (Shift+S toggle).
+    #[serde(default = "default_true")]
+    pub skim_audio: bool,
     /// Speed above which audio mutes during JKL playback. Default 4.0.
     pub jkl_audio_mute_threshold: f32,
 }
@@ -55,6 +60,7 @@ impl Default for PlaybackPrefs {
     fn default() -> Self {
         Self {
             scrub_audio: true,
+            skim_audio: true,
             jkl_audio_mute_threshold: 4.0,
         }
     }
