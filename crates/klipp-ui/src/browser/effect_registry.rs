@@ -100,9 +100,15 @@ impl EffectRegistry {
         Self { effects, reference_frame: None }
     }
 
-    /// Merge discovered OFX plugins into the registry.
+    /// Merge discovered OFX plugins into the registry, skipping duplicates.
+    /// OFX bundles often ship multiple versions of the same plugin — keep only the latest.
     pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
+        let mut seen = std::collections::HashSet::new();
         for plugin in plugins {
+            // Deduplicate by plugin identifier — keep the first (highest version)
+            if !seen.insert(plugin.name.clone()) {
+                continue;
+            }
             let display_name = format_ofx_name(&plugin.name);
             let category = category_from_grouping(&plugin.grouping);
 
@@ -144,10 +150,10 @@ impl EffectRegistry {
         });
     }
 
-    /// Filter effects by category and search query.
+    /// Filter effects by category and search query, sorted alphabetically.
     pub fn filtered(&self, category: EffectCategory, search: &str) -> Vec<&EffectEntry> {
         let search_lower = search.to_lowercase();
-        self.effects
+        let mut result: Vec<&EffectEntry> = self.effects
             .iter()
             .filter(|e| {
                 (category == EffectCategory::All || e.category == category)
@@ -155,7 +161,9 @@ impl EffectRegistry {
                         || e.name.to_lowercase().contains(&search_lower)
                         || e.grouping.to_lowercase().contains(&search_lower))
             })
-            .collect()
+            .collect();
+        result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        result
     }
 }
 

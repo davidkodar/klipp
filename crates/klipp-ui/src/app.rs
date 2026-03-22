@@ -825,14 +825,13 @@ impl KlippApp {
     }
 
     fn poll_effect_thumbnails(&mut self, ctx: &egui::Context) {
-        // Render built-in effect thumbnails when reference frame changes
-        if let Some(ref_frame) = &self.state.effect_registry.reference_frame {
-            let effects: Vec<_> = self.state.effect_registry.effects.iter()
-                .map(|e| (e.name.clone(), e.source.clone()))
-                .collect();
-            self.state.effect_thumbnails.generate_builtins_if_needed(ref_frame, &effects);
-        }
-        // Poll completed thumbnails (both built-in and on-demand OFX)
+        // Generate all effect thumbnails using the embedded reference image.
+        // This runs once at startup — no viewer frame needed.
+        let effects: Vec<_> = self.state.effect_registry.effects.iter()
+            .map(|e| (e.name.clone(), e.source.clone()))
+            .collect();
+        self.state.effect_thumbnails.generate_all_if_needed(&effects);
+        // Poll completed thumbnails
         self.state.effect_thumbnails.poll_and_upload(ctx);
     }
 
@@ -4420,47 +4419,6 @@ impl eframe::App for KlippApp {
                         egui::pos2(center_left + center_w, h_resizer_rect.min.y),
                     );
 
-                    // ── Draw resizers ──
-                    let left_delta =
-                        resizer::vertical_resizer(ui, left_resizer_rect, theme);
-                    let right_delta =
-                        resizer::vertical_resizer(ui, right_resizer_rect, theme);
-                    let h_delta =
-                        resizer::horizontal_resizer(ui, h_resizer_rect, theme);
-
-                    // Apply resizer deltas
-                    if left_delta != 0.0 {
-                        self.layout.browser_width = (self.layout.browser_width
-                            + left_delta)
-                            .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
-                    }
-                    if right_delta != 0.0 {
-                        // Dragging right shrinks inspector, dragging left grows it
-                        self.layout.inspector_width = (self.layout.inspector_width
-                            - right_delta)
-                            .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
-                    }
-                    if h_delta != 0.0 {
-                        // Dragging up increases timeline height
-                        self.layout.timeline_height = (self.layout.timeline_height
-                            - h_delta)
-                            .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
-                    }
-
-                    // Track layout dirty for persistence
-                    let resizer_active = left_delta != 0.0
-                        || right_delta != 0.0
-                        || h_delta != 0.0;
-                    if resizer_active {
-                        self.layout_dirty = true;
-                    }
-                    if self.layout_dirty
-                        && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
-                    {
-                        self.layout.save();
-                        self.layout_dirty = false;
-                    }
-
                     // ── Render panels into their rects ──
 
                     // Toolbar
@@ -4567,6 +4525,45 @@ impl eframe::App for KlippApp {
                         );
                         all_cmds.extend(cmds);
                     });
+
+                    // ── Draw resizers AFTER panels (so they get interaction priority) ──
+                    let left_delta =
+                        resizer::vertical_resizer(ui, left_resizer_rect, theme);
+                    let right_delta =
+                        resizer::vertical_resizer(ui, right_resizer_rect, theme);
+                    let h_delta =
+                        resizer::horizontal_resizer(ui, h_resizer_rect, theme);
+
+                    // Apply resizer deltas
+                    if left_delta != 0.0 {
+                        self.layout.browser_width = (self.layout.browser_width
+                            + left_delta)
+                            .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
+                    }
+                    if right_delta != 0.0 {
+                        self.layout.inspector_width = (self.layout.inspector_width
+                            - right_delta)
+                            .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
+                    }
+                    if h_delta != 0.0 {
+                        self.layout.timeline_height = (self.layout.timeline_height
+                            - h_delta)
+                            .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
+                    }
+
+                    // Track layout dirty for persistence
+                    let resizer_active = left_delta != 0.0
+                        || right_delta != 0.0
+                        || h_delta != 0.0;
+                    if resizer_active {
+                        self.layout_dirty = true;
+                    }
+                    if self.layout_dirty
+                        && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
+                    {
+                        self.layout.save();
+                        self.layout_dirty = false;
+                    }
 
                     // Transport is now integrated into the toolbar (P1-2).
                     // Keyboard shortcuts still handled by self.transport.handle_keyboard().

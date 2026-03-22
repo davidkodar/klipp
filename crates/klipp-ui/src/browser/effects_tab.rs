@@ -15,6 +15,8 @@ pub enum EffectCategory {
     Light,
 }
 
+const CATEGORY_SIDEBAR_W: f32 = 90.0;
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -23,294 +25,261 @@ pub fn show(
     active_category: &mut EffectCategory,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
+    let avail = ui.available_rect_before_wrap();
 
-    // Category filter pills
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(6.0);
-        ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
-        let categories = [
-            (EffectCategory::All, "All", theme.text_dim),
-            (EffectCategory::Blur, "Blur", egui::Color32::from_rgb(0x4a, 0x9a, 0xde)),
-            (EffectCategory::Color, "Color", theme.accent),
-            (EffectCategory::Stylize, "Stylize", egui::Color32::from_rgb(0xa0, 0x4a, 0xda)),
-            (EffectCategory::Keying, "Keying", theme.role_dialogue),
-            (EffectCategory::Distort, "Distort", egui::Color32::from_rgb(0xe8, 0x50, 0x20)),
-            (EffectCategory::Light, "Light", egui::Color32::from_rgb(0xf0, 0xd0, 0x60)),
-        ];
+    // ── Split: category sidebar (left) | thumbnail grid (right) ──
+    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.35);
+    let sidebar_rect = egui::Rect::from_min_size(
+        avail.min,
+        egui::vec2(sidebar_w, avail.height()),
+    );
+    let grid_rect = egui::Rect::from_min_max(
+        egui::pos2(avail.min.x + sidebar_w, avail.min.y),
+        avail.max,
+    );
 
-        for (cat, label, dot_color) in &categories {
-            let is_active = *active_category == *cat;
-            let (bg, fg) = if is_active {
-                (theme.accent_subtle, theme.accent)
-            } else {
-                (egui::Color32::TRANSPARENT, theme.text_secondary)
-            };
+    // ── Category sidebar ──
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.set_min_size(sidebar_rect.size());
 
-            let resp = ui.add(
-                egui::Button::new(egui::RichText::new(*label).size(11.0).color(fg))
-                    .fill(bg)
-                    .rounding(4.0),
-            );
+        // Subtle right border
+        ui.painter().vline(
+            sidebar_rect.max.x,
+            sidebar_rect.y_range(),
+            egui::Stroke::new(1.0, theme.border),
+        );
 
-            let dot_pos = egui::pos2(resp.rect.left() + 4.0, resp.rect.center().y);
-            ui.painter().circle_filled(dot_pos, 2.5, *dot_color);
+        egui::ScrollArea::vertical()
+            .id_salt("effects_category_scroll")
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("VIDEO")
+                        .size(9.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(2.0);
 
-            if resp.clicked() {
-                *active_category = *cat;
-            }
-        }
+                let categories = [
+                    (EffectCategory::All, "All"),
+                    (EffectCategory::Blur, "Blur"),
+                    (EffectCategory::Color, "Color"),
+                    (EffectCategory::Stylize, "Stylize"),
+                    (EffectCategory::Keying, "Keying"),
+                    (EffectCategory::Distort, "Distort"),
+                    (EffectCategory::Light, "Light"),
+                ];
+
+                for (cat, label) in &categories {
+                    let is_active = *active_category == *cat;
+                    let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
+
+                    let resp = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(*label)
+                                .size(11.0)
+                                .color(text_color)
+                        )
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
+                    );
+
+                    // Highlight bar for active category
+                    if is_active {
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(resp.rect.min.x - 2.0, resp.rect.min.y),
+                            egui::vec2(2.0, resp.rect.height()),
+                        );
+                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
+                    }
+
+                    if resp.clicked() {
+                        *active_category = *cat;
+                    }
+                }
+            });
     });
 
-    ui.add_space(2.0);
-    ui.painter().hline(
-        ui.available_rect_before_wrap().x_range(),
-        ui.cursor().min.y,
-        egui::Stroke::new(1.0, theme.border),
-    );
-    ui.add_space(2.0);
+    // ── Thumbnail grid ──
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
+        ui.set_min_size(grid_rect.size());
 
-    // Get filtered effects from registry
-    let filtered = state.effect_registry.filtered(*active_category, search_query);
+        let filtered = state.effect_registry.filtered(*active_category, search_query);
+        let count = filtered.len();
 
-    // 2-column grid
-    egui::ScrollArea::vertical()
-        .id_salt("browser_effects_scroll")
-        .show(ui, |ui| {
-            let avail_w = ui.available_width() - 16.0;
-            let card_w = (avail_w - 6.0) / 2.0;
+        egui::ScrollArea::vertical()
+            .id_salt("browser_effects_scroll")
+            .show(ui, |ui| {
+                let grid_w = ui.available_width() - 8.0;
+                let spacing = 4.0;
+                let card_w = ((grid_w - spacing) / 2.0).floor();
+                let preview_h = (card_w * 9.0 / 16.0).round(); // 16:9 aspect
+                let card_h = preview_h + 22.0; // preview + name label
 
-            egui::Grid::new("effects_grid")
-                .num_columns(2)
-                .spacing([6.0, 6.0])
-                .min_col_width(card_w)
-                .show(ui, |ui| {
-                    for (i, fx) in filtered.iter().enumerate() {
-                        let thumb = state.effect_thumbnails.get_texture(&fx.name);
-                        let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
-                        let resp = effect_card(ui, theme, fx, card_w, thumb, is_pending);
+                egui::Grid::new("effects_grid")
+                    .num_columns(2)
+                    .spacing([spacing, spacing])
+                    .min_col_width(card_w)
+                    .show(ui, |ui| {
+                        for (i, fx) in filtered.iter().enumerate() {
+                            let thumb = state.effect_thumbnails.get_texture(&fx.name);
+                            let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
+                            let resp = effect_card(ui, theme, fx, card_w, card_h, preview_h, thumb, is_pending);
 
-                        // On hover: trigger OFX render if not already cached
-                        if resp.hovered() {
-                            if let EffectSource::Ofx(ref plugin_id) = fx.source {
-                                if thumb.is_none() && !is_pending {
-                                    if let Some(ref_frame) = &state.effect_registry.reference_frame {
-                                        state.effect_thumbnails.request_ofx_render(
-                                            &fx.name,
-                                            plugin_id,
-                                            ref_frame,
-                                        );
+                            if resp.hovered() {
+                                if let EffectSource::Ofx(ref plugin_id) = fx.source {
+                                    if thumb.is_none() && !is_pending {
+                                        if let Some(ref_frame) = &state.effect_registry.reference_frame {
+                                            state.effect_thumbnails.request_ofx_render(
+                                                &fx.name,
+                                                plugin_id,
+                                                ref_frame,
+                                            );
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        if resp.double_clicked() {
-                            if let Some(clip_id) = state.selected_clip {
-                                match &fx.source {
-                                    EffectSource::Builtin(effect) => {
-                                        cmds.push(AppCommand::AddBuiltinEffect {
-                                            clip_id,
-                                            effect: effect.clone(),
-                                        });
-                                        state.toast.show(format!(
-                                            "\"{}\" applied (Built-in)",
-                                            fx.name
-                                        ));
+                            if resp.double_clicked() {
+                                if let Some(clip_id) = state.selected_clip {
+                                    match &fx.source {
+                                        EffectSource::Builtin(effect) => {
+                                            cmds.push(AppCommand::AddBuiltinEffect {
+                                                clip_id,
+                                                effect: effect.clone(),
+                                            });
+                                            state.toast.show(format!("\"{}\" applied", fx.name));
+                                        }
+                                        EffectSource::Ofx(plugin_name) => {
+                                            cmds.push(AppCommand::AddEffect {
+                                                clip_id,
+                                                plugin_name: plugin_name.clone(),
+                                            });
+                                            state.toast.show(format!("\"{}\" applied", fx.name));
+                                        }
                                     }
-                                    EffectSource::Ofx(plugin_name) => {
-                                        cmds.push(AppCommand::AddEffect {
-                                            clip_id,
-                                            plugin_name: plugin_name.clone(),
-                                        });
-                                        state.toast.show(format!(
-                                            "\"{}\" applied (OFX)",
-                                            fx.name
-                                        ));
-                                    }
+                                } else {
+                                    state.toast.show("Select a clip first".to_string());
                                 }
-                            } else {
-                                state.toast.show("Select a clip first".to_string());
+                            }
+
+                            if resp.drag_started() {
+                                let (is_builtin, plugin_id) = match &fx.source {
+                                    EffectSource::Builtin(_) => (true, String::new()),
+                                    EffectSource::Ofx(id) => (false, id.clone()),
+                                };
+                                state.drag_drop.begin(DragPayload::Effect {
+                                    name: fx.name.clone(),
+                                    is_builtin,
+                                    plugin_id,
+                                });
+                            }
+
+                            if i % 2 == 1 {
+                                ui.end_row();
                             }
                         }
+                    });
 
-                        if resp.drag_started() {
-                            let (is_builtin, plugin_id) = match &fx.source {
-                                EffectSource::Builtin(_) => (true, String::new()),
-                                EffectSource::Ofx(id) => (false, id.clone()),
-                            };
-                            state.drag_drop.begin(DragPayload::Effect {
-                                name: fx.name.clone(),
-                                is_builtin,
-                                plugin_id,
-                            });
-                        }
-
-                        if i % 2 == 1 {
-                            ui.end_row();
-                        }
-                    }
-                });
-        });
+                // Item count at bottom
+                if count > 0 {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("{count} items"))
+                                .size(9.0)
+                                .color(theme.text_dim),
+                        );
+                    });
+                }
+            });
+    });
 
     cmds
 }
 
+/// FCP-style effect card: large thumbnail + name below. Clean, no badges.
 fn effect_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     fx: &crate::browser::effect_registry::EffectEntry,
     width: f32,
+    card_h: f32,
+    preview_h: f32,
     thumbnail: Option<&egui::TextureHandle>,
     is_pending: bool,
 ) -> egui::Response {
-    let card_h = 72.0;
-    let preview_h = 48.0;
-    let info_h = card_h - preview_h;
-
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, card_h),
         egui::Sense::click_and_drag(),
     );
 
     let hovered = resp.hovered();
-    let border_color = if hovered { theme.accent_dim } else { theme.border };
-    let card_rect = if hovered {
-        rect.translate(egui::vec2(0.0, -1.0))
-    } else {
-        rect
-    };
-
+    let card_rect = rect;
     let painter = ui.painter();
 
-    // Hover shadow
+    // Preview area (top)
+    let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
+    let rounding = egui::Rounding::same(4.0);
+
+    // Hover highlight: subtle bright border
     if hovered {
-        let shadow_rect = card_rect.expand(2.0).translate(egui::vec2(0.0, 2.0));
-        painter.rect_filled(shadow_rect, 8.0, egui::Color32::from_black_alpha(40));
+        let highlight = preview_rect.expand(1.5);
+        painter.rect_stroke(highlight, rounding, egui::Stroke::new(1.5, theme.accent_dim));
     }
 
-    // Card background
-    painter.rect_filled(card_rect, 6.0, theme.bg_raised);
-    painter.rect_stroke(card_rect, 6.0, egui::Stroke::new(if hovered { 1.5 } else { 1.0 }, border_color));
-
-    // Preview area
-    let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
-    let preview_rounding = egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 };
-    painter.rect_filled(preview_rect, preview_rounding, theme.bg_panel);
+    // Dark background for preview
+    painter.rect_filled(preview_rect, rounding, theme.bg_panel);
 
     if let Some(tex) = thumbnail {
-        // Draw real thumbnail texture
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        painter.image(tex.id(), preview_rect.shrink(1.0), uv, egui::Color32::WHITE);
+        // Clip the image to rounded rect
+        painter.rect_filled(preview_rect, rounding, egui::Color32::BLACK);
+        painter.image(tex.id(), preview_rect, uv, egui::Color32::WHITE);
     } else {
-        // Fallback: category-colored gradient placeholder
-        paint_effect_preview(painter, preview_rect.shrink(2.0), fx, theme);
+        paint_effect_preview(painter, preview_rect.shrink(1.0), fx, theme);
 
         if is_pending {
-            // Spinner overlay while OFX render is in progress
             let center = preview_rect.center();
             let t = ui.input(|i| i.time) as f32;
-            let angle = t * 4.0; // radians per second
-            let r = 6.0;
+            let angle = t * 4.0;
             for i in 0..8 {
                 let a = angle + i as f32 * std::f32::consts::TAU / 8.0;
                 let alpha = (255.0 * (1.0 - i as f32 / 8.0)) as u8;
-                let dot = egui::pos2(
-                    center.x + a.cos() * r,
-                    center.y + a.sin() * r,
-                );
+                let dot = egui::pos2(center.x + a.cos() * 6.0, center.y + a.sin() * 6.0);
                 painter.circle_filled(dot, 1.5, egui::Color32::from_white_alpha(alpha));
             }
-            ui.ctx().request_repaint(); // keep animating
-        } else if matches!(fx.source, EffectSource::Ofx(_)) {
-            // "Hover to preview" hint for OFX effects without thumbnails
-            painter.text(
-                preview_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Hover to preview",
-                egui::FontId::proportional(8.0),
-                egui::Color32::from_white_alpha(60),
-            );
+            ui.ctx().request_repaint();
         }
     }
 
-    // Category dot (top-left corner of preview)
-    let cat_color = category_color(fx.category, theme);
-    painter.circle_filled(
-        egui::pos2(preview_rect.min.x + 8.0, preview_rect.min.y + 8.0),
-        3.0,
-        cat_color,
-    );
-
-    // Info area
-    let info_rect = egui::Rect::from_min_size(
-        egui::pos2(card_rect.min.x, card_rect.min.y + preview_h),
-        egui::vec2(width, info_h),
-    );
-
-    // Effect name (left)
-    painter.text(
-        egui::pos2(info_rect.min.x + 6.0, info_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        &fx.name,
+    // Name below preview — FCP style: just the name, no badges
+    let name_y = card_rect.min.y + preview_h + 2.0;
+    let name_galley = painter.layout(
+        fx.name.clone(),
         egui::FontId::proportional(10.0),
-        theme.text_secondary,
+        if hovered { theme.text_primary } else { theme.text_secondary },
+        width - 2.0,
     );
+    painter.galley(egui::pos2(card_rect.min.x + 1.0, name_y), name_galley, theme.text_secondary);
 
-    // Source badge (right)
-    let badge_color = match &fx.source {
-        EffectSource::Builtin(_) => theme.accent_dim,
-        EffectSource::Ofx(_) => egui::Color32::from_rgb(0xe0, 0x80, 0x20),
-    };
-    let badge_text = fx.source_label;
-    let badge_galley = painter.layout_no_wrap(
-        badge_text.to_string(),
-        egui::FontId::proportional(8.0),
-        badge_color,
-    );
-    let badge_w = badge_galley.size().x + 8.0;
-    let badge_rect = egui::Rect::from_min_size(
-        egui::pos2(info_rect.max.x - badge_w - 4.0, info_rect.center().y - 7.0),
-        egui::vec2(badge_w, 14.0),
-    );
-    painter.rect_filled(badge_rect, 3.0, badge_color.linear_multiply(0.15));
-    painter.rect_stroke(badge_rect, 3.0, egui::Stroke::new(0.5, badge_color.linear_multiply(0.4)));
-    painter.text(
-        badge_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        badge_text,
-        egui::FontId::proportional(8.0),
-        badge_color,
-    );
-
-    // Tooltip on hover
-    let cat_name = category_name(fx.category);
-    let grouping_display = if fx.grouping.is_empty() { cat_name.to_string() } else { fx.grouping.clone() };
+    // Tooltip with full info
     resp.clone().on_hover_ui(|ui| {
         ui.label(egui::RichText::new(&fx.name).strong().size(12.0));
-        ui.horizontal(|ui| {
-            let dot = category_color(fx.category, theme);
-            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-            ui.painter().circle_filled(dot_rect.center(), 3.5, dot);
-            ui.label(egui::RichText::new(&grouping_display).size(10.0).color(egui::Color32::from_rgb(160, 160, 170)));
-            ui.label(egui::RichText::new("\u{2022}").size(10.0).color(egui::Color32::from_rgb(80, 80, 90)));
-            ui.label(egui::RichText::new(fx.source_label).size(10.0).color(badge_color));
-        });
+        if !fx.grouping.is_empty() {
+            ui.label(egui::RichText::new(&fx.grouping).size(10.0).color(theme.text_dim));
+        }
+        ui.label(
+            egui::RichText::new(fx.source_label)
+                .size(9.0)
+                .color(theme.text_dim),
+        );
         ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
     });
 
     resp
-}
-
-fn category_name(cat: EffectCategory) -> &'static str {
-    match cat {
-        EffectCategory::All => "All",
-        EffectCategory::Blur => "Blur",
-        EffectCategory::Color => "Color",
-        EffectCategory::Stylize => "Stylize",
-        EffectCategory::Keying => "Keying",
-        EffectCategory::Distort => "Distort",
-        EffectCategory::Light => "Light",
-    }
 }
 
 fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
@@ -331,7 +300,6 @@ fn paint_effect_preview(
     fx: &crate::browser::effect_registry::EffectEntry,
     theme: &KlippTheme,
 ) {
-    // Simple visual preview based on category (placeholder until real thumbnails in Phase C)
     let cat_color = category_color(fx.category, theme);
     let dim = cat_color.linear_multiply(0.3);
 
@@ -371,7 +339,6 @@ fn paint_effect_preview(
         }
         EffectCategory::Distort => {
             painter.rect_filled(rect, 0.0, dim);
-            // Diagonal lines
             for i in 0..6 {
                 let x = rect.min.x + (i as f32 / 5.0) * rect.width();
                 painter.line_segment(
