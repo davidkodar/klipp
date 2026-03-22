@@ -338,6 +338,16 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
             if ui.button("Render Queue").clicked() { cmds.push(AppCommand::ShowRenderQueue); ui.close_menu(); }
             ui.separator();
+            if ui.button("New Workspace...").clicked() {
+                ui.close_menu();
+                if let Some(dir) = rfd::FileDialog::new().set_title("Create Workspace").pick_folder() {
+                    let name = dir.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Workspace".into());
+                    cmds.push(AppCommand::CreateWorkspace { path: dir, name });
+                }
+            }
+            ui.separator();
             if ui.button("Quit").clicked() { cmds.push(AppCommand::Quit); ui.close_menu(); }
         });
     }

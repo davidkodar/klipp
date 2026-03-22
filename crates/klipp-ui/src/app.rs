@@ -2490,6 +2490,18 @@ impl KlippApp {
                     }
                     continue;
                 }
+                AppCommand::CreateWorkspace { path, name } => {
+                    match klipp_project::workspace::create_workspace(path, name) {
+                        Ok(()) => {
+                            tracing::info!("Created workspace at {:?}", path);
+                            self.state.toast.show(format!("Workspace \"{name}\" created"));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to create workspace: {e}");
+                        }
+                    }
+                    continue;
+                }
                 AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
                     // Spawn a targeted filmstrip pass for the requested range
                     if let Some(item) = self.state.media_pool.get(media_id) {

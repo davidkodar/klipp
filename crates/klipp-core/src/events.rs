@@ -149,6 +149,9 @@ pub enum AppCommand {
     DeleteSequence { sequence_idx: usize },
     ReorderSequences { from_idx: usize, to_idx: usize },
 
+    // Workspace
+    CreateWorkspace { path: PathBuf, name: String },
+
     // Edit
     Undo,
     Redo,

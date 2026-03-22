@@ -257,6 +257,31 @@ impl LaunchScreen {
             return;
         }
 
+        // Group projects by workspace
+        let mut workspace_groups: HashMap<PathBuf, (String, Vec<&RecentProject>)> = HashMap::new();
+        let mut standalone: Vec<&RecentProject> = Vec::new();
+
+        for rp in &filtered {
+            if let Some(parent) = rp.path.parent() {
+                if klipp_project::workspace::is_workspace(parent) {
+                    let ws_name = klipp_project::workspace::load_workspace(parent)
+                        .map(|w| w.name)
+                        .unwrap_or_else(|| parent.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Workspace".into()));
+                    workspace_groups
+                        .entry(parent.to_path_buf())
+                        .or_insert_with(|| (ws_name, Vec::new()))
+                        .1
+                        .push(rp);
+                } else {
+                    standalone.push(rp);
+                }
+            } else {
+                standalone.push(rp);
+            }
+        }
+
         // Card grid
         let grid_top = area.min.y + pad + 66.0;
         let grid_width = area.width() - pad * 2.0;
@@ -269,9 +294,85 @@ impl LaunchScreen {
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (i, rp) in filtered.iter().enumerate() {
-                    let col = i % cols;
-                    let row = i / cols;
+                let mut card_idx = 0usize;
+
+                // Workspace groups first
+                let mut ws_keys: Vec<_> = workspace_groups.keys().cloned().collect();
+                ws_keys.sort();
+                for ws_path in &ws_keys {
+                    let (ws_name, projects) = &workspace_groups[ws_path];
+                    let row = card_idx / cols;
+                    let y_offset = row as f32 * (CARD_H + CARD_GAP);
+
+                    // Workspace header
+                    let header_rect = egui::Rect::from_min_size(
+                        ui.min_rect().min + egui::vec2(pad, y_offset),
+                        egui::vec2(grid_width, 22.0),
+                    );
+                    ui.allocate_at_least(
+                        egui::vec2(grid_width, y_offset + 22.0),
+                        egui::Sense::hover(),
+                    );
+                    // Folder icon + workspace name
+                    ui.painter().text(
+                        header_rect.left_center() + egui::vec2(0.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("\u{1F4C1} {}  \u{2014} {} project(s)", ws_name, projects.len()),
+                        egui::FontId::proportional(12.0),
+                        theme.text_secondary,
+                    );
+
+                    // Bump card_idx to next row for the cards
+                    card_idx = (card_idx / cols + 1) * cols;
+
+                    for rp in projects {
+                        let col = card_idx % cols;
+                        let row = card_idx / cols;
+                        let x = pad + col as f32 * (CARD_W + CARD_GAP);
+                        let y = row as f32 * (CARD_H + CARD_GAP);
+
+                        let card_rect = egui::Rect::from_min_size(
+                            ui.min_rect().min + egui::vec2(x, y),
+                            egui::vec2(CARD_W, CARD_H),
+                        );
+                        ui.allocate_at_least(
+                            egui::vec2(grid_width, (row + 1) as f32 * (CARD_H + CARD_GAP)),
+                            egui::Sense::hover(),
+                        );
+                        self.draw_card(ctx, ui, card_rect, rp, theme, cmds);
+                        card_idx += 1;
+                    }
+
+                    // Start next group on a fresh row
+                    card_idx = card_idx.div_ceil(cols) * cols;
+                }
+
+                // Standalone projects
+                if !standalone.is_empty() && !workspace_groups.is_empty() {
+                    // "Other Projects" header if there are workspace groups
+                    let row = card_idx / cols;
+                    let y_offset = row as f32 * (CARD_H + CARD_GAP);
+                    let header_rect = egui::Rect::from_min_size(
+                        ui.min_rect().min + egui::vec2(pad, y_offset),
+                        egui::vec2(grid_width, 22.0),
+                    );
+                    ui.allocate_at_least(
+                        egui::vec2(grid_width, y_offset + 22.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().text(
+                        header_rect.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        "Other Projects",
+                        egui::FontId::proportional(12.0),
+                        theme.text_secondary,
+                    );
+                    card_idx = (card_idx / cols + 1) * cols;
+                }
+
+                for rp in &standalone {
+                    let col = card_idx % cols;
+                    let row = card_idx / cols;
                     let x = pad + col as f32 * (CARD_W + CARD_GAP);
                     let y = row as f32 * (CARD_H + CARD_GAP);
 
@@ -279,17 +380,12 @@ impl LaunchScreen {
                         ui.min_rect().min + egui::vec2(x, y),
                         egui::vec2(CARD_W, CARD_H),
                     );
-
-                    // Ensure scroll area is big enough
                     ui.allocate_at_least(
-                        egui::vec2(
-                            grid_width,
-                            (row + 1) as f32 * (CARD_H + CARD_GAP),
-                        ),
+                        egui::vec2(grid_width, (row + 1) as f32 * (CARD_H + CARD_GAP)),
                         egui::Sense::hover(),
                     );
-
                     self.draw_card(ctx, ui, card_rect, rp, theme, cmds);
+                    card_idx += 1;
                 }
             });
         });

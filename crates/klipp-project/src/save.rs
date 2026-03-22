@@ -38,34 +38,7 @@ pub fn save_project_with_color(
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
 
     // Build project.json
-    let now = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        // Manual ISO 8601 without pulling in chrono
-        let (days, rem) = (secs / 86400, secs % 86400);
-        let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-        // Days since 1970-01-01 → year/month/day (simplified)
-        let mut y = 1970i64;
-        let mut d = days as i64;
-        loop {
-            let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-            if d < dy { break; }
-            d -= dy;
-            y += 1;
-        }
-        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-        let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        let mut mo = 0usize;
-        for md in &mdays {
-            if d < *md { break; }
-            d -= md;
-            mo += 1;
-        }
-        format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, d + 1)
-    };
+    let now = iso8601_now();
 
     let project = ProjectJson {
         version: "1.0.0".to_string(),
@@ -228,6 +201,34 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
         },
         ClipKind::Gap => ClipKindJson::Gap,
     }
+}
+
+/// Generate an ISO 8601 UTC timestamp string.
+pub fn iso8601_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (days, rem) = (secs / 86400, secs % 86400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let mut y = 1970i64;
+    let mut d = days as i64;
+    loop {
+        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if d < dy { break; }
+        d -= dy;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0usize;
+    for md in &mdays {
+        if d < *md { break; }
+        d -= md;
+        mo += 1;
+    }
+    format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, d + 1)
 }
 
 fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
