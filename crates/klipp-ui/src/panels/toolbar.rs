@@ -310,7 +310,7 @@ impl ToolbarPanel {
             });
     }
 
-    fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, _state: &mut AppState, recent: &[RecentProject]) {
+    fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject]) {
         ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
             if ui.button("New Project").clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.button("Open Project...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
@@ -334,6 +334,8 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
+            if ui.button("Project Info...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            if ui.button("Consolidate Project...").clicked() { state.show_consolidate_dialog = true; ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
             if ui.button("Render Queue").clicked() { cmds.push(AppCommand::ShowRenderQueue); ui.close_menu(); }

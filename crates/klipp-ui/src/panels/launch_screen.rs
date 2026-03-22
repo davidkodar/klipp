@@ -13,6 +13,8 @@ const SIDEBAR_W: f32 = 220.0;
 pub struct LaunchScreen {
     search_query: String,
     thumbnail_textures: HashMap<PathBuf, egui::TextureHandle>,
+    /// Project being renamed: (path, new name buffer)
+    renaming_project: Option<(PathBuf, String)>,
 }
 
 impl LaunchScreen {
@@ -59,6 +61,51 @@ impl LaunchScreen {
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(main_rect), |ui| {
             self.draw_main_area(ctx, ui, recent, theme, &mut cmds);
         });
+
+        // Rename project popup
+        if let Some((ref rename_path, _)) = self.renaming_project.clone() {
+            let mut open = true;
+            let mut done = false;
+            egui::Window::new("Rename Project")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        let buf = &mut self.renaming_project.as_mut().unwrap().1;
+                        let resp = ui.text_edit_singleline(buf);
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            done = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Rename").clicked() {
+                            done = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.renaming_project = None;
+                        }
+                    });
+                });
+            if !open {
+                self.renaming_project = None;
+            }
+            if done {
+                let new_name = self.renaming_project.as_ref()
+                    .map(|(_, buf)| buf.trim().to_string())
+                    .unwrap_or_default();
+                if !new_name.is_empty() {
+                    cmds.push(AppCommand::RenameProjectOnDisk {
+                        old_path: rename_path.clone(),
+                        new_name,
+                    });
+                }
+                self.renaming_project = None;
+            }
+        }
 
         cmds
     }
@@ -493,6 +540,9 @@ impl LaunchScreen {
             let secs = (dur % 60.0).floor() as u32;
             meta_parts.push(format!("{mins}:{secs:02}"));
         }
+        if let Some(size) = rp.total_size_bytes {
+            meta_parts.push(format_size_compact(size));
+        }
         if !meta_parts.is_empty() {
             ui.painter().text(
                 egui::pos2(rect.min.x + 10.0, info_top + 18.0),
@@ -531,6 +581,10 @@ impl LaunchScreen {
                 });
                 ui.close_menu();
             }
+            if ui.button("Rename...").clicked() {
+                self.renaming_project = Some((rp.path.clone(), rp.name.clone()));
+                ui.close_menu();
+            }
             if ui.button("Remove from Recent").clicked() {
                 cmds.push(AppCommand::RemoveRecentProject {
                     path: rp.path.clone(),
@@ -548,6 +602,16 @@ impl LaunchScreen {
                 ui.close_menu();
             }
         });
+    }
+}
+
+fn format_size_compact(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 

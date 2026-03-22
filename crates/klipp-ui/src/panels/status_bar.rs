@@ -61,6 +61,12 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         );
         status_item(ui, theme, &res_str);
 
+        // Project media size
+        let total_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
+        if total_bytes > 0 {
+            status_label_value(ui, theme, "Media:", &format_size(total_bytes));
+        }
+
         // Edit mode indicator
         {
             let (mode_label, mode_color) = match state.edit_mode {
@@ -147,6 +153,16 @@ fn status_item(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
             .monospace()
             .color(theme.text_secondary),
     );
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn status_label_value(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {

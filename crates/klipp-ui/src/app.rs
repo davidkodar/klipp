@@ -208,6 +208,48 @@ impl KlippApp {
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
 
+        // Enrich any stale recent project entries with metadata from disk
+        let mut prefs_changed = app.prefs.enrich_recent_projects();
+
+        // Generate poster frame thumbnails for recent projects that don't have one
+        let cache_dir = dirs::cache_dir().map(|d| d.join("klipp").join("thumbnails"));
+        if let Some(ref cache_dir) = cache_dir {
+            let _ = std::fs::create_dir_all(cache_dir);
+            for rp in &mut app.prefs.general.recent_projects {
+                // Skip if already has a valid thumbnail
+                if rp.thumbnail_path.as_ref().is_some_and(|p| p.exists()) {
+                    continue;
+                }
+                if !rp.path.exists() {
+                    continue;
+                }
+                // Try to find the first media file from the project's manifest
+                let manifest_path = rp.path.join("media").join("manifest.json");
+                let first_media = std::fs::read_to_string(&manifest_path).ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("items")?.as_array()?.first()?.get("path")?.as_str().map(std::path::PathBuf::from));
+
+                if let Some(media_path) = first_media {
+                    if media_path.exists() {
+                        // Extract a frame at 1 second (or start) and save as PNG
+                        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&media_path, 1.0, 320) {
+                            let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
+                            let out_path = cache_dir.join(format!("{stem}.png"));
+                            if save_rgba_as_png(&rgba, w, h, &out_path) {
+                                rp.thumbnail_path = Some(out_path);
+                                prefs_changed = true;
+                                tracing::info!("Generated poster frame for {:?}", rp.path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if prefs_changed {
+            let _ = app.prefs.save();
+        }
+
         // Discover OFX plugins at startup
         let mut ofx_host = klipp_plugin::OfxHost::new();
         let count = ofx_host.discover_plugins();
@@ -2322,6 +2364,33 @@ impl KlippApp {
                     self.prefs_dirty = true;
                     continue;
                 }
+                AppCommand::RenameProjectOnDisk { old_path, new_name } => {
+                    if let Some(parent) = old_path.parent() {
+                        let new_dir_name = format!("{new_name}.klipp");
+                        let new_path = parent.join(&new_dir_name);
+                        if new_path.exists() {
+                            tracing::error!("Cannot rename: {:?} already exists", new_path);
+                        } else if let Err(e) = std::fs::rename(old_path, &new_path) {
+                            tracing::error!("Failed to rename project: {e}");
+                        } else {
+                            tracing::info!("Renamed project {:?} -> {:?}", old_path, new_path);
+                            // Update recent projects entry
+                            for rp in &mut self.prefs.general.recent_projects {
+                                if rp.path == *old_path {
+                                    rp.path = new_path.clone();
+                                    rp.name = new_name.clone();
+                                    break;
+                                }
+                            }
+                            // Update current project path if this is the open project
+                            if self.state.project_path.as_ref() == Some(old_path) {
+                                self.state.project_path = Some(new_path);
+                            }
+                            self.prefs_dirty = true;
+                        }
+                    }
+                    continue;
+                }
                 AppCommand::CreateProject {
                     name, location, fps_num, fps_den, width, height, sequence_name,
                 } => {
@@ -2358,6 +2427,7 @@ impl KlippApp {
                     self.state.fps = fps;
                     self.state.media_pool = klipp_media::MediaPool::new();
                     self.state.project_path = Some(project_dir.clone());
+                    self.state.created_at = Some(klipp_project::iso8601_now());
                     self.state.dirty = false;
                     self.state.selected_clip = None;
                     self.state.selected_clips.clear();
@@ -3170,6 +3240,7 @@ impl KlippApp {
                         self.state.sequences[self.state.active_sequence_idx].resolution.height
                     )),
                     thumbnail_path: generate_poster_frame(&self.frame_buffer, path),
+                    total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
@@ -3256,6 +3327,7 @@ impl KlippApp {
                         self.state.sequences[self.state.active_sequence_idx].resolution.height
                     )),
                     thumbnail_path: None,
+                    total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
@@ -3885,6 +3957,24 @@ impl eframe::App for KlippApp {
         self.poll_render_queue();
         self.upload_frame_to_egui(ctx);
 
+        // Window title with project name and dirty indicator
+        {
+            let title = match &self.state.project_path {
+                Some(p) => {
+                    let name = p.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Untitled".into());
+                    if self.state.dirty {
+                        format!("Klipp \u{2014} {name} \u{2022}")
+                    } else {
+                        format!("Klipp \u{2014} {name}")
+                    }
+                }
+                None => "Klipp".to_string(),
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
             if let Err(e) = self.prefs.save() {
@@ -4076,6 +4166,92 @@ impl eframe::App for KlippApp {
                 &self.theme,
             ) {
                 all_cmds.push(cmd);
+            }
+        }
+
+        // 4c2. Consolidate Project dialog
+        if self.state.show_consolidate_dialog {
+            if let Some(ref project_path) = self.state.project_path.clone() {
+                let mut open = true;
+                // Count media files outside the project directory
+                let project_dir = project_path.clone();
+                let external_media: Vec<_> = self.state.media_pool.all()
+                    .filter(|item| !item.offline && !item.path.starts_with(&project_dir))
+                    .map(|item| (item.id, item.path.clone(), item.file_size_bytes))
+                    .collect();
+                let file_count = external_media.len();
+                let total_bytes: u64 = external_media.iter().map(|(_, _, s)| s).sum();
+
+                egui::Window::new("Consolidate Project")
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_width(380.0)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("Copy all referenced media files into the project folder for portability.");
+                        ui.add_space(8.0);
+                        if file_count == 0 {
+                            ui.label(egui::RichText::new("All media is already inside the project folder.")
+                                .color(self.theme.text_secondary));
+                        } else {
+                            ui.label(format!("Media to copy: {} file(s)", file_count));
+                            ui.label(format!("Total size: {}", format_size_brief(total_bytes)));
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Cancel").clicked() {
+                                    self.state.show_consolidate_dialog = false;
+                                }
+                                if ui.button("Consolidate").clicked() {
+                                    self.state.show_consolidate_dialog = false;
+                                    let media_dir = project_dir.join("media").join("files");
+                                    if let Err(e) = std::fs::create_dir_all(&media_dir) {
+                                        tracing::error!("Failed to create media/files dir: {e}");
+                                    } else {
+                                        let mut copied = 0usize;
+                                        for (media_id, src_path, _) in &external_media {
+                                            let filename = src_path.file_name().unwrap_or_default();
+                                            let dst = media_dir.join(filename);
+                                            match std::fs::copy(src_path, &dst) {
+                                                Ok(_) => {
+                                                    // Update media item path
+                                                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                                                        item.path = dst;
+                                                    }
+                                                    copied += 1;
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Failed to copy {:?}: {e}", src_path);
+                                                }
+                                            }
+                                        }
+                                        self.state.dirty = true;
+                                        self.state.toast.show(format!("Consolidated {copied} file(s)"));
+                                        tracing::info!("Consolidated {copied}/{file_count} media files");
+                                    }
+                                }
+                            });
+                        }
+                    });
+                if !open {
+                    self.state.show_consolidate_dialog = false;
+                }
+            } else {
+                self.state.show_consolidate_dialog = false;
+            }
+        }
+
+        // 4c3. Project Info window
+        if self.state.show_project_info {
+            let mut still_open = true;
+            crate::panels::project_info::show_project_info(
+                ctx,
+                &self.state,
+                &self.theme,
+                &mut still_open,
+            );
+            if !still_open {
+                self.state.show_project_info = false;
             }
         }
 
@@ -5339,6 +5515,17 @@ fn is_leap(y: u64) -> bool {
 
 /// Generate a poster frame thumbnail and save as PNG.
 /// Returns the path to the saved thumbnail, or None if no frame available.
+/// Save RGBA pixel data as a PNG file.
+fn save_rgba_as_png(rgba: &[u8], width: u32, height: u32, path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::File::create(path) else { return false };
+    let w = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let Ok(mut writer) = encoder.write_header() else { return false };
+    writer.write_image_data(rgba).is_ok()
+}
+
 fn generate_poster_frame(
     frame_buffer: &klipp_engine::SharedFrameBuffer,
     project_path: &std::path::Path,
@@ -5385,6 +5572,16 @@ fn generate_poster_frame(
     writer.write_image_data(&rgb_data).ok()?;
 
     Some(out_path)
+}
+
+fn format_size_brief(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {

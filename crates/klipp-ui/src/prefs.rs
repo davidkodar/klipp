@@ -27,6 +27,9 @@ pub struct RecentProject {
     pub resolution: Option<String>,
     #[serde(default)]
     pub thumbnail_path: Option<PathBuf>,
+    /// Total media size in bytes (cached for display).
+    #[serde(default)]
+    pub total_size_bytes: Option<u64>,
 }
 
 impl RecentProject {
@@ -44,6 +47,7 @@ impl RecentProject {
             fps: None,
             resolution: None,
             thumbnail_path: None,
+            total_size_bytes: None,
         }
     }
 }
@@ -188,5 +192,62 @@ impl Preferences {
         self.general.recent_projects.retain(|p| p.path != project.path);
         self.general.recent_projects.insert(0, project);
         self.general.recent_projects.truncate(20);
+    }
+
+    /// Enrich recent project entries that are missing metadata by reading
+    /// from the project files on disk. Returns true if any entries were updated.
+    pub fn enrich_recent_projects(&mut self) -> bool {
+        let mut changed = false;
+        for rp in &mut self.general.recent_projects {
+            if rp.total_size_bytes.is_some() && rp.duration_secs.is_some() && rp.fps.is_some() {
+                continue; // already has data
+            }
+            if !rp.path.exists() {
+                continue;
+            }
+            // Try to load project metadata from disk
+            match klipp_project::load_project(&rp.path) {
+                Ok((sequences, media_pool, _color, _active_id, _created_at)) => {
+                    if rp.total_size_bytes.is_none() {
+                        rp.total_size_bytes = Some(media_pool.all().map(|m| m.file_size_bytes).sum());
+                        changed = true;
+                    }
+                    if let Some(seq) = sequences.first() {
+                        if rp.duration_secs.is_none() {
+                            rp.duration_secs = Some(seq.total_duration().to_secs_f64());
+                            changed = true;
+                        }
+                        if rp.fps.is_none() {
+                            rp.fps = Some(if seq.fps.den == 1 {
+                                format!("{}fps", seq.fps.num)
+                            } else {
+                                format!("{:.3}fps", seq.fps.num as f64 / seq.fps.den as f64)
+                            });
+                            changed = true;
+                        }
+                        if rp.resolution.is_none() {
+                            rp.resolution = Some(format!(
+                                "{}x{}",
+                                seq.resolution.width, seq.resolution.height
+                            ));
+                            changed = true;
+                        }
+                        if rp.name.is_empty() || rp.name == rp.path.file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                        {
+                            // Use sequence name if project name is just the directory stem
+                            rp.name = seq.name.clone();
+                            changed = true;
+                        }
+                    }
+                    tracing::info!("Enriched recent project metadata for {:?}", rp.path);
+                }
+                Err(e) => {
+                    tracing::debug!("Could not enrich recent project {:?}: {e}", rp.path);
+                }
+            }
+        }
+        changed
     }
 }

@@ -140,6 +140,7 @@ pub enum AppCommand {
     },
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
+    RenameProjectOnDisk { old_path: PathBuf, new_name: String },
 
     // Sequences
     AddSequence { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },

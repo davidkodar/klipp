@@ -191,6 +191,10 @@ pub struct AppState {
 
     // New Project dialog
     pub show_new_project_dialog: bool,
+    // Project Info window
+    pub show_project_info: bool,
+    // Consolidate Project dialog
+    pub show_consolidate_dialog: bool,
 
     // Sequence tab rename
     pub renaming_sequence_idx: Option<usize>,
@@ -360,6 +364,8 @@ impl Default for AppState {
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_new_project_dialog: false,
+            show_project_info: false,
+            show_consolidate_dialog: false,
             renaming_sequence_idx: None,
             rename_sequence_buf: String::new(),
             show_autosave_recovery: false,
