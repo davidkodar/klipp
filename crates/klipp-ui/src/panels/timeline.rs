@@ -1344,7 +1344,58 @@ impl TimelinePanel {
                     }
                 }
             } else {
+                // Non-video clip (audio, etc): draw waveform if available
                 painter.rect_filled(clip_rect, 3.0, fill);
+
+                // Draw waveform overlay for clips with audio peak data
+                if let Some(mid) = clip.media_id() {
+                    if let Some(peaks) = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref()) {
+                        if !peaks.is_empty() {
+                            // Map clip source range to peak indices
+                            // Each peak bin covers PEAK_BIN_SIZE/48000 seconds
+                            const PEAK_BIN_SECS: f64 = 256.0 / 48000.0;
+                            let src_in = clip.source_in.to_secs_f64();
+                            let src_out = clip.source_out.to_secs_f64();
+                            let first_bin = (src_in / PEAK_BIN_SECS) as usize;
+                            let last_bin = ((src_out / PEAK_BIN_SECS) as usize).min(peaks.len());
+
+                            if first_bin < last_bin {
+                                let clip_peaks = &peaks[first_bin..last_bin];
+                                let waveform_color = egui::Color32::from_rgba_premultiplied(
+                                    bright_color.r().saturating_add(40),
+                                    bright_color.g().saturating_add(40),
+                                    bright_color.b().saturating_add(40),
+                                    180,
+                                );
+
+                                let clip_painter = ui.painter().with_clip_rect(clip_rect);
+                                let center_y = clip_rect.center().y;
+                                let half_h = clip_rect.height() * 0.40; // 80% of clip height for waveform
+                                let w = clip_rect.width();
+
+                                // Draw min/max envelope: one vertical line per pixel
+                                let num_cols = (w as usize).max(1);
+                                for col in 0..num_cols {
+                                    let x = clip_rect.left() + col as f32;
+                                    // Map pixel column to peak index
+                                    let peak_idx = col * clip_peaks.len() / num_cols;
+                                    let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
+
+                                    // pmin is negative, pmax is positive (audio centered at 0)
+                                    let y_top = center_y - pmax.abs() * half_h;
+                                    let y_bot = center_y + pmin.abs() * half_h;
+
+                                    if (y_bot - y_top) > 0.5 {
+                                        clip_painter.line_segment(
+                                            [egui::pos2(x, y_top), egui::pos2(x, y_bot)],
+                                            egui::Stroke::new(1.0, waveform_color),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Border
