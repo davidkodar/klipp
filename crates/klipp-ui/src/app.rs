@@ -136,6 +136,8 @@ pub struct KlippApp {
     cpal_sample_rate: u32,
     // Launch screen
     launch_screen: crate::panels::launch_screen::LaunchScreen,
+    // New Project dialog
+    new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
 }
 
 impl KlippApp {
@@ -201,6 +203,7 @@ impl KlippApp {
             skim_consumer,
             cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
+            new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
@@ -2263,10 +2266,13 @@ impl KlippApp {
                 AppCommand::NewProject => {
                     if self.state.dirty {
                         self.state.show_unsaved_dialog = true;
-                        self.state.unsaved_dialog_action = UnsavedAction::NewProject;
+                        self.state.unsaved_dialog_action = UnsavedAction::OpenNewProjectDialog;
                         continue;
                     }
-                    self.do_new_project();
+                    self.new_project_dialog.reset(
+                        self.prefs.general.default_project_dir.as_ref(),
+                    );
+                    self.state.show_new_project_dialog = true;
                     continue;
                 }
                 AppCommand::SaveProject => {
@@ -2314,6 +2320,59 @@ impl KlippApp {
                     }
                     self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
                     self.prefs_dirty = true;
+                    continue;
+                }
+                AppCommand::CreateProject {
+                    name, location, fps_num, fps_den, width, height, sequence_name,
+                } => {
+                    let project_dir = location.join(format!("{name}.klipp"));
+                    let fps = klipp_core::Fps::new(*fps_num, *fps_den);
+                    let resolution = klipp_core::Resolution { width: *width, height: *height };
+                    let seq_name = if sequence_name.is_empty() {
+                        name.clone()
+                    } else {
+                        sequence_name.clone()
+                    };
+                    let seq = klipp_timeline::Sequence {
+                        id: klipp_core::SequenceId::new(),
+                        name: seq_name,
+                        fps,
+                        resolution,
+                        tracks: {
+                            let mut tracks = vec![
+                                klipp_timeline::Track::new("Video 2", klipp_timeline::TrackKind::Video),
+                                klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
+                                klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
+                            ];
+                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Primary;
+                            tracks[2].magnetic_role = klipp_timeline::TrackRole::Connected;
+                            tracks
+                        },
+                        in_point: None,
+                        out_point: None,
+                        markers: Vec::new(),
+                    };
+                    self.state.sequence = seq;
+                    self.state.fps = fps;
+                    self.state.media_pool = klipp_media::MediaPool::new();
+                    self.state.project_path = Some(project_dir.clone());
+                    self.state.dirty = false;
+                    self.state.selected_clip = None;
+                    self.state.selected_clips.clear();
+                    self.state.hovered_clip = None;
+                    self.state.playback = PlaybackState::Idle;
+                    self.state.playhead = Timecode::zero();
+                    self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
+                    self.state.thumbnail_textures.clear();
+                    self.state.filmstrip_textures.clear();
+                    self.state.history = crate::history::CommandHistory::new();
+                    self.sync_sequence_to_engine();
+                    // Save immediately so the .klipp directory is created
+                    self.do_save_project(&project_dir);
+                    // Update default project dir pref
+                    self.prefs.general.default_project_dir = Some(location.clone());
+                    self.prefs_dirty = true;
+                    tracing::info!("Created new project at {:?}", project_dir);
                     continue;
                 }
                 AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
@@ -3124,6 +3183,12 @@ impl KlippApp {
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                         match action {
                             UnsavedAction::NewProject => self.do_new_project(),
+                            UnsavedAction::OpenNewProjectDialog => {
+                                self.new_project_dialog.reset(
+                                    self.prefs.general.default_project_dir.as_ref(),
+                                );
+                                self.state.show_new_project_dialog = true;
+                            }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::Quit => cmds.push(AppCommand::Quit),
                             UnsavedAction::None => {}
@@ -3141,6 +3206,12 @@ impl KlippApp {
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                         match action {
                             UnsavedAction::NewProject => self.do_new_project(),
+                            UnsavedAction::OpenNewProjectDialog => {
+                                self.new_project_dialog.reset(
+                                    self.prefs.general.default_project_dir.as_ref(),
+                                );
+                                self.state.show_new_project_dialog = true;
+                            }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::Quit => cmds.push(AppCommand::Quit),
                             UnsavedAction::None => {}
@@ -3849,6 +3920,17 @@ impl eframe::App for KlippApp {
 
         // 4c. Render queue window
         self.show_render_queue_window(ctx);
+
+        // 4c1. New Project dialog
+        if self.state.show_new_project_dialog {
+            if let Some(cmd) = self.new_project_dialog.show(
+                ctx,
+                &mut self.state.show_new_project_dialog,
+                &self.theme,
+            ) {
+                all_cmds.push(cmd);
+            }
+        }
 
         // 4d. Preferences window
         if self.state.show_preferences {

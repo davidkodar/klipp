@@ -187,6 +187,9 @@ pub struct AppState {
     // Remove media confirmation
     pub show_remove_media_confirm: Option<MediaId>,
 
+    // New Project dialog
+    pub show_new_project_dialog: bool,
+
     // Auto-save recovery dialog
     pub show_autosave_recovery: bool,
     pub autosave_recovery_path: Option<PathBuf>,
@@ -244,6 +247,7 @@ pub struct ClipboardContent {
 pub enum UnsavedAction {
     None,
     NewProject,
+    OpenNewProjectDialog,
     OpenProject(PathBuf),
     Quit,
 }
@@ -347,6 +351,7 @@ impl Default for AppState {
             show_preferences: false,
             show_media_panel: false,
             show_remove_media_confirm: None,
+            show_new_project_dialog: false,
             show_autosave_recovery: false,
             autosave_recovery_path: None,
             autosave_original_path: None,

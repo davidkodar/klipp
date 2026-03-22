@@ -1,6 +1,7 @@
 pub mod inspector;
 pub mod launch_screen;
 pub mod markers;
+pub mod new_project_dialog;
 pub mod preferences;
 pub mod status_bar;
 pub mod timeline;

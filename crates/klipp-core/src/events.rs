@@ -129,6 +129,15 @@ pub enum AppCommand {
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },
+    CreateProject {
+        name: String,
+        location: PathBuf,
+        fps_num: u32,
+        fps_den: u32,
+        width: u32,
+        height: u32,
+        sequence_name: String,
+    },
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
 
