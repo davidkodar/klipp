@@ -336,6 +336,10 @@ impl KlippApp {
                     self.state.playback = PlaybackState::Playing;
                     self.state.playhead_anchor = self.state.playhead;
                     self.state.playhead_anchor_wall = std::time::Instant::now();
+                    // Re-engage playhead follow on play (user scroll disables it)
+                    if self.state.playhead_follow == crate::state::PlayheadFollow::Off {
+                        self.state.playhead_follow = crate::state::PlayheadFollow::Page;
+                    }
                 }
                 AppEvent::PlaybackPaused => {
                     self.state.playback = PlaybackState::Paused;
