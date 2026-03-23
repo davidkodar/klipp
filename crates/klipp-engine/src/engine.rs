@@ -2388,11 +2388,16 @@ impl PlaybackEngine {
         let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
         drop(seq);
 
-        // 1. Per-clip color grade (skipped in before/after bypass mode)
+        // Save pre-grade frame for Before/After split view
+        let pre_grade_rgba = if self.bypass_color_grade {
+            Some(rgba.clone())
+        } else {
+            None
+        };
+
+        // 1. Per-clip color grade
         let t1 = std::time::Instant::now();
-        let rgba = if self.bypass_color_grade {
-            rgba
-        } else if let Some(g) = grade {
+        let rgba = if let Some(g) = grade {
             if g.enabled {
                 // Build curve LUTs if any curve is non-identity
                 let curve_luts = {
@@ -2483,6 +2488,18 @@ impl PlaybackEngine {
         // 4. Global color pipeline
         let rgba = self.color_pipeline.process_frame(rgba, width, height);
         let t5 = std::time::Instant::now();
+
+        // Store pre-grade frame in frame buffer for Before/After split
+        if let Some(original) = pre_grade_rgba {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.original_data = original;
+        } else {
+            // Clear original when not in split mode to free memory
+            let mut fb = self.frame_buffer.lock().unwrap();
+            if !fb.original_data.is_empty() {
+                fb.original_data = Vec::new();
+            }
+        }
 
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 2.0 {

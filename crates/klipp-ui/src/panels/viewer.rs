@@ -12,7 +12,7 @@ impl ViewerPanel {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        state: &AppState,
+        state: &mut AppState,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
@@ -193,7 +193,7 @@ impl ViewerPanel {
     fn show_program_viewer(
         &mut self,
         ui: &mut egui::Ui,
-        state: &AppState,
+        state: &mut AppState,
         theme: &KlippTheme,
         viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
@@ -266,6 +266,77 @@ impl ViewerPanel {
             );
         }
 
+        // ── Before/After split divider ──
+        if state.before_after_active {
+            let split_x = image_rect.min.x + state.split_position * image_rect.width();
+            let divider_color = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+
+            // Vertical divider line
+            ui.painter().vline(
+                split_x,
+                image_rect.y_range(),
+                egui::Stroke::new(2.0, divider_color),
+            );
+
+            // Labels
+            let label_font = egui::FontId::proportional(10.0);
+            let label_y = image_rect.min.y + 14.0;
+            ui.painter().text(
+                egui::pos2(split_x - 8.0, label_y),
+                egui::Align2::RIGHT_CENTER,
+                "Original",
+                label_font.clone(),
+                egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
+            );
+            ui.painter().text(
+                egui::pos2(split_x + 8.0, label_y),
+                egui::Align2::LEFT_CENTER,
+                "Graded",
+                label_font,
+                egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
+            );
+
+            // Small triangle arrows on the divider
+            let arrow_y = image_rect.center().y;
+            let tri_size = 6.0;
+            // Left arrow
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(split_x - 2.0, arrow_y - tri_size),
+                    egui::pos2(split_x - 2.0 - tri_size, arrow_y),
+                    egui::pos2(split_x - 2.0, arrow_y + tri_size),
+                ],
+                divider_color,
+                egui::Stroke::NONE,
+            ));
+            // Right arrow
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(split_x + 2.0, arrow_y - tri_size),
+                    egui::pos2(split_x + 2.0 + tri_size, arrow_y),
+                    egui::pos2(split_x + 2.0, arrow_y + tri_size),
+                ],
+                divider_color,
+                egui::Stroke::NONE,
+            ));
+
+            // Drag interaction on divider
+            let drag_rect = egui::Rect::from_center_size(
+                egui::pos2(split_x, image_rect.center().y),
+                egui::vec2(16.0, image_rect.height()),
+            );
+            let drag_resp = ui.allocate_rect(drag_rect, egui::Sense::drag());
+            if drag_resp.dragged() {
+                if let Some(pos) = drag_resp.interact_pointer_pos() {
+                    state.split_position = ((pos.x - image_rect.min.x) / image_rect.width())
+                        .clamp(0.05, 0.95);
+                }
+            }
+            if drag_resp.hovered() || drag_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+        }
+
         // ── Letterbox bars (drawn ON TOP of video frame) ──
         ui.painter().rect_filled(
             egui::Rect::from_min_size(viewer_rect.min, egui::vec2(viewer_rect.width(), lb_h)),
@@ -278,6 +349,26 @@ impl ViewerPanel {
             ),
             0.0, egui::Color32::BLACK,
         );
+
+        // ── White balance eyedropper interaction ──
+        if state.wb_eyedropper_active {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            // Allocate click sense over the image area
+            let eyedropper_resp = ui.allocate_rect(image_rect, egui::Sense::click());
+            if eyedropper_resp.clicked() {
+                if let Some(pos) = eyedropper_resp.interact_pointer_pos() {
+                    // Normalized coordinates (0-1) within the video frame
+                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                    state.wb_sample_request = Some((nx, ny));
+                    state.wb_eyedropper_active = false;
+                }
+            }
+            // Cancel on Escape
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                state.wb_eyedropper_active = false;
+            }
+        }
 
         // Safe area overlay removed — it looked like a viewer border
 

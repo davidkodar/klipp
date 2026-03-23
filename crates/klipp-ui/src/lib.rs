@@ -6,6 +6,7 @@ pub mod inspector;
 pub mod layout_state;
 pub mod panels;
 pub mod prefs;
+pub mod presets;
 pub mod state;
 pub mod theme;
 pub mod timeline;

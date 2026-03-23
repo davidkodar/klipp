@@ -188,6 +188,10 @@ pub struct AppState {
     pub curves_single_mode: bool,
     pub curve_histograms: Option<klipp_color::scopes::HistogramData>,
     pub slider_edit: crate::widgets::color_slider::SliderEditState,
+    pub show_preset_menu: bool,
+    pub preset_save_name: String,
+    pub show_preset_save: bool,
+    pub grade_presets: Vec<(String, klipp_timeline::ClipColorGrade)>,
     pub huesat_single_mode: bool,
     pub huesat_active_curve: u8, // 0-5 index for Single mode
 
@@ -195,8 +199,14 @@ pub struct AppState {
     pub show_scopes: bool,
     pub scope_mode: ScopeMode,
 
-    // Before/After
+    // Eyedropper (white balance)
+    pub wb_eyedropper_active: bool,
+    /// Pixel coordinates to sample (set by viewer on click, consumed by app)
+    pub wb_sample_request: Option<(f32, f32)>, // normalized 0-1
+
+    // Before/After split view
     pub before_after_active: bool,
+    pub split_position: f32, // 0.0-1.0, default 0.5
 
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
@@ -416,11 +426,18 @@ impl Default for AppState {
             curves_single_mode: false,
             curve_histograms: None,
             slider_edit: Default::default(),
+            show_preset_menu: false,
+            preset_save_name: String::new(),
+            show_preset_save: false,
+            grade_presets: crate::presets::load_all_presets(),
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,
             scope_mode: ScopeMode::Waveform,
+            wb_eyedropper_active: false,
+            wb_sample_request: None,
             before_after_active: false,
+            split_position: 0.5,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),

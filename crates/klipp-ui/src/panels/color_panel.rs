@@ -404,6 +404,23 @@ impl ColorPanel {
             }).collect()
         }, cmds);
 
+        // White balance eyedropper
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            let wb_active = state.wb_eyedropper_active;
+            let wb_color = if wb_active {
+                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+            } else {
+                egui::Color32::from_rgb(0x60, 0x60, 0x70)
+            };
+            let wb_label = if wb_active { "⊙ Click viewer to sample" } else { "⊙ White Balance" };
+            let wb_resp = ui.label(egui::RichText::new(wb_label).size(9.0).color(wb_color));
+            if wb_resp.interact(egui::Sense::click()).clicked() {
+                state.wb_eyedropper_active = !state.wb_eyedropper_active;
+            }
+        });
+        ui.add_space(2.0);
+
         let color_sliders: &[SliderDef] = &[
             (grade.saturation,  "Saturation",  |v| format!("{v:.2}"),   1.0, 0.0..=2.0,       ColorGradeParam::Saturation),
             (grade.temperature, "Temperature", |v| format!("{v:+.0}"),  0.0, -100.0..=100.0,  ColorGradeParam::Temperature),
@@ -1503,6 +1520,14 @@ impl ColorPanel {
                 }
             }
 
+            ui.add_space(6.0);
+
+            // Presets dropdown
+            let preset_resp = footer_button(ui, "Presets ▾", text_dim, btn_bg, border);
+            if preset_resp {
+                state.show_preset_menu = !state.show_preset_menu;
+            }
+
             // Spacer
             let remaining = ui.available_width() - 110.0;
             if remaining > 0.0 {
@@ -1537,6 +1562,186 @@ impl ColorPanel {
 
             ui.add_space(12.0);
         });
+
+        // Preset popup menu (rendered outside the horizontal layout)
+        if state.show_preset_menu {
+            let menu_bg = egui::Color32::from_rgb(0x18, 0x18, 0x1e);
+            let menu_border = egui::Color32::from_rgb(0x3a, 0x3a, 0x44);
+            let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let hover_bg = egui::Color32::from_rgb(0x28, 0x28, 0x32);
+
+            let popup_id = ui.id().with("preset_popup");
+            let mut close_menu = false;
+
+            egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(ui.min_rect().min.x + 12.0, ui.min_rect().min.y - 4.0))
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::none()
+                        .fill(menu_bg)
+                        .stroke(egui::Stroke::new(0.5, menu_border))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::same(4.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(160.0);
+
+                            // Header
+                            ui.label(egui::RichText::new("PRESETS").size(9.0).color(
+                                egui::Color32::from_rgb(0x50, 0x50, 0x60),
+                            ));
+                            ui.add_space(2.0);
+
+                            // Save current
+                            let save_resp = ui.horizontal(|ui| {
+                                let r = ui.label(egui::RichText::new("Save current...").size(10.0).color(text_accent));
+                                r.interact(egui::Sense::click())
+                            }).inner;
+                            if save_resp.clicked() {
+                                state.show_preset_save = true;
+                                close_menu = true;
+                            }
+
+                            ui.add_space(2.0);
+                            let sep_rect = egui::Rect::from_min_size(
+                                egui::pos2(ui.min_rect().min.x, ui.cursor().min.y),
+                                egui::vec2(ui.available_width(), 0.5),
+                            );
+                            ui.painter().rect_filled(sep_rect, 0.0, menu_border);
+                            ui.add_space(4.0);
+
+                            // Preset list
+                            let presets = state.grade_presets.clone();
+                            for (name, grade) in &presets {
+                                let (item_rect, item_resp) = ui.allocate_exact_size(
+                                    egui::vec2(ui.available_width(), 18.0),
+                                    egui::Sense::click(),
+                                );
+                                if item_resp.hovered() {
+                                    ui.painter().rect_filled(item_rect, 2.0, hover_bg);
+                                }
+                                ui.painter().text(
+                                    egui::pos2(item_rect.min.x + 6.0, item_rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    name,
+                                    egui::FontId::proportional(10.0),
+                                    text_dim,
+                                );
+                                if item_resp.clicked() {
+                                    if let Some(clip_id) = state.selected_clip {
+                                        // Get old grade for undo
+                                        let old_grade = state.sequences[state.active_sequence_idx].tracks.iter()
+                                            .flat_map(|t| t.clips.iter())
+                                            .find(|c| c.id == clip_id)
+                                            .map(|c| c.color_grade.clone())
+                                            .unwrap_or_default();
+
+                                        // Apply preset by setting all params
+                                        cmds.push(AppCommand::ResetClipColorGrade { clip_id });
+                                        use ColorGradeParam as P;
+                                        let g = grade;
+                                        let params: &[(P, f32)] = &[
+                                            (P::Exposure, g.exposure), (P::Contrast, g.contrast),
+                                            (P::Saturation, g.saturation), (P::Temperature, g.temperature),
+                                            (P::Tint, g.tint), (P::Highlights, g.highlights),
+                                            (P::Shadows, g.shadows), (P::Whites, g.whites),
+                                            (P::Blacks, g.blacks),
+                                            (P::LiftX, g.lift_x), (P::LiftY, g.lift_y),
+                                            (P::LiftMaster, g.lift_master),
+                                            (P::GammaX, g.gamma_x), (P::GammaY, g.gamma_y),
+                                            (P::GammaMaster, g.gamma_master),
+                                            (P::GainX, g.gain_x), (P::GainY, g.gain_y),
+                                            (P::GainMaster, g.gain_master),
+                                        ];
+                                        for &(param, value) in params {
+                                            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param, value });
+                                        }
+
+                                        // Push undo
+                                        state.history.push(crate::history::HistoryEntry {
+                                            sequence_idx: state.active_sequence_idx,
+                                            command: crate::history::EditCommand::SetColorGrade {
+                                                clip_id,
+                                                old_grade,
+                                                new_grade: grade.clone(),
+                                            },
+                                        });
+                                    }
+                                    close_menu = true;
+                                }
+                            }
+                        });
+                });
+
+            // Close menu on click outside or after selection
+            if close_menu || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                || ui.input(|i| i.pointer.any_pressed() && !state.show_preset_menu) {
+                // Defer close to next frame to avoid flicker
+            }
+            if close_menu {
+                state.show_preset_menu = false;
+            }
+        }
+
+        // Save preset dialog
+        if state.show_preset_save {
+            let popup_id = ui.id().with("preset_save_popup");
+            egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(ui.min_rect().min.x + 50.0, ui.min_rect().min.y - 50.0))
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(0x18, 0x18, 0x1e))
+                        .stroke(egui::Stroke::new(0.5, egui::Color32::from_rgb(0x3a, 0x3a, 0x44)))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::same(8.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(180.0);
+                            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+                            let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
+
+                            ui.label(egui::RichText::new("Save Preset").size(11.0).color(text_accent));
+                            ui.add_space(4.0);
+
+                            let te = egui::TextEdit::singleline(&mut state.preset_save_name)
+                                .hint_text("Preset name")
+                                .font(egui::FontId::proportional(10.0))
+                                .desired_width(160.0);
+                            let te_resp = ui.add(te);
+                            if (te_resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                && !state.preset_save_name.trim().is_empty() {
+                                    if let Some(clip_id) = state.selected_clip {
+                                        let grade = state.sequences[state.active_sequence_idx].tracks.iter()
+                                            .flat_map(|t| t.clips.iter())
+                                            .find(|c| c.id == clip_id)
+                                            .map(|c| c.color_grade.clone());
+                                        if let Some(grade) = grade {
+                                            let _ = crate::presets::save_preset(&state.preset_save_name, &grade);
+                                            // Reload presets
+                                            state.grade_presets = crate::presets::load_all_presets();
+                                        }
+                                    }
+                                    state.preset_save_name.clear();
+                                    state.show_preset_save = false;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                state.preset_save_name.clear();
+                                state.show_preset_save = false;
+                            }
+
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Cancel").clicked() {
+                                    state.preset_save_name.clear();
+                                    state.show_preset_save = false;
+                                }
+                                ui.label(egui::RichText::new("Enter to save").size(8.0).color(text_dim));
+                            });
+                        });
+                });
+        }
     }
 }
 

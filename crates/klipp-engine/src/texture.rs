@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 pub struct FrameBuffer {
     pub data: Vec<u8>,
+    /// Pre-grade original frame for Before/After split view.
+    pub original_data: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -11,6 +13,7 @@ impl FrameBuffer {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             data: vec![0u8; (width * height * 4) as usize],
+            original_data: Vec::new(),
             width,
             height,
             dirty: false,

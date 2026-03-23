@@ -888,11 +888,50 @@ impl KlippApp {
             self.state.curve_histograms = Some(hist);
         }
 
-        // Zero-copy: RGBA [u8;4] has the same layout as egui::Color32.
-        // Take ownership of the data to avoid a copy.
-        let rgba_bytes = std::mem::take(&mut fb.data);
+        // Process white balance eyedropper sample
+        if let Some((nx, ny)) = self.state.wb_sample_request.take() {
+            let px = (nx * (fb.width - 1) as f32) as usize;
+            let py = (ny * (fb.height - 1) as f32) as usize;
+            let idx = (py * fb.width as usize + px) * 4;
+            if idx + 2 < fb.data.len() {
+                let r = fb.data[idx] as f32 / 255.0;
+                let g = fb.data[idx + 1] as f32 / 255.0;
+                let b = fb.data[idx + 2] as f32 / 255.0;
+                // Compute correction to neutralize the sampled color
+                // Temperature controls R-B balance, Tint controls G vs (R+B)/2
+                let temp = -(r - b) * 200.0;
+                let tint = -(g - (r + b) / 2.0) * 200.0;
+                if let Some(clip_id) = self.state.selected_clip {
+                    self.cmd_tx.send(AppCommand::SetClipColorGradeParam {
+                        clip_id, param: klipp_core::ColorGradeParam::Temperature,
+                        value: temp.clamp(-100.0, 100.0),
+                    }).ok();
+                    self.cmd_tx.send(AppCommand::SetClipColorGradeParam {
+                        clip_id, param: klipp_core::ColorGradeParam::Tint,
+                        value: tint.clamp(-100.0, 100.0),
+                    }).ok();
+                }
+            }
+        }
+
+        // Take ownership of frame data
+        let mut rgba_bytes = std::mem::take(&mut fb.data);
+        let original_bytes = std::mem::take(&mut fb.original_data);
         fb.dirty = false;
         drop(fb);
+
+        // Before/After split compositing: left = original, right = graded
+        if self.state.before_after_active && !original_bytes.is_empty()
+            && original_bytes.len() == rgba_bytes.len()
+        {
+            let split_x = (self.state.split_position * w as f32) as usize;
+            for y in 0..h {
+                let row_start = y * w * 4;
+                let copy_end = (split_x * 4).min(w * 4);
+                rgba_bytes[row_start..row_start + copy_end]
+                    .copy_from_slice(&original_bytes[row_start..row_start + copy_end]);
+            }
+        }
 
         let t_convert = std::time::Instant::now();
         // Safety: Color32 is repr(C) [u8; 4], same as our RGBA layout.
@@ -4762,7 +4801,7 @@ impl eframe::App for KlippApp {
                             v.window_stroke = egui::Stroke::NONE;
                             v.window_shadow = egui::Shadow::NONE;
                         }
-                        let cmds = self.viewer.show(ui, &self.state, &self.theme);
+                        let cmds = self.viewer.show(ui, &mut self.state, &self.theme);
                         all_cmds.extend(cmds);
                     });
 
