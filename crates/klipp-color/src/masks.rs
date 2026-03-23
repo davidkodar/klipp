@@ -94,3 +94,130 @@ fn smooth_step(dist: f32, feather: f32) -> f32 {
         0.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::Mask;
+
+    fn make_circle_mask(cx: f32, cy: f32, r: f32, feather: f32) -> MaskStack {
+        MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: r },
+                feather,
+                invert: false,
+                opacity: 1.0,
+                enabled: true,
+            }],
+        }
+    }
+
+    /// Sample matte at a specific normalized coordinate.
+    /// Uses a 100×100 pixel grid for reasonable precision.
+    fn sample_matte(masks: &MaskStack, nx: f32, ny: f32) -> f32 {
+        let w = 100u32;
+        let h = 100u32;
+        let matte = generate_mask_matte(w, h, masks);
+        // Map normalized coords to pixel indices
+        let px = ((nx * (w - 1) as f32) as u32).min(w - 1);
+        let py = ((ny * (h - 1) as f32) as u32).min(h - 1);
+        matte[(py * w + px) as usize]
+    }
+
+    #[test]
+    fn circle_mask_centre_pixel() {
+        let masks = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        let m = sample_matte(&masks, 0.5, 0.5);
+        // Dead centre of circle → fully inside
+        assert!((m - 1.0).abs() < 0.01, "centre should be 1.0: got {m}");
+    }
+
+    #[test]
+    fn circle_mask_outside_pixel() {
+        let masks = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        let m = sample_matte(&masks, 0.9, 0.9);
+        // Far outside circle → matte ≈ 0
+        assert!(m <= 0.05, "outside should be ~0: got {m}");
+    }
+
+    #[test]
+    fn circle_mask_feather_zone() {
+        // Circle radius 0.3, feather 0.1. Sample at ~radius + feather/2 from centre
+        let masks = make_circle_mask(0.5, 0.5, 0.3, 0.1);
+        // Point at (0.5 + 0.35, 0.5) = (0.85, 0.5) — 0.35 from centre,
+        // which is radius(0.3) + 0.05 into the feather zone (feather=0.1)
+        // Hermite smooth_step at t=0.5: 1 - 0.25*(3-1) = 0.5
+        let m = sample_matte(&masks, 0.85, 0.5);
+        // Should be in the feather transition zone
+        assert!(m > 0.1 && m < 0.9,
+            "feather zone should have partial matte: got {m}");
+    }
+
+    #[test]
+    fn circle_mask_invert() {
+        let mut masks = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        masks.masks[0].invert = true;
+        // Centre should now be outside (inverted)
+        let m_centre = sample_matte(&masks, 0.5, 0.5);
+        assert!(m_centre <= 0.05, "inverted centre should be ~0: got {m_centre}");
+        // Far outside should now be inside
+        let m_outside = sample_matte(&masks, 0.05, 0.05);
+        assert!(m_outside >= 0.95, "inverted outside should be ~1: got {m_outside}");
+    }
+
+    #[test]
+    fn rectangle_mask_inside() {
+        let masks = MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Rectangle {
+                    center_x: 0.5, center_y: 0.5,
+                    width: 0.4, height: 0.4, rotation: 0.0,
+                },
+                feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+            }],
+        };
+        let m = sample_matte(&masks, 0.5, 0.5);
+        assert!((m - 1.0).abs() < 0.01, "rect centre should be 1.0: got {m}");
+    }
+
+    #[test]
+    fn rectangle_mask_outside() {
+        let masks = MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Rectangle {
+                    center_x: 0.5, center_y: 0.5,
+                    width: 0.4, height: 0.4, rotation: 0.0,
+                },
+                feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+            }],
+        };
+        let m = sample_matte(&masks, 0.05, 0.05);
+        assert!(m <= 0.05, "rect far corner should be ~0: got {m}");
+    }
+
+    #[test]
+    fn mask_stack_union() {
+        // Two non-overlapping circles
+        let masks = MaskStack {
+            masks: vec![
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.2, center_y: 0.5, radius: 0.1 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                },
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.8, center_y: 0.5, radius: 0.1 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                },
+            ],
+        };
+        // Inside circle 1
+        let m1 = sample_matte(&masks, 0.2, 0.5);
+        assert!(m1 >= 0.95, "inside circle 1: got {m1}");
+        // Inside circle 2
+        let m2 = sample_matte(&masks, 0.8, 0.5);
+        assert!(m2 >= 0.95, "inside circle 2: got {m2}");
+        // Outside both
+        let m_out = sample_matte(&masks, 0.5, 0.5);
+        assert!(m_out <= 0.05, "outside both circles: got {m_out}");
+    }
+}

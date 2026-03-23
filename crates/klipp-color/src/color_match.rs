@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn lab_conversion_black_white() {
-        let (l, a, b) = rgb_to_lab(0.0, 0.0, 0.0);
+        let (l, _a, _b) = rgb_to_lab(0.0, 0.0, 0.0);
         assert!(l.abs() < 1.0, "black L should be ~0: {l}");
         let (l, _a, _b) = rgb_to_lab(1.0, 1.0, 1.0);
         assert!((l - 100.0).abs() < 1.0, "white L should be ~100: {l}");
@@ -175,5 +175,79 @@ mod tests {
         let (_l, a, b) = rgb_to_lab(0.5, 0.5, 0.5);
         assert!(a.abs() < 1.0, "grey a should be ~0: {a}");
         assert!(b.abs() < 1.0, "grey b should be ~0: {b}");
+    }
+
+    #[test]
+    fn color_match_warm_to_cool() {
+        // Warm frame (elevated R) vs cool frame (elevated B)
+        let warm: Vec<u8> = (0..100).flat_map(|_| [200, 128, 80, 255]).collect();
+        let cool: Vec<u8> = (0..100).flat_map(|_| [80, 128, 200, 255]).collect();
+        let result = match_colors(&warm, &cool);
+        // Matching warm→cool should produce negative temperature (shift toward cool)
+        assert!(result.temperature_adjust < -5.0,
+            "warm→cool should decrease temperature: {}", result.temperature_adjust);
+    }
+
+    #[test]
+    fn color_match_dark_to_bright() {
+        let dark: Vec<u8> = (0..200).flat_map(|_| [50, 50, 50, 255]).collect();
+        let bright: Vec<u8> = (0..200).flat_map(|_| [180, 180, 180, 255]).collect();
+        let result = match_colors(&dark, &bright);
+        assert!(result.exposure_adjust > 0.3,
+            "dark→bright should increase exposure: {}", result.exposure_adjust);
+    }
+
+    #[test]
+    fn color_match_oversaturated_to_neutral() {
+        let saturated: Vec<u8> = (0..100).flat_map(|_| [255, 50, 50, 255]).collect();
+        let neutral: Vec<u8> = (0..100).flat_map(|_| [140, 130, 120, 255]).collect();
+        let result = match_colors(&saturated, &neutral);
+        assert!(result.saturation_adjust < 1.0,
+            "saturated→neutral should desaturate: {}", result.saturation_adjust);
+    }
+
+    #[test]
+    fn color_match_apply_produces_closer_match() {
+        // Use frames that differ primarily in brightness — the match algorithm
+        // handles this well since exposure is the most reliable adjustment
+        let source: Vec<u8> = (0..200).flat_map(|_| [80, 80, 80, 255]).collect();
+        let reference: Vec<u8> = (0..200).flat_map(|_| [170, 170, 170, 255]).collect();
+
+        // Compute Lab distance before matching
+        let src_stats = rgba_to_lab_stats(&source);
+        let ref_stats = rgba_to_lab_stats(&reference);
+        let dist_before = ((src_stats.l_mean - ref_stats.l_mean).powi(2)
+            + (src_stats.a_mean - ref_stats.a_mean).powi(2)
+            + (src_stats.b_mean - ref_stats.b_mean).powi(2)).sqrt();
+
+        // Apply match
+        let result = match_colors(&source, &reference);
+
+        // Simulate applying the match to the source
+        let factor = 2.0f32.powf(result.exposure_adjust);
+        let t = result.temperature_adjust / 100.0 * 0.1;
+        let tn = result.tint_adjust / 100.0 * 0.1;
+        let matched: Vec<u8> = source.chunks_exact(4).flat_map(|px| {
+            let mut r = px[0] as f32 / 255.0 * factor;
+            let mut g = px[1] as f32 / 255.0 * factor;
+            let mut b = px[2] as f32 / 255.0 * factor;
+            // Temperature + tint
+            r += t; g += tn; b -= t;
+            // Saturation
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            r = luma + (r - luma) * result.saturation_adjust;
+            g = luma + (g - luma) * result.saturation_adjust;
+            b = luma + (b - luma) * result.saturation_adjust;
+            [(r.clamp(0.0, 1.0) * 255.0) as u8, (g.clamp(0.0, 1.0) * 255.0) as u8,
+             (b.clamp(0.0, 1.0) * 255.0) as u8, 255]
+        }).collect();
+
+        let matched_stats = rgba_to_lab_stats(&matched);
+        let dist_after = ((matched_stats.l_mean - ref_stats.l_mean).powi(2)
+            + (matched_stats.a_mean - ref_stats.a_mean).powi(2)
+            + (matched_stats.b_mean - ref_stats.b_mean).powi(2)).sqrt();
+
+        assert!(dist_after < dist_before,
+            "match should reduce Lab distance: before={dist_before:.2}, after={dist_after:.2}");
     }
 }

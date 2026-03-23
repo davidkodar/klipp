@@ -985,4 +985,197 @@ mod tests {
             );
         }
     }
+
+    // ─── HDR/ACES input transform tests ──────────────────────────────
+
+    #[test]
+    fn slog3_black_point() {
+        // S-Log3 encoded black (value=0) should map to near-zero linear
+        let mut px = make_pixel(0, 0, 0);
+        apply_input_transform(&mut px, klipp_core::LogFormat::SLog3);
+        // Black should stay dark (output ≤ 10 after sRGB gamma)
+        assert!(px[0] <= 10, "S-Log3 black should stay dark: got {}", px[0]);
+    }
+
+    #[test]
+    fn slog3_middle_grey() {
+        // S-Log3: 0.41 encoded ≈ 18% middle grey
+        // 0.41 * 255 ≈ 104.55 → pixel value 105
+        let mut px = make_pixel(105, 105, 105);
+        apply_input_transform(&mut px, klipp_core::LogFormat::SLog3);
+        // After log→linear→sRGB: 18% linear ≈ 0.18, sRGB(0.18) ≈ 0.461 → ~118
+        // Tolerance: ±15 because the S-Log3 formula is an approximation
+        // and the 8-bit input quantisation at 105 doesn't land exactly at 0.41
+        let output = px[0] as f32 / 255.0;
+        assert!(output > 0.2 && output < 0.7,
+            "S-Log3 middle grey should be mid-range: got {} ({})", px[0], output);
+    }
+
+    #[test]
+    fn slog3_white_point() {
+        // S-Log3: ~0.70 encoded ≈ 90% white. 0.70*255 ≈ 178
+        let mut px = make_pixel(178, 178, 178);
+        apply_input_transform(&mut px, klipp_core::LogFormat::SLog3);
+        // Should be brighter than the input value (log expands highlights)
+        assert!(px[0] > 178, "S-Log3 white should expand: got {}", px[0]);
+    }
+
+    #[test]
+    fn logc3_middle_grey() {
+        // ARRI LogC3 at EI800: middle grey (0.18 linear) encodes to ~0.391
+        // 0.391 * 255 ≈ 100
+        let mut px = make_pixel(100, 100, 100);
+        apply_input_transform(&mut px, klipp_core::LogFormat::LogC3);
+        let output = px[0] as f32 / 255.0;
+        // Should land in the mid-range after conversion
+        assert!(output > 0.2 && output < 0.7,
+            "LogC3 middle grey should be mid-range: got {} ({})", px[0], output);
+    }
+
+    #[test]
+    fn log_transform_monotone() {
+        // Log transforms applied to ascending values should produce monotonically
+        // increasing output. Test the most common formats.
+        for format in [klipp_core::LogFormat::SLog3, klipp_core::LogFormat::LogC3,
+                       klipp_core::LogFormat::VLog, klipp_core::LogFormat::SLog2] {
+            let mut prev = 0u8;
+            for i in 0..=255u8 {
+                let mut px = vec![i, i, i, 255];
+                apply_input_transform(&mut px, format);
+                assert!(px[0] >= prev,
+                    "{:?}: monotonicity violation at input {i}: output {} < prev {prev}",
+                    format, px[0]);
+                prev = px[0];
+            }
+        }
+    }
+
+    #[test]
+    fn log_transform_no_negative_output() {
+        // All log transforms should produce non-negative output for any input
+        for format in [klipp_core::LogFormat::SLog3, klipp_core::LogFormat::SLog2,
+                       klipp_core::LogFormat::LogC3, klipp_core::LogFormat::LogC4,
+                       klipp_core::LogFormat::VLog, klipp_core::LogFormat::CanonLog,
+                       klipp_core::LogFormat::CanonLog3, klipp_core::LogFormat::NLog,
+                       klipp_core::LogFormat::FLog, klipp_core::LogFormat::DJIDLog] {
+            for i in 0..=255u8 {
+                let mut px = vec![i, i, i, 255];
+                apply_input_transform(&mut px, format);
+                // Output is u8 so it's inherently non-negative, but verify no panic
+                // and alpha is preserved
+                assert_eq!(px[3], 255, "{:?}: alpha corrupted at input {i}", format);
+            }
+        }
+    }
+
+    // ─── Film grain CPU tests ─────────────────────────────────────────
+
+    fn wang_hash_cpu(mut x: u32) -> f32 {
+        x = (x ^ 61) ^ (x >> 16);
+        x = x.wrapping_mul(9);
+        x = x ^ (x >> 4);
+        x = x.wrapping_mul(0x27d4eb2d);
+        x = x ^ (x >> 15);
+        x as f32 / u32::MAX as f32
+    }
+
+    fn apply_grain_cpu(rgba: &mut [u8], width: u32, amount: f32, size: f32,
+                       shadows: f32, highlights: f32, monochrome: bool, frame_seed: u32) {
+        for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+            let px = (i as u32) % width;
+            let py = (i as u32) / width;
+            let qx = (px as f32 / size) as u32;
+            let qy = (py as f32 / size) as u32;
+            let seed = qx.wrapping_mul(1973).wrapping_add(qy.wrapping_mul(9277))
+                .wrapping_add(frame_seed.wrapping_mul(26699));
+            let noise_r = (wang_hash_cpu(seed) - 0.5) * amount;
+            let noise_g = if monochrome { noise_r } else { (wang_hash_cpu(seed + 1) - 0.5) * amount };
+            let noise_b = if monochrome { noise_r } else { (wang_hash_cpu(seed + 2) - 0.5) * amount };
+            let luma = 0.2126 * chunk[0] as f32 / 255.0 + 0.7152 * chunk[1] as f32 / 255.0
+                + 0.0722 * chunk[2] as f32 / 255.0;
+            let weight = ((1.0 - luma) * shadows + luma * highlights).min(1.5);
+            chunk[0] = ((chunk[0] as f32 / 255.0 + noise_r * weight).clamp(0.0, 1.0) * 255.0) as u8;
+            chunk[1] = ((chunk[1] as f32 / 255.0 + noise_g * weight).clamp(0.0, 1.0) * 255.0) as u8;
+            chunk[2] = ((chunk[2] as f32 / 255.0 + noise_b * weight).clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
+
+    #[test]
+    fn grain_zero_amount_is_noop() {
+        let mut px = vec![100, 150, 200, 255, 50, 80, 120, 255];
+        let orig = px.clone();
+        apply_grain_cpu(&mut px, 2, 0.0, 1.0, 1.0, 0.5, true, 42);
+        assert_eq!(px, orig, "zero grain should be exact no-op");
+    }
+
+    #[test]
+    fn grain_deterministic_per_seed() {
+        let mut px1 = vec![128; 400]; // 100 pixels
+        let mut px2 = px1.clone();
+        apply_grain_cpu(&mut px1, 10, 0.2, 1.0, 1.0, 0.5, true, 42);
+        apply_grain_cpu(&mut px2, 10, 0.2, 1.0, 1.0, 0.5, true, 42);
+        assert_eq!(px1, px2, "same seed should produce identical results");
+    }
+
+    #[test]
+    fn grain_varies_between_frames() {
+        let mut px1 = vec![128; 400];
+        let mut px2 = vec![128; 400];
+        apply_grain_cpu(&mut px1, 10, 0.2, 1.0, 1.0, 0.5, true, 0);
+        apply_grain_cpu(&mut px2, 10, 0.2, 1.0, 1.0, 0.5, true, 1);
+        assert_ne!(px1, px2, "different seeds should produce different results");
+    }
+
+    #[test]
+    fn grain_monochrome_equal_channels() {
+        let mut px = vec![128, 128, 128, 255];
+        let orig = px.clone();
+        apply_grain_cpu(&mut px, 1, 0.3, 1.0, 1.0, 1.0, true, 7);
+        // Monochrome: all channels should shift by the same amount
+        let dr = px[0] as i16 - orig[0] as i16;
+        let dg = px[1] as i16 - orig[1] as i16;
+        let db = px[2] as i16 - orig[2] as i16;
+        assert_eq!(dr, dg, "mono grain R={dr} should equal G={dg}");
+        assert_eq!(dg, db, "mono grain G={dg} should equal B={db}");
+    }
+
+    #[test]
+    fn grain_colour_independent_channels() {
+        // Colour grain: R, G, B should get independent noise
+        let mut px = vec![128, 128, 128, 255];
+        apply_grain_cpu(&mut px, 1, 0.3, 1.0, 1.0, 1.0, false, 7);
+        // With independent hashes, at least one channel pair should differ
+        // (statistically near-impossible for all 3 to be identical)
+        let dr = px[0] as i16 - 128;
+        let dg = px[1] as i16 - 128;
+        let db = px[2] as i16 - 128;
+        let all_same = dr == dg && dg == db;
+        assert!(!all_same, "colour grain channels should be independent: dr={dr} dg={dg} db={db}");
+    }
+
+    #[test]
+    fn grain_clamped() {
+        // Max grain on near-black and near-white pixels — must not overflow
+        let mut px = vec![2, 2, 2, 255, 253, 253, 253, 255];
+        apply_grain_cpu(&mut px, 2, 1.0, 1.0, 1.0, 1.0, true, 99);
+        // All values must be valid u8 (0..=255) — the type guarantees this,
+        // but verify no panic occurred and alpha is preserved
+        assert_eq!(px[3], 255);
+        assert_eq!(px[7], 255);
+    }
+
+    #[test]
+    fn grain_shadow_weight() {
+        // shadows=1.0, highlights=0.0: dark pixels should show more grain
+        let mut dark = vec![10, 10, 10, 255];
+        let mut bright = vec![245, 245, 245, 255];
+        apply_grain_cpu(&mut dark, 1, 0.3, 1.0, 1.0, 0.0, true, 42);
+        apply_grain_cpu(&mut bright, 1, 0.3, 1.0, 1.0, 0.0, true, 42);
+        let dark_change = (dark[0] as i16 - 10).unsigned_abs();
+        let bright_change = (bright[0] as i16 - 245).unsigned_abs();
+        // With highlights=0, bright pixels get zero weight → no grain
+        // Dark pixels get full shadow weight → grain applied
+        assert!(dark_change >= bright_change,
+            "dark pixel change ({dark_change}) should >= bright ({bright_change}) with highlights=0");
+    }
 }

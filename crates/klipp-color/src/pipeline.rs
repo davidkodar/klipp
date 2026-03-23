@@ -310,4 +310,112 @@ mod tests {
         let output = pipeline.process_frame(input, 1, 1);
         assert_eq!(output[0], 100);
     }
+
+    // ─── Phase 2: Matte preview integration tests ────────────────────
+
+    fn make_identity_params() -> ColorGradeParams {
+        ColorGradeParams {
+            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            temperature: 0.0, tint: 0.0,
+            highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
+            lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
+            gain: (0.0, 0.0, 0.0), offset: (0.0, 0.0, 0.0),
+            lift_sat: 0.0, lift_bri: 0.0,
+            gamma_sat: 0.0, gamma_bri: 0.0,
+            gain_sat: 0.0, gain_bri: 0.0,
+            offset_sat: 0.0, offset_bri: 0.0,
+            hue: 0.0, global_mix: 1.0,
+            curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
+            huesat: Default::default(), huesat_mix: 1.0,
+            qualifier: Default::default(), masks: Default::default(),
+            input_log_format: Default::default(),
+        }
+    }
+
+    #[test]
+    fn matte_preview_outputs_greyscale() {
+        // Create a frame with varied colours + narrow qualifier
+        let pipeline = ColorPipeline::new();
+        let mut params = make_identity_params();
+        params.qualifier.enabled = true;
+        params.qualifier.hue_center = 0.0; // select red
+        params.qualifier.hue_width = 30.0;
+        params.qualifier.hue_soft = 10.0;
+
+        // 4-pixel frame: red, green, blue, grey
+        let frame = vec![
+            255, 0, 0, 255,     // red → should be selected
+            0, 255, 0, 255,     // green → excluded
+            0, 0, 255, 255,     // blue → excluded
+            128, 128, 128, 255, // grey → excluded (zero saturation)
+        ];
+
+        let output = pipeline.apply_clip_grade_full(frame, &params, 2, 2, true);
+
+        // Matte preview: every pixel should be greyscale (R == G == B)
+        for (i, chunk) in output.chunks_exact(4).enumerate() {
+            assert_eq!(chunk[0], chunk[1],
+                "pixel {i}: R={} != G={} — not greyscale", chunk[0], chunk[1]);
+            assert_eq!(chunk[1], chunk[2],
+                "pixel {i}: G={} != B={} — not greyscale", chunk[1], chunk[2]);
+        }
+    }
+
+    #[test]
+    fn matte_preview_white_inside_selection() {
+        let pipeline = ColorPipeline::new();
+        let mut params = make_identity_params();
+        params.qualifier.enabled = true;
+        params.qualifier.hue_center = 0.0;
+        params.qualifier.hue_width = 30.0;
+        params.qualifier.hue_soft = 10.0;
+
+        // Pure red pixel — dead centre of hue selection
+        let frame = vec![255, 0, 0, 255];
+        let output = pipeline.apply_clip_grade_full(frame, &params, 1, 1, true);
+        // Matte should be high (≥ 200) — inside selection
+        assert!(output[0] >= 200,
+            "red pixel matte should be bright: got {}", output[0]);
+    }
+
+    #[test]
+    fn matte_preview_black_outside_selection() {
+        let pipeline = ColorPipeline::new();
+        let mut params = make_identity_params();
+        params.qualifier.enabled = true;
+        params.qualifier.hue_center = 0.0;
+        params.qualifier.hue_width = 30.0;
+        params.qualifier.hue_soft = 10.0;
+
+        // Pure blue pixel — far outside red selection
+        let frame = vec![0, 0, 255, 255];
+        let output = pipeline.apply_clip_grade_full(frame, &params, 1, 1, true);
+        // Matte should be low (≤ 30) — outside selection
+        assert!(output[0] <= 30,
+            "blue pixel matte should be dark: got {}", output[0]);
+    }
+
+    #[test]
+    fn matte_preview_disabled_shows_grade() {
+        let pipeline = ColorPipeline::new();
+        let mut params = make_identity_params();
+        params.qualifier.enabled = true;
+        params.qualifier.hue_center = 0.0;
+        params.qualifier.hue_width = 30.0;
+        params.qualifier.hue_soft = 10.0;
+        params.qualifier.exposure = 1.0; // boost exposure in qualifier
+
+        // Varied frame
+        let frame = vec![
+            255, 0, 0, 255,    // red (selected, will be boosted)
+            0, 255, 0, 255,    // green (not selected)
+        ];
+
+        let output = pipeline.apply_clip_grade_full(frame, &params, 2, 1, false);
+
+        // With matte_preview=false, the grade should be applied normally
+        // At least one pixel should NOT be greyscale (the graded output has colour)
+        let has_colour = output.chunks_exact(4).any(|c| c[0] != c[1] || c[1] != c[2]);
+        assert!(has_colour, "with matte_preview=false, output should have colour");
+    }
 }

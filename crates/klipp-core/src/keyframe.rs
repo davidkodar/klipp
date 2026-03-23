@@ -171,3 +171,118 @@ impl KeyframeTracks {
         self.tracks.iter().any(|t| t.param == param && !t.keyframes.is_empty())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_track(keyframes: Vec<Keyframe>) -> KeyframeTrack {
+        KeyframeTrack {
+            param: crate::ColorGradeParam::Exposure,
+            keyframes,
+        }
+    }
+
+    fn kf(time: f64, value: f32, interp: Interpolation) -> Keyframe {
+        Keyframe {
+            time_secs: time, value, interpolation: interp,
+            tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn keyframe_linear_midpoint() {
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Linear),
+            kf(1.0, 1.0, Interpolation::Linear),
+        ]);
+        let v = track.evaluate(0.5).unwrap();
+        // Linear midpoint: exactly 0.5
+        assert!((v - 0.5).abs() < 0.001, "linear midpoint should be 0.5: got {v}");
+    }
+
+    #[test]
+    fn keyframe_step_before_second() {
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Step),
+            kf(1.0, 1.0, Interpolation::Step),
+        ]);
+        let v = track.evaluate(0.99).unwrap();
+        // Step holds previous value until the next keyframe
+        assert!((v - 0.0).abs() < 0.001, "step should hold at 0.0: got {v}");
+    }
+
+    #[test]
+    fn keyframe_step_at_second() {
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Step),
+            kf(1.0, 1.0, Interpolation::Step),
+        ]);
+        let v = track.evaluate(1.0).unwrap();
+        // At or after the second keyframe, should be its value
+        assert!((v - 1.0).abs() < 0.001, "at second kf should be 1.0: got {v}");
+    }
+
+    #[test]
+    fn keyframe_bezier_at_endpoints() {
+        // Bezier must pass through its control points (keyframe values)
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Bezier),
+            kf(2.0, 1.0, Interpolation::Bezier),
+        ]);
+        let v0 = track.evaluate(0.0).unwrap();
+        let v2 = track.evaluate(2.0).unwrap();
+        assert!((v0 - 0.0).abs() < 0.001, "bezier at t=0: got {v0}");
+        assert!((v2 - 1.0).abs() < 0.001, "bezier at t=2: got {v2}");
+    }
+
+    #[test]
+    fn keyframe_bezier_smooth() {
+        // Bezier with zero tangents (smooth hermite-like): monotone, no overshoots
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Bezier),
+            kf(1.0, 1.0, Interpolation::Bezier),
+        ]);
+        let mut prev = 0.0f32;
+        for i in 0..=20 {
+            let t = i as f64 / 20.0;
+            let v = track.evaluate(t).unwrap();
+            // Monotone: each sample >= previous
+            assert!(v >= prev - 0.001, "bezier should be monotone at t={t}: {v} < {prev}");
+            // No overshoot past endpoints
+            assert!(v >= -0.01 && v <= 1.01, "bezier overshoot at t={t}: {v}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn keyframe_evaluate_before_first() {
+        let track = make_track(vec![
+            kf(1.0, 0.7, Interpolation::Linear),
+            kf(2.0, 1.0, Interpolation::Linear),
+        ]);
+        let v = track.evaluate(-1.0).unwrap();
+        // Before first keyframe: clamp to first value
+        assert!((v - 0.7).abs() < 0.001, "before first kf: got {v}");
+    }
+
+    #[test]
+    fn keyframe_evaluate_after_last() {
+        let track = make_track(vec![
+            kf(0.0, 0.0, Interpolation::Linear),
+            kf(5.0, 0.3, Interpolation::Linear),
+        ]);
+        let v = track.evaluate(10.0).unwrap();
+        // After last keyframe: clamp to last value
+        assert!((v - 0.3).abs() < 0.001, "after last kf: got {v}");
+    }
+
+    #[test]
+    fn keyframe_single_keyframe() {
+        let track = make_track(vec![kf(1.0, 0.7, Interpolation::Linear)]);
+        // With only one keyframe, value is constant at any time
+        assert!((track.evaluate(0.0).unwrap() - 0.7).abs() < 0.001);
+        assert!((track.evaluate(1.0).unwrap() - 0.7).abs() < 0.001);
+        assert!((track.evaluate(99.0).unwrap() - 0.7).abs() < 0.001);
+    }
+}

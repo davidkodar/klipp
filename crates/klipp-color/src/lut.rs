@@ -552,4 +552,161 @@ mod tests {
             }
         }
     }
+
+    // ─── Phase 2: LUT bake/export tests ──────────────────────────────
+
+    fn identity_grade_params() -> crate::ColorGradeParams {
+        crate::ColorGradeParams {
+            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            temperature: 0.0, tint: 0.0,
+            highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
+            lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
+            gain: (0.0, 0.0, 0.0), offset: (0.0, 0.0, 0.0),
+            lift_sat: 0.0, lift_bri: 0.0,
+            gamma_sat: 0.0, gamma_bri: 0.0,
+            gain_sat: 0.0, gain_bri: 0.0,
+            offset_sat: 0.0, offset_bri: 0.0,
+            hue: 0.0, global_mix: 1.0,
+            curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
+            huesat: Default::default(), huesat_mix: 1.0,
+            qualifier: Default::default(), masks: Default::default(),
+            input_log_format: Default::default(),
+        }
+    }
+
+    #[test]
+    fn lut_bake_identity_grade() {
+        // Identity grade → LUT should be identity (output ≈ input)
+        let params = identity_grade_params();
+        let pipeline = crate::ColorPipeline::new();
+        let lut = bake_grade_to_lut(&params, &pipeline, 17);
+        assert_eq!(lut.len(), 17 * 17 * 17);
+        // Spot-check: several grid points should map to themselves
+        // LUT quantisation error: max 2/255 ≈ 0.008 from u8 truncation
+        for bi in [0, 8, 16] {
+            for gi in [0, 8, 16] {
+                for ri in [0, 8, 16] {
+                    let idx = bi * 17 * 17 + gi * 17 + ri;
+                    let expected_r = ri as f32 / 16.0;
+                    let expected_g = gi as f32 / 16.0;
+                    let expected_b = bi as f32 / 16.0;
+                    let [lr, lg, lb] = lut[idx];
+                    assert!((lr - expected_r).abs() < 0.01,
+                        "identity R at ({ri},{gi},{bi}): got {lr}, expected {expected_r}");
+                    assert!((lg - expected_g).abs() < 0.01,
+                        "identity G at ({ri},{gi},{bi}): got {lg}, expected {expected_g}");
+                    assert!((lb - expected_b).abs() < 0.01,
+                        "identity B at ({ri},{gi},{bi}): got {lb}, expected {expected_b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lut_bake_exposure_only() {
+        // Exposure +0.5 stops → mid-grey should brighten
+        let mut params = identity_grade_params();
+        params.exposure = 0.5;
+        let pipeline = crate::ColorPipeline::new();
+        let lut = bake_grade_to_lut(&params, &pipeline, 17);
+        // Mid-grey: index (8,8,8) → input = 128/255 ≈ 0.502
+        let idx = 8 * 17 * 17 + 8 * 17 + 8;
+        let [lr, _, _] = lut[idx];
+        // Direct grade: 128/255 * 2^0.5 ≈ 0.710
+        // LUT tolerance: 3/255 ≈ 0.012 (u8 quantisation in bake + readback)
+        let direct = (128.0 / 255.0 * 2.0f32.powf(0.5)).min(1.0);
+        assert!((lr - direct).abs() < 0.015,
+            "exposure LUT: got {lr}, direct={direct}");
+    }
+
+    #[test]
+    fn lut_bake_temperature_only() {
+        // Temperature +30 → R should increase, B should decrease
+        let mut params = identity_grade_params();
+        params.temperature = 30.0;
+        let pipeline = crate::ColorPipeline::new();
+        let lut = bake_grade_to_lut(&params, &pipeline, 17);
+        let idx = 8 * 17 * 17 + 8 * 17 + 8; // mid-grey
+        let [lr, _, lb] = lut[idx];
+        let input = 8.0 / 16.0; // 0.5
+        assert!(lr > input, "warm temperature should increase R: {lr} > {input}");
+        assert!(lb < input, "warm temperature should decrease B: {lb} < {input}");
+    }
+
+    #[test]
+    fn lut_write_and_read_roundtrip() {
+        // Bake, write .cube, read back, compare
+        let mut params = identity_grade_params();
+        params.exposure = 0.3;
+        params.saturation = 1.2;
+        let pipeline = crate::ColorPipeline::new();
+        let lut_data = bake_grade_to_lut(&params, &pipeline, 17);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("klipp_test_lut_roundtrip.cube");
+        write_cube(&path, &lut_data, 17, "Test").unwrap();
+
+        // Read back with existing parser
+        let loaded = parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.size, 17);
+        assert_eq!(loaded.data.len(), 17 * 17 * 17 * 3);
+
+        // Apply both original grade and loaded LUT to test pixels
+        for &(r, g, b) in &[(100u8, 100, 100), (200, 50, 150), (30, 200, 80)] {
+            // Direct grade
+            let direct = pipeline.apply_clip_grade_full(
+                vec![r, g, b, 255], &params, 1, 1, false);
+            // LUT application
+            let mut lut_px = vec![r, g, b, 255];
+            apply_3d_lut(&mut lut_px, &loaded, 1.0);
+            // Tolerance: 5/255 ≈ 0.020 for LUT quantisation + trilinear interpolation
+            // in steep gradient regions (e.g. highly saturated colours near clipping)
+            for ch in 0..3 {
+                let err = (direct[ch] as i16 - lut_px[ch] as i16).unsigned_abs();
+                assert!(err <= 5,
+                    "roundtrip pixel ({r},{g},{b}) ch{ch}: direct={} lut={} err={err}",
+                    direct[ch], lut_px[ch]);
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lut_cube_format_valid() {
+        let params = identity_grade_params();
+        let pipeline = crate::ColorPipeline::new();
+        let lut_data = bake_grade_to_lut(&params, &pipeline, 17);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("klipp_test_lut_format.cube");
+        write_cube(&path, &lut_data, 17, "Format Test").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // Header checks
+        assert!(lines[0].starts_with("TITLE"), "first line should be TITLE");
+        let size_line = lines.iter().find(|l| l.starts_with("LUT_3D_SIZE")).unwrap();
+        assert_eq!(*size_line, "LUT_3D_SIZE 17");
+
+        // Count data lines (lines with 3 floats)
+        let data_lines: Vec<&&str> = lines.iter()
+            .filter(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                parts.len() == 3 && parts[0].parse::<f32>().is_ok()
+            })
+            .collect();
+        assert_eq!(data_lines.len(), 17 * 17 * 17,
+            "should have 4913 data lines, got {}", data_lines.len());
+
+        // Each data value should be in 0.0-1.0 range
+        for line in &data_lines {
+            for val_str in line.split_whitespace() {
+                let v: f32 = val_str.parse().unwrap();
+                assert!(v >= 0.0 && v <= 1.0,
+                    "LUT value out of range: {v} in line '{line}'");
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }
