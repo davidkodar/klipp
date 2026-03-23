@@ -22,15 +22,16 @@ pub fn color_slider(
     let min = *range.start();
     let max = *range.end();
 
-    // Layout: 82px label | flexible track | 38px value
+    // Layout: 82px label | flexible track (max 220px) | 38px value
     let available_width = ui.available_width();
     let label_w = 82.0;
     let value_w = 38.0;
-    let track_w = (available_width - label_w - value_w - 16.0).max(40.0);
+    let track_w = (available_width - label_w - value_w - 16.0).clamp(40.0, 220.0);
+    let total_w = label_w + track_w + value_w + 16.0;
     let row_height = 16.0;
 
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(available_width, row_height),
+        egui::vec2(total_w, row_height),
         egui::Sense::click_and_drag(),
     );
 
@@ -114,11 +115,11 @@ pub fn color_slider(
         painter.rect_filled(fill_rect, 2.0, fill_color);
     }
 
-    // Thumb: 10px white circle, 1.5px amber border, glow ring
+    // Thumb: 9px white circle with amber border
     let thumb_center = egui::pos2(thumb_x, track_y);
-    painter.circle_filled(thumb_center, 7.5, glow_color); // glow
-    painter.circle_filled(thumb_center, 5.0, thumb_fill);
-    painter.circle_stroke(thumb_center, 5.0, egui::Stroke::new(1.5, text_accent));
+    painter.circle_filled(thumb_center, 6.0, glow_color); // subtle glow
+    painter.circle_filled(thumb_center, 4.5, thumb_fill);
+    painter.circle_stroke(thumb_center, 4.5, egui::Stroke::new(1.5, text_accent));
 
     // Value text (10px monospace, right-aligned)
     let is_default = (*value - default_value).abs() < 0.001;

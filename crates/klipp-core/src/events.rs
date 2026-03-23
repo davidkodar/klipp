@@ -206,6 +206,7 @@ pub enum AppCommand {
     ResetClipColorGrade { clip_id: ClipId },
     SetClipColorGradeParam { clip_id: ClipId, param: ColorGradeParam, value: f32 },
     SetClipCurves { clip_id: ClipId, curves: crate::color_grade::CurveSet },
+    SetClipHueSatCurves { clip_id: ClipId, huesat: crate::color_grade::HueSatCurves },
     ToggleColorPanel,
     ToggleBeforeAfter,
 
@@ -366,6 +367,22 @@ pub enum ColorGradeParam {
     GainX,
     GainY,
     GainMaster,
+    OffsetX,
+    OffsetY,
+    OffsetMaster,
+    LiftSat,
+    LiftBri,
+    GammaSat,
+    GammaBri,
+    GainSat,
+    GainBri,
+    OffsetSat,
+    OffsetBri,
+    Hue,
+    GlobalMix,
+    CurvesPreserveLuma,
+    CurvesMix,
+    HueSatMix,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

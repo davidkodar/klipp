@@ -7,4 +7,5 @@ pub mod role_pill;
 pub mod slider;
 pub mod toast;
 pub mod tooltip;
+pub mod vertical_slider;
 pub mod waveform;

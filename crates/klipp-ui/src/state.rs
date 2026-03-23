@@ -185,6 +185,9 @@ pub struct AppState {
     pub show_color_panel: bool,
     pub color_grade_drag_start: Option<klipp_timeline::ClipColorGrade>,
     pub color_grade_clipboard: Option<klipp_timeline::ClipColorGrade>,
+    pub curves_single_mode: bool,
+    pub huesat_single_mode: bool,
+    pub huesat_active_curve: u8, // 0-5 index for Single mode
 
     // Scopes
     pub show_scopes: bool,
@@ -269,6 +272,7 @@ pub struct AppState {
 pub enum ScopeMode {
     #[default]
     Waveform,
+    Parade,
     Vectorscope,
     Histogram,
 }
@@ -407,6 +411,9 @@ impl Default for AppState {
             show_color_panel: false,
             color_grade_drag_start: None,
             color_grade_clipboard: None,
+            curves_single_mode: false,
+            huesat_single_mode: false,
+            huesat_active_curve: 0,
             show_scopes: false,
             scope_mode: ScopeMode::Waveform,
             before_after_active: false,

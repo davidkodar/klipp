@@ -1,4 +1,5 @@
 pub mod curves;
+pub mod huesat;
 pub mod lut;
 pub mod pipeline;
 pub mod scopes;

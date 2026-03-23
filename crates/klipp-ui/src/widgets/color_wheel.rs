@@ -21,18 +21,36 @@ pub fn color_wheel(
     offset: &mut [f32; 2],
     master: &mut f32,
 ) -> WheelResponse {
+    color_wheel_sized(ui, state, _theme, label, offset, master, 108.0)
+}
+
+/// Like `color_wheel` but with a custom diameter (in pixels).
+pub fn color_wheel_sized(
+    ui: &mut egui::Ui,
+    state: &mut ColorWheelState,
+    _theme: &KlippTheme,
+    label: &str,
+    offset: &mut [f32; 2],
+    master: &mut f32,
+    wheel_diameter: f32,
+) -> WheelResponse {
     let mut changed = false;
     let mut drag_started = false;
     let mut drag_ended = false;
-
-    let wheel_diameter = 108.0;
     let wheel_radius = wheel_diameter / 2.0;
-    let rgb_row_h = 18.0;
-    let master_row_h = 16.0;
-    let label_h = 16.0;
-    let spacing = 6.0;
+    let rgb_row_h = 16.0;
+    let master_row_h = 14.0;
+    let label_h = 14.0;
+    let spacing = 4.0;
+
+    // Pre-compute pill dimensions so widget width fits them
+    let pill_font_size = if wheel_diameter < 65.0 { 7.0 } else { 8.0 };
+    let pill_w = (wheel_diameter * 0.34).max(28.0);
+    let pill_gap = 2.0;
+    let pills_total_w = pill_w * 3.0 + pill_gap * 2.0;
+
     let total_h = label_h + wheel_diameter + spacing + rgb_row_h + spacing + master_row_h;
-    let total_w = wheel_diameter + 12.0;
+    let total_w = pills_total_w.max(wheel_diameter + 8.0) + 4.0; // ensure pills fit
 
     let (full_rect, _) = ui.allocate_exact_size(
         egui::vec2(total_w, total_h),
@@ -59,11 +77,11 @@ pub fn color_wheel(
         egui::vec2(wheel_diameter, wheel_diameter),
     );
 
-    // Generate texture once
+    // Generate texture once (use a fixed high-res texture, scaled to display size)
     if state.texture.is_none() {
-        let radius = 54u32; // 108/2
-        let pixels = klipp_color::generate_wheel_texture(radius);
-        let size = (radius * 2) as usize;
+        let tex_radius = 54u32;
+        let pixels = klipp_color::generate_wheel_texture(tex_radius);
+        let size = (tex_radius * 2) as usize;
         let image = egui::ColorImage::from_rgba_unmultiplied([size, size], &pixels);
         state.texture = Some(ui.ctx().load_texture("color_wheel", image, egui::TextureOptions::LINEAR));
     }
@@ -125,24 +143,24 @@ pub fn color_wheel(
     let puck_x = wc.x + offset[0] * wheel_radius * 0.5;
     let puck_y = wc.y + offset[1] * wheel_radius * 0.5;
     let puck_center = egui::pos2(puck_x, puck_y);
+    let puck_r = (wheel_radius * 0.09).clamp(4.0, 6.0);
+    let shadow_off = (wheel_radius * 0.015).max(1.0);
     // Shadow
     painter.circle_filled(
-        egui::pos2(puck_x + 0.5, puck_y + 0.5),
-        5.0,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 102),
+        egui::pos2(puck_x + shadow_off, puck_y + shadow_off),
+        puck_r,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
     );
     // Puck body
-    painter.circle_filled(puck_center, 5.0, egui::Color32::WHITE);
-    painter.circle_stroke(puck_center, 5.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 153)));
+    painter.circle_filled(puck_center, puck_r, egui::Color32::WHITE);
+    painter.circle_stroke(puck_center, puck_r, egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140)));
 
     // ── RGB readout ──
     let rgb_top = wheel_rect.max.y + spacing;
     let (rgb_r, rgb_g, rgb_b) = klipp_color::wheel_offset_to_rgb(offset[0], offset[1], *master);
 
-    let pill_w = 34.0;
-    let pill_h = 14.0;
-    let pill_gap = 4.0;
-    let pills_total = pill_w * 3.0 + pill_gap * 2.0;
+    let pill_h = if wheel_diameter < 65.0 { 12.0 } else { 13.0 };
+    let pills_total = pills_total_w;
     let pills_left = center_x - pills_total / 2.0;
 
     let pill_colors: [(f32, egui::Color32, egui::Color32); 3] = [
@@ -169,15 +187,17 @@ pub fn color_wheel(
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,
             format!("{val:+.2}"),
-            egui::FontId::monospace(9.0),
+            egui::FontId::monospace(pill_font_size),
             text,
         );
     }
 
     // ── Master slider ──
     let master_top = rgb_top + rgb_row_h + spacing;
-    let track_left = center_x - pills_total / 2.0 + 14.0;
-    let track_w = pills_total - 14.0 - 32.0;
+    let m_label_w = 10.0;
+    let m_value_w = if wheel_diameter < 65.0 { 24.0 } else { 30.0 };
+    let track_left = center_x - pills_total / 2.0 + m_label_w + 2.0;
+    let track_w = (pills_total - m_label_w - m_value_w - 4.0).max(20.0);
     let track_y = master_top + master_row_h / 2.0;
     let track_bg = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
 
@@ -223,14 +243,15 @@ pub fn color_wheel(
     let thumb_x = track_left + master_t * track_w;
     painter.circle_filled(egui::pos2(thumb_x, track_y), 4.0, text_accent);
 
-    // Value
+    // Value (compact format for small wheels)
     let is_default = master.abs() < 0.005;
     let val_color = if is_default { neutral_text } else { text_accent };
+    let master_font = if wheel_diameter < 65.0 { 7.0 } else { 8.0 };
     painter.text(
         egui::pos2(center_x + pills_total / 2.0, track_y),
         egui::Align2::RIGHT_CENTER,
         format!("{master:+.2}"),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(master_font),
         val_color,
     );
 

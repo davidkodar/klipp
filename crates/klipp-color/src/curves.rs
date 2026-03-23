@@ -136,6 +136,17 @@ pub fn apply_curves(
     }
 }
 
+/// Build a 256-entry float LUT from control points (for hue/sat curves).
+/// Same Fritsch-Carlson method as build_curve_lut but returns [f32; 256] in 0..1 range.
+pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
+    let u8_lut = build_curve_lut(points);
+    let mut lut = [0.0f32; 256];
+    for (i, &v) in u8_lut.iter().enumerate() {
+        lut[i] = v as f32 / 255.0;
+    }
+    lut
+}
+
 /// Check if curve points represent identity (no adjustment).
 pub fn is_identity(points: &[[f32; 2]]) -> bool {
     points.len() == 2

@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use crate::widgets::{color_slider, color_wheel, curves_editor, scopes};
+use crate::widgets::{color_slider, color_wheel, curves_editor, scopes, vertical_slider};
 use klipp_core::{AppCommand, ColorGradeParam};
 use klipp_engine::SharedFrameBuffer;
 
@@ -8,9 +8,10 @@ type SliderDef = (f32, &'static str, fn(f32) -> String, f32, std::ops::RangeIncl
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPanelTab {
-    Basic,
+    Adjustments,
     Wheels,
     Curves,
+    HueSat,
 }
 
 pub struct ColorPanel {
@@ -18,6 +19,7 @@ pub struct ColorPanel {
     pub lift_wheel: color_wheel::ColorWheelState,
     pub gamma_wheel: color_wheel::ColorWheelState,
     pub gain_wheel: color_wheel::ColorWheelState,
+    pub offset_wheel: color_wheel::ColorWheelState,
     pub scope_state: scopes::ScopeState,
     pub active_curve_channel: curves_editor::CurveChannel,
 }
@@ -25,10 +27,11 @@ pub struct ColorPanel {
 impl Default for ColorPanel {
     fn default() -> Self {
         Self {
-            active_tab: ColorPanelTab::Wheels,
+            active_tab: ColorPanelTab::Adjustments,
             lift_wheel: Default::default(),
             gamma_wheel: Default::default(),
             gain_wheel: Default::default(),
+            offset_wheel: Default::default(),
             scope_state: Default::default(),
             active_curve_channel: curves_editor::CurveChannel::Master,
         }
@@ -70,17 +73,18 @@ impl ColorPanel {
             ui.horizontal_centered(|ui| {
                 ui.add_space(12.0);
                 let tabs = [
-                    (ColorPanelTab::Basic, "BASIC"),
-                    (ColorPanelTab::Wheels, "WHEELS"),
-                    (ColorPanelTab::Curves, "CURVES"),
+                    (ColorPanelTab::Adjustments, "Adjustments", 76.0_f32),
+                    (ColorPanelTab::Wheels, "Wheels", 50.0),
+                    (ColorPanelTab::Curves, "Curves", 50.0),
+                    (ColorPanelTab::HueSat, "Hue / Sat", 62.0),
                 ];
                 let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
                 let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
 
-                for (tab, label) in &tabs {
+                for (tab, label, tab_w) in &tabs {
                     let is_active = self.active_tab == *tab;
                     let (tab_rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(56.0, tab_bar_height),
+                        egui::vec2(*tab_w, tab_bar_height),
                         egui::Sense::click(),
                     );
                     let color = if is_active || resp.hovered() { text_accent } else { text_dim };
@@ -145,11 +149,23 @@ impl ColorPanel {
             egui::pos2(rect.max.x, rect.max.y - footer_height),
         );
 
-        // Split content: scopes on right when active
-        let scope_width = if show_scopes { 220.0_f32.min(full_content_rect.width() * 0.35) } else { 0.0 };
-        let controls_rect = egui::Rect::from_min_max(
+        // Split content: controls | scopes (right side)
+        // Controls width adapts: use up to 45% of panel when scopes open, max 420px
+        let panel_w = full_content_rect.width();
+        let controls_max_w = if show_scopes {
+            (panel_w * 0.45).clamp(300.0, 420.0)
+        } else {
+            panel_w.min(420.0)
+        };
+        let scope_width = if show_scopes {
+            (panel_w - controls_max_w).clamp(180.0, 400.0)
+        } else {
+            0.0
+        };
+        let controls_w = (panel_w - scope_width).min(controls_max_w);
+        let controls_rect = egui::Rect::from_min_size(
             full_content_rect.min,
-            egui::pos2(full_content_rect.max.x - scope_width, full_content_rect.max.y),
+            egui::vec2(controls_w, full_content_rect.height()),
         );
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
@@ -157,24 +173,28 @@ impl ColorPanel {
                 .id_salt("color_panel_content")
                 .show(ui, |ui| {
                     match self.active_tab {
-                        ColorPanelTab::Basic => {
-                            self.show_basic_tab(ui, state, theme, &mut cmds);
+                        ColorPanelTab::Adjustments => {
+                            self.show_adjustments_tab(ui, state, theme, &mut cmds);
                         }
                         ColorPanelTab::Wheels => {
-                            self.show_wheels_tab(ui, state, theme, &mut cmds);
+                            let content_h = full_content_rect.height();
+                            self.show_wheels_tab(ui, state, theme, &mut cmds, content_h);
                         }
                         ColorPanelTab::Curves => {
                             self.show_curves_tab(ui, state, theme, &mut cmds);
+                        }
+                        ColorPanelTab::HueSat => {
+                            self.show_huesat_tab(ui, state, theme, &mut cmds);
                         }
                     }
                 });
         });
 
-        // Scopes panel (right side when active)
+        // Scopes panel (right of controls)
         if show_scopes {
             let scope_rect = egui::Rect::from_min_max(
-                egui::pos2(full_content_rect.max.x - scope_width, full_content_rect.min.y),
-                full_content_rect.max,
+                egui::pos2(controls_rect.max.x, full_content_rect.min.y),
+                egui::pos2(full_content_rect.max.x, full_content_rect.max.y),
             );
 
             // Divider line
@@ -192,6 +212,7 @@ impl ColorPanel {
                     ui.add_space(6.0);
                     let modes = [
                         (crate::state::ScopeMode::Waveform, "Wave"),
+                        (crate::state::ScopeMode::Parade, "Parade"),
                         (crate::state::ScopeMode::Vectorscope, "Vector"),
                         (crate::state::ScopeMode::Histogram, "Hist"),
                     ];
@@ -214,10 +235,11 @@ impl ColorPanel {
             });
         }
 
-        // Footer
+        // Footer (constrained to controls width so it doesn't overlap scopes)
+        let footer_right = if show_scopes { controls_rect.max.x } else { rect.max.x };
         let footer_rect = egui::Rect::from_min_max(
             egui::pos2(rect.min.x, rect.max.y - footer_height),
-            rect.max,
+            egui::pos2(footer_right, rect.max.y),
         );
         ui.painter().hline(
             footer_rect.x_range(),
@@ -236,8 +258,8 @@ impl ColorPanel {
         cmds
     }
 
-    fn show_basic_tab(
-        &self,
+    fn show_adjustments_tab(
+        &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
         theme: &KlippTheme,
@@ -266,14 +288,76 @@ impl ColorPanel {
 
         let Some(grade) = grade else { return };
 
-        ui.add_space(8.0);
-
         let mut any_drag_started = false;
         let mut any_drag_ended = false;
         let mut any_changed = false;
 
+        // ── Wheels row (LIFT / GAMMA / GAIN at 88px) — centred with 20px gaps ──
+        ui.add_space(6.0);
+        let adj_wheel_diam = 88.0_f32;
+        let between_gap = 20.0_f32;
+
+        ui.horizontal(|ui| {
+            let wheel_widget_w = adj_wheel_diam + 12.0; // 100px per widget
+            let block_w = wheel_widget_w * 3.0 + between_gap * 2.0; // total block
+            let avail = ui.available_width();
+            let left_margin = ((avail - block_w) / 2.0).max(0.0);
+            ui.add_space(left_margin);
+
+            let mut render_wheel = |ui: &mut egui::Ui,
+                                     ws: &mut color_wheel::ColorWheelState,
+                                     label: &str,
+                                     ox: f32, oy: f32, m: f32,
+                                     px: ColorGradeParam, py: ColorGradeParam, pm: ColorGradeParam| {
+                let mut off = [ox, oy];
+                let mut master_val = m;
+                let resp = color_wheel::color_wheel_sized(ui, ws, theme, label, &mut off, &mut master_val, adj_wheel_diam);
+                if resp.drag_started { any_drag_started = true; }
+                if resp.drag_ended { any_drag_ended = true; }
+                if resp.changed {
+                    any_changed = true;
+                    cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: px, value: off[0] });
+                    cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: py, value: off[1] });
+                    cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: pm, value: master_val });
+                }
+            };
+
+            render_wheel(ui, &mut self.lift_wheel, "LIFT",
+                grade.lift_x, grade.lift_y, grade.lift_master,
+                ColorGradeParam::LiftX, ColorGradeParam::LiftY, ColorGradeParam::LiftMaster);
+            ui.add_space(between_gap);
+            render_wheel(ui, &mut self.gamma_wheel, "GAMMA",
+                grade.gamma_x, grade.gamma_y, grade.gamma_master,
+                ColorGradeParam::GammaX, ColorGradeParam::GammaY, ColorGradeParam::GammaMaster);
+            ui.add_space(between_gap);
+            render_wheel(ui, &mut self.gain_wheel, "GAIN",
+                grade.gain_x, grade.gain_y, grade.gain_master,
+                ColorGradeParam::GainX, ColorGradeParam::GainY, ColorGradeParam::GainMaster);
+        });
+
+        // Divider
+        let border_color = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+        let div_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
+            egui::vec2(ui.available_width() - 24.0, 0.5),
+        );
+        ui.painter().rect_filled(div_rect, 0.0, border_color);
+        ui.add_space(4.0);
+
         // TONE section
-        section_header(ui, "TONE", || true);
+        section_header_with_reset(ui, "TONE", || {
+            let params = [
+                (ColorGradeParam::Exposure, 0.0),
+                (ColorGradeParam::Contrast, 0.0),
+                (ColorGradeParam::Highlights, 0.0),
+                (ColorGradeParam::Shadows, 0.0),
+                (ColorGradeParam::Whites, 0.0),
+                (ColorGradeParam::Blacks, 0.0),
+            ];
+            params.iter().map(|(p, v)| {
+                AppCommand::SetClipColorGradeParam { clip_id, param: *p, value: *v }
+            }).collect()
+        }, cmds);
 
         let tone_sliders: &[SliderDef] = &[
             (grade.exposure,   "Exposure",   |v| format!("{v:+.1}"),  0.0, -5.0..=5.0,   ColorGradeParam::Exposure),
@@ -295,10 +379,27 @@ impl ColorPanel {
             ui.add_space(3.0);
         }
 
-        ui.add_space(8.0);
+        ui.add_space(4.0);
+
+        // Divider
+        let div_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
+            egui::vec2(ui.available_width() - 24.0, 0.5),
+        );
+        ui.painter().rect_filled(div_rect, 0.0, border_color);
+        ui.add_space(4.0);
 
         // COLOR section
-        section_header(ui, "COLOR", || true);
+        section_header_with_reset(ui, "COLOR", || {
+            let params = [
+                (ColorGradeParam::Saturation, 1.0),
+                (ColorGradeParam::Temperature, 0.0),
+                (ColorGradeParam::Tint, 0.0),
+            ];
+            params.iter().map(|(p, v)| {
+                AppCommand::SetClipColorGradeParam { clip_id, param: *p, value: *v }
+            }).collect()
+        }, cmds);
 
         let color_sliders: &[SliderDef] = &[
             (grade.saturation,  "Saturation",  |v| format!("{v:.2}"),   1.0, 0.0..=2.0,       ColorGradeParam::Saturation),
@@ -317,14 +418,8 @@ impl ColorPanel {
             ui.add_space(3.0);
         }
 
-        ui.add_space(12.0);
-
-        // LUT section
-        self.show_lut_section(ui, state, theme, cmds);
-
-        // Undo: capture start grade on drag start, push undo on drag end
+        // ── Undo handling ──
         if any_drag_started {
-            // Capture the grade BEFORE this frame's changes
             let pre_change_grade = {
                 let seq = &state.sequences[state.active_sequence_idx];
                 seq.tracks.iter()
@@ -337,7 +432,6 @@ impl ColorPanel {
 
         if any_drag_ended {
             if let Some(old_grade) = state.color_grade_drag_start.take() {
-                // Current clip grade has all changes applied from previous frames
                 let current = state.sequences[state.active_sequence_idx].tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
@@ -354,14 +448,13 @@ impl ColorPanel {
             }
         }
 
-        // For single-click changes (not drag), push undo immediately
         if any_changed && !any_drag_started && !any_drag_ended && state.color_grade_drag_start.is_none() {
             state.history.push(crate::history::HistoryEntry {
                 sequence_idx: state.active_sequence_idx,
                 command: crate::history::EditCommand::SetColorGrade {
                     clip_id,
-                    old_grade: grade.clone(), // grade is the pre-change snapshot
-                    new_grade: grade.clone(), // will be updated when command is applied; close enough for single-click
+                    old_grade: grade.clone(),
+                    new_grade: grade.clone(),
                 },
             });
         }
@@ -373,6 +466,7 @@ impl ColorPanel {
         state: &mut AppState,
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
+        content_h: f32,
     ) {
         let clip_id = match state.selected_clip {
             Some(id) => id,
@@ -393,119 +487,166 @@ impl ColorPanel {
                 .find(|c| c.id == clip_id)
                 .map(|c| c.color_grade.clone())
         };
-        let Some(mut grade) = grade else { return };
+        let Some(grade) = grade else { return };
 
         let mut any_drag_started = false;
         let mut any_drag_ended = false;
         let mut any_changed = false;
 
-        ui.add_space(8.0);
+        let border_color = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
 
-        // ── Three wheels in a row ──
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            let wheel_spacing = (ui.available_width() - 120.0 * 3.0 - 16.0).max(0.0) / 2.0;
+        // Adaptive wheel size: fit both width and height constraints
+        // Each column = (avail - grid_gap) / 2
+        // Cell width = 4 + 18 + 4 + widget_w + 4 + 18 + 4 = widget_w + 52
+        // widget_w ≈ max(diam+8, pills_row) + 4 ≈ diam * 1.15 + 8 (approx)
+        // So diam ≈ (col_w - 60) / 1.15
+        let col_w = (ui.available_width() - 8.0) / 2.0;
+        let diam_from_w = ((col_w - 60.0) / 1.15).max(40.0);
+        let diam_from_h = ((content_h - 180.0) / 2.0 * 0.5).max(40.0);
+        let wheel_diam = diam_from_w.min(diam_from_h).clamp(48.0, 80.0);
+        let vslider_h = (wheel_diam * 0.75).clamp(36.0, 60.0);
 
-            // LIFT
-            let mut lift_off = [grade.lift_x, grade.lift_y];
-            let mut lift_m = grade.lift_master;
-            let resp = color_wheel::color_wheel(ui, &mut self.lift_wheel, theme, "LIFT", &mut lift_off, &mut lift_m);
-            any_drag_started |= resp.drag_started;
-            any_drag_ended |= resp.drag_ended;
-            if resp.changed {
-                any_changed = true;
-                grade.lift_x = lift_off[0];
-                grade.lift_y = lift_off[1];
-                grade.lift_master = lift_m;
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::LiftX, value: lift_off[0] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::LiftY, value: lift_off[1] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::LiftMaster, value: lift_m });
-            }
+        // ── 2×2 Wheel Grid ──
+        // Renders a wheel cell: [Sat slider] [Wheel] [Bri slider] + RGB + reset
+        let mut render_wheel_cell = |ui: &mut egui::Ui,
+                                      label: &str,
+                                      ws: &mut color_wheel::ColorWheelState,
+                                      ox: f32, oy: f32, m: f32,
+                                      sat: f32, bri: f32,
+                                      px: ColorGradeParam, py: ColorGradeParam, pm: ColorGradeParam,
+                                      ps: ColorGradeParam, pb: ColorGradeParam| {
+            let cell_bg = egui::Color32::from_rgb(0x11, 0x11, 0x14);
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let text_dim = egui::Color32::from_rgb(0x36, 0x36, 0x40);
 
-            ui.add_space(wheel_spacing);
+            ui.vertical(|ui| {
+                ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, cell_bg);
+                ui.add_space(8.0);
 
-            // GAMMA
-            let mut gamma_off = [grade.gamma_x, grade.gamma_y];
-            let mut gamma_m = grade.gamma_master;
-            let resp = color_wheel::color_wheel(ui, &mut self.gamma_wheel, theme, "GAMMA", &mut gamma_off, &mut gamma_m);
-            any_drag_started |= resp.drag_started;
-            any_drag_ended |= resp.drag_ended;
-            if resp.changed {
-                any_changed = true;
-                grade.gamma_x = gamma_off[0];
-                grade.gamma_y = gamma_off[1];
-                grade.gamma_master = gamma_m;
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GammaX, value: gamma_off[0] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GammaY, value: gamma_off[1] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GammaMaster, value: gamma_m });
-            }
+                // Label
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(label).size(9.0).color(text_accent).strong());
+                });
+                ui.add_space(4.0);
 
-            ui.add_space(wheel_spacing);
+                // [Sat] [Wheel] [Bri] row
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    // Sat vertical slider
+                    let mut sat_val = sat;
+                    let sr = vertical_slider::vertical_slider(ui, theme, "Sat", &mut sat_val, -1.0..=1.0, vslider_h);
+                    if sr.drag_started { any_drag_started = true; }
+                    if sr.drag_ended { any_drag_ended = true; }
+                    if sr.changed {
+                        any_changed = true;
+                        cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ps, value: sat_val });
+                    }
 
-            // GAIN
-            let mut gain_off = [grade.gain_x, grade.gain_y];
-            let mut gain_m = grade.gain_master;
-            let resp = color_wheel::color_wheel(ui, &mut self.gain_wheel, theme, "GAIN", &mut gain_off, &mut gain_m);
-            any_drag_started |= resp.drag_started;
-            any_drag_ended |= resp.drag_ended;
-            if resp.changed {
-                any_changed = true;
-                grade.gain_x = gain_off[0];
-                grade.gain_y = gain_off[1];
-                grade.gain_master = gain_m;
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GainX, value: gain_off[0] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GainY, value: gain_off[1] });
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: ColorGradeParam::GainMaster, value: gain_m });
-            }
+                    ui.add_space(2.0);
 
-            ui.add_space(8.0);
-        });
+                    // Wheel (adaptive size for 2x2 grid)
+                    let mut off = [ox, oy];
+                    let mut master_val = m;
+                    let wr = color_wheel::color_wheel_sized(ui, ws, theme, "", &mut off, &mut master_val, wheel_diam);
+                    if wr.drag_started { any_drag_started = true; }
+                    if wr.drag_ended { any_drag_ended = true; }
+                    if wr.changed {
+                        any_changed = true;
+                        cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: px, value: off[0] });
+                        cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: py, value: off[1] });
+                        cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: pm, value: master_val });
+                    }
+
+                    ui.add_space(2.0);
+
+                    // Bri vertical slider
+                    let mut bri_val = bri;
+                    let br = vertical_slider::vertical_slider(ui, theme, "Bri", &mut bri_val, -1.0..=1.0, vslider_h);
+                    if br.drag_started { any_drag_started = true; }
+                    if br.drag_ended { any_drag_ended = true; }
+                    if br.changed {
+                        any_changed = true;
+                        cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: pb, value: bri_val });
+                    }
+
+                    ui.add_space(4.0);
+                });
+
+                // Reset button
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 40.0) / 2.0);
+                    let resp = ui.label(egui::RichText::new("↺ reset").size(8.0).color(text_dim));
+                    if resp.interact(egui::Sense::click()).clicked() {
+                        for &(param, val) in &[(px, 0.0), (py, 0.0), (pm, 0.0), (ps, 0.0), (pb, 0.0)] {
+                            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param, value: val });
+                        }
+                        any_changed = true;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        };
+
+        // 2×2 grid with breathing room
+        egui::Grid::new("wheels_2x2")
+            .num_columns(2)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                // Row 1: LIFT, GAMMA
+                render_wheel_cell(ui, "LIFT", &mut self.lift_wheel,
+                    grade.lift_x, grade.lift_y, grade.lift_master,
+                    grade.lift_sat, grade.lift_bri,
+                    ColorGradeParam::LiftX, ColorGradeParam::LiftY, ColorGradeParam::LiftMaster,
+                    ColorGradeParam::LiftSat, ColorGradeParam::LiftBri);
+                render_wheel_cell(ui, "GAMMA", &mut self.gamma_wheel,
+                    grade.gamma_x, grade.gamma_y, grade.gamma_master,
+                    grade.gamma_sat, grade.gamma_bri,
+                    ColorGradeParam::GammaX, ColorGradeParam::GammaY, ColorGradeParam::GammaMaster,
+                    ColorGradeParam::GammaSat, ColorGradeParam::GammaBri);
+                ui.end_row();
+                // Row 2: GAIN, OFFSET
+                render_wheel_cell(ui, "GAIN", &mut self.gain_wheel,
+                    grade.gain_x, grade.gain_y, grade.gain_master,
+                    grade.gain_sat, grade.gain_bri,
+                    ColorGradeParam::GainX, ColorGradeParam::GainY, ColorGradeParam::GainMaster,
+                    ColorGradeParam::GainSat, ColorGradeParam::GainBri);
+                render_wheel_cell(ui, "OFFSET", &mut self.offset_wheel,
+                    grade.offset_x, grade.offset_y, grade.offset_master,
+                    grade.offset_sat, grade.offset_bri,
+                    ColorGradeParam::OffsetX, ColorGradeParam::OffsetY, ColorGradeParam::OffsetMaster,
+                    ColorGradeParam::OffsetSat, ColorGradeParam::OffsetBri);
+                ui.end_row();
+            });
 
         // Divider
-        let border_color = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
         let div_rect = egui::Rect::from_min_size(
             egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
             egui::vec2(ui.available_width() - 24.0, 0.5),
         );
         ui.painter().rect_filled(div_rect, 0.0, border_color);
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
-        // ── Sliders below wheels ──
-        // TONE section
-        section_header(ui, "TONE", || true);
+        // ── GLOBAL section ──
+        section_header_with_reset(ui, "GLOBAL", || {
+            let params = [
+                (ColorGradeParam::Temperature, 0.0),
+                (ColorGradeParam::Tint, 0.0),
+                (ColorGradeParam::Hue, 0.0),
+                (ColorGradeParam::GlobalMix, 1.0),
+            ];
+            params.iter().map(|(p, v)| {
+                AppCommand::SetClipColorGradeParam { clip_id, param: *p, value: *v }
+            }).collect()
+        }, cmds);
 
-        let sliders: &[SliderDef] = &[
-            (grade.exposure,   "Exposure",   |v| format!("{v:+.1}"),  0.0, -5.0..=5.0,     ColorGradeParam::Exposure),
-            (grade.contrast,   "Contrast",   |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,     ColorGradeParam::Contrast),
-            (grade.highlights, "Highlights", |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,     ColorGradeParam::Highlights),
-            (grade.shadows,    "Shadows",    |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,     ColorGradeParam::Shadows),
-            (grade.whites,     "Whites",     |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,     ColorGradeParam::Whites),
-            (grade.blacks,     "Blacks",     |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,     ColorGradeParam::Blacks),
+        let global_sliders: &[SliderDef] = &[
+            (grade.temperature, "Temperature", |v| format!("{v:+.0} K"), 0.0, -100.0..=100.0, ColorGradeParam::Temperature),
+            (grade.tint,        "Tint",        |v| format!("{v:+.0}"),   0.0, -100.0..=100.0, ColorGradeParam::Tint),
+            (grade.hue,         "Hue",         |v| format!("{v:.0}°"),   0.0, 0.0..=360.0,    ColorGradeParam::Hue),
+            (grade.global_mix,  "Mix",         |v| format!("{:.0}%", v * 100.0), 1.0, 0.0..=1.0, ColorGradeParam::GlobalMix),
         ];
 
-        for &(mut val, label, fmt, def, ref range, param) in sliders {
-            let resp = color_slider::color_slider(ui, theme, label, &mut val, range.clone(), def, fmt);
-            any_drag_started |= resp.drag_started;
-            any_drag_ended |= resp.drag_ended;
-            if resp.changed {
-                any_changed = true;
-                cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param, value: val });
-            }
-            ui.add_space(3.0);
-        }
-
-        ui.add_space(8.0);
-
-        // COLOR section
-        section_header(ui, "COLOR", || true);
-
-        let color_sliders: &[SliderDef] = &[
-            (grade.saturation,  "Saturation",  |v| format!("{v:.2}"),   1.0, 0.0..=2.0,       ColorGradeParam::Saturation),
-            (grade.temperature, "Temperature", |v| format!("{v:+.0}"),  0.0, -100.0..=100.0,  ColorGradeParam::Temperature),
-            (grade.tint,        "Tint",        |v| format!("{v:+.0}"),  0.0, -100.0..=100.0,  ColorGradeParam::Tint),
-        ];
-
-        for &(mut val, label, fmt, def, ref range, param) in color_sliders {
+        for &(mut val, label, fmt, def, ref range, param) in global_sliders {
             let resp = color_slider::color_slider(ui, theme, label, &mut val, range.clone(), def, fmt);
             any_drag_started |= resp.drag_started;
             any_drag_ended |= resp.drag_ended;
@@ -574,90 +715,188 @@ impl ColorPanel {
             }
         };
 
-        let mut curves = {
+        let grade = {
             let seq = &state.sequences[state.active_sequence_idx];
             seq.tracks.iter()
                 .flat_map(|t| t.clips.iter())
                 .find(|c| c.id == clip_id)
-                .map(|c| c.color_grade.curves.clone())
-                .unwrap_or_default()
+                .map(|c| c.color_grade.clone())
         };
+        let Some(grade) = grade else { return };
+        let mut curves = grade.curves.clone();
 
-        ui.add_space(8.0);
-
-        // Channel tabs
         let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
+        let text_reset = egui::Color32::from_rgb(0x36, 0x36, 0x40);
 
+        ui.add_space(6.0);
+
+        // ── All/Single toggle + channel buttons ──
         ui.horizontal(|ui| {
-            ui.add_space(16.0);
-            let channels = [
-                (curves_editor::CurveChannel::Master, "Master", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc)),
-                (curves_editor::CurveChannel::Red, "Red", egui::Color32::from_rgb(0xe0, 0x60, 0x60)),
-                (curves_editor::CurveChannel::Green, "Green", egui::Color32::from_rgb(0x60, 0xc0, 0x60)),
-                (curves_editor::CurveChannel::Blue, "Blue", egui::Color32::from_rgb(0x60, 0x70, 0xe0)),
-            ];
-            for (ch, label, color) in &channels {
-                let active = self.active_curve_channel == *ch;
-                let text_c = if active { *color } else { text_dim };
-                let resp = ui.label(egui::RichText::new(*label).size(10.0).color(text_c));
-                if active {
-                    let r = resp.rect;
-                    ui.painter().hline(r.x_range(), r.max.y + 1.0, egui::Stroke::new(1.5, *color));
-                }
-                if resp.interact(egui::Sense::click()).clicked() {
-                    self.active_curve_channel = *ch;
-                }
-                ui.add_space(8.0);
+            ui.add_space(12.0);
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+
+            // All/Single toggle
+            let all_color = if !state.curves_single_mode { text_accent } else { text_dim };
+            let single_color = if state.curves_single_mode { text_accent } else { text_dim };
+
+            let all_resp = ui.label(egui::RichText::new("All").size(10.0).color(all_color));
+            if all_resp.interact(egui::Sense::click()).clicked() {
+                state.curves_single_mode = false;
+            }
+            ui.add_space(4.0);
+            let single_resp = ui.label(egui::RichText::new("Single").size(10.0).color(single_color));
+            if single_resp.interact(egui::Sense::click()).clicked() {
+                state.curves_single_mode = true;
             }
 
-            // Reset curves button
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(16.0);
-                let reset_resp = ui.label(egui::RichText::new("↺ reset").size(9.0).color(text_dim));
-                if reset_resp.interact(egui::Sense::click()).clicked() {
-                    curves = klipp_timeline::CurveSet::default();
-                    cmds.push(AppCommand::SetClipCurves { clip_id, curves: curves.clone() });
+            ui.add_space(12.0);
+
+            // Channel selectors (visible in Single mode)
+            if state.curves_single_mode {
+                let channels = [
+                    (curves_editor::CurveChannel::Master, "Luma"),
+                    (curves_editor::CurveChannel::Red, "R"),
+                    (curves_editor::CurveChannel::Green, "G"),
+                    (curves_editor::CurveChannel::Blue, "B"),
+                ];
+                for (ch, label) in &channels {
+                    let active = self.active_curve_channel == *ch;
+                    let color = if active {
+                        curves_editor::channel_color(*ch)
+                    } else {
+                        text_dim
+                    };
+                    let resp = ui.label(egui::RichText::new(*label).size(10.0).color(color));
+                    if resp.interact(egui::Sense::click()).clicked() {
+                        self.active_curve_channel = *ch;
+                    }
+                    ui.add_space(6.0);
                 }
-            });
+            }
         });
 
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
-        // Curves editor — use a local copy of the active channel's points
-        // to avoid borrow conflicts with the full CurveSet
-        let mut channel_pts = match self.active_curve_channel {
-            curves_editor::CurveChannel::Master => curves.master.clone(),
-            curves_editor::CurveChannel::Red => curves.red.clone(),
-            curves_editor::CurveChannel::Green => curves.green.clone(),
-            curves_editor::CurveChannel::Blue => curves.blue.clone(),
-        };
+        let mut any_changed = false;
+        let mut any_drag_started = false;
+        let mut any_drag_ended = false;
 
-        let resp = {
-            let mut resp_out = None;
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                resp_out = Some(curves_editor::curves_editor(
-                    ui,
-                    theme,
-                    self.active_curve_channel,
-                    &mut channel_pts,
-                ));
-            });
-            resp_out.unwrap()
-        };
-
-        // Write back changed points
-        if resp.changed {
+        // ── Curve blocks ──
+        // Mockup heights: Master=84px, R/G/B=62px each
+        let curve_defs: &[(curves_editor::CurveChannel, &str, f32)] = if state.curves_single_mode {
+            // Single mode: show only active channel at large size
             match self.active_curve_channel {
-                curves_editor::CurveChannel::Master => curves.master = channel_pts.clone(),
-                curves_editor::CurveChannel::Red => curves.red = channel_pts.clone(),
-                curves_editor::CurveChannel::Green => curves.green = channel_pts.clone(),
-                curves_editor::CurveChannel::Blue => curves.blue = channel_pts,
+                curves_editor::CurveChannel::Master => &[(curves_editor::CurveChannel::Master, "Luma", 140.0)],
+                curves_editor::CurveChannel::Red => &[(curves_editor::CurveChannel::Red, "Red", 140.0)],
+                curves_editor::CurveChannel::Green => &[(curves_editor::CurveChannel::Green, "Green", 140.0)],
+                curves_editor::CurveChannel::Blue => &[(curves_editor::CurveChannel::Blue, "Blue", 140.0)],
             }
-            cmds.push(AppCommand::SetClipCurves { clip_id, curves: curves.clone() });
+        } else {
+            &[
+                (curves_editor::CurveChannel::Master, "Luma", 84.0),
+                (curves_editor::CurveChannel::Red, "Red", 62.0),
+                (curves_editor::CurveChannel::Green, "Green", 62.0),
+                (curves_editor::CurveChannel::Blue, "Blue", 62.0),
+            ]
+        };
+
+        // Compute histogram bins from cached frame (if available)
+        // TODO: hook up cached_curve_histograms from FrameReady events
+        let empty_hist = [0u32; 256];
+
+        for &(ch, label, height) in curve_defs {
+            let curve_color = curves_editor::channel_color(ch);
+
+            // Header: label + reset
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(label).size(10.0).color(curve_color).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    let reset_resp = ui.label(egui::RichText::new("↺").size(9.0).color(text_reset));
+                    if reset_resp.interact(egui::Sense::click()).clicked() {
+                        let default_pts = vec![[0.0, 0.0], [1.0, 1.0]];
+                        match ch {
+                            curves_editor::CurveChannel::Master => curves.master = default_pts,
+                            curves_editor::CurveChannel::Red => curves.red = default_pts,
+                            curves_editor::CurveChannel::Green => curves.green = default_pts,
+                            curves_editor::CurveChannel::Blue => curves.blue = default_pts,
+                        }
+                        cmds.push(AppCommand::SetClipCurves { clip_id, curves: curves.clone() });
+                        any_changed = true;
+                    }
+                });
+            });
+
+            // Curve editor with histogram background
+            let mut pts = match ch {
+                curves_editor::CurveChannel::Master => curves.master.clone(),
+                curves_editor::CurveChannel::Red => curves.red.clone(),
+                curves_editor::CurveChannel::Green => curves.green.clone(),
+                curves_editor::CurveChannel::Blue => curves.blue.clone(),
+            };
+
+            let hist = &empty_hist; // placeholder — will be wired in future
+
+            let resp = {
+                let mut resp_out = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    resp_out = Some(curves_editor::curves_editor_sized(
+                        ui, theme, ch, &mut pts, height, Some(hist),
+                    ));
+                });
+                resp_out.unwrap()
+            };
+
+            if resp.changed {
+                match ch {
+                    curves_editor::CurveChannel::Master => curves.master = pts,
+                    curves_editor::CurveChannel::Red => curves.red = pts,
+                    curves_editor::CurveChannel::Green => curves.green = pts,
+                    curves_editor::CurveChannel::Blue => curves.blue = pts,
+                }
+                cmds.push(AppCommand::SetClipCurves { clip_id, curves: curves.clone() });
+                any_changed = true;
+            }
+            any_drag_started |= resp.drag_started;
+            any_drag_ended |= resp.drag_ended;
+
+            ui.add_space(4.0);
         }
 
-        if resp.drag_started {
+        // ── Preserve Luma checkbox ──
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let mut preserve = grade.curves_preserve_luma;
+            if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(10.0).color(text_dim)).changed() {
+                cmds.push(AppCommand::SetClipColorGradeParam {
+                    clip_id,
+                    param: ColorGradeParam::CurvesPreserveLuma,
+                    value: if preserve { 1.0 } else { 0.0 },
+                });
+                any_changed = true;
+            }
+        });
+
+        // ── Mix slider ──
+        ui.add_space(2.0);
+        let mut mix_val = grade.curves_mix;
+        let mix_resp = color_slider::color_slider(
+            ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
+        );
+        any_drag_started |= mix_resp.drag_started;
+        any_drag_ended |= mix_resp.drag_ended;
+        if mix_resp.changed {
+            cmds.push(AppCommand::SetClipColorGradeParam {
+                clip_id, param: ColorGradeParam::CurvesMix, value: mix_val,
+            });
+            any_changed = true;
+        }
+
+        // ── Undo handling ──
+        if any_drag_started {
             let old_grade = state.sequences[state.active_sequence_idx].tracks.iter()
                 .flat_map(|t| t.clips.iter())
                 .find(|c| c.id == clip_id)
@@ -665,7 +904,7 @@ impl ColorPanel {
             state.color_grade_drag_start = old_grade;
         }
 
-        if resp.drag_ended {
+        if any_drag_ended {
             if let Some(old_grade) = state.color_grade_drag_start.take() {
                 let new_grade = state.sequences[state.active_sequence_idx].tracks.iter()
                     .flat_map(|t| t.clips.iter())
@@ -683,8 +922,7 @@ impl ColorPanel {
             }
         }
 
-        // Push undo for single-click add/remove
-        if resp.changed && !resp.drag_started && !resp.drag_ended && state.color_grade_drag_start.is_none() {
+        if any_changed && !any_drag_started && !any_drag_ended && state.color_grade_drag_start.is_none() {
             let old_grade = state.sequences[state.active_sequence_idx].tracks.iter()
                 .flat_map(|t| t.clips.iter())
                 .find(|c| c.id == clip_id)
@@ -701,6 +939,372 @@ impl ColorPanel {
         }
     }
 
+    fn show_huesat_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let clip_id = match state.selected_clip {
+            Some(id) => id,
+            None => {
+                ui.add_space(40.0);
+                let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Select a clip to grade").color(text_dim).size(12.0));
+                });
+                return;
+            }
+        };
+
+        let grade = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| c.color_grade.clone())
+        };
+        let Some(grade) = grade else { return };
+        let mut huesat = grade.huesat.clone();
+
+        let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
+        let text_reset = egui::Color32::from_rgb(0x36, 0x36, 0x40);
+        let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+
+        ui.add_space(6.0);
+
+        // All/Single toggle
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let all_color = if !state.huesat_single_mode { text_accent } else { text_dim };
+            let single_color = if state.huesat_single_mode { text_accent } else { text_dim };
+            let all_resp = ui.label(egui::RichText::new("All").size(10.0).color(all_color));
+            if all_resp.interact(egui::Sense::click()).clicked() {
+                state.huesat_single_mode = false;
+            }
+            ui.add_space(4.0);
+            let single_resp = ui.label(egui::RichText::new("Single").size(10.0).color(single_color));
+            if single_resp.interact(egui::Sense::click()).clicked() {
+                state.huesat_single_mode = true;
+            }
+
+            if state.huesat_single_mode {
+                ui.add_space(12.0);
+                let labels = ["HvH", "HvS", "HvL", "LvS", "SvS", "OvS"];
+                for (i, label) in labels.iter().enumerate() {
+                    let active = state.huesat_active_curve == i as u8;
+                    let color = if active { text_accent } else { text_dim };
+                    let resp = ui.label(egui::RichText::new(*label).size(9.0).color(color));
+                    if resp.interact(egui::Sense::click()).clicked() {
+                        state.huesat_active_curve = i as u8;
+                    }
+                    ui.add_space(4.0);
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+
+        let mut any_changed = false;
+        let mut any_drag_started = false;
+        let mut any_drag_ended = false;
+
+        // Curve definitions: (index, label, has_hue_bg, has_lum_bg)
+        let curve_defs: &[(u8, &str, bool, bool)] = &[
+            (0, "Hue vs Hue",    true,  false),
+            (1, "Hue vs Sat",    true,  false),
+            (2, "Hue vs Lum",    true,  false),
+            (3, "Lum vs Sat",    false, true),
+            (4, "Sat vs Sat",    false, false),
+            (5, "Orange vs Sat", true,  false),
+        ];
+
+        for &(idx, label, hue_bg, lum_bg) in curve_defs {
+            // Skip in Single mode if not active
+            if state.huesat_single_mode && state.huesat_active_curve != idx {
+                continue;
+            }
+
+            let height = if state.huesat_single_mode { 100.0 } else { 50.0 };
+
+            // Get mutable reference to the right curve
+            let points = match idx {
+                0 => &mut huesat.hue_vs_hue,
+                1 => &mut huesat.hue_vs_sat,
+                2 => &mut huesat.hue_vs_lum,
+                3 => &mut huesat.lum_vs_sat,
+                4 => &mut huesat.sat_vs_sat,
+                _ => &mut huesat.orange_vs_sat,
+            };
+
+            // Header
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(label).size(10.0).color(egui::Color32::from_rgb(0x60, 0x60, 0x70)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    let reset_resp = ui.label(egui::RichText::new("↺").size(9.0).color(text_reset));
+                    if reset_resp.interact(egui::Sense::click()).clicked() {
+                        points.clear();
+                        any_changed = true;
+                    }
+                });
+            });
+
+            // Canvas
+            let canvas_width = (ui.available_width() - 24.0).max(100.0);
+            let (rect, response) = {
+                let mut rect_out = egui::Rect::NOTHING;
+                let mut resp_out = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    let (r, resp) = ui.allocate_exact_size(
+                        egui::vec2(canvas_width, height),
+                        egui::Sense::click_and_drag(),
+                    );
+                    rect_out = r;
+                    resp_out = Some(resp);
+                });
+                (rect_out, resp_out.unwrap())
+            };
+
+            any_drag_started |= response.drag_started();
+            any_drag_ended |= response.drag_stopped();
+
+            let painter = ui.painter_at(rect);
+            let bg_color = egui::Color32::from_rgb(0x16, 0x16, 0x1a);
+            let border_color = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+
+            painter.rect_filled(rect, 4.0, bg_color);
+            painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5, border_color));
+
+            // Hue spectrum background
+            if hue_bg {
+                let w = rect.width() as u32;
+                for x in 0..w {
+                    let hue_deg = x as f32 / w as f32 * 360.0;
+                    let (r, g, b) = klipp_color::hsv_to_rgb(hue_deg, 0.75, 0.55);
+                    let color = egui::Color32::from_rgba_unmultiplied(
+                        (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, 56,
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(rect.min.x + x as f32, rect.min.y),
+                            egui::vec2(1.0, rect.height()),
+                        ),
+                        0.0, color,
+                    );
+                }
+            }
+
+            // Luminance gradient background
+            if lum_bg {
+                let w = rect.width() as u32;
+                for x in 0..w {
+                    let v = (x as f32 / w as f32 * 200.0) as u8;
+                    let color = egui::Color32::from_rgba_unmultiplied(v, v, v, 76);
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(rect.min.x + x as f32, rect.min.y),
+                            egui::vec2(1.0, rect.height()),
+                        ),
+                        0.0, color,
+                    );
+                }
+            }
+
+            // Flat horizontal identity line at 50% height
+            let mid_y = rect.center().y;
+            painter.line_segment(
+                [egui::pos2(rect.min.x, mid_y), egui::pos2(rect.max.x, mid_y)],
+                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)),
+            );
+
+            // Hint text when curve is empty — white with black outline for visibility on gradients
+            if points.is_empty() {
+                let hint_pos = rect.center();
+                let hint_font = egui::FontId::proportional(9.0);
+                let hint_text = "Click to add points";
+                // Black outline (draw offset in 4 directions)
+                let outline_color = egui::Color32::from_rgb(0x00, 0x00, 0x00);
+                for &(dx, dy) in &[(-1.0_f32, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    painter.text(
+                        egui::pos2(hint_pos.x + dx, hint_pos.y + dy),
+                        egui::Align2::CENTER_CENTER,
+                        hint_text,
+                        hint_font.clone(),
+                        outline_color,
+                    );
+                }
+                // White text on top
+                painter.text(
+                    hint_pos,
+                    egui::Align2::CENTER_CENTER,
+                    hint_text,
+                    hint_font,
+                    egui::Color32::from_rgb(0xdd, 0xdd, 0xdd),
+                );
+            }
+
+            // Draw curve (if points exist)
+            if points.len() >= 2 {
+                let lut = klipp_color::curves::build_curve_lut_f32(points);
+                let mut curve_pts = Vec::with_capacity(256);
+                for (i, &val) in lut.iter().enumerate() {
+                    let x = rect.min.x + (i as f32 / 255.0) * rect.width();
+                    let y = rect.max.y - val * rect.height();
+                    curve_pts.push(egui::pos2(x, y));
+                }
+                for window in curve_pts.windows(2) {
+                    painter.line_segment([window[0], window[1]], egui::Stroke::new(1.5, text_accent));
+                }
+            }
+
+            // Draw control points — hollow circles
+            let point_bg = egui::Color32::from_rgb(0x0e, 0x0e, 0x12);
+            for pt in points.iter() {
+                let px = rect.min.x + pt[0] * rect.width();
+                let py = rect.max.y - pt[1] * rect.height();
+                let center = egui::pos2(px, py);
+                painter.circle_filled(center, 3.5, point_bg);
+                painter.circle_stroke(center, 3.5, egui::Stroke::new(1.5, text_accent));
+            }
+
+            // Interaction: drag
+            let hit_radius = 10.0;
+            if let Some(pointer_pos) = response.interact_pointer_pos() {
+                if response.dragged() {
+                    let mut closest_idx = None;
+                    let mut closest_dist = f32::MAX;
+                    for (i, pt) in points.iter().enumerate() {
+                        let px = rect.min.x + pt[0] * rect.width();
+                        let py = rect.max.y - pt[1] * rect.height();
+                        let dist = (egui::pos2(px, py) - pointer_pos).length();
+                        if dist < closest_dist {
+                            closest_dist = dist;
+                            closest_idx = Some(i);
+                        }
+                    }
+                    if let Some(i) = closest_idx {
+                        if closest_dist < hit_radius || response.drag_started() {
+                            let new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                            let new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+                            if i > 0 && i < points.len() - 1 {
+                                let x_min = points[i - 1][0] + 0.01;
+                                let x_max = points[i + 1][0] - 0.01;
+                                points[i][0] = new_x.clamp(x_min, x_max);
+                            } else {
+                                points[i][0] = new_x; // endpoints can move freely on hue/sat
+                            }
+                            points[i][1] = new_y;
+                            any_changed = true;
+                        }
+                    }
+                }
+            }
+
+            // Double-click: remove point
+            if response.double_clicked() {
+                if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    for i in (0..points.len()).rev() {
+                        let px = rect.min.x + points[i][0] * rect.width();
+                        let py = rect.max.y - points[i][1] * rect.height();
+                        if (egui::pos2(px, py) - pointer_pos).length() < hit_radius {
+                            points.remove(i);
+                            any_changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Single click: add point
+            if response.clicked() && !any_changed {
+                if let Some(pointer_pos) = response.interact_pointer_pos() {
+                    let new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                    let new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+                    let near = points.iter().any(|pt| {
+                        let px = rect.min.x + pt[0] * rect.width();
+                        let py = rect.max.y - pt[1] * rect.height();
+                        (egui::pos2(px, py) - pointer_pos).length() < hit_radius
+                    });
+                    if !near {
+                        let insert_idx = points.iter().position(|pt| pt[0] > new_x).unwrap_or(points.len());
+                        points.insert(insert_idx, [new_x, new_y]);
+                        any_changed = true;
+                    }
+                }
+            }
+
+            ui.add_space(3.0);
+        }
+
+        // Push huesat changes
+        if any_changed {
+            cmds.push(AppCommand::SetClipHueSatCurves { clip_id, huesat: huesat.clone() });
+        }
+
+        // Mix slider
+        ui.add_space(4.0);
+        let mut mix_val = grade.huesat_mix;
+        let mix_resp = color_slider::color_slider(
+            ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
+        );
+        any_drag_started |= mix_resp.drag_started;
+        any_drag_ended |= mix_resp.drag_ended;
+        if mix_resp.changed {
+            cmds.push(AppCommand::SetClipColorGradeParam {
+                clip_id, param: ColorGradeParam::HueSatMix, value: mix_val,
+            });
+            any_changed = true;
+        }
+
+        // Undo handling
+        if any_drag_started {
+            let old_grade = state.sequences[state.active_sequence_idx].tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| c.color_grade.clone());
+            state.color_grade_drag_start = old_grade;
+        }
+
+        if any_drag_ended {
+            if let Some(old_grade) = state.color_grade_drag_start.take() {
+                let new_grade = state.sequences[state.active_sequence_idx].tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .map(|c| c.color_grade.clone())
+                    .unwrap_or_else(|| old_grade.clone());
+                state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: state.active_sequence_idx,
+                    command: crate::history::EditCommand::SetColorGrade {
+                        clip_id,
+                        old_grade,
+                        new_grade,
+                    },
+                });
+            }
+        }
+
+        if any_changed && !any_drag_started && !any_drag_ended && state.color_grade_drag_start.is_none() {
+            let old_grade = state.sequences[state.active_sequence_idx].tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| c.color_grade.clone())
+                .unwrap_or_default();
+            state.history.push(crate::history::HistoryEntry {
+                sequence_idx: state.active_sequence_idx,
+                command: crate::history::EditCommand::SetColorGrade {
+                    clip_id,
+                    old_grade: old_grade.clone(),
+                    new_grade: old_grade,
+                },
+            });
+        }
+    }
+
+    #[allow(dead_code)]
     fn show_lut_section(
         &self,
         ui: &mut egui::Ui,
@@ -850,6 +1454,16 @@ impl ColorPanel {
                         (P::GammaMaster, grade.gamma_master),
                         (P::GainX, grade.gain_x), (P::GainY, grade.gain_y),
                         (P::GainMaster, grade.gain_master),
+                        (P::OffsetX, grade.offset_x), (P::OffsetY, grade.offset_y),
+                        (P::OffsetMaster, grade.offset_master),
+                        (P::LiftSat, grade.lift_sat), (P::LiftBri, grade.lift_bri),
+                        (P::GammaSat, grade.gamma_sat), (P::GammaBri, grade.gamma_bri),
+                        (P::GainSat, grade.gain_sat), (P::GainBri, grade.gain_bri),
+                        (P::OffsetSat, grade.offset_sat), (P::OffsetBri, grade.offset_bri),
+                        (P::Hue, grade.hue), (P::GlobalMix, grade.global_mix),
+                        (P::CurvesPreserveLuma, if grade.curves_preserve_luma { 1.0 } else { 0.0 }),
+                        (P::CurvesMix, grade.curves_mix),
+                        (P::HueSatMix, grade.huesat_mix),
                     ];
                     for &(param, value) in params {
                         cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param, value });
@@ -927,6 +1541,42 @@ fn section_header(ui: &mut egui::Ui, label: &str, mut on_reset: impl FnMut() -> 
             }
         });
     });
+    ui.add_space(6.0);
+}
+
+/// Section header with reset button that dispatches AppCommands.
+fn section_header_with_reset(
+    ui: &mut egui::Ui,
+    label: &str,
+    make_reset_cmds: impl FnOnce() -> Vec<AppCommand>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let header_color = egui::Color32::from_rgb(0x50, 0x50, 0x60);
+    let reset_color = egui::Color32::from_rgb(0x36, 0x36, 0x40);
+
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        ui.label(
+            egui::RichText::new(label)
+                .size(9.0)
+                .color(header_color),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(16.0);
+            let resp = ui.label(
+                egui::RichText::new("↺ reset")
+                    .size(9.0)
+                    .color(reset_color),
+            );
+            if resp.interact(egui::Sense::click()).clicked() {
+                clicked = true;
+            }
+        });
+    });
+    if clicked {
+        cmds.extend(make_reset_cmds());
+    }
     ui.add_space(6.0);
 }
 

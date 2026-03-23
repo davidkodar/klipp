@@ -115,9 +115,7 @@ impl InspectorPanel {
                 }
             }
             InspectorTab::Color => {
-                if let Some((_, clip)) = clip_info {
-                    self.show_color_tab(ui, clip, &mut cmds);
-                }
+                self.show_color_tab_redirect(ui, &mut cmds);
                 self.show_global_lut_section(ui, state, &mut cmds);
             }
             InspectorTab::Effects => {
@@ -370,70 +368,30 @@ impl InspectorPanel {
         }
     }
 
-    fn show_color_tab(
+    fn show_color_tab_redirect(
         &self,
         ui: &mut egui::Ui,
-        clip: &klipp_timeline::Clip,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let clip_id = clip.id;
-        let grade = clip.color_grade.clone();
+        let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
+        let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
 
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Color Grade").strong().size(12.0));
-        ui.separator();
-        ui.add_space(8.0);
-
-        let mut exposure = grade.exposure;
-        ui.label("Exposure");
-        if ui.add(egui::Slider::new(&mut exposure, -5.0..=5.0)
-            .step_by(0.05).suffix(" stops").min_decimals(1)
-            .custom_formatter(|v, _| format!("{v:+.1}"))
-        ).changed() {
-            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Exposure, value: exposure });
-        }
-        ui.add_space(6.0);
-
-        let mut contrast = grade.contrast;
-        ui.label("Contrast");
-        if ui.add(egui::Slider::new(&mut contrast, -1.0..=1.0)
-            .step_by(0.01).min_decimals(2)
-            .custom_formatter(|v, _| format!("{v:+.2}"))
-        ).changed() {
-            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Contrast, value: contrast });
-        }
-        ui.add_space(6.0);
-
-        let mut saturation = grade.saturation;
-        ui.label("Saturation");
-        if ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0)
-            .step_by(0.01).min_decimals(2)
-        ).changed() {
-            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Saturation, value: saturation });
-        }
-        ui.add_space(6.0);
-
-        let mut temperature = grade.temperature;
-        ui.label("Temperature");
-        if ui.add(egui::Slider::new(&mut temperature, -100.0..=100.0)
-            .step_by(1.0).min_decimals(0)
-        ).changed() {
-            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Temperature, value: temperature });
-        }
-        ui.add_space(6.0);
-
-        let mut tint = grade.tint;
-        ui.label("Tint");
-        if ui.add(egui::Slider::new(&mut tint, -100.0..=100.0)
-            .step_by(1.0).min_decimals(0)
-        ).changed() {
-            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Tint, value: tint });
-        }
-
-        ui.add_space(12.0);
-        if ui.button("Reset All").clicked() {
-            cmds.push(AppCommand::ResetClipColorGrade { clip_id });
-        }
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("Color grading has moved")
+                    .size(11.0)
+                    .color(text_dim),
+            );
+            ui.add_space(12.0);
+            if ui.button(
+                egui::RichText::new("Open Color Panel  (C)")
+                    .size(11.0)
+                    .color(text_accent),
+            ).clicked() {
+                cmds.push(AppCommand::ToggleColorPanel);
+            }
+        });
     }
 
     fn show_title_tab(

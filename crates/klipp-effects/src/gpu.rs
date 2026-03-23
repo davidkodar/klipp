@@ -321,6 +321,7 @@ impl GpuEffectsPipeline {
     /// Apply per-clip color grading on the GPU. Returns the processed RGBA data.
     /// Accepts the pre-converted lift/gamma/gain RGB tuples from wheel_offset_to_rgb.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_color_grade(
         &mut self,
         rgba: Vec<u8>,
@@ -338,6 +339,9 @@ impl GpuEffectsPipeline {
         lift: (f32, f32, f32),
         gamma: (f32, f32, f32),
         gain: (f32, f32, f32),
+        offset: (f32, f32, f32),
+        hue: f32,
+        global_mix: f32,
     ) -> Vec<u8> {
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
@@ -371,8 +375,12 @@ impl GpuEffectsPipeline {
             gain_r: gain.0,
             gain_g: gain.1,
             gain_b: gain.2,
+            offset_r: offset.0,
+            offset_g: offset.1,
+            offset_b: offset.2,
+            hue,
+            global_mix,
             _pad0: 0,
-            _pad1: 0,
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
@@ -798,10 +806,14 @@ struct GpuColorGradeParams {
     gain_r: f32,
     gain_g: f32,
     gain_b: f32,
+    offset_r: f32,
+    offset_g: f32,
+    offset_b: f32,
+    hue: f32,
+    global_mix: f32,
     _pad0: u32,
-    _pad1: u32,
 }
-// 22 fields × 4 bytes = 88 bytes (well under 256-byte PARAMS_SIZE)
+// 26 fields × 4 bytes = 104 bytes (well under 256-byte PARAMS_SIZE)
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -1340,8 +1352,12 @@ struct Params {
     gain_r: f32,
     gain_g: f32,
     gain_b: f32,
+    offset_r: f32,
+    offset_g: f32,
+    offset_b: f32,
+    hue: f32,
+    global_mix: f32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<u32>;
@@ -1354,10 +1370,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let pixel = input[idx];
-    var r = f32(pixel & 0xFFu) / 255.0;
-    var g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    var b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let orig_r = f32(pixel & 0xFFu) / 255.0;
+    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
     let a = (pixel >> 24u) & 0xFFu;
+
+    var r = orig_r;
+    var g = orig_g;
+    var b = orig_b;
 
     // 1. Exposure (2^stops)
     let exp_factor = pow(2.0, params.exposure);
@@ -1376,14 +1396,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = g + tone_adj;
     b = b + tone_adj;
 
-    // 3. Lift/Gamma/Gain color wheels
+    // 3. Lift/Gamma/Gain/Offset color wheels
     let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let lift_w = max(1.0 - luma2, 0.0);
     let gain_w = max(luma2, 0.0);
     let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
-    r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w;
-    g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w;
-    b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w;
+    r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w + params.offset_r;
+    g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w + params.offset_g;
+    b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w + params.offset_b;
 
     // 4. Contrast (S-curve around 0.5)
     let cs = 1.0 + params.contrast;
@@ -1401,6 +1421,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     r = r + params.temperature * 0.001;
     b = b - params.temperature * 0.001;
     g = g + params.tint * 0.001;
+
+    // 7. Hue rotation (simplified: skip on GPU for now, CPU handles it)
+    // Full HSL conversion in WGSL is expensive; apply on CPU path for hue != 0
+
+    // 8. Global mix (blend with original)
+    r = orig_r + (r - orig_r) * params.global_mix;
+    g = orig_g + (g - orig_g) * params.global_mix;
+    b = orig_b + (b - orig_b) * params.global_mix;
 
     // Pack result
     let ro = u32(clamp(r, 0.0, 1.0) * 255.0);

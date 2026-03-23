@@ -2425,16 +2425,37 @@ impl PlaybackEngine {
                     lift: klipp_color::wheel_offset_to_rgb(g.lift_x, g.lift_y, g.lift_master),
                     gamma: klipp_color::wheel_offset_to_rgb(g.gamma_x, g.gamma_y, g.gamma_master),
                     gain: klipp_color::wheel_offset_to_rgb(g.gain_x, g.gain_y, g.gain_master),
+                    offset: klipp_color::wheel_offset_to_rgb(g.offset_x, g.offset_y, g.offset_master),
+                    lift_sat: g.lift_sat,
+                    lift_bri: g.lift_bri,
+                    gamma_sat: g.gamma_sat,
+                    gamma_bri: g.gamma_bri,
+                    gain_sat: g.gain_sat,
+                    gain_bri: g.gain_bri,
+                    offset_sat: g.offset_sat,
+                    offset_bri: g.offset_bri,
+                    hue: g.hue,
+                    global_mix: g.global_mix,
                     curve_luts,
+                    curves_preserve_luma: g.curves_preserve_luma,
+                    curves_mix: g.curves_mix,
+                    huesat: g.huesat.clone(),
+                    huesat_mix: g.huesat_mix,
                 };
                 if let Some(gpu) = &mut self.gpu_effects {
-                    gpu.apply_color_grade(
+                    let mut result = gpu.apply_color_grade(
                         rgba, width, height,
                         params.exposure, params.contrast, params.saturation,
                         params.temperature, params.tint,
                         params.highlights, params.shadows, params.whites, params.blacks,
-                        params.lift, params.gamma, params.gain,
-                    )
+                        params.lift, params.gamma, params.gain, params.offset,
+                        params.hue, params.global_mix,
+                    );
+                    // Hue rotation not in GPU shader — apply on CPU if needed
+                    if params.hue.abs() > 0.01 {
+                        klipp_color::transforms::apply_hue_rotation(&mut result, params.hue);
+                    }
+                    result
                 } else {
                     self.color_pipeline.apply_clip_grade_full(rgba, &params)
                 }

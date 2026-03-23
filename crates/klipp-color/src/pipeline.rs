@@ -18,8 +18,25 @@ pub struct ColorGradeParams {
     pub lift: (f32, f32, f32),
     pub gamma: (f32, f32, f32),
     pub gain: (f32, f32, f32),
+    pub offset: (f32, f32, f32),
+    /// Per-wheel sat/bri
+    pub lift_sat: f32,
+    pub lift_bri: f32,
+    pub gamma_sat: f32,
+    pub gamma_bri: f32,
+    pub gain_sat: f32,
+    pub gain_bri: f32,
+    pub offset_sat: f32,
+    pub offset_bri: f32,
+    /// Global controls
+    pub hue: f32,
+    pub global_mix: f32,
     /// Pre-computed curve LUTs (None = identity/skip)
     pub curve_luts: Option<CurveLuts>,
+    pub curves_preserve_luma: bool,
+    pub curves_mix: f32,
+    pub huesat: klipp_core::HueSatCurves,
+    pub huesat_mix: f32,
 }
 
 /// Pre-computed 256-entry lookup tables for RGB curves.
@@ -73,15 +90,74 @@ impl ColorPipeline {
 
     /// Apply per-clip color grade to an RGBA frame using the full parameter set.
     pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams) -> Vec<u8> {
+        // Save original for global mix if needed
+        let original = if params.global_mix < 0.999 { Some(rgba.clone()) } else { None };
+
+        // 1. Exposure
         transforms::apply_exposure(&mut rgba, params.exposure);
+        // 2. Tone controls
         transforms::apply_tone_controls(&mut rgba, params.highlights, params.shadows, params.whites, params.blacks);
-        transforms::apply_lift_gamma_gain(&mut rgba, params.lift, params.gamma, params.gain);
+        // 3. Lift/Gamma/Gain/Offset wheels
+        transforms::apply_lift_gamma_gain_offset(&mut rgba, params.lift, params.gamma, params.gain, params.offset);
+        // 4. Per-wheel Sat/Bri
+        transforms::apply_wheel_sat_bri(
+            &mut rgba,
+            params.lift_sat, params.lift_bri,
+            params.gamma_sat, params.gamma_bri,
+            params.gain_sat, params.gain_bri,
+            params.offset_sat, params.offset_bri,
+        );
+        // 5. Contrast
         transforms::apply_contrast(&mut rgba, params.contrast);
+        // 6. Saturation
         transforms::apply_saturation(&mut rgba, params.saturation);
+        // 7. Curves (with optional preserve luma + mix)
         if let Some(luts) = &params.curve_luts {
+            let pre_curves = if params.curves_preserve_luma || params.curves_mix < 0.999 {
+                Some(rgba.clone())
+            } else {
+                None
+            };
             crate::curves::apply_curves(&mut rgba, &luts.master, &luts.red, &luts.green, &luts.blue);
+            // 7b. Preserve luma
+            if params.curves_preserve_luma {
+                if let Some(ref pre) = pre_curves {
+                    for (g, o) in rgba.chunks_exact_mut(4).zip(pre.chunks_exact(4)) {
+                        let luma_before = 0.2126 * o[0] as f32 + 0.7152 * o[1] as f32 + 0.0722 * o[2] as f32;
+                        let luma_after = 0.2126 * g[0] as f32 + 0.7152 * g[1] as f32 + 0.0722 * g[2] as f32;
+                        if luma_after > 0.5 {
+                            let ratio = luma_before / luma_after;
+                            g[0] = ((g[0] as f32 * ratio).clamp(0.0, 255.0)) as u8;
+                            g[1] = ((g[1] as f32 * ratio).clamp(0.0, 255.0)) as u8;
+                            g[2] = ((g[2] as f32 * ratio).clamp(0.0, 255.0)) as u8;
+                        }
+                    }
+                }
+            }
+            // 7c. Curves mix
+            if params.curves_mix < 0.999 {
+                if let Some(ref pre) = pre_curves {
+                    let mix = params.curves_mix;
+                    for (g, o) in rgba.chunks_exact_mut(4).zip(pre.chunks_exact(4)) {
+                        g[0] = ((o[0] as f32 + (g[0] as f32 - o[0] as f32) * mix).clamp(0.0, 255.0)) as u8;
+                        g[1] = ((o[1] as f32 + (g[1] as f32 - o[1] as f32) * mix).clamp(0.0, 255.0)) as u8;
+                        g[2] = ((o[2] as f32 + (g[2] as f32 - o[2] as f32) * mix).clamp(0.0, 255.0)) as u8;
+                    }
+                }
+            }
         }
+        // 8. Hue/Sat curves
+        if !params.huesat.is_all_identity() {
+            crate::huesat::apply_huesat_curves(&mut rgba, &params.huesat, params.huesat_mix);
+        }
+        // 9. Temperature/Tint
         transforms::apply_temperature_tint(&mut rgba, params.temperature, params.tint);
+        // 10. Hue rotation
+        transforms::apply_hue_rotation(&mut rgba, params.hue);
+        // 11. Global mix
+        if let Some(orig) = &original {
+            transforms::apply_global_mix(&mut rgba, orig, params.global_mix);
+        }
         rgba
     }
 

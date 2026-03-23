@@ -512,12 +512,52 @@ pub struct ClipColorGrade {
     pub gain_y: f32,
     #[serde(default)]
     pub gain_master: f32,
+    // ── Offset wheel ──
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default)]
+    pub offset_master: f32,
+    // ── Per-wheel Sat/Bri (Wheels tab flanking sliders) ──
+    #[serde(default)]
+    pub lift_sat: f32,
+    #[serde(default)]
+    pub lift_bri: f32,
+    #[serde(default)]
+    pub gamma_sat: f32,
+    #[serde(default)]
+    pub gamma_bri: f32,
+    #[serde(default)]
+    pub gain_sat: f32,
+    #[serde(default)]
+    pub gain_bri: f32,
+    #[serde(default)]
+    pub offset_sat: f32,
+    #[serde(default)]
+    pub offset_bri: f32,
+    // ── Global controls (Wheels tab) ──
+    #[serde(default)]
+    pub hue: f32,
+    #[serde(default = "default_one")]
+    pub global_mix: f32,
     // ── RGB Curves ──
     #[serde(default)]
     pub curves: CurveSet,
+    #[serde(default)]
+    pub curves_preserve_luma: bool,
+    #[serde(default = "default_one")]
+    pub curves_mix: f32,
+    // ── Hue/Sat curves ──
+    #[serde(default)]
+    pub huesat: klipp_core::HueSatCurves,
+    #[serde(default = "default_one")]
+    pub huesat_mix: f32,
 }
 
 pub use klipp_core::CurveSet;
+
+fn default_one() -> f32 { 1.0 }
 
 impl Default for ClipColorGrade {
     fn default() -> Self {
@@ -541,7 +581,24 @@ impl Default for ClipColorGrade {
             gain_x: 0.0,
             gain_y: 0.0,
             gain_master: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            offset_master: 0.0,
+            lift_sat: 0.0,
+            lift_bri: 0.0,
+            gamma_sat: 0.0,
+            gamma_bri: 0.0,
+            gain_sat: 0.0,
+            gain_bri: 0.0,
+            offset_sat: 0.0,
+            offset_bri: 0.0,
+            hue: 0.0,
+            global_mix: 1.0,
             curves: CurveSet::default(),
+            curves_preserve_luma: false,
+            curves_mix: 1.0,
+            huesat: Default::default(),
+            huesat_mix: 1.0,
         }
     }
 }

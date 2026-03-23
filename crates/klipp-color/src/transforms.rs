@@ -119,6 +119,140 @@ pub fn apply_lift_gamma_gain(
     }
 }
 
+/// Apply lift/gamma/gain/offset color wheels.
+/// Offset affects all tones uniformly (no luma weighting).
+pub fn apply_lift_gamma_gain_offset(
+    rgba: &mut [u8],
+    lift: (f32, f32, f32),
+    gamma: (f32, f32, f32),
+    gain: (f32, f32, f32),
+    offset: (f32, f32, f32),
+) {
+    let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
+    if is_zero(lift) && is_zero(gamma) && is_zero(gain) && is_zero(offset) {
+        return;
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        let lift_w = (1.0 - luma).max(0.0);
+        let gain_w = luma;
+        let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
+
+        pixel[0] = ((r + lift.0 * lift_w + gamma.0 * gamma_w + gain.0 * gain_w + offset.0).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((g + lift.1 * lift_w + gamma.1 * gamma_w + gain.1 * gain_w + offset.1).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((b + lift.2 * lift_w + gamma.2 * gamma_w + gain.2 * gain_w + offset.2).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Apply per-wheel saturation and brightness adjustments.
+/// Each parameter pair (sat, bri) is weighted by the corresponding tonal range.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_wheel_sat_bri(
+    rgba: &mut [u8],
+    lift_sat: f32, lift_bri: f32,
+    gamma_sat: f32, gamma_bri: f32,
+    gain_sat: f32, gain_bri: f32,
+    offset_sat: f32, offset_bri: f32,
+) {
+    if lift_sat.abs() < 0.0001 && lift_bri.abs() < 0.0001
+        && gamma_sat.abs() < 0.0001 && gamma_bri.abs() < 0.0001
+        && gain_sat.abs() < 0.0001 && gain_bri.abs() < 0.0001
+        && offset_sat.abs() < 0.0001 && offset_bri.abs() < 0.0001
+    {
+        return;
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        let lift_w = (1.0 - luma).max(0.0);
+        let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
+        let gain_w = luma;
+
+        let sat_adj = lift_sat * lift_w + gamma_sat * gamma_w + gain_sat * gain_w + offset_sat;
+        let bri_adj = lift_bri * lift_w + gamma_bri * gamma_w + gain_bri * gain_w + offset_bri;
+
+        // Apply brightness (uniform shift)
+        let r = r + bri_adj;
+        let g = g + bri_adj;
+        let b = b + bri_adj;
+
+        // Apply saturation adjustment
+        let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let sat_factor = 1.0 + sat_adj;
+        pixel[0] = ((luma2 + (r - luma2) * sat_factor).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((luma2 + (g - luma2) * sat_factor).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((luma2 + (b - luma2) * sat_factor).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Apply hue rotation in degrees (0-360). Rotates every pixel's hue by the given amount.
+pub fn apply_hue_rotation(rgba: &mut [u8], degrees: f32) {
+    if degrees.abs() < 0.01 {
+        return;
+    }
+    let angle = degrees / 360.0;
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        // RGB → HSL
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let l = (max + min) * 0.5;
+        if delta < 0.0001 {
+            continue; // achromatic — no hue to rotate
+        }
+        let s = delta / (1.0 - (2.0 * l - 1.0).abs());
+        let h = if max == r {
+            ((g - b) / delta).rem_euclid(6.0) / 6.0
+        } else if max == g {
+            ((b - r) / delta + 2.0) / 6.0
+        } else {
+            ((r - g) / delta + 4.0) / 6.0
+        };
+
+        // Rotate hue
+        let h = (h + angle).rem_euclid(1.0);
+
+        // HSL → RGB
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+        let m = l - c * 0.5;
+        let (nr, ng, nb) = match (h * 6.0) as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        pixel[0] = ((nr + m).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((ng + m).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((nb + m).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Apply global mix — blend the graded result with the ungraded original.
+pub fn apply_global_mix(graded: &mut [u8], original: &[u8], mix: f32) {
+    if (mix - 1.0).abs() < 0.001 || graded.len() != original.len() {
+        return;
+    }
+    for (g, o) in graded.chunks_exact_mut(4).zip(original.chunks_exact(4)) {
+        g[0] = ((o[0] as f32 + (g[0] as f32 - o[0] as f32) * mix).clamp(0.0, 255.0)) as u8;
+        g[1] = ((o[1] as f32 + (g[1] as f32 - o[1] as f32) * mix).clamp(0.0, 255.0)) as u8;
+        g[2] = ((o[2] as f32 + (g[2] as f32 - o[2] as f32) * mix).clamp(0.0, 255.0)) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

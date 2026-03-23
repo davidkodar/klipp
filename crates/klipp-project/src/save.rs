@@ -189,6 +189,23 @@ fn color_grade_to_json(cg: &klipp_timeline::ClipColorGrade) -> ColorGradeJson {
         gain_x: cg.gain_x,
         gain_y: cg.gain_y,
         gain_master: cg.gain_master,
+        offset_x: cg.offset_x,
+        offset_y: cg.offset_y,
+        offset_master: cg.offset_master,
+        lift_sat: cg.lift_sat,
+        lift_bri: cg.lift_bri,
+        gamma_sat: cg.gamma_sat,
+        gamma_bri: cg.gamma_bri,
+        gain_sat: cg.gain_sat,
+        gain_bri: cg.gain_bri,
+        offset_sat: cg.offset_sat,
+        offset_bri: cg.offset_bri,
+        hue: cg.hue,
+        global_mix: cg.global_mix,
+        curves_preserve_luma: cg.curves_preserve_luma,
+        curves_mix: cg.curves_mix,
+        huesat: if cg.huesat.is_all_identity() { None } else { Some(cg.huesat.clone()) },
+        huesat_mix: cg.huesat_mix,
         curves: {
             let c = &cg.curves;
             let is_default = |pts: &[[f32; 2]]| pts.len() == 2

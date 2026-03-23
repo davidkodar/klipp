@@ -1476,6 +1476,22 @@ impl KlippApp {
                                 P::GainX => g.gain_x = *value,
                                 P::GainY => g.gain_y = *value,
                                 P::GainMaster => g.gain_master = *value,
+                                P::OffsetX => g.offset_x = *value,
+                                P::OffsetY => g.offset_y = *value,
+                                P::OffsetMaster => g.offset_master = *value,
+                                P::LiftSat => g.lift_sat = *value,
+                                P::LiftBri => g.lift_bri = *value,
+                                P::GammaSat => g.gamma_sat = *value,
+                                P::GammaBri => g.gamma_bri = *value,
+                                P::GainSat => g.gain_sat = *value,
+                                P::GainBri => g.gain_bri = *value,
+                                P::OffsetSat => g.offset_sat = *value,
+                                P::OffsetBri => g.offset_bri = *value,
+                                P::Hue => g.hue = *value,
+                                P::GlobalMix => g.global_mix = *value,
+                                P::CurvesPreserveLuma => g.curves_preserve_luma = *value > 0.5,
+                                P::CurvesMix => g.curves_mix = *value,
+                                P::HueSatMix => g.huesat_mix = *value,
                             }
                             break;
                         }
@@ -1488,6 +1504,17 @@ impl KlippApp {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.color_grade.enabled = true;
                             clip.color_grade.curves = curves.clone();
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipHueSatCurves { clip_id, huesat } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.huesat = huesat.clone();
                             break;
                         }
                     }

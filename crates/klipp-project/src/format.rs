@@ -208,8 +208,44 @@ pub struct ColorGradeJson {
     #[serde(default)]
     pub gain_master: f32,
     #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default)]
+    pub offset_master: f32,
+    #[serde(default)]
+    pub lift_sat: f32,
+    #[serde(default)]
+    pub lift_bri: f32,
+    #[serde(default)]
+    pub gamma_sat: f32,
+    #[serde(default)]
+    pub gamma_bri: f32,
+    #[serde(default)]
+    pub gain_sat: f32,
+    #[serde(default)]
+    pub gain_bri: f32,
+    #[serde(default)]
+    pub offset_sat: f32,
+    #[serde(default)]
+    pub offset_bri: f32,
+    #[serde(default)]
+    pub hue: f32,
+    #[serde(default = "default_one")]
+    pub global_mix: f32,
+    #[serde(default)]
     pub curves: Option<klipp_timeline::CurveSet>,
+    #[serde(default)]
+    pub curves_preserve_luma: bool,
+    #[serde(default = "default_one")]
+    pub curves_mix: f32,
+    #[serde(default)]
+    pub huesat: Option<klipp_core::HueSatCurves>,
+    #[serde(default = "default_one")]
+    pub huesat_mix: f32,
 }
+
+fn default_one() -> f32 { 1.0 }
 
 fn default_saturation() -> f32 { 1.0 }
 

@@ -97,6 +97,36 @@ pub fn compute_histogram(rgba: &[u8], width: u32, height: u32) -> HistogramData 
     data
 }
 
+/// RGB Parade data: per-column R/G/B histograms (256 bins each).
+pub struct ParadeData {
+    pub red:   Vec<[u32; 256]>,
+    pub green: Vec<[u32; 256]>,
+    pub blue:  Vec<[u32; 256]>,
+    pub width: u32,
+}
+
+/// Compute an RGB parade from RGBA data.
+/// Each channel gets its own per-column histogram.
+pub fn compute_parade(rgba: &[u8], width: u32, height: u32, display_columns: u32) -> ParadeData {
+    let display_columns = display_columns.max(1).min(width);
+    let mut red   = vec![[0u32; 256]; display_columns as usize];
+    let mut green = vec![[0u32; 256]; display_columns as usize];
+    let mut blue  = vec![[0u32; 256]; display_columns as usize];
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = ((y * width + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { break; }
+            let col = (x as u64 * display_columns as u64 / width as u64) as usize;
+            red[col][rgba[idx] as usize] += 1;
+            green[col][rgba[idx + 1] as usize] += 1;
+            blue[col][rgba[idx + 2] as usize] += 1;
+        }
+    }
+
+    ParadeData { red, green, blue, width: display_columns }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
