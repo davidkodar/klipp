@@ -239,28 +239,39 @@ impl NewTimelinePanel {
                     // Check 4px drag threshold
                     let dist = (pos.x - origin.x).abs();
                     if dist > 4.0 {
-                        // If a range already exists, extend the nearest edge instead of creating new
-                        let has_range = state.sequence().in_point.is_some()
-                            && state.sequence().out_point.is_some();
-                        let drag_kind = if has_range {
-                            let click_secs = time_utils::x_to_time(
-                                origin.x - ruler_rect.left(), pps, scroll_x,
-                            );
-                            let in_secs = state.sequence().in_point
-                                .map(|t| t.to_secs_f64()).unwrap_or(0.0);
-                            let out_secs = state.sequence().out_point
-                                .map(|t| t.to_secs_f64()).unwrap_or(0.0);
-                            let mid = (in_secs + out_secs) / 2.0;
-                            // Click closer to in_point → drag in_point; closer to out_point → drag out_point
-                            if click_secs <= mid {
+                        // Decide: extend existing range edge vs create new range
+                        let anchor_secs = time_utils::x_to_time(
+                            origin.x - ruler_rect.left(), pps, scroll_x,
+                        ).max(0.0).min(duration_secs);
+                        let drag_kind = if let (Some(in_pt), Some(out_pt)) =
+                            (state.sequence().in_point, state.sequence().out_point)
+                        {
+                            let in_secs = in_pt.to_secs_f64();
+                            let out_secs = out_pt.to_secs_f64();
+                            let range_dur = (out_secs - in_secs).max(0.01);
+                            // "Near" = within 20% of range duration from either edge
+                            let margin = range_dur * 0.20;
+                            let near_in = anchor_secs >= in_secs - margin && anchor_secs <= in_secs + margin;
+                            let near_out = anchor_secs >= out_secs - margin && anchor_secs <= out_secs + margin;
+                            let inside = anchor_secs > in_secs + margin && anchor_secs < out_secs - margin;
+
+                            if near_in {
                                 crate::state::RangeDragKind::InHandle
-                            } else {
+                            } else if near_out {
                                 crate::state::RangeDragKind::OutHandle
+                            } else if inside {
+                                // Click inside range but not near edges → extend nearest edge
+                                let mid = (in_secs + out_secs) / 2.0;
+                                if anchor_secs <= mid {
+                                    crate::state::RangeDragKind::InHandle
+                                } else {
+                                    crate::state::RangeDragKind::OutHandle
+                                }
+                            } else {
+                                // Click far outside range → create new range
+                                crate::state::RangeDragKind::RulerCreate { anchor_secs }
                             }
                         } else {
-                            let anchor_secs = time_utils::x_to_time(
-                                origin.x - ruler_rect.left(), pps, scroll_x,
-                            ).max(0.0).min(duration_secs);
                             crate::state::RangeDragKind::RulerCreate { anchor_secs }
                         };
                         state.range_drag = Some(crate::state::RangeDragState {
