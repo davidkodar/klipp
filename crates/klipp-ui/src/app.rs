@@ -2096,6 +2096,18 @@ impl KlippApp {
                     let cid = *clip_id;
                     let cut = *cut_at;
 
+                    // Find linked partner clip info BEFORE the blade modifies the sequence
+                    let linked_info = self.state.sequences[self.state.active_sequence_idx].tracks[ti]
+                        .find_clip(cid)
+                        .and_then(|c| c.linked_clip_id)
+                        .and_then(|lid| {
+                            self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                                .enumerate()
+                                .find_map(|(track_i, track)| {
+                                    track.find_clip(lid).map(|_| (track_i, lid))
+                                })
+                        });
+
                     if self.is_magnetic_track(ti) {
                         // Magnetic blade
                         let result = klipp_timeline::magnetic::MagneticEditor::blade(
@@ -2121,6 +2133,66 @@ impl KlippApp {
                             }
                         }
                     }
+
+                    // Blade the linked partner clip at the same cut point and re-link
+                    if let Some((partner_track_i, partner_id)) = linked_info {
+                        // Check partner clip spans the cut point and get track role
+                        let partner_spans = self.state.sequences[self.state.active_sequence_idx]
+                            .tracks[partner_track_i]
+                            .find_clip(partner_id)
+                            .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
+                        let partner_is_magnetic = self.is_magnetic_track(partner_track_i);
+
+                        if partner_spans {
+                            if partner_is_magnetic {
+                                let result = klipp_timeline::magnetic::MagneticEditor::blade(
+                                    &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut);
+                                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                            } else {
+                                let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[partner_track_i];
+                                let original = track.find_clip(partner_id).cloned();
+                                let position = track.clips.iter().position(|c| c.id == partner_id);
+                                if let (Some(original), Some(pos)) = (original, position) {
+                                    if let Some((pa, pb)) = track.blade_at(partner_id, cut) {
+                                        self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyBladeClip {
+                                            track_index: partner_track_i,
+                                            original_clip: original,
+                                            clip_a: pa,
+                                            clip_b: pb,
+                                            position: pos,
+                                        } });
+                                    }
+                                }
+                            }
+
+                            // Re-link: find the two halves on each track and cross-link them
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let video_halves: Vec<ClipId> = seq.tracks[ti].clips.iter()
+                                .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
+                                .map(|c| c.id)
+                                .collect();
+                            let audio_halves: Vec<ClipId> = seq.tracks[partner_track_i].clips.iter()
+                                .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
+                                .map(|c| c.id)
+                                .collect();
+
+                            for vid_id in &video_halves {
+                                let vid_out = seq.tracks[ti].find_clip(*vid_id).map(|c| c.timeline_out);
+                                for aud_id in &audio_halves {
+                                    let aud_out = seq.tracks[partner_track_i].find_clip(*aud_id).map(|c| c.timeline_out);
+                                    if vid_out == aud_out {
+                                        if let Some(vc) = seq.tracks[ti].find_clip_mut(*vid_id) {
+                                            vc.linked_clip_id = Some(*aud_id);
+                                        }
+                                        if let Some(ac) = seq.tracks[partner_track_i].find_clip_mut(*aud_id) {
+                                            ac.linked_clip_id = Some(*vid_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     self.sync_sequence_to_engine();
                     continue;
                 }
@@ -4357,12 +4429,16 @@ impl KlippApp {
                 }
                 self.state.ruler_press_origin = None;
             }
-            // , — Insert edit (ripple)
-            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ",")) {
+            // , or F10 — Insert edit (ripple)
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ","))
+                || i.key_pressed(egui::Key::F10)
+            {
                 cmds.push(AppCommand::InsertEdit);
             }
-            // . — Overwrite edit
-            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ".")) {
+            // . or F11 — Overwrite edit
+            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "."))
+                || i.key_pressed(egui::Key::F11)
+            {
                 cmds.push(AppCommand::OverwriteEdit);
             }
             // ; — Lift edit

@@ -2226,6 +2226,34 @@ impl TimelinePanel {
                     }
                 }
 
+                // Collision resolution (connected/storyline tracks only)
+                if !is_on_primary {
+                    let collision = state.sequence().tracks.get(track_idx).and_then(|track| {
+                        let clip = track.clips.iter().find(|c| c.id == clip_id)?;
+                        // Find overlapping clip on same track
+                        track.clips.iter().find(|other| {
+                            other.id != clip_id
+                                && !other.kind.is_gap()
+                                && clip.timeline_in < other.timeline_out
+                                && clip.timeline_out > other.timeline_in
+                        }).map(|other| other.id)
+                    });
+                    if let Some(colliding_id) = collision {
+                        ui.separator();
+                        if ui.button("Push to Resolve").clicked() {
+                            let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(
+                                state.sequence_mut(), clip_id, colliding_id);
+                            state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: state.active_sequence_idx,
+                                command: crate::history::EditCommand::Magnetic(result.command),
+                            });
+                            state.dirty = true;
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                    }
+                }
+
                 // Lock Track
                 ui.separator();
                 let track_locked = state.sequence().tracks.get(track_idx).is_some_and(|t| t.locked);
@@ -2742,6 +2770,14 @@ impl TimelinePanel {
                         .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
 
                     if is_primary {
+                        // Alt override: temporarily treat as Overwrite when Alt is held
+                        let alt_held = ui.input(|i| i.modifiers.alt);
+                        let effective_mode = if alt_held {
+                            klipp_timeline::magnetic::EditMode::Overwrite
+                        } else {
+                            state.edit_mode
+                        };
+
                         // PRIMARY TRACK: Don't move clip in sequence.
                         // Keep it at original position. Draw a floating ghost + insertion indicator.
                         let clip_dur = state.sequence().tracks.get(drag.track_idx)
@@ -2757,8 +2793,8 @@ impl TimelinePanel {
                             egui::vec2(ghost_w, track_rect.height() - 4.0),
                         );
 
-                        // Draw ghost with semi-transparency
-                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(60, 80, 140, 100);
+                        // Draw ghost with 50% opacity
+                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(60, 80, 140, 128);
                         let ghost_border = egui::Color32::from_rgba_unmultiplied(120, 160, 240, 180);
                         painter.rect_filled(ghost_rect, 3.0, ghost_fill);
                         painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
@@ -2774,7 +2810,7 @@ impl TimelinePanel {
                                     tex.id(),
                                     ghost_rect,
                                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
                                 );
                             }
                         }
@@ -2791,8 +2827,11 @@ impl TimelinePanel {
                                     insert_x = content_rect.left() + c.timeline_out.to_secs_f64() as f32 * zoom - scroll;
                                 }
                             }
-                            // Draw amber insertion line
-                            let insert_color = egui::Color32::from_rgb(232, 160, 32);
+                            // Draw insertion line — amber for Insert, blue for Overwrite
+                            let insert_color = match effective_mode {
+                                klipp_timeline::magnetic::EditMode::Insert => egui::Color32::from_rgb(232, 160, 32),
+                                klipp_timeline::magnetic::EditMode::Overwrite => egui::Color32::from_rgb(60, 120, 220),
+                            };
                             painter.line_segment(
                                 [egui::pos2(insert_x, track_rect.top()), egui::pos2(insert_x, track_rect.bottom())],
                                 egui::Stroke::new(3.0, insert_color),
@@ -2817,12 +2856,198 @@ impl TimelinePanel {
                             ));
                         }
 
-                        // Store final_in for use on drop (stash in a field we can read later)
-                        // We use the fact that on drop, we read the clip's current timeline_in
-                        // but we DON'T move it during drag for Primary. So on drop, we need
-                        // to pass the target time. Store it via a small mutation:
-                        // Actually, we store the drag target in the snap_line area or recompute on drop.
-                        // For now, store final_in by setting it on drop (see pointer_released block).
+                        // Drop zone highlight for primary track — amber glow at ghost position
+                        if snapped {
+                            let drop_rect = egui::Rect::from_min_size(
+                                egui::pos2(ghost_x - 1.0, track_rect.top() + 1.0),
+                                egui::vec2(ghost_w + 2.0, track_rect.height() - 2.0),
+                            );
+                            painter.rect_stroke(drop_rect, 4.0,
+                                egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 80)));
+                            painter.rect_stroke(drop_rect, 4.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
+                        }
+
+                        // ── Items 11-14: Cascade preview, ripple arrows, connected previews, anchor snap ──
+                        if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
+                            let amber = egui::Color32::from_rgb(232, 160, 32);
+                            let drag_clip_in = drag.original_timeline_in;
+                            let delta_secs = final_in.to_secs_f64() - drag_clip_in.to_secs_f64();
+
+                            // Item 12: Ripple direction arrows on primary clips in Insert mode
+                            if effective_mode == klipp_timeline::magnetic::EditMode::Insert {
+                                let insert_secs = final_in.to_secs_f64();
+                                for c in &track.clips {
+                                    if c.id == drag.clip_id { continue; }
+                                    let c_in_secs = c.timeline_in.to_secs_f64();
+                                    // Clips to the right of insertion point will ripple right
+                                    let will_ripple_right = c_in_secs >= insert_secs && delta_secs > 0.01;
+                                    let will_ripple_left = c_in_secs >= drag_clip_in.to_secs_f64() && delta_secs < -0.01 && c_in_secs > insert_secs;
+                                    if will_ripple_right || will_ripple_left {
+                                        let c_rect = Self::clip_screen_rect(c, content_rect, track_rect, zoom, scroll, track_height);
+                                        if c_rect.right() < content_rect.left() || c_rect.left() > content_rect.right() {
+                                            continue; // off-screen
+                                        }
+                                        let c_w = c_rect.width();
+                                        let arrow_right = will_ripple_right;
+                                        let arrow_h = 6.0_f32;
+                                        let arrow_w = 8.0_f32;
+                                        let cy = c_rect.center().y;
+
+                                        // Determine number of arrows based on clip width
+                                        let arrow_count = if c_w > 40.0 { 3 } else if c_w > 20.0 { 1 } else { 0 };
+                                        if arrow_count > 0 {
+                                            let spacing = c_w / (arrow_count as f32 + 1.0);
+                                            for i in 0..arrow_count {
+                                                let ax = c_rect.left() + spacing * (i as f32 + 1.0);
+                                                let points = if arrow_right {
+                                                    vec![
+                                                        egui::pos2(ax - arrow_w / 2.0, cy - arrow_h / 2.0),
+                                                        egui::pos2(ax + arrow_w / 2.0, cy),
+                                                        egui::pos2(ax - arrow_w / 2.0, cy + arrow_h / 2.0),
+                                                    ]
+                                                } else {
+                                                    vec![
+                                                        egui::pos2(ax + arrow_w / 2.0, cy - arrow_h / 2.0),
+                                                        egui::pos2(ax - arrow_w / 2.0, cy),
+                                                        egui::pos2(ax + arrow_w / 2.0, cy + arrow_h / 2.0),
+                                                    ]
+                                                };
+                                                painter.add(egui::Shape::convex_polygon(
+                                                    points,
+                                                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 180),
+                                                    egui::Stroke::NONE,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Items 11 + 13: Cascade preview — connected clips show preview positions
+                            if delta_secs.abs() > 0.001 {
+                                for (other_ti, other_track) in state.sequence().tracks.iter().enumerate() {
+                                    if other_ti == drag.track_idx { continue; }
+                                    let is_connected = other_track.magnetic_role == klipp_timeline::TrackRole::Connected
+                                        || other_track.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline;
+                                    if !is_connected { continue; }
+
+                                    let other_track_rect = self.track_rects.iter()
+                                        .find(|(idx, _, _)| *idx == other_ti)
+                                        .map(|(_, _, r)| *r);
+                                    let other_track_rect = match other_track_rect {
+                                        Some(r) => r,
+                                        None => continue,
+                                    };
+                                    let other_h = match other_track.kind {
+                                        TrackKind::Video => VIDEO_TRACK_HEIGHT,
+                                        TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                                    };
+
+                                    for clip in &other_track.clips {
+                                        if clip.kind.is_gap() { continue; }
+                                        // Check if this clip is anchored to a primary clip that would move
+                                        let would_cascade = if other_track.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline {
+                                            // Storyline: all clips cascade if any primary anchor moves
+                                            other_track.storyline_anchor.as_ref().is_some_and(|sa| {
+                                                track.clips.iter().any(|pc| pc.id == sa.anchor_clip_id)
+                                            })
+                                        } else {
+                                            clip.magnetic_anchor.as_ref().is_some_and(|anchor| {
+                                                // Cascade if the anchor is on a primary clip that ripples
+                                                track.clips.iter().any(|pc| pc.id == anchor.anchor_clip_id)
+                                            })
+                                        };
+                                        if !would_cascade { continue; }
+
+                                        // Compute preview position with cascade delta
+                                        let delta_rt = final_in - drag_clip_in;
+                                        let preview_in = clip.timeline_in + delta_rt;
+                                        let preview_in_secs = preview_in.to_secs_f64();
+                                        let clip_dur_secs = clip.duration().to_secs_f64();
+
+                                        // Item 11: Draw connected clip at preview position with 60% opacity
+                                        let px = content_rect.left() + preview_in_secs as f32 * zoom - scroll;
+                                        let pw = clip_dur_secs as f32 * zoom;
+                                        let preview_rect = egui::Rect::from_min_size(
+                                            egui::pos2(px, other_track_rect.top() + 2.0),
+                                            egui::vec2(pw.max(2.0), other_h - 4.0),
+                                        );
+                                        if preview_rect.right() >= content_rect.left() && preview_rect.left() <= content_rect.right() {
+                                            // 60% opacity fill
+                                            painter.rect_filled(preview_rect, 3.0,
+                                                egui::Color32::from_rgba_unmultiplied(60, 80, 140, 153));
+                                            // Dashed amber border
+                                            let dash_color = egui::Color32::from_rgba_unmultiplied(232, 160, 32, 180);
+                                            let dash_len = 5.0_f32;
+                                            let gap_len = 3.0_f32;
+                                            // Top edge
+                                            let mut dx = preview_rect.left();
+                                            while dx < preview_rect.right() {
+                                                let end_x = (dx + dash_len).min(preview_rect.right());
+                                                painter.line_segment(
+                                                    [egui::pos2(dx, preview_rect.top()), egui::pos2(end_x, preview_rect.top())],
+                                                    egui::Stroke::new(1.5, dash_color),
+                                                );
+                                                dx += dash_len + gap_len;
+                                            }
+                                            // Bottom edge
+                                            dx = preview_rect.left();
+                                            while dx < preview_rect.right() {
+                                                let end_x = (dx + dash_len).min(preview_rect.right());
+                                                painter.line_segment(
+                                                    [egui::pos2(dx, preview_rect.bottom()), egui::pos2(end_x, preview_rect.bottom())],
+                                                    egui::Stroke::new(1.5, dash_color),
+                                                );
+                                                dx += dash_len + gap_len;
+                                            }
+                                        }
+
+                                        // Item 13: Ghost outline at destination (30% opacity) if different from current
+                                        let current_secs = clip.timeline_in.to_secs_f64();
+                                        if (preview_in_secs - current_secs).abs() > 0.001 {
+                                            let dest_x = content_rect.left() + preview_in_secs as f32 * zoom - scroll;
+                                            let dest_rect = egui::Rect::from_min_size(
+                                                egui::pos2(dest_x, other_track_rect.top() + 2.0),
+                                                egui::vec2(pw.max(2.0), other_h - 4.0),
+                                            );
+                                            if dest_rect.right() >= content_rect.left() && dest_rect.left() <= content_rect.right() {
+                                                painter.rect_stroke(dest_rect, 3.0,
+                                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 77)));
+                                            }
+                                        }
+
+                                        // Draw preview anchor line from connected clip to primary
+                                        if let Some(anchor) = &clip.magnetic_anchor {
+                                            let anchor_clip = track.clips.iter().find(|pc| pc.id == anchor.anchor_clip_id);
+                                            if let Some(ac) = anchor_clip {
+                                                let anchor_preview_in = ac.timeline_in + delta_rt;
+                                                let anchor_x = content_rect.left()
+                                                    + (anchor_preview_in + anchor.offset).to_secs_f64() as f32 * zoom - scroll;
+                                                let from_y = preview_rect.top();
+                                                let to_y = track_rect.bottom();
+                                                let (top_y, bottom_y) = if from_y < to_y { (from_y, to_y) } else { (to_y, from_y) };
+                                                // Dashed amber anchor line
+                                                let mut dy = top_y;
+                                                while dy < bottom_y {
+                                                    let end_y = (dy + 5.0).min(bottom_y);
+                                                    painter.line_segment(
+                                                        [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
+                                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)),
+                                                    );
+                                                    dy += 8.0;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Item 14: Anchor snap indicator during non-primary drag
+                            // (This renders when dragging clips near/far from primary on connected tracks)
+                            // Already handled in the non-primary drag section above.
+                            let _ = amber; // suppress unused
+                        }
 
                     } else {
                         // NON-PRIMARY: Legacy free movement
@@ -2868,6 +3093,108 @@ impl TimelinePanel {
                                         egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 80)));
                                     painter.rect_stroke(drop_rect, 4.0,
                                         egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
+                                }
+                            }
+                        }
+                    }
+
+                    // Auto-connect/disconnect indicator during non-primary drag
+                    if !is_primary {
+                        let primary_rect = self.track_rects.iter()
+                            .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
+                                .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
+                            .map(|(_, _, r)| *r);
+                        if let Some(primary_r) = primary_rect {
+                            let drag_clip_y = if let Some(pos) = pointer_pos { pos.y } else { track_rect.center().y };
+                            let primary_center_y = primary_r.center().y;
+                            let dist_px = (drag_clip_y - primary_center_y).abs();
+                            let track_h = track_rect.height();
+                            let dist_tracks = dist_px / track_h;
+
+                            let clip_is_connected = state.sequence().tracks.get(drag.track_idx)
+                                .and_then(|t| t.find_clip(drag.clip_id))
+                                .is_some_and(|c| c.magnetic_anchor.is_some());
+
+                            let connect_threshold = klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE;
+                            let disconnect_threshold = klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE;
+
+                            if dist_tracks < connect_threshold && !clip_is_connected {
+                                // Will auto-connect on drop — show chain icon + dashed anchor line
+                                if let Some(pos) = pointer_pos {
+                                    let amber = egui::Color32::from_rgb(232, 160, 32);
+                                    let pill_rect = egui::Rect::from_min_size(
+                                        egui::pos2(pos.x + 12.0, pos.y - 20.0),
+                                        egui::vec2(90.0, 16.0),
+                                    );
+                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220));
+                                    painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0, amber));
+                                    painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
+                                        "\u{229E} Will connect", egui::FontId::monospace(8.0), amber);
+
+                                    // Dashed amber vertical line from dragged clip to primary
+                                    let clip_x = state.sequence().tracks.get(drag.track_idx)
+                                        .and_then(|t| t.find_clip(drag.clip_id))
+                                        .map(|c| content_rect.left() + c.timeline_in.to_secs_f64() as f32 * zoom - scroll);
+                                    if let Some(anchor_x) = clip_x {
+                                        let (top_y, bottom_y) = if primary_r.center().y > track_rect.center().y {
+                                            (track_rect.bottom(), primary_r.top())
+                                        } else {
+                                            (primary_r.bottom(), track_rect.top())
+                                        };
+                                        let mut dy = top_y;
+                                        let dash_len = 5.0_f32;
+                                        let gap_len = 3.0_f32;
+                                        while dy < bottom_y {
+                                            let end_y = (dy + dash_len).min(bottom_y);
+                                            painter.line_segment(
+                                                [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
+                                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 160)),
+                                            );
+                                            dy += dash_len + gap_len;
+                                        }
+                                    }
+                                }
+                            } else if dist_tracks > disconnect_threshold && clip_is_connected {
+                                // Will auto-disconnect on drop — show broken chain icon + red dashed line
+                                if let Some(pos) = pointer_pos {
+                                    let warn_color = egui::Color32::from_rgb(192, 96, 96);
+                                    let pill_rect = egui::Rect::from_min_size(
+                                        egui::pos2(pos.x + 12.0, pos.y - 20.0),
+                                        egui::vec2(100.0, 16.0),
+                                    );
+                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220));
+                                    painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0, warn_color));
+                                    painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
+                                        "\u{229F} Will disconnect", egui::FontId::monospace(8.0), warn_color);
+
+                                    // Existing anchor line turns red-dashed to indicate it will break
+                                    if let Some(anchor) = state.sequence().tracks.get(drag.track_idx)
+                                        .and_then(|t| t.find_clip(drag.clip_id))
+                                        .and_then(|c| c.magnetic_anchor.clone())
+                                    {
+                                        let anchor_clip_in = state.sequence().tracks.iter()
+                                            .flat_map(|t| t.clips.iter())
+                                            .find(|c| c.id == anchor.anchor_clip_id)
+                                            .map(|c| c.timeline_in);
+                                        if let Some(ac_in) = anchor_clip_in {
+                                            let anchor_x = content_rect.left()
+                                                + (ac_in + anchor.offset).to_secs_f64() as f32 * zoom - scroll;
+                                            let (top_y, bottom_y) = if primary_r.center().y > track_rect.center().y {
+                                                (track_rect.bottom(), primary_r.top())
+                                            } else {
+                                                (primary_r.bottom(), track_rect.top())
+                                            };
+                                            let mut dy = top_y;
+                                            while dy < bottom_y {
+                                                let end_y = (dy + 5.0).min(bottom_y);
+                                                painter.line_segment(
+                                                    [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
+                                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(192, 96, 96, 160)),
+                                                );
+                                                dy += 8.0;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2939,20 +3266,45 @@ impl TimelinePanel {
                         let is_primary = state.sequence().tracks.get(from_track)
                             .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
                         if is_primary {
-                            // Magnetic: reorder within primary (index-based move)
-                            // Compute target time from pointer position (clip wasn't moved during drag)
+                            // Magnetic: route by edit mode (Insert = ripple move, Overwrite = replace)
                             let target_time = pointer_pos.map(|pos| {
                                 let x_in_content = pos.x - content_rect.left() + scroll;
                                 let secs = (x_in_content as f64 / zoom as f64).max(0.0);
                                 RationalTime::from_secs_f64(secs, fps.rate())
                             });
                             if let Some(target_time) = target_time {
-                                // Clip is already at original position (we didn't move it during drag)
                                 if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
                                     track.sort_clips();
                                 }
-                                let result = klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                    state.sequence_mut(), clip_id, target_time);
+                                // Alt override: temporarily treat as Overwrite when Alt is held
+                                let alt_held = ui.input(|i| i.modifiers.alt);
+                                let effective_mode = if alt_held {
+                                    klipp_timeline::magnetic::EditMode::Overwrite
+                                } else {
+                                    state.edit_mode
+                                };
+                                let result = match effective_mode {
+                                    klipp_timeline::magnetic::EditMode::Insert => {
+                                        klipp_timeline::magnetic::MagneticEditor::move_primary(
+                                            state.sequence_mut(), clip_id, target_time)
+                                    }
+                                    klipp_timeline::magnetic::EditMode::Overwrite => {
+                                        // Remove clip from track first, then overwrite at target
+                                        let clip_data = state.sequence().tracks.get(from_track)
+                                            .and_then(|t| t.find_clip(clip_id)).cloned();
+                                        if let Some(clip_data) = clip_data {
+                                            // Remove the clip being dragged
+                                            if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
+                                                track.clips.retain(|c| c.id != clip_id);
+                                            }
+                                            klipp_timeline::magnetic::MagneticEditor::overwrite_primary(
+                                                state.sequence_mut(), clip_data, target_time)
+                                        } else {
+                                            klipp_timeline::magnetic::MagneticEditor::move_primary(
+                                                state.sequence_mut(), clip_id, target_time)
+                                        }
+                                    }
+                                };
                                 state.history.push(crate::history::HistoryEntry { sequence_idx: state.active_sequence_idx, command: crate::history::EditCommand::Magnetic(result.command) });
                                 state.dirty = true;
                                 cmds.push(AppCommand::SequenceUpdated);
@@ -2965,6 +3317,58 @@ impl TimelinePanel {
                                         clip_id,
                                         new_timeline_in: clip.timeline_in,
                                     });
+                                }
+                            }
+
+                            // Auto-connect/disconnect on drop for non-primary tracks
+                            let primary_rect = self.track_rects.iter()
+                                .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
+                                    .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
+                                .map(|(pi, _, r)| (*pi, *r));
+                            if let (Some(pos), Some((primary_ti, primary_r))) = (pointer_pos, primary_rect) {
+                                let dist_px = (pos.y - primary_r.center().y).abs();
+                                let track_h = track_rect.height().max(1.0);
+                                let dist_tracks = dist_px / track_h;
+
+                                let clip_is_connected = state.sequence().tracks.get(from_track)
+                                    .and_then(|t| t.find_clip(clip_id))
+                                    .is_some_and(|c| c.magnetic_anchor.is_some());
+
+                                if dist_tracks < klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE && !clip_is_connected {
+                                    // Auto-connect: find nearest primary clip
+                                    let clip_in = state.sequence().tracks.get(from_track)
+                                        .and_then(|t| t.find_clip(clip_id))
+                                        .map(|c| c.timeline_in);
+                                    if let Some(clip_in) = clip_in {
+                                        let anchor_id = state.sequence().tracks[primary_ti].clips.iter()
+                                            .min_by_key(|c| {
+                                                let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
+                                                let diff = mid - clip_in;
+                                                diff.value.unsigned_abs()
+                                            })
+                                            .map(|c| c.id);
+                                        if let Some(anchor_id) = anchor_id {
+                                            let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
+                                                state.sequence_mut(), clip_id, anchor_id,
+                                                klipp_timeline::AnchorAlignment::StartAligned);
+                                            state.history.push(crate::history::HistoryEntry {
+                                                sequence_idx: state.active_sequence_idx,
+                                                command: crate::history::EditCommand::Magnetic(result.command),
+                                            });
+                                            state.dirty = true;
+                                            cmds.push(AppCommand::SequenceUpdated);
+                                        }
+                                    }
+                                } else if dist_tracks > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE && clip_is_connected {
+                                    // Auto-disconnect
+                                    let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
+                                        state.sequence_mut(), clip_id);
+                                    state.history.push(crate::history::HistoryEntry {
+                                        sequence_idx: state.active_sequence_idx,
+                                        command: crate::history::EditCommand::Magnetic(result.command),
+                                    });
+                                    state.dirty = true;
+                                    cmds.push(AppCommand::SequenceUpdated);
                                 }
                             }
                         }

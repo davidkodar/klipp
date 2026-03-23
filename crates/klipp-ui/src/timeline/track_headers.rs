@@ -1,6 +1,7 @@
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
+use klipp_core::AppCommand;
 use klipp_timeline::TrackKind;
 
 /// Render the 110px track header column: ruler spacer + per-track headers.
@@ -9,7 +10,7 @@ pub fn show(
     state: &mut AppState,
     theme: &KlippTheme,
     header_rect: egui::Rect,
-) {
+) -> Vec<AppCommand> {
     let ruler_h = crate::theme::RULER_HEIGHT;
 
     // ── Ruler spacer (22px) ──
@@ -31,10 +32,20 @@ pub fn show(
         theme.text_dim,
     );
 
+    let mut cmds = Vec::new();
+
     // ── Track headers ──
     let mut y = header_rect.min.y + ruler_h;
     let mut toggle_mute: Option<usize> = None;
     let mut toggle_lock: Option<usize> = None;
+    // Deferred magnetic operation from context menu (track_idx, action)
+    #[derive(Clone)]
+    enum TrackAction {
+        PromoteToStoryline(usize),
+        BreakApartStoryline(usize),
+        SetAsPrimary(usize),
+    }
+    let mut deferred_action: Option<TrackAction> = None;
 
     for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
         let track_h = match track.kind {
@@ -186,6 +197,36 @@ pub fn show(
             toggle_lock = Some(track_idx);
         }
 
+        // Right-click context menu on track header area
+        let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
+        let track_role = track.magnetic_role.clone();
+        header_resp.context_menu(|ui| {
+            ui.set_min_width(180.0);
+            match track_role {
+                klipp_timeline::TrackRole::Connected => {
+                    if ui.button("Create Storyline (Shift+S)").clicked() {
+                        deferred_action = Some(TrackAction::PromoteToStoryline(track_idx));
+                        ui.close_menu();
+                    }
+                }
+                klipp_timeline::TrackRole::ConnectedStoryline => {
+                    if ui.button("Break Apart Storyline").clicked() {
+                        deferred_action = Some(TrackAction::BreakApartStoryline(track_idx));
+                        ui.close_menu();
+                    }
+                }
+                klipp_timeline::TrackRole::Free => {
+                    if ui.button("Set as Primary").clicked() {
+                        deferred_action = Some(TrackAction::SetAsPrimary(track_idx));
+                        ui.close_menu();
+                    }
+                }
+                klipp_timeline::TrackRole::Primary => {
+                    // No storyline options for primary track
+                }
+            }
+        });
+
         y += track_h;
     }
 
@@ -198,4 +239,60 @@ pub fn show(
         let locked = state.sequence().tracks[idx].locked;
         state.sequence_mut().tracks[idx].locked = !locked;
     }
+
+    // Apply deferred magnetic track actions
+    if let Some(action) = deferred_action {
+        match action {
+            TrackAction::PromoteToStoryline(ti) => {
+                // Find nearest primary clip as anchor (same logic as Shift+S in app.rs)
+                let primary_idx = state.sequence().primary_track_index();
+                if let Some(pi) = primary_idx {
+                    let first_clip_in = state.sequence().tracks[ti].clips.first()
+                        .map(|c| c.timeline_in);
+                    if let Some(clip_in) = first_clip_in {
+                        let anchor_id = state.sequence().tracks[pi].clips.iter()
+                            .min_by_key(|c| {
+                                let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
+                                let diff = mid - clip_in;
+                                diff.value.unsigned_abs()
+                            })
+                            .map(|c| c.id);
+                        if let Some(anchor_id) = anchor_id {
+                            let result = klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(
+                                state.sequence_mut(), ti, anchor_id);
+                            state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: state.active_sequence_idx,
+                                command: crate::history::EditCommand::Magnetic(result.command),
+                            });
+                            state.dirty = true;
+                            cmds.push(AppCommand::SequenceUpdated);
+                        }
+                    }
+                }
+            }
+            TrackAction::BreakApartStoryline(ti) => {
+                let result = klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(
+                    state.sequence_mut(), ti);
+                state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: state.active_sequence_idx,
+                    command: crate::history::EditCommand::Magnetic(result.command),
+                });
+                state.dirty = true;
+                cmds.push(AppCommand::SequenceUpdated);
+            }
+            TrackAction::SetAsPrimary(ti) => {
+                // Clear old primary, set new one
+                for track in &mut state.sequence_mut().tracks {
+                    if track.magnetic_role == klipp_timeline::TrackRole::Primary {
+                        track.magnetic_role = klipp_timeline::TrackRole::Free;
+                    }
+                }
+                state.sequence_mut().tracks[ti].magnetic_role = klipp_timeline::TrackRole::Primary;
+                state.dirty = true;
+                cmds.push(AppCommand::SequenceUpdated);
+            }
+        }
+    }
+
+    cmds
 }

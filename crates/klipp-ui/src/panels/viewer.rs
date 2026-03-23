@@ -851,6 +851,9 @@ impl ViewerPanel {
                         egui::FontId::proportional(11.0),
                         egui::Color32::from_rgba_premultiplied(200, 200, 210, 180),
                     );
+
+                    // Graphical IN/OUT markers
+                    Self::draw_source_in_out_markers(ui, &image_rect, media);
                 }
                 return;
             }
@@ -933,6 +936,9 @@ impl ViewerPanel {
                 egui::Color32::from_rgb(200, 160, 80),
             );
 
+            // Graphical IN/OUT markers on the viewer rect
+            Self::draw_source_in_out_markers(ui, &viewer_rect, media);
+
             // Edit buttons
             let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
             let edit_buttons: &[(&str, AppCommand, bool)] = &[
@@ -986,6 +992,87 @@ impl ViewerPanel {
                 "Click a media item to load it here",
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_rgb(80, 80, 90),
+            );
+        }
+    }
+
+    /// Draw graphical IN/OUT markers on the source viewer.
+    fn draw_source_in_out_markers(
+        ui: &mut egui::Ui,
+        image_rect: &egui::Rect,
+        media: &klipp_media::MediaItem,
+    ) {
+        let amber = egui::Color32::from_rgb(232, 160, 32);
+        let bar_h = 4.0_f32;
+        let marker_w = 3.0_f32;
+        let label_font = egui::FontId::monospace(8.0);
+
+        let has_in = media.default_source_in.is_some();
+        let has_out = media.default_source_out.is_some();
+
+        // IN marker — amber vertical bar on left edge
+        if has_in {
+            let in_rect = egui::Rect::from_min_size(
+                egui::pos2(image_rect.left(), image_rect.top()),
+                egui::vec2(marker_w, image_rect.height()),
+            );
+            ui.painter().rect_filled(in_rect, 0.0, amber);
+            // Small downward triangle at bottom
+            let tri_size = 5.0;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(image_rect.left() + marker_w / 2.0, image_rect.bottom() - bar_h - tri_size),
+                    egui::pos2(image_rect.left() - tri_size + marker_w / 2.0, image_rect.bottom() - bar_h - tri_size * 2.0),
+                    egui::pos2(image_rect.left() + tri_size + marker_w / 2.0, image_rect.bottom() - bar_h - tri_size * 2.0),
+                ],
+                amber, egui::Stroke::NONE,
+            ));
+            // "IN" label
+            ui.painter().text(
+                egui::pos2(image_rect.left() + marker_w + 4.0, image_rect.bottom() - bar_h - 10.0),
+                egui::Align2::LEFT_CENTER,
+                "IN",
+                label_font.clone(),
+                amber,
+            );
+        }
+
+        // OUT marker — amber vertical bar on right edge
+        if has_out {
+            let out_rect = egui::Rect::from_min_size(
+                egui::pos2(image_rect.right() - marker_w, image_rect.top()),
+                egui::vec2(marker_w, image_rect.height()),
+            );
+            ui.painter().rect_filled(out_rect, 0.0, amber);
+            // Small downward triangle at bottom
+            let tri_size = 5.0;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(image_rect.right() - marker_w / 2.0, image_rect.bottom() - bar_h - tri_size),
+                    egui::pos2(image_rect.right() - tri_size - marker_w / 2.0, image_rect.bottom() - bar_h - tri_size * 2.0),
+                    egui::pos2(image_rect.right() + tri_size - marker_w / 2.0, image_rect.bottom() - bar_h - tri_size * 2.0),
+                ],
+                amber, egui::Stroke::NONE,
+            ));
+            // "OUT" label
+            ui.painter().text(
+                egui::pos2(image_rect.right() - marker_w - 4.0, image_rect.bottom() - bar_h - 10.0),
+                egui::Align2::RIGHT_CENTER,
+                "OUT",
+                label_font,
+                amber,
+            );
+        }
+
+        // Progress bar between IN and OUT at bottom of viewer
+        if has_in && has_out {
+            let fill_rect = egui::Rect::from_min_size(
+                egui::pos2(image_rect.left(), image_rect.bottom() - bar_h),
+                egui::vec2(image_rect.width(), bar_h),
+            );
+            ui.painter().rect_filled(
+                fill_rect, 0.0,
+                egui::Color32::from_rgba_unmultiplied(232, 160, 32, 60),
             );
         }
     }

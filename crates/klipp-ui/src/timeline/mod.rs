@@ -82,7 +82,8 @@ impl NewTimelinePanel {
                 header_rect.y_range(),
                 egui::Stroke::new(1.0, theme.border),
             );
-            track_headers::show(ui, state, theme, header_rect);
+            let header_cmds = track_headers::show(ui, state, theme, header_rect);
+            cmds.extend(header_cmds);
         });
 
         // ── New adaptive ruler (22px at top of content area) ──

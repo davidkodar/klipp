@@ -117,6 +117,11 @@ pub struct PlaybackEngine {
     pre_seek_result: Arc<std::sync::Mutex<Option<LoopPreSeekResult>>>,
     pre_seek_generation: u64,
     pre_seek_started: bool,
+    // Clip look-ahead: pre-decoder for the next clip, opened ~1s before the cut point.
+    // When the cut arrives, this decoder is swapped in as v1_decoder — zero stall.
+    preroll_decoder: Option<VideoDecoder>,
+    preroll_clip_index: Option<usize>,
+    preroll_source_in: f64,
 }
 
 impl PlaybackEngine {
@@ -216,6 +221,9 @@ impl PlaybackEngine {
             pre_seek_result: Arc::new(std::sync::Mutex::new(None)),
             pre_seek_generation: 0,
             pre_seek_started: false,
+            preroll_decoder: None,
+            preroll_clip_index: None,
+            preroll_source_in: 0.0,
         })
     }
 
@@ -1117,21 +1125,18 @@ impl PlaybackEngine {
                     return;
                 }
 
-                // Log actual stalls (delta > 0.5s means decode can't keep up)
-                if q_len > 0 && self.last_playback_log.elapsed().as_millis() > 2000 {
-                    if let Some(dec) = &self.v1_decoder {
-                        let queue = dec.frame_queue().lock().unwrap();
-                        if let Some(front) = queue.front() {
-                            let delta = front.pts_secs() - current_source_secs;
-                            if delta > 0.5 {
-                                debug!(
-                                    "STALL: clock={:.3}s front_pts={:.3}s delta={:.3}s q_len={}",
-                                    current_source_secs, front.pts_secs(), delta, q_len
-                                );
-                                self.last_playback_log = std::time::Instant::now();
-                            }
-                        }
-                    }
+                // Log every no-frame tick to diagnose cut-point stalls
+                if let Some(dec) = &self.v1_decoder {
+                    let queue = dec.frame_queue().lock().unwrap();
+                    let front_pts = queue.front().map(|f| f.pts_secs());
+                    let front_eof = queue.front().map(|f| f.is_eof).unwrap_or(false);
+                    drop(queue);
+                    info!(
+                        "CUT-DIAG no-frame: clock={:.4}s q_len={} front_pts={} front_eof={} clip_idx={} clip_src_start={:.4}s",
+                        current_source_secs, q_len,
+                        front_pts.map(|p| format!("{:.4}", p)).unwrap_or_else(|| "empty".into()),
+                        front_eof, self.current_clip_index, self.clip_source_start,
+                    );
                 }
                 return;
             }
@@ -1151,6 +1156,13 @@ impl PlaybackEngine {
             .find_map(|track| track.clips.get(self.current_clip_index).cloned());
         drop(seq);
 
+        if found_clip.is_none() {
+            info!(
+                "CUT-DIAG STALE INDEX: clip_idx={} not found, pts={:.4}s clock={:.4}s — skipping frame",
+                self.current_clip_index, frame.pts_secs(), current_source_secs,
+            );
+            return;
+        }
         if let Some(clip) = found_clip {
             let source_elapsed_secs = frame.pts_secs() - clip.source_in.to_secs_f64();
             let elapsed_tc = RationalTime::from_secs_f64(
@@ -1195,10 +1207,17 @@ impl PlaybackEngine {
                 }
             }
 
+            // Look-ahead: pre-decode next clip when within 1.5s of source_out
+            let dist_to_out = clip.source_out.to_secs_f64() - frame.pts_secs();
+            if dist_to_out < 1.5 && dist_to_out > 0.0 && self.preroll_decoder.is_none() {
+                self.start_preroll_for_next_clip();
+            }
+
             // Check if we've passed source_out
             if frame.pts_secs() >= clip.source_out.to_secs_f64() - 0.01 {
-                info!("Clip source_out reached: pts={:.3} source_out={:.3} timeline_out={:.3}",
-                    frame.pts_secs(), clip.source_out.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                info!("CUT-DIAG BOUNDARY HIT: pts={:.4}s source_out={:.4}s timeline_out={:.4}s clock={:.4}s",
+                    frame.pts_secs(), clip.source_out.to_secs_f64(),
+                    clip.timeline_out.to_secs_f64(), current_source_secs);
                 self.playhead = clip.timeline_out;
                 self.advance_to_next_clip();
                 return;
@@ -1314,27 +1333,137 @@ impl PlaybackEngine {
 
     fn advance_to_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap();
+
+        // Find the track that contains the current clip, then look for the next clip
+        // on the SAME track. This ensures contiguous detection compares adjacent clips
+        // on one track, not clips at the same index across different tracks.
         let next_idx = self.current_clip_index + 1;
-        // Find next non-gap clip (skip gap placeholders)
-        let next_clip_info = seq.tracks.iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|track| {
-                for idx in next_idx..track.clips.len() {
-                    let clip = &track.clips[idx];
-                    if let Some(media_id) = clip.media_id() {
-                        return Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in));
+        let (current_clip_info, next_clip_info) = {
+            let mut cur_info = None;
+            let mut next_info = None;
+            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+                if let Some(c) = track.clips.get(self.current_clip_index) {
+                    if let Some(mid) = c.media_id() {
+                        cur_info = Some((mid, c.source_out.to_secs_f64()));
+                        // Search for next non-gap clip on THIS SAME track
+                        for idx in next_idx..track.clips.len() {
+                            let clip = &track.clips[idx];
+                            if let Some(media_id) = clip.media_id() {
+                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in));
+                                break;
+                            }
+                        }
+                        break; // Found the track with current clip — stop searching
                     }
-                    // Gap clip — skip it, continue to next
                 }
-                None
-            });
+            }
+            (cur_info, next_info)
+        };
         drop(seq);
 
         if let Some((actual_idx, media_id, source_in_secs, timeline_in)) = next_clip_info {
+            // Contiguous clip optimization: if the next clip uses the same media file
+            // and its source_in matches the current clip's source_out (e.g. after a blade cut),
+            // keep the decoder running — no seek, no flush, no stall.
+            let is_contiguous = current_clip_info.as_ref().is_some_and(|(cur_media_id, cur_source_out)| {
+                *cur_media_id == media_id && (*cur_source_out - source_in_secs).abs() < 0.02
+            });
+            info!(
+                "CUT-DIAG advance: cur_clip={:?} next_idx={} next_media={:?} next_src_in={:.4}s is_contiguous={} has_decoder={}",
+                current_clip_info.as_ref().map(|(mid, so)| format!("media={:?} src_out={:.4}", mid, so)),
+                actual_idx, media_id, source_in_secs, is_contiguous, self.v1_decoder.is_some(),
+            );
+
+            if is_contiguous && self.v1_decoder.is_some() {
+                info!(
+                    "CUT-DIAG CONTIGUOUS: old_idx={} new_idx={} source_in={:.4}s clock={:.4}s",
+                    self.current_clip_index, actual_idx, source_in_secs,
+                    self.master_clock.current_secs(),
+                );
+                self.current_clip_index = actual_idx;
+                self.playhead = timeline_in;
+                self.clip_source_start = source_in_secs;
+                self.clip_timeline_start = timeline_in;
+                self.last_frame_time = std::time::Instant::now();
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                // Audio continues uninterrupted — same file, same stream position
+                // V2 may need updating
+                self.maybe_open_v2_decoder(self.playhead);
+                return;
+            }
+
             self.current_clip_index = actual_idx;
             self.playhead = timeline_in;
 
+            // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
+            if self.preroll_clip_index == Some(actual_idx) {
+                if let Some(preroll_dec) = self.preroll_decoder.take() {
+                    info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
+                    // Stop old V1 decoder
+                    if let Some(dec) = &mut self.v1_decoder {
+                        dec.stop_detached();
+                    }
+                    self.v1_decoder = Some(preroll_dec);
+                    self.preroll_clip_index = None;
+
+                    // Update file path
+                    if let Some(path) = self.path_for_media(media_id) {
+                        self.current_file = Some(path);
+                    }
+
+                    // Seek audio to the new position
+                    self.seek_all_audio_to_timecode(self.playhead);
+
+                    let start_us = (source_in_secs * 1_000_000.0) as u64;
+                    self.master_clock.seek(start_us);
+                    self.master_clock.resume();
+
+                    self.clip_source_start = source_in_secs;
+                    self.clip_timeline_start = timeline_in;
+                    self.last_frame_time = std::time::Instant::now();
+                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.maybe_open_v2_decoder(self.playhead);
+                    return;
+                }
+            }
+            // Clear stale preroll if it didn't match
+            if let Some(mut old) = self.preroll_decoder.take() {
+                old.stop_detached();
+            }
+            self.preroll_clip_index = None;
+
             if let Some(path) = self.path_for_media(media_id) {
+                // Same-file optimization: if next clip is from the same file,
+                // reuse the decoder (just seek) instead of tearing down and reopening.
+                let same_file = self.current_file.as_ref() == Some(&path);
+
+                if same_file && self.v1_decoder.is_some() {
+                    info!("CUT-DIAG SAME-FILE seek: idx={} source_in={:.4}s (reusing decoder)", actual_idx, source_in_secs);
+                    // Seek existing decoder — much faster than close+reopen
+                    if let Some(dec) = &self.v1_decoder {
+                        dec.seek(source_in_secs);
+                        dec.frame_queue().lock().unwrap().clear();
+                    }
+
+                    // Pause clock while waiting for the decoder to produce a post-seek frame.
+                    self.master_clock.pause();
+                    self.wait_for_valid_frame(source_in_secs);
+
+                    // Seek audio to the new clip position
+                    self.seek_all_audio_to_timecode(self.playhead);
+
+                    let start_us = (source_in_secs * 1_000_000.0) as u64;
+                    self.master_clock.seek(start_us);
+                    self.master_clock.resume();
+
+                    self.clip_source_start = source_in_secs;
+                    self.clip_timeline_start = timeline_in;
+                    self.last_frame_time = std::time::Instant::now();
+                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.maybe_open_v2_decoder(self.playhead);
+                    return;
+                }
+
                 info!("Advancing to clip {next_idx} ({:?})", path);
 
                 // Stop old decoders (detached)
@@ -1400,6 +1529,57 @@ impl PlaybackEngine {
             }
         } else {
             self.stop_at_end();
+        }
+    }
+
+    /// Start pre-decoding the next clip so frames are ready when the cut arrives.
+    fn start_preroll_for_next_clip(&mut self) {
+        let seq = self.sequence.read().unwrap();
+        let next_idx = self.current_clip_index + 1;
+
+        // Find next non-gap clip on the SAME track as the current clip
+        let next_info = {
+            let mut result = None;
+            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+                if track.clips.get(self.current_clip_index).and_then(|c| c.media_id()).is_some() {
+                    for idx in next_idx..track.clips.len() {
+                        if let Some(media_id) = track.clips[idx].media_id() {
+                            result = Some((idx, media_id, track.clips[idx].source_in.to_secs_f64()));
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            result
+        };
+        drop(seq);
+
+        if let Some((idx, media_id, source_in_secs)) = next_info {
+            if self.preroll_clip_index == Some(idx) {
+                return; // Already pre-rolling this clip
+            }
+            if let Some(path) = self.path_for_media(media_id) {
+                match VideoDecoder::open(&path) {
+                    Ok(dec) => {
+                        if source_in_secs > 0.01 {
+                            dec.seek(source_in_secs);
+                        }
+                        dec.resume();
+                        info!("CUT-DIAG PREROLL started: idx={} source_in={:.4}s", idx, source_in_secs);
+                        // Close any previous preroll
+                        if let Some(mut old) = self.preroll_decoder.take() {
+                            old.stop_detached();
+                        }
+                        self.preroll_decoder = Some(dec);
+                        self.preroll_clip_index = Some(idx);
+                        self.preroll_source_in = source_in_secs;
+                    }
+                    Err(e) => {
+                        warn!("Failed to open preroll decoder: {e}");
+                    }
+                }
+            }
         }
     }
 
