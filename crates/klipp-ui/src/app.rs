@@ -1492,7 +1492,7 @@ impl KlippApp {
                 }
                 AppCommand::ToggleBeforeAfter => {
                     self.state.before_after_active = !self.state.before_after_active;
-                    continue;
+                    // Fall through to forward to engine (sets bypass_color_grade)
                 }
 
                 // Global LUT — update UI state and forward to engine
