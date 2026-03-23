@@ -5,6 +5,7 @@ pub mod playhead;
 pub mod skimmer;
 pub mod sequence_tabs;
 pub mod time_utils;
+pub mod range_visuals;
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -95,31 +96,200 @@ impl NewTimelinePanel {
         let scroll_x = state.timeline_scroll_x;
         let duration_secs = state.sequence_duration().to_secs_f64();
 
-        let ruler_painter = ui.painter().with_clip_rect(ruler_rect);
-        ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
-
-        // Ruler click/drag → seek playhead
-        let ruler_resp = ui.interact(ruler_rect, ui.id().with("new_ruler_seek"), egui::Sense::click_and_drag());
-        if ruler_resp.clicked() || ruler_resp.dragged() {
-            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let x_in_content = pos.x - ruler_rect.left() + scroll_x;
-                let secs = (x_in_content / pps) as f64;
-                let tc = klipp_core::RationalTime::from_secs_f64(secs, state.fps.rate());
-                let dur = state.sequence_duration();
-                let clamped = if dur.value > 0 {
-                    klipp_core::RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
-                } else {
-                    klipp_core::RationalTime { value: tc.value.max(0), rate: tc.rate }
-                };
-                cmds.push(AppCommand::SeekTo(clamped));
-            }
-        }
-
-        // ── Track lanes + clips (delegate to old timeline below the ruler) ──
+        // Compute tracks_rect early — needed by both range visuals and clip delegation
         let tracks_rect = egui::Rect::from_min_max(
             egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h),
             timeline_content_rect.max,
         );
+
+        let ruler_painter = ui.painter().with_clip_rect(ruler_rect);
+        ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
+
+        // Draw range selection visuals (ruler fill + handles + lollipops + labels)
+        let loop_pulsing = state.loop_playback_enabled
+            && state.playback == klipp_engine::PlaybackState::Playing;
+        range_visuals::draw_range(
+            &ruler_painter,
+            ui.painter(),
+            ruler_rect,
+            tracks_rect.bottom(),
+            state,
+            theme,
+            pps,
+            scroll_x,
+            loop_pulsing,
+        );
+        // Request repaint during loop pulse animation for smooth sine wave
+        if loop_pulsing {
+            ui.ctx().request_repaint();
+        }
+
+        // ── Ruler interaction: seek, range drag, handle drag ──
+        let ruler_resp = ui.interact(ruler_rect, ui.id().with("new_ruler_seek"), egui::Sense::click_and_drag());
+
+        // Clear snap line each frame
+        state.range_snap_line_x = None;
+
+        // Compute handle x positions for hit testing
+        let handle_in_x = state.sequence().in_point
+            .map(|t| ruler_rect.left() + time_utils::time_to_x(t.to_secs_f64(), pps, scroll_x));
+        let handle_out_x = state.sequence().out_point
+            .map(|t| ruler_rect.left() + time_utils::time_to_x(t.to_secs_f64(), pps, scroll_x));
+
+        // Helper: convert mouse x on ruler to clamped RationalTime
+        let mouse_to_time = |mouse_x: f32| -> klipp_core::RationalTime {
+            let secs = time_utils::x_to_time(mouse_x - ruler_rect.left(), pps, scroll_x);
+            let clamped = secs.max(0.0).min(duration_secs);
+            klipp_core::RationalTime::from_secs_f64(clamped, state.fps.rate())
+        };
+
+        // Hover cursor: ResizeHorizontal near handles
+        let mut handle_hovered = false;
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+            if ruler_rect.contains(pos)
+                && state.range_drag.is_none()
+                && range_visuals::hit_test_handle(pos.x, handle_in_x, handle_out_x).is_some()
+            {
+                handle_hovered = true;
+            }
+        }
+        if handle_hovered || state.range_drag.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+
+        // On drag_started: determine if handle drag or ruler range drag
+        if ruler_resp.drag_started() {
+            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                if let Some(kind) = range_visuals::hit_test_handle(pos.x, handle_in_x, handle_out_x) {
+                    // Start handle drag
+                    state.range_drag = Some(crate::state::RangeDragState {
+                        kind,
+                        original_in: state.sequence().in_point,
+                        original_out: state.sequence().out_point,
+                    });
+                } else {
+                    // Record press origin for 4px threshold
+                    state.ruler_press_origin = Some(pos);
+                }
+            }
+        }
+
+        // On dragged: handle drag logic or threshold-based ruler range drag
+        if ruler_resp.dragged() {
+            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let snap_threshold = 10.0 / pps as f64;
+                let snap_targets = range_visuals::collect_snap_targets(state);
+
+                if let Some(ref drag) = state.range_drag {
+                    // Active drag — update in/out points
+                    let raw_tc = mouse_to_time(pos.x);
+                    let raw_secs = raw_tc.to_secs_f64();
+
+                    // Apply snap
+                    let (snapped_tc, snapped_secs) = if state.snap_enabled {
+                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold)
+                            .unwrap_or((raw_tc, raw_secs))
+                    } else {
+                        (raw_tc, raw_secs)
+                    };
+
+                    // Show snap line if snapped
+                    if state.snap_enabled && (snapped_secs - raw_secs).abs() > 0.0001 {
+                        let snap_x = ruler_rect.left() + time_utils::time_to_x(snapped_secs, pps, scroll_x);
+                        state.range_snap_line_x = Some(snap_x);
+                    }
+
+                    match drag.kind {
+                        crate::state::RangeDragKind::InHandle => {
+                            // Clamp: in can't pass out
+                            let ok = state.sequence().out_point
+                                .map(|out| snapped_tc < out)
+                                .unwrap_or(true);
+                            if ok {
+                                cmds.push(AppCommand::SetSequenceInPoint(snapped_tc));
+                            }
+                        }
+                        crate::state::RangeDragKind::OutHandle => {
+                            // Clamp: out can't pass in
+                            let ok = state.sequence().in_point
+                                .map(|inp| snapped_tc > inp)
+                                .unwrap_or(true);
+                            if ok {
+                                cmds.push(AppCommand::SetSequenceOutPoint(snapped_tc));
+                            }
+                        }
+                        crate::state::RangeDragKind::RulerCreate { anchor_secs } => {
+                            let anchor_tc = klipp_core::RationalTime::from_secs_f64(anchor_secs, state.fps.rate());
+                            if snapped_secs < anchor_secs {
+                                cmds.push(AppCommand::SetSequenceInPoint(snapped_tc));
+                                cmds.push(AppCommand::SetSequenceOutPoint(anchor_tc));
+                            } else {
+                                cmds.push(AppCommand::SetSequenceInPoint(anchor_tc));
+                                cmds.push(AppCommand::SetSequenceOutPoint(snapped_tc));
+                            }
+                        }
+                    }
+                } else if let Some(origin) = state.ruler_press_origin {
+                    // Check 4px drag threshold
+                    let dist = (pos.x - origin.x).abs();
+                    if dist > 4.0 {
+                        // Start ruler range drag
+                        let anchor_secs = time_utils::x_to_time(origin.x - ruler_rect.left(), pps, scroll_x)
+                            .max(0.0).min(duration_secs);
+                        state.range_drag = Some(crate::state::RangeDragState {
+                            kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
+                            original_in: state.sequence().in_point,
+                            original_out: state.sequence().out_point,
+                        });
+                        state.ruler_press_origin = None;
+                    }
+                }
+            }
+        }
+
+        // On drag_stopped: push undo entry if values changed
+        if ruler_resp.drag_stopped() {
+            if let Some(drag) = state.range_drag.take() {
+                let new_in = state.sequence().in_point;
+                let new_out = state.sequence().out_point;
+                if drag.original_in != new_in || drag.original_out != new_out {
+                    state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in: drag.original_in,
+                            old_out: drag.original_out,
+                            new_in,
+                            new_out,
+                        },
+                    });
+                }
+            }
+            state.ruler_press_origin = None;
+        }
+
+        // Click (no drag): seek playhead
+        if ruler_resp.clicked() && state.range_drag.is_none() {
+            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let tc = mouse_to_time(pos.x);
+                cmds.push(AppCommand::SeekTo(tc));
+            }
+        }
+
+        // Double-click: clear range
+        if ruler_resp.double_clicked() {
+            cmds.push(AppCommand::ClearSequenceInPoint);
+            cmds.push(AppCommand::ClearSequenceOutPoint);
+        }
+
+        // Draw snap line during range drag
+        if let Some(snap_x) = state.range_snap_line_x {
+            let parent_painter = ui.painter();
+            let snap_secs = time_utils::x_to_time(snap_x - ruler_rect.left(), pps, scroll_x);
+            range_visuals::draw_snap_line(
+                parent_painter, snap_x, ruler_rect.top(), tracks_rect.bottom(),
+                snap_secs, state.fps.rate(), theme,
+            );
+        }
         // CRITICAL: clip everything to prevent bleed into inspector
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tracks_rect), |ui| {
             ui.set_clip_rect(tracks_rect.intersect(ui.clip_rect()));

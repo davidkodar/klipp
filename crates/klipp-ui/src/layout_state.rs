@@ -84,5 +84,6 @@ pub enum EditTool {
     Select,
     Trim,
     Blade,
+    Range,
     Zoom,
 }

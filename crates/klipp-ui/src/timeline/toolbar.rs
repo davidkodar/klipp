@@ -10,18 +10,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
 
         // ── Edit tools (26px, painted icons) ──
         #[allow(clippy::type_complexity)]
-        let tool_defs: &[(&str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
-            ("Select Tool", "V", draw_tl_select_icon),
-            ("Blade Tool", "B", draw_tl_blade_icon),
-            ("Trim Tool", "T", draw_tl_trim_icon),
+        let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
+            (klipp_core::Tool::Select, "Select Tool", "V", draw_tl_select_icon),
+            (klipp_core::Tool::Blade, "Blade Tool", "B", draw_tl_blade_icon),
+            (klipp_core::Tool::Select, "Trim Tool", "T", draw_tl_trim_icon),
+            (klipp_core::Tool::Range, "Range Tool", "R", draw_tl_range_icon),
         ];
-        for (tip, key, draw_fn) in tool_defs {
+        for (tool, tip, key, draw_fn) in tool_defs {
+            let active = state.active_tool == *tool;
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(26.0, 26.0),
                 egui::Sense::click(),
             );
-            let bg = if resp.hovered() { theme.bg_hover } else { egui::Color32::TRANSPARENT };
-            let fg = if resp.hovered() { theme.text_secondary } else { theme.text_dim };
+            let (bg, fg) = if active {
+                (theme.accent_subtle, theme.accent)
+            } else if resp.hovered() {
+                (theme.bg_hover, theme.text_secondary)
+            } else {
+                (egui::Color32::TRANSPARENT, theme.text_dim)
+            };
             ui.painter().rect_filled(rect, 5.0, bg);
             draw_fn(ui.painter(), rect, fg);
             styled_tooltip(&resp, theme, tip, Some(key));
@@ -154,6 +161,26 @@ fn draw_tl_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32)
     painter.line_segment([egui::pos2(ir.max.x - 2.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 2.0, ir.max.y - 1.0)], s);
     painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.center().y), egui::pos2(ir.min.x + 5.0, ir.center().y)], s);
     painter.line_segment([egui::pos2(ir.max.x - 5.0, ir.center().y), egui::pos2(ir.max.x - 2.0, ir.center().y)], s);
+}
+
+fn draw_tl_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let ir = icon_area(btn);
+    let s = egui::Stroke::new(1.3, c);
+    // Left bracket bar
+    painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 2.0, ir.max.y - 1.0)], s);
+    // Right bracket bar
+    painter.line_segment([egui::pos2(ir.max.x - 2.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 2.0, ir.max.y - 1.0)], s);
+    // Horizontal connecting line
+    painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.center().y), egui::pos2(ir.max.x - 3.0, ir.center().y)], s);
+    // Subtle fill
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(ir.min.x + 2.0, ir.min.y + 3.0),
+            egui::pos2(ir.max.x - 2.0, ir.max.y - 3.0),
+        ),
+        0.0,
+        egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 30),
+    );
 }
 
 fn draw_tl_snap_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {

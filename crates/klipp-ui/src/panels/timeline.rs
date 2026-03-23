@@ -253,7 +253,6 @@ impl TimelinePanel {
         if !self.embedded {
             painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
             self.draw_ruler_ticks(&painter, &ruler_rect, state);
-            self.draw_in_out_markers(&painter, &ruler_rect, &content_rect, state);
         }
 
         // Sequence markers + ruler click — skip when embedded
@@ -854,6 +853,25 @@ impl TimelinePanel {
 
                 // Request repaint during drag for smooth following
                 ui.ctx().request_repaint();
+            }
+        }
+
+        // Range guide lines — 1px amber vertical lines at in/out points through track area
+        {
+            let theme = crate::theme::KlippTheme::default();
+            let zoom = state.timeline_zoom;
+            let scroll = state.timeline_scroll_x;
+            if let Some(in_pt) = state.sequence().in_point {
+                let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
+                if x >= content_rect.left() && x <= content_rect.right() {
+                    crate::timeline::range_visuals::draw_guide_line(&painter, x, tracks_start_y, content_rect.bottom(), &theme);
+                }
+            }
+            if let Some(out_pt) = state.sequence().out_point {
+                let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
+                if x >= content_rect.left() && x <= content_rect.right() {
+                    crate::timeline::range_visuals::draw_guide_line(&painter, x, tracks_start_y, content_rect.bottom(), &theme);
+                }
             }
         }
 
@@ -1561,6 +1579,27 @@ impl TimelinePanel {
                 }
             }
 
+            // Range selection overlay — amber tint on clips within in/out range
+            if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point) {
+                let range_in_secs = in_pt.to_secs_f64();
+                let range_out_secs = out_pt.to_secs_f64();
+                let clip_in_secs = clip.timeline_in.to_secs_f64();
+                let clip_out_secs = clip.timeline_out.to_secs_f64();
+                if clip_out_secs > range_in_secs && clip_in_secs < range_out_secs {
+                    let range_in_x = content_rect.left() + range_in_secs as f32 * zoom - scroll;
+                    let range_out_x = content_rect.left() + range_out_secs as f32 * zoom - scroll;
+                    let overlay_left = clip_rect.left().max(range_in_x);
+                    let overlay_right = clip_rect.right().min(range_out_x);
+                    if overlay_right > overlay_left {
+                        let overlay_rect = egui::Rect::from_min_max(
+                            egui::pos2(overlay_left, clip_rect.top()),
+                            egui::pos2(overlay_right, clip_rect.bottom()),
+                        );
+                        crate::timeline::range_visuals::draw_clip_overlay(painter, overlay_rect, &crate::theme::KlippTheme::default());
+                    }
+                }
+            }
+
             if !interactive {
                 continue;
             }
@@ -2260,6 +2299,11 @@ impl TimelinePanel {
                             clip_id: hit_clip.id,
                             cut_at: cut_tc,
                         });
+                    } else if state.active_tool == Tool::Range {
+                        // Range tool: click on clip = set range to clip boundaries
+                        cmds.push(AppCommand::SetSequenceInPoint(hit_clip.timeline_in));
+                        cmds.push(AppCommand::SetSequenceOutPoint(hit_clip.timeline_out));
+                        state.toast.show("Range: clip selected");
                     } else {
                         let modifiers = ui.input(|i| i.modifiers);
                         if modifiers.shift || modifiers.ctrl || modifiers.command {
@@ -2324,6 +2368,16 @@ impl TimelinePanel {
                         subsequent_clips: subsequent,
                     });
                 }
+                // Range tool: drag anywhere in track area sets range
+                else if state.active_tool == Tool::Range {
+                    let x_in_content = pos.x - content_rect.left() + scroll;
+                    let anchor_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                    state.range_drag = Some(crate::state::RangeDragState {
+                        kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
+                        original_in: state.sequence().in_point,
+                        original_out: state.sequence().out_point,
+                    });
+                }
                 // Second: check if pointer is inside a clip body (drag/move)
                 else if let Some((_cr, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
@@ -2384,6 +2438,48 @@ impl TimelinePanel {
             }
             best.map(|(_, target)| (target, target.to_secs_f64()))
         };
+
+        // Handle Range tool drag in track area (update in/out as user drags)
+        if state.active_tool == Tool::Range {
+            if let Some(ref drag) = state.range_drag.clone() {
+                if let crate::state::RangeDragKind::RulerCreate { anchor_secs } = drag.kind {
+                    if let Some(pos) = pointer_pos {
+                        if pointer_down {
+                            let x_in_content = pos.x - content_rect.left() + scroll;
+                            let current_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                            let anchor_tc = RationalTime::from_secs_f64(anchor_secs, fps.rate());
+                            let current_tc = RationalTime::from_secs_f64(current_secs, fps.rate());
+                            if current_secs < anchor_secs {
+                                cmds.push(AppCommand::SetSequenceInPoint(current_tc));
+                                cmds.push(AppCommand::SetSequenceOutPoint(anchor_tc));
+                            } else {
+                                cmds.push(AppCommand::SetSequenceInPoint(anchor_tc));
+                                cmds.push(AppCommand::SetSequenceOutPoint(current_tc));
+                            }
+                        }
+                        if pointer_released {
+                            if let Some(drag) = state.range_drag.take() {
+                                let new_in = state.sequence().in_point;
+                                let new_out = state.sequence().out_point;
+                                if drag.original_in != new_in || drag.original_out != new_out {
+                                    state.history.push(crate::history::HistoryEntry {
+                                        sequence_idx: state.active_sequence_idx,
+                                        command: crate::history::EditCommand::SetRange {
+                                            old_in: drag.original_in,
+                                            old_out: drag.original_out,
+                                            new_in,
+                                            new_out,
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Show crosshair cursor when Range tool is active
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
 
         // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
         if let Some(ref trim) = self.trimming_clip {
@@ -3195,63 +3291,6 @@ impl TimelinePanel {
             cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
         }
         proxy_resp.on_hover_text("Use proxy files for playback (lower quality, faster decode)");
-    }
-
-    fn draw_in_out_markers(
-        &self,
-        painter: &egui::Painter,
-        ruler_rect: &egui::Rect,
-        content_rect: &egui::Rect,
-        state: &AppState,
-    ) {
-        let zoom = state.timeline_zoom;
-        let scroll = state.timeline_scroll_x;
-        let marker_color = egui::Color32::from_rgb(220, 160, 60);
-
-        if let Some(in_pt) = state.sequence().in_point {
-            let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
-            if x >= ruler_rect.left() && x <= ruler_rect.right() {
-                painter.text(
-                    egui::pos2(x, ruler_rect.bottom() - 2.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    "[",
-                    egui::FontId::monospace(14.0),
-                    marker_color,
-                );
-            }
-        }
-
-        if let Some(out_pt) = state.sequence().out_point {
-            let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
-            if x >= ruler_rect.left() && x <= ruler_rect.right() {
-                painter.text(
-                    egui::pos2(x, ruler_rect.bottom() - 2.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    "]",
-                    egui::FontId::monospace(14.0),
-                    marker_color,
-                );
-            }
-        }
-
-        // Highlight region between in and out
-        if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point) {
-            let x1 = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
-            let x2 = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
-            let x1 = x1.max(ruler_rect.left());
-            let x2 = x2.min(ruler_rect.right());
-            if x2 > x1 {
-                let highlight = egui::Rect::from_min_max(
-                    egui::pos2(x1, ruler_rect.top()),
-                    egui::pos2(x2, ruler_rect.bottom()),
-                );
-                painter.rect_filled(
-                    highlight,
-                    0.0,
-                    egui::Color32::from_rgba_premultiplied(220, 160, 60, 25),
-                );
-            }
-        }
     }
 
     fn draw_overview_bar(

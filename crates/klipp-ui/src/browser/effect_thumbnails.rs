@@ -679,7 +679,7 @@ fn apply_ofx_visual_proxy(frame: &ReferenceFrame, plugin_name: &str) -> Vec<u8> 
         for px in out.chunks_exact_mut(4) {
             // Show RGB channels with a slight color cast
             px[0] = (px[0] as f32 * 0.9) as u8;
-            px[1] = px[1];
+            // px[1] (green) kept unchanged intentionally
             px[2] = (px[2] as f32 * 0.9) as u8;
         }
         return out;

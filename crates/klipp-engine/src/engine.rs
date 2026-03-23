@@ -18,6 +18,21 @@ struct ActiveAudioSource {
     track_index: usize,
     source: AudioSource,
 }
+/// Pre-opened audio source ready for loop swap (created by pre-seek thread).
+struct PreSeekAudioSource {
+    track_index: usize,
+    source: AudioSource,
+    consumer: crate::audio_decoder::AudioConsumer,
+}
+
+/// Result from the pre-seek background thread.
+struct LoopPreSeekResult {
+    generation: u64,
+    sources: Vec<PreSeekAudioSource>,
+    #[allow(dead_code)]
+    target_secs: f64,
+}
+
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{AppCommand, AppEvent, Fps, MediaId, RationalTime, Resolution, Timecode};
 use klipp_media::MediaPool;
@@ -92,6 +107,12 @@ pub struct PlaybackEngine {
     use_proxies: bool,
     // Skim audio — shared with app layer for browser hover audio
     skim_consumer: crate::audio_output::SkimConsumer,
+    // Loop playback — cycle between in/out points or whole sequence
+    loop_enabled: bool,
+    // Predictive pre-seek — background thread pre-opens audio decoders before loop point
+    pre_seek_result: Arc<std::sync::Mutex<Option<LoopPreSeekResult>>>,
+    pre_seek_generation: u64,
+    pre_seek_started: bool,
 }
 
 impl PlaybackEngine {
@@ -185,6 +206,10 @@ impl PlaybackEngine {
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
             skim_consumer,
+            loop_enabled: false,
+            pre_seek_result: Arc::new(std::sync::Mutex::new(None)),
+            pre_seek_generation: 0,
+            pre_seek_started: false,
         })
     }
 
@@ -375,6 +400,8 @@ impl PlaybackEngine {
                     self.stop_all_audio();
                     self.playhead = Timecode::zero();
                     self.state = PlaybackState::Stopped;
+                    self.pre_seek_generation += 1;
+                    self.pre_seek_started = false;
                     let _ = self.event_tx.send(AppEvent::PlaybackStopped);
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     (self.repaint_cb)();
@@ -481,6 +508,15 @@ impl PlaybackEngine {
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
+            }
+
+            AppCommand::SetLoopPlayback(enabled) => {
+                debug!("SetLoopPlayback: {enabled}");
+                self.loop_enabled = enabled;
+                if !enabled {
+                    self.pre_seek_generation += 1;
+                    self.pre_seek_started = false;
+                }
             }
 
             // UI-side commands — engine ignores them
@@ -1107,6 +1143,42 @@ impl PlaybackEngine {
             );
             self.playhead = clip.timeline_in + elapsed_tc;
 
+            // Loop out-point detection: if loop enabled and playhead crossed out_point, loop back
+            if self.loop_enabled {
+                let seq = self.sequence.read().unwrap();
+                let out_pt = seq.out_point;
+                let in_pt = seq.in_point;
+                drop(seq);
+
+                if let Some(out) = out_pt {
+                    let out_secs = out.to_secs_f64();
+                    let playhead_secs = self.playhead.to_secs_f64();
+                    let in_secs = in_pt.map(|t| t.to_secs_f64()).unwrap_or(0.0);
+                    let range_duration = out_secs - in_secs;
+
+                    // Predictive pre-seek: start 200ms before out_point if range >= 1.0s
+                    if range_duration >= 1.0
+                        && !self.pre_seek_started
+                        && playhead_secs >= out_secs - 0.200
+                        && playhead_secs < out_secs
+                    {
+                        self.begin_pre_seek(in_secs);
+                    }
+
+                    // Poll pre-seek result (non-blocking) — consumed by execute_loop
+                    if let Ok(guard) = self.pre_seek_result.try_lock() {
+                        drop(guard);
+                    }
+
+                    if playhead_secs >= out_secs {
+                        // Target: in_point if set, else start
+                        let target = in_pt.unwrap_or_else(|| RationalTime { value: 0, rate: self.fps.rate() });
+                        self.execute_loop(target);
+                        return;
+                    }
+                }
+            }
+
             // Check if we've passed source_out
             if frame.pts_secs() >= clip.source_out.to_secs_f64() - 0.01 {
                 self.playhead = clip.timeline_out;
@@ -1406,6 +1478,16 @@ impl PlaybackEngine {
     }
 
     fn stop_at_end(&mut self) {
+        // Loop: if enabled, seek back to in_point (or start)
+        if self.loop_enabled {
+            let seq = self.sequence.read().unwrap();
+            let in_pt = seq.in_point;
+            drop(seq);
+            let target = in_pt.unwrap_or_else(|| RationalTime { value: 0, rate: self.fps.rate() });
+            self.execute_loop(target);
+            return;
+        }
+
         self.v1_decoder = None;
         self.v2_decoder = None;
         self.current_clip_v2 = None;
@@ -1420,6 +1502,400 @@ impl PlaybackEngine {
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
         (self.repaint_cb)();
+    }
+
+    /// Execute a loop-back seek to the given target timecode.
+    /// Modeled on seek_in_sequence_with_timeout() but always resumes playback.
+    /// Begin predictive pre-seek: spawn background thread to open audio decoders
+    /// at the loop target position, so they're ready when we reach the out_point.
+    fn begin_pre_seek(&mut self, target_secs: f64) {
+        self.pre_seek_started = true;
+        let generation = self.pre_seek_generation;
+        let result_arc = self.pre_seek_result.clone();
+        let sequence = self.sequence.clone();
+        let media_pool = self.media_pool.clone();
+        let sample_rate = self.cpal_sample_rate;
+        let use_proxies = self.use_proxies;
+
+        debug!("[Loop] Starting pre-seek to {target_secs:.3}s (gen={generation})");
+
+        std::thread::spawn(move || {
+            let tc = RationalTime::from_secs_f64(target_secs, 24); // rate doesn't matter for lookup
+            let seq = match sequence.read() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let pool = match media_pool.read() {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+
+            // Collect audio track info at target position
+            let track_audio: Vec<(usize, PathBuf, f64)> = seq
+                .tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(track_idx, track)| {
+                    let (_, clip) = track.clip_at_timecode(tc)?;
+                    let media_id = clip.media_id()?;
+                    let item = pool.get(&media_id)?;
+                    if !item.has_audio {
+                        return None;
+                    }
+                    // Skip audio for linked video-track clips
+                    if track.kind == klipp_timeline::TrackKind::Video {
+                        if let Some(lid) = clip.linked_clip_id {
+                            let partner_on_audio = seq.tracks.iter().any(|t| {
+                                t.kind == klipp_timeline::TrackKind::Audio
+                                    && t.clips.iter().any(|c| c.id == lid)
+                            });
+                            if partner_on_audio {
+                                return None;
+                            }
+                        }
+                    }
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (tc - clip.timeline_in).to_secs_f64();
+
+                    // Resolve path (proxy or original)
+                    let decode_path = if use_proxies && item.proxy_ready {
+                        item.proxy_path
+                            .as_ref()
+                            .filter(|p| p.exists())
+                            .cloned()
+                            .unwrap_or_else(|| item.path.clone())
+                    } else {
+                        item.path.clone()
+                    };
+
+                    // Try PCM cache first
+                    let path = item
+                        .audio_cache
+                        .as_ref()
+                        .map(|c| c.pcm_path.clone())
+                        .filter(|p| p.exists())
+                        .unwrap_or(decode_path);
+
+                    Some((track_idx, path, source_secs))
+                })
+                .collect();
+            drop(pool);
+            drop(seq);
+
+            // Open and seek audio sources
+            let mut sources = Vec::new();
+            for (track_idx, path, source_secs) in track_audio {
+                // Try PCM cache
+                if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate) {
+                    if source_secs > 0.01 {
+                        feeder.seek(source_secs);
+                    }
+                    sources.push(PreSeekAudioSource {
+                        track_index: track_idx,
+                        source: AudioSource::PcmFeeder(feeder),
+                        consumer,
+                    });
+                    continue;
+                }
+                // Fallback: ffmpeg decode
+                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate) {
+                    if source_secs > 0.01 {
+                        adec.seek(source_secs);
+                    }
+                    sources.push(PreSeekAudioSource {
+                        track_index: track_idx,
+                        source: AudioSource::Decoder(adec),
+                        consumer,
+                    });
+                }
+            }
+
+            // Wait for all sources to confirm seek (max 50ms)
+            let deadline = std::time::Instant::now() + Duration::from_millis(50);
+            loop {
+                let all_ready = sources.iter().all(|s| {
+                    s.source.seek_generation().load(Ordering::Acquire) >= 1
+                });
+                if all_ready || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+
+            // Resume sources so they start filling their ring buffers
+            for s in &sources {
+                s.source.resume();
+            }
+            // Let them decode for a bit (~50ms of audio)
+            std::thread::sleep(Duration::from_millis(50));
+            // Pause them — they've pre-filled their ring buffers
+            for s in &sources {
+                s.source.pause();
+            }
+
+            // Store result
+            if let Ok(mut guard) = result_arc.lock() {
+                *guard = Some(LoopPreSeekResult {
+                    generation,
+                    sources,
+                    target_secs,
+                });
+            }
+            debug!("[Loop] Pre-seek ready (gen={generation})");
+        });
+    }
+
+    fn execute_loop(&mut self, target: Timecode) {
+        debug!("[Loop] Executing loop-back to {:.3}s", target.to_secs_f64());
+        let was_playing = self.state == PlaybackState::Playing;
+
+        // Reset pre-seek state for next iteration
+        self.pre_seek_started = false;
+
+        // Try pre-seek fast path: use pre-opened audio sources if available
+        let pre_seek = self.pre_seek_result.try_lock().ok().and_then(|mut g| g.take());
+        if let Some(ps) = pre_seek {
+            if ps.generation == self.pre_seek_generation {
+                debug!("[Loop] Using pre-seeked audio sources (gen={})", ps.generation);
+
+                // 1. Pause clock + cpal
+                self.master_clock.pause();
+                if let Some(aout) = &self.audio_output { aout.0.pause(); }
+
+                // 2. Stop old audio sources, swap in pre-seeked ones
+                self.stop_all_audio();
+                for ps_source in ps.sources {
+                    self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index);
+                    self.audio_sources.push(ActiveAudioSource {
+                        track_index: ps_source.track_index,
+                        source: ps_source.source,
+                    });
+                }
+
+                // 3. Seek video decoder (still needed — video wasn't pre-seeked)
+                let seq = self.sequence.read().unwrap();
+                let clip_info = seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|track| {
+                        track.clip_at_timecode(target).and_then(|(idx, clip)| {
+                            let media_id = clip.media_id()?;
+                            let source_secs = clip.source_in.to_secs_f64()
+                                + (target - clip.timeline_in).to_secs_f64();
+                            let clip_source_in = clip.source_in.to_secs_f64();
+                            Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
+                        })
+                    });
+                drop(seq);
+
+                let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+                    let need_new = self.current_clip_index != idx || self.v1_decoder.is_none();
+                    if need_new {
+                        if let Some(path) = self.path_for_media(media_id) {
+                            self.v1_decoder = None;
+                            if let Ok(dec) = VideoDecoder::open(&path) {
+                                dec.seek(source_secs);
+                                dec.resume();
+                                self.v1_decoder = Some(dec);
+                                self.current_clip_index = idx;
+                                self.current_file = Some(path);
+                                self.clip_source_start = clip_source_in;
+                                self.clip_timeline_start = timeline_in;
+                            }
+                        }
+                    } else if let Some(dec) = &self.v1_decoder {
+                        dec.seek(source_secs);
+                        dec.frame_queue().lock().unwrap().clear();
+                        self.clip_source_start = clip_source_in;
+                        self.clip_timeline_start = timeline_in;
+                    }
+                    source_secs
+                } else {
+                    target.to_secs_f64()
+                };
+
+                // 4. Set master clock
+                let target_us = (source_secs_for_clock * 1_000_000.0) as u64;
+                self.master_clock.seek(target_us);
+
+                // 5. Resume — audio already pre-filled, skip the 15ms wait
+                if was_playing {
+                    for active in &self.audio_sources { active.source.resume(); }
+                    // Shorter pre-fill since sources already have buffered samples
+                    std::thread::sleep(Duration::from_millis(5));
+                    if let Some(aout) = &self.audio_output { aout.0.resume(); }
+                    self.master_clock.resume();
+                }
+
+                // 6. V2 decoder update
+                self.v2_frame_cache = None;
+                self.maybe_open_v2_decoder(target);
+
+                self.playhead = target;
+                let _ = self.event_tx.send(AppEvent::LoopedBack);
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+                (self.repaint_cb)();
+                return;
+            } else {
+                debug!("[Loop] Pre-seek stale (gen={} vs current={}), falling back to cold seek",
+                    ps.generation, self.pre_seek_generation);
+                // Drop stale pre-seek sources (they'll be cleaned up)
+            }
+        }
+
+        // Cold seek fallback (no pre-seek available)
+
+        // Find video clip at target position
+        let seq = self.sequence.read().unwrap();
+        let clip_info = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|track| {
+                track.clip_at_timecode(target).and_then(|(idx, clip)| {
+                    let media_id = clip.media_id()?;
+                    let source_secs = clip.source_in.to_secs_f64()
+                        + (target - clip.timeline_in).to_secs_f64();
+                    let clip_source_in = clip.source_in.to_secs_f64();
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
+                })
+            });
+        // Also check for title clip
+        let title_info = if clip_info.is_none() {
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|track| {
+                    track.clip_at_timecode(target).and_then(|(idx, clip)| {
+                        let td = clip.title_data()?.clone();
+                        Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
+                    })
+                })
+        } else {
+            None
+        };
+        let res = seq.resolution;
+        drop(seq);
+
+        // Handle title clip at loop target
+        if let Some((idx, title_data, timeline_in, clip_source_in)) = title_info {
+            self.v1_decoder = None;
+            self.current_clip_index = idx;
+            self.current_file = None;
+            self.clip_source_start = clip_source_in;
+            self.clip_timeline_start = timeline_in;
+
+            let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+            let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame(final_rgba, res.width, res.height);
+            drop(fb);
+
+            // Reopen audio at target
+            self.master_clock.pause();
+            if let Some(aout) = &self.audio_output { aout.0.pause(); }
+            self.start_all_audio(target);
+            self.seek_all_audio_to_timecode(target);
+            let target_us = (target.to_secs_f64() * 1_000_000.0) as u64;
+            self.master_clock.seek(target_us);
+
+            if was_playing {
+                for active in &self.audio_sources { active.source.resume(); }
+                std::thread::sleep(Duration::from_millis(15));
+                if let Some(aout) = &self.audio_output { aout.0.resume(); }
+                self.master_clock.resume();
+            }
+
+            self.playhead = target;
+            let _ = self.event_tx.send(AppEvent::LoopedBack);
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            (self.repaint_cb)();
+            return;
+        }
+
+        // Handle media clip at loop target
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+            let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
+
+            if need_new_decoder {
+                if let Some(path) = self.path_for_media(media_id) {
+                    self.v1_decoder = None;
+                    self.stop_all_audio();
+                    match VideoDecoder::open(&path) {
+                        Ok(dec) => {
+                            dec.seek(source_secs);
+                            dec.resume();
+                            self.v1_decoder = Some(dec);
+                            self.current_clip_index = idx;
+                            self.current_file = Some(path);
+                            self.clip_source_start = clip_source_in;
+                            self.clip_timeline_start = timeline_in;
+                        }
+                        Err(e) => {
+                            error!("[Loop] Failed to open decoder: {e}");
+                            return;
+                        }
+                    }
+                }
+            } else if let Some(dec) = &self.v1_decoder {
+                dec.seek(source_secs);
+                dec.frame_queue().lock().unwrap().clear();
+                if self.state != PlaybackState::Playing {
+                    dec.resume();
+                }
+                self.clip_source_start = clip_source_in;
+                self.clip_timeline_start = timeline_in;
+            }
+
+            // 1. Pause clock + cpal
+            self.master_clock.pause();
+            if let Some(aout) = &self.audio_output { aout.0.pause(); }
+
+            // 2. Reopen audio at target
+            self.start_all_audio(target);
+            self.seek_all_audio_to_timecode(target);
+
+            // 3. Set master clock
+            let target_us = (source_secs * 1_000_000.0) as u64;
+            self.master_clock.seek(target_us);
+
+            // 4. Pre-fill + resume
+            if was_playing {
+                for active in &self.audio_sources { active.source.resume(); }
+                std::thread::sleep(Duration::from_millis(15));
+                if let Some(aout) = &self.audio_output { aout.0.resume(); }
+                self.master_clock.resume();
+            }
+
+            // 5. V2 decoder update
+            self.v2_frame_cache = None;
+            self.maybe_open_v2_decoder(target);
+
+            self.playhead = target;
+            let _ = self.event_tx.send(AppEvent::LoopedBack);
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            (self.repaint_cb)();
+        } else {
+            // No video clip at target — audio-only loop
+            self.v1_decoder = None;
+            self.v2_frame_cache = None;
+
+            self.master_clock.pause();
+            if let Some(aout) = &self.audio_output { aout.0.pause(); }
+
+            self.start_all_audio(target);
+            self.seek_all_audio_to_timecode(target);
+            let target_us = (target.to_secs_f64() * 1_000_000.0) as u64;
+            self.master_clock.seek(target_us);
+
+            if was_playing {
+                for active in &self.audio_sources { active.source.resume(); }
+                std::thread::sleep(Duration::from_millis(15));
+                if let Some(aout) = &self.audio_output { aout.0.resume(); }
+                self.master_clock.resume();
+            }
+
+            self.playhead = target;
+            let _ = self.event_tx.send(AppEvent::LoopedBack);
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            (self.repaint_cb)();
+        }
     }
 
     fn seek_in_sequence(&mut self, tc: Timecode) {

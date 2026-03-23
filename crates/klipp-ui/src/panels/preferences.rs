@@ -206,6 +206,16 @@ impl PreferencesPanel {
         }
 
         ui.add_space(8.0);
+        ui.label(egui::RichText::new("Playback").strong().size(12.0));
+        ui.add_space(4.0);
+        if ui
+            .checkbox(&mut prefs.playback.loop_playback, "Loop playback (Ctrl+L)")
+            .changed()
+        {
+            *dirty = true;
+        }
+
+        ui.add_space(8.0);
         ui.label("JKL audio mute threshold");
         ui.add_space(4.0);
 

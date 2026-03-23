@@ -95,6 +95,30 @@ impl TransportBar {
                 cmds.push(AppCommand::SeekTo(dur));
             }
 
+            // Loop button
+            ui.add_space(4.0);
+            {
+                let loop_active = state.loop_playback_enabled;
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(32.0, 32.0),
+                    egui::Sense::click(),
+                );
+                let (bg, fg) = if loop_active {
+                    (egui::Color32::from_rgb(232, 160, 32), egui::Color32::BLACK)
+                } else if resp.hovered() {
+                    (egui::Color32::from_rgb(42, 42, 50), egui::Color32::from_rgb(200, 200, 210))
+                } else {
+                    (egui::Color32::TRANSPARENT, egui::Color32::from_rgb(100, 100, 110))
+                };
+                ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
+                // Loop icon: 270° arc + arrowhead
+                draw_loop_icon(ui.painter(), rect.center(), 8.0, fg);
+                if resp.clicked() {
+                    cmds.push(AppCommand::ToggleLoopPlayback);
+                }
+                resp.on_hover_text("Loop playback (Ctrl+L)");
+            }
+
             // Timecode display — clickable for input
             ui.add_space(24.0);
 
@@ -154,6 +178,51 @@ impl TransportBar {
                     .size(14.0)
                     .color(egui::Color32::from_rgb(100, 100, 110)),
             );
+
+            // Range display (only when in or out is set)
+            let has_range = state.sequence().in_point.is_some() || state.sequence().out_point.is_some();
+            if has_range {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                let amber = egui::Color32::from_rgb(232, 160, 32);
+                let dim = egui::Color32::from_rgb(120, 120, 130);
+
+                if let Some(in_pt) = state.sequence().in_point {
+                    ui.label(egui::RichText::new("In ").size(10.0).color(dim));
+                    ui.label(egui::RichText::new(
+                        crate::timeline::range_visuals::format_handle_timecode(in_pt.to_secs_f64(), in_pt.rate),
+                    ).monospace().size(11.0).color(amber));
+                }
+
+                ui.label(egui::RichText::new(" \u{2192} ").size(10.0).color(dim));
+
+                if let Some(out_pt) = state.sequence().out_point {
+                    ui.label(egui::RichText::new(
+                        crate::timeline::range_visuals::format_handle_timecode(out_pt.to_secs_f64(), out_pt.rate),
+                    ).monospace().size(11.0).color(amber));
+                    ui.label(egui::RichText::new(" Out").size(10.0).color(dim));
+                }
+
+                if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point) {
+                    let dur_secs = (out_pt - in_pt).to_secs_f64();
+                    ui.label(egui::RichText::new(
+                        format!(" = {}", crate::timeline::range_visuals::format_range_duration(dur_secs)),
+                    ).monospace().size(11.0).color(amber));
+                }
+
+                // Clear button
+                let clear_resp = ui.add(
+                    egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(amber))
+                        .frame(false)
+                );
+                if clear_resp.clicked() {
+                    cmds.push(AppCommand::ClearSequenceInPoint);
+                    cmds.push(AppCommand::ClearSequenceOutPoint);
+                }
+                clear_resp.on_hover_text("Clear range (Alt+X)");
+            }
 
             // Spacer to push master controls right
             ui.add_space(24.0);
@@ -350,4 +419,37 @@ fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
     let ff: i64 = parts[3].parse().ok()?;
     let total_frames = ((hh * 3600 + mm * 60 + ss) * rate as i64) + ff;
     Some(RationalTime::from_frames(total_frames, rate))
+}
+
+fn draw_loop_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: egui::Color32) {
+    // 270° arc (three-quarters circle, clockwise from top)
+    let steps = 24;
+    let start_angle = -std::f32::consts::FRAC_PI_2; // top
+    let sweep = std::f32::consts::PI * 1.5; // 270°
+    let pts: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let angle = start_angle + sweep * (i as f32 / steps as f32);
+            egui::pos2(
+                center.x + radius * angle.cos(),
+                center.y + radius * angle.sin(),
+            )
+        })
+        .collect();
+
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, color)));
+
+    // Arrowhead at the end of the arc (pointing clockwise)
+    let end_angle = start_angle + sweep;
+    let tip = egui::pos2(
+        center.x + radius * end_angle.cos(),
+        center.y + radius * end_angle.sin(),
+    );
+    let arrow_dir = egui::vec2(-end_angle.sin(), end_angle.cos());
+    let perp = egui::vec2(arrow_dir.y, -arrow_dir.x);
+    let arrow_pts = vec![
+        tip,
+        tip - arrow_dir * 4.0 + perp * 3.0,
+        tip - arrow_dir * 4.0 - perp * 3.0,
+    ];
+    painter.add(egui::Shape::convex_polygon(arrow_pts, color, egui::Stroke::NONE));
 }

@@ -207,6 +207,7 @@ impl KlippApp {
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
+        app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
 
         // Enrich any stale recent project entries with metadata from disk
         let mut prefs_changed = app.prefs.enrich_recent_projects();
@@ -338,6 +339,11 @@ impl KlippApp {
                 }
                 AppEvent::PlaybackStopped => {
                     self.state.playback = PlaybackState::Stopped;
+                }
+                AppEvent::LoopedBack => {
+                    // Engine looped back — the following PlayheadMoved carries the new position.
+                    // Pre-reset smooth playhead so it doesn't animate from old position.
+                    // The PlayheadMoved handler will set the final anchor.
                 }
                 AppEvent::PlayheadMoved(tc) => {
                     if self.state.playback == PlaybackState::Playing {
@@ -1919,18 +1925,22 @@ impl KlippApp {
                 // Phase 4: Sequence markers
                 AppCommand::SetSequenceInPoint(tc) => {
                     self.state.sequences[self.state.active_sequence_idx].in_point = Some(*tc);
+                    self.sync_sequence_to_engine();
                     continue;
                 }
                 AppCommand::SetSequenceOutPoint(tc) => {
                     self.state.sequences[self.state.active_sequence_idx].out_point = Some(*tc);
+                    self.sync_sequence_to_engine();
                     continue;
                 }
                 AppCommand::ClearSequenceInPoint => {
                     self.state.sequences[self.state.active_sequence_idx].in_point = None;
+                    self.sync_sequence_to_engine();
                     continue;
                 }
                 AppCommand::ClearSequenceOutPoint => {
                     self.state.sequences[self.state.active_sequence_idx].out_point = None;
+                    self.sync_sequence_to_engine();
                     continue;
                 }
                 // Phase 4: Source monitor
@@ -2339,7 +2349,30 @@ impl KlippApp {
                 }
                 AppCommand::SetActiveTool(tool) => {
                     self.state.active_tool = *tool;
+                    // Sync layout tool
+                    self.layout.active_tool = match tool {
+                        Tool::Select => crate::layout_state::EditTool::Select,
+                        Tool::Blade => crate::layout_state::EditTool::Blade,
+                        Tool::Range => crate::layout_state::EditTool::Range,
+                    };
+                    // Clear range drag state on tool change
+                    self.state.range_drag = None;
+                    self.state.ruler_press_origin = None;
                     continue;
+                }
+                AppCommand::ToggleLoopPlayback => {
+                    self.state.loop_playback_enabled = !self.state.loop_playback_enabled;
+                    self.prefs.playback.loop_playback = self.state.loop_playback_enabled;
+                    self.prefs.save().ok();
+                    let msg = if self.state.loop_playback_enabled { "Loop On" } else { "Loop Off" };
+                    self.state.toast.show(msg);
+                    // Forward to engine as SetLoopPlayback
+                    let _ = self.cmd_tx.send(AppCommand::SetLoopPlayback(self.state.loop_playback_enabled));
+                    continue;
+                }
+                AppCommand::SetLoopPlayback(enabled) => {
+                    self.state.loop_playback_enabled = *enabled;
+                    // Fall through to forward to engine
                 }
                 AppCommand::ToggleFullscreen => {
                     self.state.fullscreen_viewer = !self.state.fullscreen_viewer;
@@ -2971,6 +3004,11 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::SetRange { old_in, old_out, .. } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                seq.in_point = *old_in;
+                seq.out_point = *old_out;
+            }
         }
     }
 
@@ -3076,6 +3114,11 @@ impl KlippApp {
                         item.bin = Some(new_name.clone());
                     }
                 }
+            }
+            EditCommand::SetRange { new_in, new_out, .. } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                seq.in_point = *new_in;
+                seq.out_point = *new_out;
             }
         }
     }
@@ -3746,10 +3789,15 @@ impl KlippApp {
                     }
                 }
             }
-            // Delete/Backspace — remove selected clip (plain, no shift)
+            // Delete/Backspace — remove selected clip OR extract range (plain, no shift)
             else if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
+                } else if self.state.selected_clips.is_empty()
+                    && self.state.sequence().in_point.is_some()
+                    && self.state.sequence().out_point.is_some()
+                {
+                    cmds.push(AppCommand::ExtractEdit);
                 }
             }
 
@@ -3788,6 +3836,10 @@ impl KlippApp {
                         });
                     }
                 }
+            }
+            // Ctrl+L — Toggle loop playback
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
+                cmds.push(AppCommand::ToggleLoopPlayback);
             }
             // Ctrl+T — Create title clip at playhead on a free video track (or create new one)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
@@ -3834,6 +3886,58 @@ impl KlippApp {
                 tracing::debug!("V key pressed -> Select tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Select));
             }
+            // R — Range tool toggle
+            if !i.modifiers.ctrl && i.key_pressed(egui::Key::R) {
+                if self.state.active_tool == Tool::Range {
+                    cmds.push(AppCommand::SetActiveTool(Tool::Select));
+                } else {
+                    cmds.push(AppCommand::SetActiveTool(Tool::Range));
+                }
+            }
+            // X — Set range to clip at playhead / Alt+X — Clear range
+            if i.key_pressed(egui::Key::X) && !i.modifiers.ctrl {
+                if i.modifiers.alt {
+                    // Alt+X: Clear both in and out
+                    let old_in = self.state.sequence().in_point;
+                    let old_out = self.state.sequence().out_point;
+                    if old_in.is_some() || old_out.is_some() {
+                        cmds.push(AppCommand::ClearSequenceInPoint);
+                        cmds.push(AppCommand::ClearSequenceOutPoint);
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetRange {
+                                old_in, old_out, new_in: None, new_out: None,
+                            },
+                        });
+                        self.state.toast.show("Range cleared");
+                    }
+                } else if !i.modifiers.shift {
+                    // X: Set range to clip at playhead
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let mut found = false;
+                    for track in &seq.tracks {
+                        if let Some((_, clip)) = track.clip_at_timecode(ph) {
+                            let old_in = seq.in_point;
+                            let old_out = seq.out_point;
+                            cmds.push(AppCommand::SetSequenceInPoint(clip.timeline_in));
+                            cmds.push(AppCommand::SetSequenceOutPoint(clip.timeline_out));
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetRange {
+                                    old_in, old_out,
+                                    new_in: Some(clip.timeline_in),
+                                    new_out: Some(clip.timeline_out),
+                                },
+                            });
+                            self.state.toast.show("Range: clip selected");
+                            found = true;
+                            break;
+                        }
+                    }
+                    let _ = found;
+                }
+            }
             // F — Toggle fullscreen viewer
             if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl {
                 cmds.push(AppCommand::ToggleFullscreen);
@@ -3850,26 +3954,71 @@ impl KlippApp {
             if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {
                 if i.modifiers.shift {
                     tracing::debug!("Shift+I -> Clear sequence in point");
+                    let old_in = self.state.sequence().in_point;
+                    let old_out = self.state.sequence().out_point;
                     cmds.push(AppCommand::ClearSequenceInPoint);
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in, old_out, new_in: None, new_out: old_out,
+                        },
+                    });
                 } else if self.state.viewer_mode == ViewerMode::Source {
                     tracing::debug!("I key (Source mode) -> Set source in point at {:?}", self.state.source_playhead);
                     cmds.push(AppCommand::SetSourceInPoint(self.state.source_playhead));
                 } else {
                     tracing::debug!("I key (Program mode) -> Set sequence in point at {:?}", self.state.playhead);
+                    let old_in = self.state.sequence().in_point;
+                    let old_out = self.state.sequence().out_point;
+                    let new_in = Some(self.state.playhead);
                     cmds.push(AppCommand::SetSequenceInPoint(self.state.playhead));
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in, old_out, new_in, new_out: old_out,
+                        },
+                    });
                 }
             }
             if i.key_pressed(egui::Key::O) && !i.modifiers.ctrl {
                 if i.modifiers.shift {
                     tracing::debug!("Shift+O -> Clear sequence out point");
+                    let old_in = self.state.sequence().in_point;
+                    let old_out = self.state.sequence().out_point;
                     cmds.push(AppCommand::ClearSequenceOutPoint);
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in, old_out, new_in: old_in, new_out: None,
+                        },
+                    });
                 } else if self.state.viewer_mode == ViewerMode::Source {
                     tracing::debug!("O key (Source mode) -> Set source out point at {:?}", self.state.source_playhead);
                     cmds.push(AppCommand::SetSourceOutPoint(self.state.source_playhead));
                 } else {
                     tracing::debug!("O key (Program mode) -> Set sequence out point at {:?}", self.state.playhead);
+                    let old_in = self.state.sequence().in_point;
+                    let old_out = self.state.sequence().out_point;
+                    let new_out = Some(self.state.playhead);
                     cmds.push(AppCommand::SetSequenceOutPoint(self.state.playhead));
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in, old_out, new_in: old_in, new_out,
+                        },
+                    });
                 }
+            }
+
+            // Escape — clear active range drag OR return Range tool to Select
+            if i.key_pressed(egui::Key::Escape) {
+                if let Some(drag) = self.state.range_drag.take() {
+                    self.state.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
+                    self.state.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
+                } else if self.state.active_tool == Tool::Range {
+                    cmds.push(AppCommand::SetActiveTool(Tool::Select));
+                }
+                self.state.ruler_press_origin = None;
             }
             // , — Insert edit (ripple)
             if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ",")) {
@@ -3983,7 +4132,15 @@ impl eframe::App for KlippApp {
             let speed = self.state.playback_speed;
             let interpolated_secs = anchor_secs + wall_elapsed * speed;
             let dur_secs = self.state.sequence_duration().to_secs_f64();
-            let clamped = interpolated_secs.clamp(0.0, dur_secs);
+            // When looping, clamp to out_point to prevent one-frame overshoot
+            let max_secs = if self.state.loop_playback_enabled {
+                self.state.sequence().out_point
+                    .map(|t| t.to_secs_f64())
+                    .unwrap_or(dur_secs)
+            } else {
+                dur_secs
+            };
+            let clamped = interpolated_secs.clamp(0.0, max_secs);
 
             self.state.playhead_smooth_secs = clamped;
             self.state.playhead = Timecode::from_secs_f64(clamped, self.state.fps.rate());

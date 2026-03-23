@@ -12,11 +12,31 @@ pub struct BrowserClipSelection {
     pub range_out_secs: f64,
 }
 
+/// State during an active range handle drag or ruler range drag.
+#[derive(Debug, Clone)]
+pub struct RangeDragState {
+    pub kind: RangeDragKind,
+    pub original_in: Option<Timecode>,
+    pub original_out: Option<Timecode>,
+}
+
+/// What kind of range drag is in progress.
+#[derive(Debug, Clone, Copy)]
+pub enum RangeDragKind {
+    /// Dragging the in-point handle.
+    InHandle,
+    /// Dragging the out-point handle.
+    OutHandle,
+    /// Dragging on empty ruler to create a new range.
+    RulerCreate { anchor_secs: f64 },
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
     pub fps: Fps,
     pub playback_speed: f64,
+    pub loop_playback_enabled: bool,
 
     // Project
     pub sequences: Vec<Sequence>,
@@ -131,6 +151,13 @@ pub struct AppState {
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
     pub browser_drag_start: Option<(egui::Pos2, std::time::Instant)>,
+
+    // Timeline range handle drag state
+    pub range_drag: Option<RangeDragState>,
+    /// Snap line x position during range handle drag (drawn in mod.rs).
+    pub range_snap_line_x: Option<f32>,
+    /// Press origin for 4px drag threshold on ruler.
+    pub ruler_press_origin: Option<egui::Pos2>,
 
     // Phase 5: Performance overlay
     pub show_perf_overlay: bool,
@@ -277,6 +304,7 @@ impl Default for AppState {
             playhead: Timecode::zero(),
             fps: Fps::film_24(),
             playback_speed: 1.0,
+            loop_playback_enabled: false,
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
             media_pool: MediaPool::new(),
@@ -340,6 +368,9 @@ impl Default for AppState {
             skim_last_audio_dispatch: std::time::Instant::now(),
             browser_range_selection: None,
             browser_drag_start: None,
+            range_drag: None,
+            range_snap_line_x: None,
+            ruler_press_origin: None,
             show_perf_overlay: false,
             perf_fps: 0.0,
             perf_frame_count: 0,

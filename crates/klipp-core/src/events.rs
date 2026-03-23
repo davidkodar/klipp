@@ -106,6 +106,10 @@ pub enum AppCommand {
     LoadMediaFile { path: PathBuf, media_id: MediaId },
     ImportMedia { path: PathBuf },
 
+    // Loop
+    ToggleLoopPlayback,
+    SetLoopPlayback(bool),
+
     // Timeline
     SetPlayhead(Timecode),
     SetSpeed(f64),
@@ -340,6 +344,7 @@ pub enum ViewerMode {
 pub enum Tool {
     Select,
     Blade,
+    Range,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -394,6 +399,7 @@ pub enum AppEvent {
     PlaybackPaused,
     PlaybackStopped,
     PlayheadMoved(Timecode),
+    LoopedBack,
 
     // Media
     MediaLoaded {

@@ -89,6 +89,9 @@ pub struct PlaybackPrefs {
     pub skim_audio: bool,
     /// Speed above which audio mutes during JKL playback. Default 4.0.
     pub jkl_audio_mute_threshold: f32,
+    /// Whether loop playback is enabled (cycle between in/out points or whole sequence).
+    #[serde(default)]
+    pub loop_playback: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -122,6 +125,7 @@ impl Default for PlaybackPrefs {
             scrub_audio: true,
             skim_audio: true,
             jkl_audio_mute_threshold: 4.0,
+            loop_playback: false,
         }
     }
 }

@@ -150,6 +150,7 @@ impl ToolbarPanel {
                 // Compact menus
                 Self::file_menu(ui, &mut cmds, state, recent_projects);
                 Self::edit_menu(ui, &mut cmds, state);
+                Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::settings_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
@@ -161,6 +162,7 @@ impl ToolbarPanel {
                     (EditTool::Select, "Select Tool", "V"),
                     (EditTool::Trim, "Trim Tool", "T"),
                     (EditTool::Blade, "Blade Tool", "B"),
+                    (EditTool::Range, "Range Tool", "R"),
                     (EditTool::Zoom, "Zoom Tool", "Z"),
                 ];
                 for (tool, tip, key) in &tools {
@@ -181,6 +183,7 @@ impl ToolbarPanel {
                         EditTool::Select => draw_select_icon(ui.painter(), rect, fg),
                         EditTool::Trim => draw_trim_icon(ui.painter(), rect, fg),
                         EditTool::Blade => draw_blade_icon(ui.painter(), rect, fg),
+                        EditTool::Range => draw_range_icon(ui.painter(), rect, fg),
                         EditTool::Zoom => draw_zoom_icon(ui.painter(), rect, fg),
                     }
                     styled_tooltip(&resp, theme, tip, Some(key));
@@ -189,6 +192,7 @@ impl ToolbarPanel {
                         let engine_tool = match tool {
                             EditTool::Select => Tool::Select,
                             EditTool::Blade => Tool::Blade,
+                            EditTool::Range => Tool::Range,
                             EditTool::Trim | EditTool::Zoom => Tool::Select,
                         };
                         cmds.push(AppCommand::SetActiveTool(engine_tool));
@@ -359,6 +363,78 @@ impl ToolbarPanel {
             if ui.add_enabled(state.history.can_redo(), egui::Button::new(state.history.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Y")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() { let ph = state.playhead; for (ti, t) in state.sequence().tracks.iter().enumerate() { if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); } } ui.close_menu(); }
+            ui.separator();
+            // Tool selection
+            let check = |active: bool| if active { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{}Select Tool", check(state.active_tool == Tool::Select))).shortcut_text("V")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Select)); ui.close_menu(); }
+            if ui.add(egui::Button::new(format!("{}Blade Tool", check(state.active_tool == Tool::Blade))).shortcut_text("B")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Blade)); ui.close_menu(); }
+            if ui.add(egui::Button::new(format!("{}Range Tool", check(state.active_tool == Tool::Range))).shortcut_text("R")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Range)); ui.close_menu(); }
+        });
+    }
+    fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Mark").size(11.0), |ui| {
+            // In/Out points
+            if ui.add(egui::Button::new("Set Range Start").shortcut_text("I")).clicked() {
+                cmds.push(AppCommand::SetSequenceInPoint(state.playhead));
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Set Range End").shortcut_text("O")).clicked() {
+                cmds.push(AppCommand::SetSequenceOutPoint(state.playhead));
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Select Clip Range").shortcut_text("X")).clicked() {
+                let ph = state.playhead;
+                for track in &state.sequence().tracks {
+                    if let Some((_, clip)) = track.clip_at_timecode(ph) {
+                        cmds.push(AppCommand::SetSequenceInPoint(clip.timeline_in));
+                        cmds.push(AppCommand::SetSequenceOutPoint(clip.timeline_out));
+                        break;
+                    }
+                }
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Clear Range Start").shortcut_text("Shift+I")).clicked() {
+                cmds.push(AppCommand::ClearSequenceInPoint);
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Clear Range End").shortcut_text("Shift+O")).clicked() {
+                cmds.push(AppCommand::ClearSequenceOutPoint);
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Clear Range").shortcut_text("Alt+X")).clicked() {
+                cmds.push(AppCommand::ClearSequenceInPoint);
+                cmds.push(AppCommand::ClearSequenceOutPoint);
+                ui.close_menu();
+            }
+            ui.separator();
+            // Loop
+            let loop_check = if state.loop_playback_enabled { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{loop_check}Loop Playback")).shortcut_text("Ctrl+L")).clicked() {
+                cmds.push(AppCommand::ToggleLoopPlayback);
+                ui.close_menu();
+            }
+            ui.separator();
+            // Markers
+            if ui.add(egui::Button::new("Add Marker").shortcut_text("M")).clicked() {
+                cmds.push(AppCommand::AddMarker {
+                    position: state.playhead,
+                    label: String::new(),
+                    color: klipp_core::MarkerColor::Blue,
+                });
+                ui.close_menu();
+            }
+            ui.separator();
+            // Range operations
+            let has_range = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
+            if ui.add_enabled(has_range, egui::Button::new("Lift Range").shortcut_text(";")).clicked() {
+                cmds.push(AppCommand::LiftEdit);
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_range, egui::Button::new("Extract Range").shortcut_text("'")).clicked() {
+                cmds.push(AppCommand::ExtractEdit);
+                ui.close_menu();
+            }
         });
     }
     fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
@@ -554,6 +630,26 @@ fn draw_render_queue_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Col
     painter.add(egui::Shape::convex_polygon(vec![
         egui::pos2(x + bw + 3.0, mid_y), egui::pos2(x + bw, mid_y - 3.0), egui::pos2(x + bw, mid_y + 3.0),
     ], c, egui::Stroke::NONE));
+}
+
+fn draw_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let ir = icon_rect(btn);
+    let s = egui::Stroke::new(1.5, c);
+    // Left bracket bar
+    painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 3.0, ir.max.y - 1.0)], s);
+    // Right bracket bar
+    painter.line_segment([egui::pos2(ir.max.x - 3.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 3.0, ir.max.y - 1.0)], s);
+    // Horizontal connecting line
+    painter.line_segment([egui::pos2(ir.min.x + 4.0, ir.center().y), egui::pos2(ir.max.x - 4.0, ir.center().y)], s);
+    // Subtle fill between bars
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(ir.min.x + 3.0, ir.min.y + 3.0),
+            egui::pos2(ir.max.x - 3.0, ir.max.y - 3.0),
+        ),
+        0.0,
+        egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 30),
+    );
 }
 
 fn draw_export_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {

@@ -72,6 +72,14 @@ pub enum EditCommand {
         old_name: String,
         new_name: String,
     },
+
+    // === RANGE SELECTION ===
+    SetRange {
+        old_in: Option<RationalTime>,
+        old_out: Option<RationalTime>,
+        new_in: Option<RationalTime>,
+        new_out: Option<RationalTime>,
+    },
 }
 
 impl EditCommand {
@@ -86,6 +94,7 @@ impl EditCommand {
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::RenameBin { .. } => "Rename Bin",
+            EditCommand::SetRange { .. } => "Set Range",
         }
     }
 }
