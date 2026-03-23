@@ -212,8 +212,12 @@ pub enum AppCommand {
     AddKeyframe { clip_id: ClipId, param: ColorGradeParam, time_secs: f64, value: f32 },
     RemoveKeyframe { clip_id: ClipId, param: ColorGradeParam, time_secs: f64 },
     ClearKeyframes { clip_id: ClipId, param: ColorGradeParam },
+    SetKeyframeInterpolation { clip_id: ClipId, param: ColorGradeParam, time_secs: f64, interpolation: crate::keyframe::Interpolation },
+    SetKeyframeTangents { clip_id: ClipId, param: ColorGradeParam, time_secs: f64, tangent_in: (f64, f32), tangent_out: (f64, f32) },
     ToggleColorPanel,
     ToggleBeforeAfter,
+    SetMattePreview(bool),
+    SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },

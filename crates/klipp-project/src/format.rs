@@ -249,6 +249,10 @@ pub struct ColorGradeJson {
     pub masks: Option<klipp_core::MaskStack>,
     #[serde(default)]
     pub keyframe_tracks: Option<klipp_core::KeyframeTracks>,
+    #[serde(default)]
+    pub grain: Option<klipp_core::FilmGrainSettings>,
+    #[serde(default)]
+    pub log_format: Option<klipp_core::LogFormat>,
 }
 
 fn default_one() -> f32 { 1.0 }

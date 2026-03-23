@@ -21,6 +21,14 @@ pub struct Keyframe {
     pub value: f32,
     /// Interpolation method to the NEXT keyframe.
     pub interpolation: Interpolation,
+    /// Bezier out-tangent: (time_delta, value_delta) relative to this keyframe.
+    /// Positive time_delta means the handle extends to the right.
+    #[serde(default)]
+    pub tangent_out: (f64, f32),
+    /// Bezier in-tangent: (time_delta, value_delta) relative to this keyframe.
+    /// Negative time_delta means the handle extends to the left.
+    #[serde(default)]
+    pub tangent_in: (f64, f32),
 }
 
 /// A track of keyframes for a single parameter.
@@ -74,11 +82,17 @@ impl KeyframeTrack {
                 Some(kf0.value)
             }
             Interpolation::Bezier => {
-                // Smooth step approximation (cubic hermite)
+                // Cubic bezier with tangent handles
+                // Control points: P0=kf0.value, P1=kf0.value+tangent_out.1,
+                //                 P2=kf1.value+tangent_in.1, P3=kf1.value
+                let p0 = kf0.value;
+                let p1 = kf0.value + kf0.tangent_out.1;
+                let p2 = kf1.value + kf1.tangent_in.1;
+                let p3 = kf1.value;
+                let u = 1.0 - t;
+                let u2 = u * u;
                 let t2 = t * t;
-                let t3 = t2 * t;
-                let s = 3.0 * t2 - 2.0 * t3; // smooth hermite
-                Some(kf0.value + (kf1.value - kf0.value) * s)
+                Some(u2 * u * p0 + 3.0 * u2 * t * p1 + 3.0 * u * t2 * p2 + t2 * t * p3)
             }
         }
     }
@@ -100,6 +114,8 @@ impl KeyframeTrack {
             time_secs,
             value,
             interpolation: Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
         });
     }
 

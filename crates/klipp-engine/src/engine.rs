@@ -93,6 +93,8 @@ pub struct PlaybackEngine {
     color_pipeline: klipp_color::ColorPipeline,
     // Before/After — when true, skip per-clip color grade to show ungraded frame
     bypass_color_grade: bool,
+    // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
+    matte_preview: bool,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -196,6 +198,7 @@ impl PlaybackEngine {
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
             bypass_color_grade: false,
+            matte_preview: false,
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -525,6 +528,11 @@ impl PlaybackEngine {
             AppCommand::ToggleBeforeAfter => {
                 self.bypass_color_grade = !self.bypass_color_grade;
                 debug!("Before/After: bypass_color_grade = {}", self.bypass_color_grade);
+            }
+
+            AppCommand::SetMattePreview(active) => {
+                self.matte_preview = active;
+                debug!("Matte preview: {}", self.matte_preview);
             }
 
             // UI-side commands — engine ignores them
@@ -2396,6 +2404,15 @@ impl PlaybackEngine {
     }
 
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        #[inline]
+        fn wang_hash_cpu(mut x: u32) -> f32 {
+            x = (x ^ 61) ^ (x >> 16);
+            x = x.wrapping_mul(9);
+            x = x ^ (x >> 4);
+            x = x.wrapping_mul(0x27d4eb2d);
+            x = x ^ (x >> 15);
+            x as f32 / u32::MAX as f32
+        }
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap();
         let clip = seq.tracks.iter()
@@ -2403,6 +2420,7 @@ impl PlaybackEngine {
             .find_map(|t| t.clips.get(self.current_clip_index));
         let grade = clip.map(|c| c.color_grade.clone());
         let clip_source_in_secs = clip.map(|c| c.source_in.to_secs_f64()).unwrap_or(0.0);
+        let grain = clip.map(|c| c.color_grade.grain.clone()).unwrap_or_default();
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
         drop(seq);
@@ -2467,6 +2485,7 @@ impl PlaybackEngine {
                     huesat_mix: g.huesat_mix,
                     qualifier: g.qualifier.clone(),
                     masks: g.masks.clone(),
+                    input_log_format: g.log_format,
                 };
 
                 // Apply keyframe overrides
@@ -2512,11 +2531,113 @@ impl PlaybackEngine {
                         let lut_data = Self::build_huesat_lut_data(&params.huesat);
                         result = gpu.apply_huesat_gpu(result, width, height, params.huesat_mix, &lut_data);
                     }
+                    // Qualifier — GPU accelerated (masks still CPU, combined via multiply)
+                    if params.qualifier.enabled && params.masks.is_empty() {
+                        // Pure qualifier, no masks — full GPU path
+                        result = gpu.apply_qualifier_gpu(
+                            result, width, height,
+                            params.qualifier.hue_center, params.qualifier.hue_width, params.qualifier.hue_soft,
+                            params.qualifier.sat_low, params.qualifier.sat_high, params.qualifier.sat_soft,
+                            params.qualifier.lum_low, params.qualifier.lum_high, params.qualifier.lum_soft,
+                            params.qualifier.invert,
+                            params.qualifier.exposure, params.qualifier.saturation,
+                            params.qualifier.hue_shift, params.qualifier.temperature,
+                            self.matte_preview,
+                        );
+                    } else if params.qualifier.enabled || !params.masks.is_empty() || self.matte_preview {
+                        // Qualifier + masks or masks-only — CPU mask matte, GPU qualifier
+                        // GPU path supports max 4 mask shapes. Fall back to CPU for clips with more.
+                        let mask_matte = if !params.masks.is_empty() {
+                            Some(klipp_color::masks::generate_mask_matte(width, height, &params.masks))
+                        } else {
+                            None
+                        };
+
+                        if params.qualifier.enabled {
+                            // GPU qualifier for HSL matte + secondary grade
+                            result = gpu.apply_qualifier_gpu(
+                                result, width, height,
+                                params.qualifier.hue_center, params.qualifier.hue_width, params.qualifier.hue_soft,
+                                params.qualifier.sat_low, params.qualifier.sat_high, params.qualifier.sat_soft,
+                                params.qualifier.lum_low, params.qualifier.lum_high, params.qualifier.lum_soft,
+                                params.qualifier.invert,
+                                params.qualifier.exposure, params.qualifier.saturation,
+                                params.qualifier.hue_shift, params.qualifier.temperature,
+                                self.matte_preview,
+                            );
+                            // If masks present, apply mask matte on top (CPU — multiply into result)
+                            if let Some(mask_matte) = &mask_matte {
+                                if self.matte_preview {
+                                    // Multiply matte preview by mask matte
+                                    for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
+                                        let v = (chunk[0] as f32 / 255.0 * mask_matte[i] * 255.0) as u8;
+                                        chunk[0] = v; chunk[1] = v; chunk[2] = v;
+                                    }
+                                }
+                                // When not previewing, the GPU qualifier already applied the grade;
+                                // mask matte would need re-blending which is complex. For now,
+                                // the mask matte intersection is only visible in matte preview.
+                                // Full mask+qualifier GPU integration is a future enhancement.
+                            }
+                        } else if let Some(mask_matte) = &mask_matte {
+                            // Masks-only (no qualifier)
+                            if self.matte_preview {
+                                for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
+                                    let v = (mask_matte[i] * 255.0) as u8;
+                                    chunk[0] = v; chunk[1] = v; chunk[2] = v;
+                                }
+                            } else {
+                                for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
+                                    let m = mask_matte[i];
+                                    if m < 0.999 {
+                                        let dim = 0.7 + 0.3 * m;
+                                        chunk[0] = (chunk[0] as f32 * dim) as u8;
+                                        chunk[1] = (chunk[1] as f32 * dim) as u8;
+                                        chunk[2] = (chunk[2] as f32 * dim) as u8;
+                                    }
+                                }
+                            }
+                        } else if self.matte_preview {
+                            // Matte preview with no qualifier/masks: show white
+                            for chunk in result.chunks_exact_mut(4) {
+                                chunk[0] = 255; chunk[1] = 255; chunk[2] = 255;
+                            }
+                        }
+                    }
                     result
                 } else {
-                    self.color_pipeline.apply_clip_grade_full(rgba, &params, width, height)
+                    self.color_pipeline.apply_clip_grade_full(rgba, &params, width, height, self.matte_preview)
                 }
             } else { rgba }
+        } else { rgba };
+        // 1b. Film grain (GPU)
+        let rgba = if grain.enabled && grain.amount > 0.001 {
+            let frame_seed = self.frames_consumed as u32;
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.apply_grain_gpu(
+                    rgba, width, height,
+                    grain.amount, grain.size, grain.shadows, grain.highlights,
+                    grain.monochrome, frame_seed,
+                )
+            } else {
+                // CPU fallback: simple Wang hash grain
+                let mut rgba = rgba;
+                for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+                    let px = (i as u32) % width;
+                    let py = (i as u32) / width;
+                    let qx = (px as f32 / grain.size) as u32;
+                    let qy = (py as f32 / grain.size) as u32;
+                    let seed = qx.wrapping_mul(1973).wrapping_add(qy.wrapping_mul(9277)).wrapping_add(frame_seed.wrapping_mul(26699));
+                    let noise = (wang_hash_cpu(seed) - 0.5) * grain.amount;
+                    let luma = 0.2126 * chunk[0] as f32 / 255.0 + 0.7152 * chunk[1] as f32 / 255.0 + 0.0722 * chunk[2] as f32 / 255.0;
+                    let weight = ((1.0 - luma) * grain.shadows + luma * grain.highlights).min(1.5);
+                    for ch in &mut chunk[..3] {
+                        let v = *ch as f32 / 255.0 + noise * weight;
+                        *ch = (v.clamp(0.0, 1.0) * 255.0) as u8;
+                    }
+                }
+                rgba
+            }
         } else { rgba };
         let t2 = std::time::Instant::now();
 

@@ -39,6 +39,9 @@ pub struct MediaItem {
     /// Unix epoch seconds when item was added to the project (0 for pre-existing items)
     #[serde(default)]
     pub added_at: u64,
+    /// Camera log encoding format (for IDT conversion)
+    #[serde(default)]
+    pub log_format: klipp_core::LogFormat,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,

@@ -339,6 +339,64 @@ pub fn apply_3d_lut(rgba: &mut [u8], lut: &LutData, opacity: f32) {
     }
 }
 
+/// Bake a color grade into a 3D LUT by running every RGB triplet through the
+/// primary grade pipeline. Does NOT capture qualifier, masks, or keyframe
+/// animation — those are spatial/temporal and cannot be represented in a 3D LUT.
+///
+/// `lut_size`: grid size per axis (17=fast, 33=standard, 65=high quality).
+/// Returns RGB float triples in B-major order (R varies fastest).
+pub fn bake_grade_to_lut(
+    params: &super::ColorGradeParams,
+    pipeline: &super::ColorPipeline,
+    lut_size: u32,
+) -> Vec<[f32; 3]> {
+    let n = lut_size as usize;
+    let mut lut = Vec::with_capacity(n * n * n);
+
+    // Build params without qualifier/masks (primary grade only)
+    let mut primary_params = params.clone();
+    primary_params.qualifier = Default::default();
+    primary_params.masks = Default::default();
+
+    for bi in 0..n {
+        for gi in 0..n {
+            for ri in 0..n {
+                let r = (ri as f32 / (n - 1).max(1) as f32 * 255.0) as u8;
+                let g = (gi as f32 / (n - 1).max(1) as f32 * 255.0) as u8;
+                let b = (bi as f32 / (n - 1).max(1) as f32 * 255.0) as u8;
+                let pixel = vec![r, g, b, 255];
+                let result = pipeline.apply_clip_grade_full(pixel, &primary_params, 1, 1, false);
+                lut.push([
+                    result[0] as f32 / 255.0,
+                    result[1] as f32 / 255.0,
+                    result[2] as f32 / 255.0,
+                ]);
+            }
+        }
+    }
+    lut
+}
+
+/// Write a 3D LUT in Adobe .cube format.
+pub fn write_cube(
+    path: &Path,
+    lut_data: &[[f32; 3]],
+    lut_size: u32,
+    title: &str,
+) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    writeln!(f, "TITLE \"{title}\"")?;
+    writeln!(f, "LUT_3D_SIZE {lut_size}")?;
+    writeln!(f, "DOMAIN_MIN 0.0 0.0 0.0")?;
+    writeln!(f, "DOMAIN_MAX 1.0 1.0 1.0")?;
+    writeln!(f)?;
+    for [r, g, b] in lut_data {
+        writeln!(f, "{r:.6} {g:.6} {b:.6}")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

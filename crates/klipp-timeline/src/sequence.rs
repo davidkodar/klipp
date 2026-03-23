@@ -559,6 +559,12 @@ pub struct ClipColorGrade {
     // ── Power windows / masks ──
     #[serde(default)]
     pub masks: klipp_core::MaskStack,
+    // ── Input device transform ──
+    #[serde(default)]
+    pub log_format: klipp_core::LogFormat,
+    // ── Film grain ──
+    #[serde(default)]
+    pub grain: klipp_core::FilmGrainSettings,
     // ── Keyframe animation ──
     #[serde(default)]
     pub keyframe_tracks: klipp_core::KeyframeTracks,
@@ -610,6 +616,8 @@ impl Default for ClipColorGrade {
             huesat_mix: 1.0,
             qualifier: Default::default(),
             masks: Default::default(),
+            log_format: Default::default(),
+            grain: Default::default(),
             keyframe_tracks: Default::default(),
         }
     }

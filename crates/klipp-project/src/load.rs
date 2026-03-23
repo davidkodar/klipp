@@ -73,6 +73,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
             added_at: item_json.added_at.unwrap_or(0),
+            log_format: Default::default(),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
@@ -194,6 +195,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                         qualifier: cg.qualifier.clone().unwrap_or_default(),
                         masks: cg.masks.clone().unwrap_or_default(),
                         keyframe_tracks: cg.keyframe_tracks.clone().unwrap_or_default(),
+                        grain: cg.grain.clone().unwrap_or_default(),
+                        log_format: cg.log_format.unwrap_or_default(),
                     }).unwrap_or_default(),
                     builtin_effects: c.builtin_effects.as_ref()
                         .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())

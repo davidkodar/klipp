@@ -39,6 +39,8 @@ pub struct ColorGradeParams {
     pub huesat_mix: f32,
     pub qualifier: klipp_core::QualifierSettings,
     pub masks: klipp_core::MaskStack,
+    /// Input device transform — camera log format for this clip
+    pub input_log_format: klipp_core::LogFormat,
 }
 
 /// Pre-computed 256-entry lookup tables for RGB curves.
@@ -91,7 +93,12 @@ impl ColorPipeline {
     }
 
     /// Apply per-clip color grade to an RGBA frame using the full parameter set.
-    pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams, width: u32, height: u32) -> Vec<u8> {
+    /// When `matte_preview` is true, the output is replaced with a B&W matte visualisation
+    /// (white = inside qualifier/mask, black = outside) and the grade is not applied.
+    pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams, width: u32, height: u32, matte_preview: bool) -> Vec<u8> {
+        // 0. Input Device Transform (camera log → Rec.709)
+        transforms::apply_input_transform(&mut rgba, params.input_log_format);
+
         // Save original for global mix if needed
         let original = if params.global_mix < 0.999 { Some(rgba.clone()) } else { None };
 
@@ -161,30 +168,49 @@ impl ColorPipeline {
             transforms::apply_global_mix(&mut rgba, orig, params.global_mix);
         }
         // 12. Secondary color correction (qualifier + masks)
-        if params.qualifier.enabled {
-            let mut matte = crate::qualifier::generate_qualifier_matte(
-                &rgba, width, height, &params.qualifier,
-            );
-            // Combine with mask matte (intersection: multiply)
-            if !params.masks.is_empty() {
-                let mask_matte = crate::masks::generate_mask_matte(width, height, &params.masks);
-                for (m, mm) in matte.iter_mut().zip(mask_matte.iter()) {
-                    *m *= mm;
+        if params.qualifier.enabled || !params.masks.is_empty() {
+            // Compute combined matte
+            let matte = if params.qualifier.enabled {
+                let mut matte = crate::qualifier::generate_qualifier_matte(
+                    &rgba, width, height, &params.qualifier,
+                );
+                // Combine with mask matte (intersection: multiply)
+                if !params.masks.is_empty() {
+                    let mask_matte = crate::masks::generate_mask_matte(width, height, &params.masks);
+                    for (m, mm) in matte.iter_mut().zip(mask_matte.iter()) {
+                        *m *= mm;
+                    }
                 }
+                matte
+            } else {
+                crate::masks::generate_mask_matte(width, height, &params.masks)
+            };
+
+            // Matte preview: replace output with B&W matte visualisation
+            if matte_preview {
+                for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+                    let v = (matte[i] * 255.0) as u8;
+                    chunk[0] = v;
+                    chunk[1] = v;
+                    chunk[2] = v;
+                    // alpha unchanged
+                }
+                return rgba;
             }
-            crate::qualifier::apply_qualified_grade(&mut rgba, &matte, &params.qualifier);
-        } else if !params.masks.is_empty() {
-            // Masks without qualifier: apply masks alone as a vignette/region effect
-            // For now, just darken outside the mask as a basic vignette
-            let mask_matte = crate::masks::generate_mask_matte(width, height, &params.masks);
-            for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
-                let m = mask_matte.get(i).copied().unwrap_or(1.0);
-                if m < 0.999 {
-                    // Subtle vignette: darken outside mask
-                    let dim = 0.7 + 0.3 * m; // at m=0, dim=0.7 (30% darker)
-                    chunk[0] = (chunk[0] as f32 * dim) as u8;
-                    chunk[1] = (chunk[1] as f32 * dim) as u8;
-                    chunk[2] = (chunk[2] as f32 * dim) as u8;
+
+            // Apply grade through matte
+            if params.qualifier.enabled {
+                crate::qualifier::apply_qualified_grade(&mut rgba, &matte, &params.qualifier);
+            } else {
+                // Masks without qualifier: apply as vignette
+                for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+                    let m = matte[i];
+                    if m < 0.999 {
+                        let dim = 0.7 + 0.3 * m;
+                        chunk[0] = (chunk[0] as f32 * dim) as u8;
+                        chunk[1] = (chunk[1] as f32 * dim) as u8;
+                        chunk[2] = (chunk[2] as f32 * dim) as u8;
+                    }
                 }
             }
         }

@@ -350,88 +350,266 @@ impl ViewerPanel {
             0.0, egui::Color32::BLACK,
         );
 
-        // ── White balance eyedropper interaction ──
-        if state.wb_eyedropper_active {
+        // ── Eyedropper interaction (White Balance or Qualifier) ──
+        if state.eyedropper_mode != crate::state::EyedropperMode::None {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-            // Allocate click sense over the image area
             let eyedropper_resp = ui.allocate_rect(image_rect, egui::Sense::click());
             if eyedropper_resp.clicked() {
                 if let Some(pos) = eyedropper_resp.interact_pointer_pos() {
-                    // Normalized coordinates (0-1) within the video frame
                     let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
                     let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
-                    state.wb_sample_request = Some((nx, ny));
-                    state.wb_eyedropper_active = false;
+                    match state.eyedropper_mode {
+                        crate::state::EyedropperMode::WhiteBalance => {
+                            state.wb_sample_request = Some((nx, ny));
+                        }
+                        crate::state::EyedropperMode::Qualifier => {
+                            state.qualifier_sample_request = Some((nx, ny));
+                        }
+                        crate::state::EyedropperMode::None => {}
+                    }
+                    state.eyedropper_mode = crate::state::EyedropperMode::None;
                 }
             }
-            // Cancel on Escape
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                state.wb_eyedropper_active = false;
+                state.eyedropper_mode = crate::state::EyedropperMode::None;
             }
         }
 
-        // ── Mask outlines on viewer ──
+        // ── Interactive mask handles on viewer ──
         if let Some(clip_id) = state.selected_clip {
-            let masks = state.sequences.get(state.active_sequence_idx)
+            let masks_clone = state.sequences.get(state.active_sequence_idx)
                 .and_then(|seq| seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id))
-                .map(|c| &c.color_grade.masks);
+                .map(|c| c.color_grade.masks.clone());
 
-            if let Some(masks) = masks {
-                let mask_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 160));
-                let aspect = image_rect.height() / image_rect.width();
+            if let Some(masks) = masks_clone {
+                let accent = egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 160);
+                let accent_solid = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+                let mask_stroke = egui::Stroke::new(1.5, accent);
+                let handle_size = egui::vec2(12.0, 12.0);
+                let iw = image_rect.width();
+                let ih = image_rect.height();
 
-                for mask in &masks.masks {
+                for (mask_idx, mask) in masks.masks.iter().enumerate() {
                     if !mask.enabled { continue; }
                     match &mask.shape {
                         klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
-                            let cx = image_rect.min.x + center_x * image_rect.width();
-                            let cy = image_rect.min.y + center_y * image_rect.height();
-                            let r = radius * image_rect.width();
+                            let cx = image_rect.min.x + center_x * iw;
+                            let cy = image_rect.min.y + center_y * ih;
+                            let r = radius * iw;
+
+                            // Draw circle outline
                             ui.painter().circle_stroke(egui::pos2(cx, cy), r, mask_stroke);
+
+                            // Centre handle — drag to move
+                            let center_id = ui.id().with(("mask_center", mask_idx));
+                            let center_rect = egui::Rect::from_center_size(egui::pos2(cx, cy), handle_size);
+                            let center_resp = ui.interact(center_rect, center_id, egui::Sense::drag());
+                            ui.painter().circle_filled(egui::pos2(cx, cy), 4.0, accent_solid);
+                            if center_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                            if center_resp.dragged() {
+                                let d = center_resp.drag_delta();
+                                let new_cx = (center_x + d.x / iw).clamp(0.0, 1.0);
+                                let new_cy = (center_y + d.y / ih).clamp(0.0, 1.0);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Circle {
+                                    center_x: new_cx, center_y: new_cy, radius: *radius,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
+
+                            // Edge handle (3 o'clock) — drag to resize radius
+                            let edge_x = cx + r;
+                            let edge_id = ui.id().with(("mask_edge", mask_idx));
+                            let edge_rect = egui::Rect::from_center_size(egui::pos2(edge_x, cy), handle_size);
+                            let edge_resp = ui.interact(edge_rect, edge_id, egui::Sense::drag());
+                            ui.painter().circle_stroke(egui::pos2(edge_x, cy), 3.5, egui::Stroke::new(1.5, accent_solid));
+                            if edge_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            }
+                            if edge_resp.dragged() {
+                                let new_r = ((edge_x + edge_resp.drag_delta().x - cx) / iw).max(0.01);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Circle {
+                                    center_x: *center_x, center_y: *center_y, radius: new_r,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
                         }
                         klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
-                            let cx = image_rect.min.x + center_x * image_rect.width();
-                            let cy = image_rect.min.y + center_y * image_rect.height();
-                            let hw = width / 2.0 * image_rect.width();
-                            let hh = height / 2.0 * image_rect.width(); // use width for aspect
+                            let cx = image_rect.min.x + center_x * iw;
+                            let cy = image_rect.min.y + center_y * ih;
+                            let hw = width / 2.0 * iw;
+                            let hh = height / 2.0 * iw;
                             let rad = rotation.to_radians();
                             let cos_r = rad.cos();
                             let sin_r = rad.sin();
-                            // Four corners rotated
-                            let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
-                            let points: Vec<egui::Pos2> = corners.iter().map(|&(lx, ly)| {
-                                egui::pos2(
-                                    cx + lx * cos_r - ly * sin_r,
-                                    cy + lx * sin_r + ly * cos_r,
-                                )
-                            }).collect();
+
+                            let rotate = |lx: f32, ly: f32| -> egui::Pos2 {
+                                egui::pos2(cx + lx * cos_r - ly * sin_r, cy + lx * sin_r + ly * cos_r)
+                            };
+
+                            // Draw rectangle outline
+                            let corners_local = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
+                            let points: Vec<egui::Pos2> = corners_local.iter().map(|&(lx, ly)| rotate(lx, ly)).collect();
                             for i in 0..4 {
-                                ui.painter().line_segment(
-                                    [points[i], points[(i + 1) % 4]],
-                                    mask_stroke,
-                                );
+                                ui.painter().line_segment([points[i], points[(i + 1) % 4]], mask_stroke);
                             }
-                            // Center dot
-                            ui.painter().circle_filled(egui::pos2(cx, cy), 3.0, mask_stroke.color);
+
+                            // Centre handle — drag to move
+                            let center_id = ui.id().with(("rmask_center", mask_idx));
+                            let center_rect = egui::Rect::from_center_size(egui::pos2(cx, cy), handle_size);
+                            let center_resp = ui.interact(center_rect, center_id, egui::Sense::drag());
+                            ui.painter().circle_filled(egui::pos2(cx, cy), 4.0, accent_solid);
+                            if center_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                            if center_resp.dragged() {
+                                let d = center_resp.drag_delta();
+                                let new_cx = (center_x + d.x / iw).clamp(0.0, 1.0);
+                                let new_cy = (center_y + d.y / ih).clamp(0.0, 1.0);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Rectangle {
+                                    center_x: new_cx, center_y: new_cy, width: *width, height: *height, rotation: *rotation,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
+
+                            // Corner handles — drag to resize (top-right corner only for simplicity,
+                            // symmetric resize around centre)
+                            let tr = rotate(hw, -hh);
+                            let tr_id = ui.id().with(("rmask_tr", mask_idx));
+                            let tr_rect = egui::Rect::from_center_size(tr, handle_size);
+                            let tr_resp = ui.interact(tr_rect, tr_id, egui::Sense::drag());
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(tr, egui::vec2(5.0, 5.0)),
+                                0.0, accent_solid,
+                            );
+                            if tr_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
+                            }
+                            if tr_resp.dragged() {
+                                let d = tr_resp.drag_delta();
+                                // Project drag into local space (un-rotate)
+                                let dlx = d.x * cos_r + d.y * sin_r;
+                                let dly = -d.x * sin_r + d.y * cos_r;
+                                let new_w = (width + 2.0 * dlx / iw).max(0.02);
+                                let new_h = (height - 2.0 * dly / iw).max(0.02);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Rectangle {
+                                    center_x: *center_x, center_y: *center_y,
+                                    width: new_w, height: new_h, rotation: *rotation,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
+
+                            // Bottom-left corner for symmetric resize
+                            let bl = rotate(-hw, hh);
+                            let bl_id = ui.id().with(("rmask_bl", mask_idx));
+                            let bl_rect = egui::Rect::from_center_size(bl, handle_size);
+                            let bl_resp = ui.interact(bl_rect, bl_id, egui::Sense::drag());
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(bl, egui::vec2(5.0, 5.0)),
+                                0.0, accent_solid,
+                            );
+                            if bl_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
+                            }
+                            if bl_resp.dragged() {
+                                let d = bl_resp.drag_delta();
+                                let dlx = d.x * cos_r + d.y * sin_r;
+                                let dly = -d.x * sin_r + d.y * cos_r;
+                                let new_w = (width - 2.0 * dlx / iw).max(0.02);
+                                let new_h = (height + 2.0 * dly / iw).max(0.02);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Rectangle {
+                                    center_x: *center_x, center_y: *center_y,
+                                    width: new_w, height: new_h, rotation: *rotation,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
+
+                            // Rotation handle (above top-centre)
+                            let rot_offset = 25.0; // pixels above top edge
+                            let rot_pos = rotate(0.0, -hh - rot_offset);
+                            let rot_id = ui.id().with(("rmask_rot", mask_idx));
+                            let rot_rect = egui::Rect::from_center_size(rot_pos, handle_size);
+                            let rot_resp = ui.interact(rot_rect, rot_id, egui::Sense::drag());
+                            // Draw rotation handle: small circle + line from top-centre
+                            let top_center = rotate(0.0, -hh);
+                            ui.painter().line_segment([top_center, rot_pos],
+                                egui::Stroke::new(1.0, accent));
+                            ui.painter().circle_filled(rot_pos, 4.0, accent_solid);
+                            if rot_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            }
+                            if rot_resp.dragged() {
+                                let d = rot_resp.drag_delta();
+                                let handle_pos = rot_pos + d;
+                                let angle = (handle_pos.x - cx).atan2(-(handle_pos.y - cy));
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::Rectangle {
+                                    center_x: *center_x, center_y: *center_y,
+                                    width: *width, height: *height,
+                                    rotation: angle.to_degrees(),
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
                         }
                         klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
-                            let sx = image_rect.min.x + start_x * image_rect.width();
-                            let sy = image_rect.min.y + start_y * image_rect.height();
-                            let ex = image_rect.min.x + end_x * image_rect.width();
-                            let ey = image_rect.min.y + end_y * image_rect.height();
-                            // Draw gradient line with dots at start/end
-                            ui.painter().line_segment(
-                                [egui::pos2(sx, sy), egui::pos2(ex, ey)],
-                                mask_stroke,
-                            );
-                            ui.painter().circle_filled(egui::pos2(sx, sy), 4.0, mask_stroke.color);
-                            ui.painter().circle_stroke(egui::pos2(ex, ey), 4.0, mask_stroke);
+                            let sx = image_rect.min.x + start_x * iw;
+                            let sy = image_rect.min.y + start_y * ih;
+                            let ex = image_rect.min.x + end_x * iw;
+                            let ey = image_rect.min.y + end_y * ih;
+
+                            // Draw gradient line
+                            ui.painter().line_segment([egui::pos2(sx, sy), egui::pos2(ex, ey)], mask_stroke);
+
+                            // Start handle — drag to move start point
+                            let start_id = ui.id().with(("gmask_start", mask_idx));
+                            let start_rect = egui::Rect::from_center_size(egui::pos2(sx, sy), handle_size);
+                            let start_resp = ui.interact(start_rect, start_id, egui::Sense::drag());
+                            ui.painter().circle_filled(egui::pos2(sx, sy), 5.0, accent_solid);
+                            if start_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                            if start_resp.dragged() {
+                                let d = start_resp.drag_delta();
+                                let new_sx = (start_x + d.x / iw).clamp(0.0, 1.0);
+                                let new_sy = (start_y + d.y / ih).clamp(0.0, 1.0);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::LinearGradient {
+                                    start_x: new_sx, start_y: new_sy,
+                                    end_x: *end_x, end_y: *end_y,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
+
+                            // End handle — drag to move end point
+                            let end_id = ui.id().with(("gmask_end", mask_idx));
+                            let end_rect = egui::Rect::from_center_size(egui::pos2(ex, ey), handle_size);
+                            let end_resp = ui.interact(end_rect, end_id, egui::Sense::drag());
+                            ui.painter().circle_stroke(egui::pos2(ex, ey), 5.0, egui::Stroke::new(1.5, accent_solid));
+                            if end_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                            if end_resp.dragged() {
+                                let d = end_resp.drag_delta();
+                                let new_ex = (end_x + d.x / iw).clamp(0.0, 1.0);
+                                let new_ey = (end_y + d.y / ih).clamp(0.0, 1.0);
+                                let mut new_masks = masks.clone();
+                                new_masks.masks[mask_idx].shape = klipp_core::MaskShape::LinearGradient {
+                                    start_x: *start_x, start_y: *start_y,
+                                    end_x: new_ex, end_y: new_ey,
+                                };
+                                cmds.push(AppCommand::SetClipMasks { clip_id, masks: new_masks });
+                            }
                         }
                     }
                 }
-                let _ = aspect; // suppress unused warning
             }
         }
 

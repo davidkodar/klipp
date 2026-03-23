@@ -156,6 +156,35 @@ impl MaskStack {
     }
 }
 
+/// Film grain overlay settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilmGrainSettings {
+    pub enabled: bool,
+    /// Grain intensity (0.0 = off, 1.0 = maximum)
+    pub amount: f32,
+    /// Grain particle size (0.5 = fine, 3.0 = coarse)
+    pub size: f32,
+    /// How much grain in shadows (0.0 = none, 1.0 = full)
+    pub shadows: f32,
+    /// How much grain in highlights (0.0 = none, 1.0 = full)
+    pub highlights: f32,
+    /// Monochrome grain (true) vs colour grain (false)
+    pub monochrome: bool,
+}
+
+impl Default for FilmGrainSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            amount: 0.0,
+            size: 1.0,
+            shadows: 1.0,
+            highlights: 0.5,
+            monochrome: true,
+        }
+    }
+}
+
 impl HueSatCurves {
     pub fn is_all_identity(&self) -> bool {
         self.hue_vs_hue.is_empty()

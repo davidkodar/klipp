@@ -253,6 +253,141 @@ pub fn apply_global_mix(graded: &mut [u8], original: &[u8], mix: f32) {
     }
 }
 
+/// Apply input device transform (IDT) — convert camera log encoding to linear/Rec.709.
+/// This is the first step before any grading.
+pub fn apply_input_transform(rgba: &mut [u8], log_format: klipp_core::LogFormat) {
+    use klipp_core::LogFormat;
+    match log_format {
+        LogFormat::Srgb | LogFormat::Linear => return, // no conversion needed
+        _ => {}
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let (lr, lg, lb) = (
+            log_to_linear(r, log_format),
+            log_to_linear(g, log_format),
+            log_to_linear(b, log_format),
+        );
+        // Linear → sRGB gamma for display/grading in Rec.709
+        pixel[0] = (linear_to_srgb(lr).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = (linear_to_srgb(lg).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = (linear_to_srgb(lb).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Convert a single channel from camera log encoding to scene-linear.
+fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
+    use klipp_core::LogFormat;
+    match format {
+        LogFormat::SLog3 => {
+            // Sony S-Log3 → linear (from S-Log3 specification)
+            if v >= 0.171_282_8 {
+                10.0f32.powf((v - 0.410_557_18) / 0.341_084_08) * 0.18 - 0.01
+            } else {
+                (v - 0.092_864_125) / 5.269_236
+            }
+        }
+        LogFormat::SLog2 => {
+            // Sony S-Log2 → linear
+            if v >= 0.030_001 {
+                let a = 0.432699;
+                let b = 0.037584;
+                let c = 0.616596;
+                10.0f32.powf((v - c) / a) - b
+            } else {
+                (v / 3.538_813 - 0.003_907) * 0.9
+            }
+        }
+        LogFormat::LogC3 => {
+            // ARRI LogC3 (EI 800) → linear
+            let cut = 0.010591;
+            let a = 5.555556;
+            let b = 0.052272;
+            let c = 0.247190;
+            let d = 0.385537;
+            let e = 5.367655;
+            let f_val = 0.092809;
+            if v > e * cut + f_val {
+                (10.0f32.powf((v - d) / c) - b) / a
+            } else {
+                (v - f_val) / e
+            }
+        }
+        LogFormat::LogC4 => {
+            // ARRI LogC4 → linear
+            let a = (2.0f32.ln() * 14.0) / 0.9;
+            let b = (2.0f32.ln() * 2.0) / 0.9;
+            let c = 0.0928;
+            if v >= c {
+                (2.0f32.powf((v - c) * 0.9 / (2.0f32.ln()) + 2.0) - 2.0f32.powf(2.0)) / a
+            } else {
+                (v - c) / (a * b)
+            }
+        }
+        LogFormat::CanonLog => {
+            // Canon Log → linear
+            if v >= 0.125 {
+                (10.0f32.powf((v - 0.529_136) / 0.529_136) - 1.0) / 10.1596
+            } else {
+                -(10.0f32.powf((0.529_136 - v) / 0.529_136) - 1.0) / 10.1596
+            }
+        }
+        LogFormat::CanonLog3 => {
+            // Canon Log 3 → linear
+            if v >= 0.097_465_47 {
+                (10.0f32.powf((v - 0.449_3) / 0.360_7) - 1.0) / 14.98325
+            } else {
+                (v - 0.073_59) / 2.3069
+            }
+        }
+        LogFormat::VLog => {
+            // Panasonic V-Log → linear
+            let cut_inv = 0.181;
+            if v >= cut_inv {
+                10.0f32.powf((v - 0.598_206) / 0.241_514) - 0.00873
+            } else {
+                (v - 0.125) / 5.6
+            }
+        }
+        LogFormat::NLog => {
+            // Nikon N-Log → linear
+            if v >= 328.0 / 1023.0 {
+                ((v.powf(1.0 / 3.0) - 0.0928) / 0.6007).exp()
+            } else {
+                v / 1000.0
+            }
+        }
+        LogFormat::FLog => {
+            // Fuji F-Log → linear
+            if v >= 0.100_537_8 {
+                (10.0f32.powf((v - 0.555_556) / 0.344_676) - 0.009_468) / 8.735631
+            } else {
+                (v - 0.092_864) / 8.799_461
+            }
+        }
+        LogFormat::DJIDLog => {
+            // DJI D-Log → linear (simplified)
+            if v >= 0.14 {
+                (10.0f32.powf((v - 0.584_555) / 0.684_61) - 1.0) / 6.025
+            } else {
+                (v - 0.0929) / 6.025
+            }
+        }
+        LogFormat::Srgb | LogFormat::Linear => v, // handled above
+    }
+}
+
+/// Linear → sRGB transfer function.
+fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +554,435 @@ mod tests {
         assert!(buf[0] > 100); // first pixel brighter
         assert!(buf[4] > 200); // second pixel brighter (or clamped)
         assert!(buf[8] > 50); // third pixel brighter
+    }
+
+    // ─── Ramp image helper ───────────────────────────────────────────────
+
+    /// Generate a 256×1 synthetic ramp: R=G=B=i for i in 0..256.
+    /// Returns a 256×4 RGBA buffer.
+    fn make_ramp() -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256 * 4);
+        for i in 0..256u16 {
+            let v = i as u8;
+            buf.extend_from_slice(&[v, v, v, 255]);
+        }
+        buf
+    }
+
+    /// Read the R channel at a given pixel index (R=G=B for grey ramp).
+    fn ramp_r(buf: &[u8], idx: usize) -> u8 {
+        buf[idx * 4]
+    }
+
+    // Pixel indices for 10%, 50%, 90% luma on the ramp (R=G=B=i → luma = i/255).
+    const POS_10: usize = 26;  // luma ≈ 0.102
+    const POS_50: usize = 128; // luma ≈ 0.502
+    const POS_90: usize = 230; // luma ≈ 0.902
+
+    // ─── 1. Lift/Gamma/Gain/Offset ramp tests ───────────────────────────
+
+    #[test]
+    fn ramp_lift_only() {
+        // Lift at +0.1: output ≈ input + 0.1 × (1 - luma)
+        let shift = 0.1f32;
+        let mut buf = make_ramp();
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (shift, shift, shift),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        );
+
+        // At 10% luma: lift_w = 1 - 0.102 = 0.898, expect ≈ 26 + 0.1*0.898*255 ≈ 48.9
+        let luma_10 = POS_10 as f32 / 255.0;
+        let expected_10 = (luma_10 + shift * (1.0 - luma_10)) * 255.0;
+        let actual_10 = ramp_r(&buf, POS_10) as f32;
+        assert!(
+            (actual_10 - expected_10).abs() < 2.0,
+            "lift at 10%: actual={actual_10}, expected={expected_10}"
+        );
+
+        // At 90% luma: lift_w = 1 - 0.902 = 0.098, expect ≈ 230 + 0.1*0.098*255 ≈ 232.5
+        let luma_90 = POS_90 as f32 / 255.0;
+        let expected_90 = (luma_90 + shift * (1.0 - luma_90)) * 255.0;
+        let actual_90 = ramp_r(&buf, POS_90) as f32;
+        assert!(
+            (actual_90 - expected_90).abs() < 2.0,
+            "lift at 90%: actual={actual_90}, expected={expected_90}"
+        );
+
+        // Lift should affect shadows MORE than highlights
+        let delta_10 = ramp_r(&buf, POS_10) as i16 - POS_10 as i16;
+        let delta_90 = ramp_r(&buf, POS_90) as i16 - POS_90 as i16;
+        assert!(
+            delta_10 > delta_90,
+            "lift should affect shadows more: delta_10={delta_10}, delta_90={delta_90}"
+        );
+    }
+
+    #[test]
+    fn ramp_gamma_only() {
+        // Gamma at +0.1: maximum effect at 50% luma, zero at 0% and 100%
+        let shift = 0.1f32;
+        let mut buf = make_ramp();
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (0.0, 0.0, 0.0),
+            (shift, shift, shift),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        );
+
+        // At 50% luma: gamma_w = sin(0.5*π) = 1.0, expect ≈ 128 + 0.1*1.0*255 = 153.5
+        let luma_50 = POS_50 as f32 / 255.0;
+        let gamma_w_50 = (luma_50 * std::f32::consts::PI).sin();
+        let expected_50 = (luma_50 + shift * gamma_w_50) * 255.0;
+        let actual_50 = ramp_r(&buf, POS_50) as f32;
+        assert!(
+            (actual_50 - expected_50).abs() < 2.0,
+            "gamma at 50%: actual={actual_50}, expected={expected_50}"
+        );
+
+        // At 0% luma: gamma_w = sin(0) = 0, pixel 0 should be unchanged
+        assert_eq!(
+            ramp_r(&buf, 0), 0,
+            "gamma should not affect black"
+        );
+
+        // At 100% luma: gamma_w = sin(π) ≈ 0, pixel 255 should be unchanged
+        assert!(
+            (ramp_r(&buf, 255) as i16 - 255).unsigned_abs() <= 1,
+            "gamma should not affect white: got {}", ramp_r(&buf, 255)
+        );
+
+        // 50% should be most affected (larger delta than 10% and 90%)
+        let delta_50 = (ramp_r(&buf, POS_50) as i16 - POS_50 as i16).unsigned_abs();
+        let delta_10 = (ramp_r(&buf, POS_10) as i16 - POS_10 as i16).unsigned_abs();
+        let delta_90 = (ramp_r(&buf, POS_90) as i16 - POS_90 as i16).unsigned_abs();
+        assert!(
+            delta_50 >= delta_10 && delta_50 >= delta_90,
+            "gamma should peak at midtones: d10={delta_10}, d50={delta_50}, d90={delta_90}"
+        );
+    }
+
+    #[test]
+    fn ramp_gain_only() {
+        // Gain at +0.1: output ≈ input + 0.1 × luma
+        let shift = 0.1f32;
+        let mut buf = make_ramp();
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (shift, shift, shift),
+            (0.0, 0.0, 0.0),
+        );
+
+        // At 90% luma: gain_w = 0.902, expect ≈ 230 + 0.1*0.902*255 ≈ 253.0
+        let luma_90 = POS_90 as f32 / 255.0;
+        let expected_90 = (luma_90 + shift * luma_90) * 255.0;
+        let actual_90 = ramp_r(&buf, POS_90) as f32;
+        assert!(
+            (actual_90 - expected_90).abs() < 2.0,
+            "gain at 90%: actual={actual_90}, expected={expected_90}"
+        );
+
+        // At 10% luma: gain_w = 0.102, expect ≈ 26 + 0.1*0.102*255 ≈ 28.6
+        let luma_10 = POS_10 as f32 / 255.0;
+        let expected_10 = (luma_10 + shift * luma_10) * 255.0;
+        let actual_10 = ramp_r(&buf, POS_10) as f32;
+        assert!(
+            (actual_10 - expected_10).abs() < 2.0,
+            "gain at 10%: actual={actual_10}, expected={expected_10}"
+        );
+
+        // Gain should affect highlights MORE than shadows
+        let delta_90 = ramp_r(&buf, POS_90) as i16 - POS_90 as i16;
+        let delta_10 = ramp_r(&buf, POS_10) as i16 - POS_10 as i16;
+        assert!(
+            delta_90 > delta_10,
+            "gain should affect highlights more: delta_10={delta_10}, delta_90={delta_90}"
+        );
+    }
+
+    #[test]
+    fn ramp_offset_only() {
+        // Offset at +0.1: output ≈ input + 0.1 uniformly at all positions
+        let shift = 0.1f32;
+        let mut buf = make_ramp();
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (shift, shift, shift),
+        );
+
+        let expected_delta = (shift * 255.0) as i16; // 25
+
+        let delta_10 = ramp_r(&buf, POS_10) as i16 - POS_10 as i16;
+        let delta_50 = ramp_r(&buf, POS_50) as i16 - POS_50 as i16;
+        let delta_90 = ramp_r(&buf, POS_90) as i16 - POS_90 as i16;
+
+        // All deltas should be approximately equal (uniform shift)
+        assert!(
+            (delta_10 - expected_delta).unsigned_abs() <= 1,
+            "offset at 10%: delta={delta_10}, expected={expected_delta}"
+        );
+        assert!(
+            (delta_50 - expected_delta).unsigned_abs() <= 1,
+            "offset at 50%: delta={delta_50}, expected={expected_delta}"
+        );
+        assert!(
+            (delta_90 - expected_delta).unsigned_abs() <= 1,
+            "offset at 90%: delta={delta_90}, expected={expected_delta}"
+        );
+
+        // Verify uniformity: max spread between any two positions ≤ 1
+        let spread = delta_10.max(delta_50).max(delta_90) - delta_10.min(delta_50).min(delta_90);
+        assert!(
+            spread <= 1,
+            "offset should be uniform: deltas=({delta_10}, {delta_50}, {delta_90})"
+        );
+    }
+
+    // ─── 2. Temperature/tint neutrality ──────────────────────────────────
+
+    #[test]
+    fn temperature_tint_neutrality() {
+        // Pure grey with temp=0, tint=0 must be unchanged
+        let mut px = make_pixel(128, 128, 128);
+        apply_temperature_tint(&mut px, 0.0, 0.0);
+        assert_eq!(px[0], 128, "R should be unchanged");
+        assert_eq!(px[1], 128, "G should be unchanged");
+        assert_eq!(px[2], 128, "B should be unchanged");
+    }
+
+    #[test]
+    fn temperature_warm_symmetric_shift() {
+        // With temperature=+50: R increases and B decreases by equal amounts
+        let mut px = make_pixel(128, 128, 128);
+        apply_temperature_tint(&mut px, 50.0, 0.0);
+        let r_delta = px[0] as i16 - 128;
+        let b_delta = 128 - px[2] as i16;
+        assert!(
+            r_delta > 0,
+            "warm temperature should increase R: got {}", px[0]
+        );
+        assert!(
+            b_delta > 0,
+            "warm temperature should decrease B: got {}", px[2]
+        );
+        // R increase should equal B decrease (symmetric formula: R += t, B -= t)
+        // Allow ±1 for 8-bit truncation asymmetry (floor vs ceil at boundaries)
+        assert!(
+            (r_delta - b_delta).unsigned_abs() <= 1,
+            "R increase ({r_delta}) should approximately equal B decrease ({b_delta})"
+        );
+        // Green unchanged
+        assert_eq!(px[1], 128, "G should be unchanged with tint=0");
+    }
+
+    // ─── 3. Saturation identity ──────────────────────────────────────────
+
+    #[test]
+    fn saturation_identity_exact() {
+        // saturation=1.0 must be a perfect no-op for any input
+        let test_pixels: Vec<[u8; 3]> = vec![
+            [0, 0, 0],
+            [255, 255, 255],
+            [128, 128, 128],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [200, 100, 50],
+            [42, 177, 213],
+        ];
+        for [r, g, b] in &test_pixels {
+            let mut px = make_pixel(*r, *g, *b);
+            let orig = px.clone();
+            apply_saturation(&mut px, 1.0);
+            assert_eq!(
+                px, orig,
+                "saturation=1.0 should be identity for ({r}, {g}, {b})"
+            );
+        }
+    }
+
+    // ─── 4. Curve identity ───────────────────────────────────────────────
+
+    #[test]
+    fn curve_identity_perfect_noop() {
+        // A curve with only [0,0] and [1,1] must be a perfect no-op
+        use crate::curves::{build_curve_lut, apply_curves};
+
+        let identity_lut = build_curve_lut(&[[0.0, 0.0], [1.0, 1.0]]);
+
+        // Verify the LUT itself is identity (every entry maps to itself ±1)
+        for i in 0..256 {
+            assert!(
+                (identity_lut[i] as i16 - i as i16).unsigned_abs() <= 1,
+                "identity LUT[{i}] = {}, expected {i}", identity_lut[i]
+            );
+        }
+
+        // Apply to a variety of pixels — output must equal input exactly
+        let test_pixels: Vec<[u8; 3]> = vec![
+            [0, 0, 0],
+            [255, 255, 255],
+            [1, 1, 1],
+            [254, 254, 254],
+            [128, 64, 200],
+            [42, 177, 213],
+        ];
+        for [r, g, b] in &test_pixels {
+            let mut px = make_pixel(*r, *g, *b);
+            let orig = px.clone();
+            apply_curves(&mut px, &identity_lut, &identity_lut, &identity_lut, &identity_lut);
+            // Allow ±1 for the LUT quantization at endpoints
+            for ch in 0..3 {
+                assert!(
+                    (px[ch] as i16 - orig[ch] as i16).unsigned_abs() <= 1,
+                    "curve identity failed for ({r},{g},{b}) ch={ch}: got {} expected {}",
+                    px[ch], orig[ch]
+                );
+            }
+        }
+    }
+
+    // ─── 5. Round-trip (apply + inverse) ─────────────────────────────────
+
+    #[test]
+    fn roundtrip_offset() {
+        // Apply offset +0.05, then offset -0.05 — should be within 2 LSB
+        // (two 8-bit quantization steps: forward truncation + inverse truncation)
+        let mut buf = make_ramp();
+        let original = buf.clone();
+
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.05, 0.05, 0.05),
+        );
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (-0.05, -0.05, -0.05),
+        );
+
+        // Check every non-clamped pixel (skip near 255 where clamping occurs)
+        for i in 0..243 {
+            let orig_val = original[i * 4] as i16;
+            let rt_val = buf[i * 4] as i16;
+            let err = (rt_val - orig_val).unsigned_abs();
+            assert!(
+                err <= 2,
+                "round-trip offset pixel {i}: original={orig_val}, got={rt_val}, err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_temperature() {
+        // Apply temperature +20, then -20
+        let mut px = make_pixel(128, 128, 128);
+        let orig = px.clone();
+        apply_temperature_tint(&mut px, 20.0, 0.0);
+        apply_temperature_tint(&mut px, -20.0, 0.0);
+        for ch in 0..3 {
+            let err = (px[ch] as i16 - orig[ch] as i16).unsigned_abs();
+            assert!(
+                err <= 2,
+                "round-trip temperature ch={ch}: original={}, got={}, err={err}",
+                orig[ch], px[ch]
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_lift_gain() {
+        // Apply lift +0.05 and gain +0.05, then negate both
+        let mut buf = make_ramp();
+        let original = buf.clone();
+
+        let shift = 0.05f32;
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (shift, shift, shift),
+            (0.0, 0.0, 0.0),
+            (shift, shift, shift),
+            (0.0, 0.0, 0.0),
+        );
+        apply_lift_gamma_gain_offset(
+            &mut buf,
+            (-shift, -shift, -shift),
+            (0.0, 0.0, 0.0),
+            (-shift, -shift, -shift),
+            (0.0, 0.0, 0.0),
+        );
+
+        // Check non-clamped range (skip extremes where clamping loses info)
+        for i in 5..240 {
+            let orig_val = original[i * 4] as i16;
+            let rt_val = buf[i * 4] as i16;
+            let err = (rt_val - orig_val).unsigned_abs();
+            assert!(
+                err <= 2,
+                "round-trip lift+gain pixel {i}: original={orig_val}, got={rt_val}, err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_exposure() {
+        // Apply exposure +0.25 stops, then -0.25 stops
+        let mut buf = make_ramp();
+        let original = buf.clone();
+
+        apply_exposure(&mut buf, 0.25);
+        // Snapshot the forward pass to detect clipped pixels
+        let after_forward = buf.clone();
+        apply_exposure(&mut buf, -0.25);
+
+        // Multiplicative round-trip: 2^0.25 * 2^-0.25 = 1, but 8-bit truncation
+        // Skip pixels that clipped to 0 or 255 in the forward pass (information lost)
+        for i in 1..256 {
+            let fwd = after_forward[i * 4];
+            if fwd == 0 || fwd == 255 {
+                continue; // clipped — can't recover
+            }
+            let orig_val = original[i * 4] as i16;
+            let rt_val = buf[i * 4] as i16;
+            let err = (rt_val - orig_val).unsigned_abs();
+            assert!(
+                err <= 2,
+                "round-trip exposure pixel {i}: original={orig_val}, got={rt_val}, err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_contrast() {
+        // Apply contrast +0.2, then -0.2 (not exact inverse but close for small values)
+        // Inverse of scale=(1+0.2) is scale=1/(1.2)=0.833, so factor = 0.833-1 = -0.167
+        let mut px = make_pixel(100, 150, 200);
+        let orig = px.clone();
+        let factor = 0.2f32;
+        let inv_factor = 1.0 / (1.0 + factor) - 1.0;
+        apply_contrast(&mut px, factor);
+        apply_contrast(&mut px, inv_factor);
+        for ch in 0..3 {
+            let err = (px[ch] as i16 - orig[ch] as i16).unsigned_abs();
+            assert!(
+                err <= 2,
+                "round-trip contrast ch={ch}: original={}, got={}, err={err}",
+                orig[ch], px[ch]
+            );
+        }
     }
 }

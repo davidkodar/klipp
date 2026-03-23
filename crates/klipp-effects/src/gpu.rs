@@ -24,6 +24,10 @@ pub struct GpuEffectsPipeline {
     huesat_pipeline: wgpu::ComputePipeline,
     huesat_bgl: wgpu::BindGroupLayout,
     huesat_lut_buf: wgpu::Buffer,
+    // Compute pipeline — qualifier (secondary color correction)
+    qualifier_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — film grain overlay
+    grain_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
@@ -269,6 +273,8 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
+        let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
+        let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
 
         // LUT buffer: 6 curves × 256 entries × 4 bytes = 6144 bytes
         let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -309,6 +315,8 @@ impl GpuEffectsPipeline {
             huesat_pipeline,
             huesat_bgl,
             huesat_lut_buf,
+            qualifier_pipeline,
+            grain_pipeline,
             transition_pipeline,
             bind_group_layout,
             transition_bgl,
@@ -506,6 +514,98 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply qualifier (secondary color correction) on GPU.
+    /// Generates HSL matte and applies secondary grade in a single pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_qualifier_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        hue_center: f32, hue_width: f32, hue_soft: f32,
+        sat_low: f32, sat_high: f32, sat_soft: f32,
+        lum_low: f32, lum_high: f32, lum_soft: f32,
+        invert: bool,
+        sec_exposure: f32, sec_saturation: f32, sec_hue_shift: f32, sec_temperature: f32,
+        matte_preview: bool,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        self.write_params(&GpuQualifierParams {
+            width,
+            height,
+            hue_center: hue_center / 360.0,
+            hue_width: hue_width / 360.0,
+            hue_soft: hue_soft / 360.0,
+            sat_low,
+            sat_high,
+            sat_soft,
+            lum_low,
+            lum_high,
+            lum_soft,
+            invert: if invert { 1 } else { 0 },
+            sec_exposure,
+            sec_saturation,
+            sec_hue_shift: sec_hue_shift.to_radians(),
+            sec_temperature: sec_temperature / 100.0 * 0.1,
+            matte_preview: if matte_preview { 1 } else { 0 },
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.dispatch(&self.qualifier_pipeline, buf_a, buf_b, workgroups);
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply film grain overlay on GPU.
+    pub fn apply_grain_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        amount: f32,
+        size: f32,
+        shadows: f32,
+        highlights: f32,
+        monochrome: bool,
+        frame_seed: u32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        self.write_params(&GpuGrainParams {
+            width,
+            height,
+            amount,
+            size,
+            shadows,
+            highlights,
+            frame_seed,
+            monochrome: if monochrome { 1 } else { 0 },
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.dispatch(&self.grain_pipeline, buf_a, buf_b, workgroups);
         self.download(buf_b, byte_size)
     }
 
@@ -946,6 +1046,49 @@ struct GpuHueSatParams {
     _pad0: u32,
 }
 // 4 fields × 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuQualifierParams {
+    width: u32,
+    height: u32,
+    // Qualifier selection
+    hue_center: f32,     // 0-1 (normalized from 0-360°)
+    hue_width: f32,      // 0-1
+    hue_soft: f32,       // 0-1
+    sat_low: f32,
+    sat_high: f32,
+    sat_soft: f32,
+    lum_low: f32,
+    lum_high: f32,
+    lum_soft: f32,
+    invert: u32,         // 0 or 1
+    // Secondary grade
+    sec_exposure: f32,
+    sec_saturation: f32,
+    sec_hue_shift: f32,  // radians
+    sec_temperature: f32,
+    // Matte preview
+    matte_preview: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+// 20 fields × 4 bytes = 80 bytes (well under 256-byte PARAMS_SIZE)
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuGrainParams {
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    shadows: f32,
+    highlights: f32,
+    frame_seed: u32,
+    monochrome: u32,
+}
+// 8 fields × 4 bytes = 32 bytes
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -1695,5 +1838,232 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = u32(clamp(g, 0.0, 1.0) * 255.0);
     let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
     output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ─── Qualifier (Secondary Color Correction) GPU Shader ──────────────────────
+
+const SHADER_QUALIFIER: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    hue_center: f32,
+    hue_width: f32,
+    hue_soft: f32,
+    sat_low: f32,
+    sat_high: f32,
+    sat_soft: f32,
+    lum_low: f32,
+    lum_high: f32,
+    lum_soft: f32,
+    invert: u32,
+    sec_exposure: f32,
+    sec_saturation: f32,
+    sec_hue_shift: f32,
+    sec_temperature: f32,
+    matte_preview: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn circular_distance(a: f32, b: f32) -> f32 {
+    let d = abs(a - b);
+    return min(d, 1.0 - d);
+}
+
+fn soft_range_centered(dist: f32, width: f32, soft: f32) -> f32 {
+    let half_w = width * 0.5;
+    if dist <= half_w { return 1.0; }
+    if soft <= 0.0001 { return 0.0; }
+    let t = (dist - half_w) / soft;
+    return clamp(1.0 - t, 0.0, 1.0);
+}
+
+fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
+    if val >= lo && val <= hi { return 1.0; }
+    if soft <= 0.0001 { return 0.0; }
+    if val < lo {
+        return clamp(1.0 - (lo - val) / soft, 0.0, 1.0);
+    }
+    return clamp(1.0 - (val - hi) / soft, 0.0, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu) / 255.0;
+    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = pixel & 0xFF000000u;
+
+    // RGB -> HSL
+    let mx = max(r, max(g, b));
+    let mn = min(r, min(g, b));
+    let delta = mx - mn;
+    let l = (mx + mn) * 0.5;
+    var s = 0.0;
+    if delta > 0.0001 {
+        s = clamp(delta / (1.0 - abs(2.0 * l - 1.0)), 0.0, 1.0);
+    }
+    var h = 0.0;
+    if delta > 0.0001 {
+        if mx == r {
+            h = ((g - b) / delta) % 6.0;
+            if h < 0.0 { h += 6.0; }
+            h = h / 6.0;
+        } else if mx == g {
+            h = ((b - r) / delta + 2.0) / 6.0;
+        } else {
+            h = ((r - g) / delta + 4.0) / 6.0;
+        }
+    }
+
+    // Qualifier matte
+    let hue_dist = circular_distance(h, params.hue_center);
+    let hue_m = soft_range_centered(hue_dist, params.hue_width, params.hue_soft);
+    let sat_m = soft_range(s, params.sat_low, params.sat_high, params.sat_soft);
+    let lum_m = soft_range(l, params.lum_low, params.lum_high, params.lum_soft);
+    var matte = hue_m * sat_m * lum_m;
+    if params.invert != 0u { matte = 1.0 - matte; }
+
+    // Matte preview mode: output greyscale matte
+    if params.matte_preview != 0u {
+        let v = u32(clamp(matte * 255.0, 0.0, 255.0));
+        output[idx] = v | (v << 8u) | (v << 16u) | a;
+        return;
+    }
+
+    // Skip untouched pixels
+    if matte < 0.001 {
+        output[idx] = pixel;
+        return;
+    }
+
+    // Secondary adjustments
+    var gr = r;
+    var gg = g;
+    var gb = b;
+
+    // Exposure
+    if abs(params.sec_exposure) > 0.001 {
+        let factor = pow(2.0, params.sec_exposure);
+        gr = gr * factor;
+        gg = gg * factor;
+        gb = gb * factor;
+    }
+
+    // Temperature (R += t, B -= t)
+    if abs(params.sec_temperature) > 0.0001 {
+        gr = gr + params.sec_temperature;
+        gb = gb - params.sec_temperature;
+    }
+
+    // Saturation
+    if abs(params.sec_saturation - 1.0) > 0.001 {
+        let luma = 0.2126 * gr + 0.7152 * gg + 0.0722 * gb;
+        gr = luma + (gr - luma) * params.sec_saturation;
+        gg = luma + (gg - luma) * params.sec_saturation;
+        gb = luma + (gb - luma) * params.sec_saturation;
+    }
+
+    // Hue shift (rotation matrix)
+    if abs(params.sec_hue_shift) > 0.001 {
+        let cos_h = cos(params.sec_hue_shift);
+        let sin_h = sin(params.sec_hue_shift);
+        let ir = gr; let ig = gg; let ib = gb;
+        gr = ir * (0.213 + cos_h * 0.787 - sin_h * 0.213)
+           + ig * (0.715 - cos_h * 0.715 - sin_h * 0.715)
+           + ib * (0.072 - cos_h * 0.072 + sin_h * 0.928);
+        gg = ir * (0.213 - cos_h * 0.213 + sin_h * 0.143)
+           + ig * (0.715 + cos_h * 0.285 + sin_h * 0.140)
+           + ib * (0.072 - cos_h * 0.072 - sin_h * 0.283);
+        gb = ir * (0.213 - cos_h * 0.213 - sin_h * 0.787)
+           + ig * (0.715 - cos_h * 0.715 + sin_h * 0.715)
+           + ib * (0.072 + cos_h * 0.928 + sin_h * 0.072);
+    }
+
+    // Blend through matte
+    let ro = u32(clamp((r * (1.0 - matte) + gr * matte) * 255.0, 0.0, 255.0));
+    let go2 = u32(clamp((g * (1.0 - matte) + gg * matte) * 255.0, 0.0, 255.0));
+    let bo2 = u32(clamp((b * (1.0 - matte) + gb * matte) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go2 << 8u) | (bo2 << 16u) | a;
+}
+";
+
+// ─── Film Grain GPU Shader ──────────────────────────────────────────────────
+
+const SHADER_GRAIN: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    shadows: f32,
+    highlights: f32,
+    frame_seed: u32,
+    monochrome: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn wang_hash(seed: u32) -> f32 {
+    var x = seed;
+    x = (x ^ 61u) ^ (x >> 16u);
+    x = x * 9u;
+    x = x ^ (x >> 4u);
+    x = x * 0x27d4eb2du;
+    x = x ^ (x >> 15u);
+    return f32(x) / 4294967295.0;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu) / 255.0;
+    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = pixel & 0xFF000000u;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+    // Pixel coordinates (for grain size variation)
+    let px = idx % params.width;
+    let py = idx / params.width;
+    // Quantize by grain size to create larger particles
+    let qx = u32(f32(px) / params.size);
+    let qy = u32(f32(py) / params.size);
+    let pixel_seed = qx * 1973u + qy * 9277u + params.frame_seed * 26699u;
+
+    // Generate grain noise
+    let grain_r = (wang_hash(pixel_seed) - 0.5) * params.amount;
+    var grain_g = grain_r;
+    var grain_b = grain_r;
+    if params.monochrome == 0u {
+        grain_g = (wang_hash(pixel_seed + 1u) - 0.5) * params.amount;
+        grain_b = (wang_hash(pixel_seed + 2u) - 0.5) * params.amount;
+    }
+
+    // Weight grain by tonal region
+    let shadow_w = (1.0 - luma) * params.shadows;
+    let highlight_w = luma * params.highlights;
+    let weight = clamp(shadow_w + highlight_w, 0.0, 1.5);
+
+    // Apply grain
+    let ro = u32(clamp((r + grain_r * weight) * 255.0, 0.0, 255.0));
+    let go = u32(clamp((g + grain_g * weight) * 255.0, 0.0, 255.0));
+    let bo = u32(clamp((b + grain_b * weight) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | a;
 }
 ";

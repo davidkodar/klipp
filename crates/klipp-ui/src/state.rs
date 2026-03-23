@@ -197,12 +197,17 @@ pub struct AppState {
 
     // Scopes
     pub show_scopes: bool,
+    pub show_keyframe_editor: bool,
     pub scope_mode: ScopeMode,
 
-    // Eyedropper (white balance)
-    pub wb_eyedropper_active: bool,
-    /// Pixel coordinates to sample (set by viewer on click, consumed by app)
+    // Eyedropper mode (shared between WB and qualifier)
+    pub eyedropper_mode: EyedropperMode,
+    /// Pixel coordinates to sample for white balance (set by viewer on click, consumed by app)
     pub wb_sample_request: Option<(f32, f32)>, // normalized 0-1
+    /// Pixel coordinates to sample for qualifier (set by viewer on click, consumed by app)
+    pub qualifier_sample_request: Option<(f32, f32)>, // normalized 0-1
+    /// Matte preview — show B&W qualifier/mask matte in viewer
+    pub matte_preview_active: bool,
 
     // Before/After split view
     pub before_after_active: bool,
@@ -282,6 +287,15 @@ pub struct AppState {
     pub proxy_status_message: Option<(String, std::time::Instant)>,
     /// Whether the proxy toast was dismissed by the user
     pub proxy_toast_dismissed: bool,
+}
+
+/// Eyedropper mode — determines what happens when the user clicks the viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EyedropperMode {
+    #[default]
+    None,
+    WhiteBalance,
+    Qualifier,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -445,9 +459,12 @@ impl Default for AppState {
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,
+            show_keyframe_editor: false,
             scope_mode: ScopeMode::Waveform,
-            wb_eyedropper_active: false,
+            eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
+            qualifier_sample_request: None,
+            matte_preview_active: false,
             before_after_active: false,
             split_position: 0.5,
             viewer_overlay: ViewerOverlay::None,

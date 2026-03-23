@@ -6,6 +6,47 @@ use klipp_engine::SharedFrameBuffer;
 
 type SliderDef = (f32, &'static str, fn(f32) -> String, f32, std::ops::RangeInclusive<f32>, ColorGradeParam);
 
+/// Render a keyframe diamond indicator. Returns true if the diamond was clicked
+/// (keyframe toggled). Call within a `ui.horizontal()` before the slider.
+fn keyframe_diamond(
+    ui: &mut egui::Ui,
+    has_keyframe: bool,
+    clip_id: klipp_core::ClipId,
+    param: ColorGradeParam,
+    clip_time_secs: f64,
+    value: f32,
+    cmds: &mut Vec<AppCommand>,
+) -> bool {
+    let color = if has_keyframe {
+        egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+    } else {
+        egui::Color32::from_rgb(0x40, 0x40, 0x50)
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::click());
+    let c = rect.center();
+    let s = 3.5;
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(c.x, c.y - s),
+            egui::pos2(c.x + s, c.y),
+            egui::pos2(c.x, c.y + s),
+            egui::pos2(c.x - s, c.y),
+        ],
+        if has_keyframe { color } else { egui::Color32::TRANSPARENT },
+        egui::Stroke::new(1.0, color),
+    ));
+    let clicked = resp.clicked();
+    if clicked {
+        if has_keyframe {
+            cmds.push(AppCommand::RemoveKeyframe { clip_id, param, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+        }
+    }
+    resp.on_hover_text(if has_keyframe { "Remove keyframe" } else { "Add keyframe" });
+    clicked
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPanelTab {
     Adjustments,
@@ -22,6 +63,7 @@ pub struct ColorPanel {
     pub offset_wheel: color_wheel::ColorWheelState,
     pub scope_state: scopes::ScopeState,
     pub active_curve_channel: curves_editor::CurveChannel,
+    pub show_match_popup: bool,
 }
 
 impl Default for ColorPanel {
@@ -34,6 +76,7 @@ impl Default for ColorPanel {
             offset_wheel: Default::default(),
             scope_state: Default::default(),
             active_curve_channel: curves_editor::CurveChannel::Master,
+            show_match_popup: false,
         }
     }
 }
@@ -187,6 +230,54 @@ impl ColorPanel {
                             self.show_huesat_tab(ui, state, theme, &mut cmds);
                         }
                     }
+
+                    // Keyframe curve editor (below tab content, toggled with K key)
+                    if state.show_keyframe_editor {
+                        if let Some(clip_id) = state.selected_clip {
+                            let tracks = state.sequences.get(state.active_sequence_idx)
+                                .and_then(|seq| seq.tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == clip_id))
+                                .map(|c| c.color_grade.keyframe_tracks.clone())
+                                .unwrap_or_default();
+                            if !tracks.is_empty() {
+                                ui.add_space(4.0);
+                                let border_c = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+                                let div = egui::Rect::from_min_size(
+                                    egui::pos2(ui.min_rect().min.x + 8.0, ui.cursor().min.y),
+                                    egui::vec2(ui.available_width() - 16.0, 0.5),
+                                );
+                                ui.painter().rect_filled(div, 0.0, border_c);
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new("KEYFRAMES").size(8.0).color(
+                                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20),
+                                    ));
+                                });
+                                let clip_duration = state.sequences.get(state.active_sequence_idx)
+                                    .and_then(|seq| seq.tracks.iter()
+                                        .flat_map(|t| t.clips.iter())
+                                        .find(|c| c.id == clip_id))
+                                    .map(|c| {
+                                        let dur = c.source_out.to_secs_f64() - c.source_in.to_secs_f64();
+                                        dur.max(1.0)
+                                    })
+                                    .unwrap_or(5.0);
+                                let clip_time = state.sequences.get(state.active_sequence_idx)
+                                    .and_then(|seq| seq.tracks.iter()
+                                        .flat_map(|t| t.clips.iter())
+                                        .find(|c| c.id == clip_id))
+                                    .map(|c| state.playhead_smooth_secs - c.source_in.to_secs_f64())
+                                    .unwrap_or(0.0);
+                                let kf_cmds = crate::widgets::keyframe_editor::show_keyframe_editor(
+                                    ui, theme, clip_id, &tracks,
+                                    clip_duration, clip_time, 120.0,
+                                );
+                                cmds.extend(kf_cmds);
+                            }
+                        }
+                    }
                 });
         });
 
@@ -247,7 +338,7 @@ impl ColorPanel {
             egui::Stroke::new(0.5, border_color),
         );
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
-            self.show_footer(ui, state, theme, &mut cmds);
+            self.show_footer(ui, state, theme, &mut cmds, frame_buffer);
         });
 
         // Apply scope toggle (deferred to avoid borrow issues)
@@ -380,45 +471,10 @@ impl ColorPanel {
 
         for &(mut val, label, fmt, def, ref range, param) in tone_sliders {
             ui.horizontal(|ui| {
-                // Keyframe diamond (3px left of slider)
-                let has_kf = grade.keyframe_tracks.has_keyframes(param);
-                let diamond_color = if has_kf {
-                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
-                } else {
-                    egui::Color32::from_rgb(0x40, 0x40, 0x50)
-                };
-                let (diamond_rect, diamond_resp) = ui.allocate_exact_size(
-                    egui::vec2(10.0, 14.0), egui::Sense::click(),
+                any_changed |= keyframe_diamond(
+                    ui, grade.keyframe_tracks.has_keyframes(param),
+                    clip_id, param, clip_time_secs, val, cmds,
                 );
-                let dc = diamond_rect.center();
-                let ds = 3.5;
-                ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(dc.x, dc.y - ds),
-                        egui::pos2(dc.x + ds, dc.y),
-                        egui::pos2(dc.x, dc.y + ds),
-                        egui::pos2(dc.x - ds, dc.y),
-                    ],
-                    if has_kf { diamond_color } else { egui::Color32::TRANSPARENT },
-                    egui::Stroke::new(1.0, diamond_color),
-                ));
-                if diamond_resp.clicked() {
-                    if has_kf {
-                        // Remove keyframe at current time
-                        cmds.push(AppCommand::RemoveKeyframe {
-                            clip_id, param, time_secs: clip_time_secs,
-                        });
-                    } else {
-                        // Add keyframe at current time
-                        cmds.push(AppCommand::AddKeyframe {
-                            clip_id, param, time_secs: clip_time_secs, value: val,
-                        });
-                    }
-                    any_changed = true;
-                }
-                if diamond_resp.hovered() {
-                    diamond_resp.on_hover_text(if has_kf { "Remove keyframe" } else { "Add keyframe" });
-                }
             });
 
             let resp = color_slider::color_slider_with_edit(
@@ -465,7 +521,7 @@ impl ColorPanel {
         // White balance eyedropper
         ui.horizontal(|ui| {
             ui.add_space(16.0);
-            let wb_active = state.wb_eyedropper_active;
+            let wb_active = state.eyedropper_mode == crate::state::EyedropperMode::WhiteBalance;
             let wb_color = if wb_active {
                 egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
             } else {
@@ -474,7 +530,11 @@ impl ColorPanel {
             let wb_label = if wb_active { "⊙ Click viewer to sample" } else { "⊙ White Balance" };
             let wb_resp = ui.label(egui::RichText::new(wb_label).size(9.0).color(wb_color));
             if wb_resp.interact(egui::Sense::click()).clicked() {
-                state.wb_eyedropper_active = !state.wb_eyedropper_active;
+                state.eyedropper_mode = if wb_active {
+                    crate::state::EyedropperMode::None
+                } else {
+                    crate::state::EyedropperMode::WhiteBalance
+                };
             }
         });
         ui.add_space(2.0);
@@ -499,6 +559,81 @@ impl ColorPanel {
             ui.add_space(3.0);
         }
 
+        // ── Film Grain ──
+        ui.add_space(4.0);
+        {
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let text_dim = egui::Color32::from_rgb(0x60, 0x60, 0x70);
+            let border_color2 = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+            let div_rect = egui::Rect::from_min_size(
+                egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
+                egui::vec2(ui.available_width() - 24.0, 0.5),
+            );
+            ui.painter().rect_filled(div_rect, 0.0, border_color2);
+            ui.add_space(4.0);
+
+            let mut grain = grade.grain.clone();
+
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                let header_color = if grain.enabled { text_accent } else {
+                    egui::Color32::from_rgb(0x50, 0x50, 0x60)
+                };
+                ui.label(egui::RichText::new("FILM GRAIN").size(9.0).color(header_color));
+                ui.add_space(8.0);
+                ui.checkbox(&mut grain.enabled, "");
+            });
+
+            if grain.enabled {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Amount").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut grain.amount, 0.0..=0.5).show_value(false));
+                    ui.label(egui::RichText::new(format!("{:.0}%", grain.amount * 100.0)).size(8.0).color(text_dim));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Size").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut grain.size, 0.5..=4.0).show_value(false));
+                    ui.label(egui::RichText::new(format!("{:.1}", grain.size)).size(8.0).color(text_dim));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Shadows").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut grain.shadows, 0.0..=1.0).show_value(false));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Highlights").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut grain.highlights, 0.0..=1.0).show_value(false));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.checkbox(&mut grain.monochrome, egui::RichText::new("Monochrome").size(9.0).color(text_dim));
+                });
+            }
+
+            // Push grain changes
+            if grain.enabled != grade.grain.enabled
+                || (grain.amount - grade.grain.amount).abs() > 0.001
+                || (grain.size - grade.grain.size).abs() > 0.001
+                || (grain.shadows - grade.grain.shadows).abs() > 0.001
+                || (grain.highlights - grade.grain.highlights).abs() > 0.001
+                || grain.monochrome != grade.grain.monochrome
+            {
+                // Update grain via the clip's color grade
+                for track in &mut state.sequences[state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(clip_id) {
+                        clip.color_grade.grain = grain;
+                        clip.color_grade.enabled = true;
+                        break;
+                    }
+                }
+                any_changed = true;
+            }
+        }
+
         // ── Qualifier (Secondary Color Correction) ──
         ui.add_space(4.0);
         let border_color2 = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
@@ -514,7 +649,7 @@ impl ColorPanel {
             let text_dim = egui::Color32::from_rgb(0x60, 0x60, 0x70);
             let mut qual = grade.qualifier.clone();
 
-            // Header with enable toggle
+            // Header with enable toggle + eyedropper + matte preview
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
                 let header_color = if qual.enabled { text_accent } else {
@@ -525,6 +660,30 @@ impl ColorPanel {
                 if ui.checkbox(&mut qual.enabled, "").changed() {
                     // will be pushed below
                 }
+
+                // Qualifier eyedropper button
+                let qe_active = state.eyedropper_mode == crate::state::EyedropperMode::Qualifier;
+                let qe_color = if qe_active { text_accent } else { text_dim };
+                let qe_label = if qe_active { "⊙ Click viewer" } else { "⊙" };
+                let qe_resp = ui.label(egui::RichText::new(qe_label).size(9.0).color(qe_color));
+                if qe_resp.interact(egui::Sense::click()).clicked() {
+                    state.eyedropper_mode = if qe_active {
+                        crate::state::EyedropperMode::None
+                    } else {
+                        crate::state::EyedropperMode::Qualifier
+                    };
+                }
+                qe_resp.interact(egui::Sense::hover()).on_hover_text("Sample color from viewer for qualifier");
+
+                // Matte preview toggle
+                let mp_active = state.matte_preview_active;
+                let mp_color = if mp_active { text_accent } else { text_dim };
+                let mp_resp = ui.label(egui::RichText::new("M").size(9.0).strong().color(mp_color));
+                if mp_resp.interact(egui::Sense::click()).clicked() {
+                    state.matte_preview_active = !state.matte_preview_active;
+                    cmds.push(AppCommand::SetMattePreview(state.matte_preview_active));
+                }
+                mp_resp.interact(egui::Sense::hover()).on_hover_text("Matte preview (Alt+M)");
             });
 
             if qual.enabled {
@@ -777,6 +936,15 @@ impl ColorPanel {
                 masks.masks.remove(idx);
             }
 
+            // GPU mask limit warning
+            if masks.masks.iter().filter(|m| m.enabled).count() > 4 {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("⚠ GPU acceleration disabled for this clip (>4 masks)")
+                        .size(8.0).color(egui::Color32::from_rgb(0xe8, 0x80, 0x20)));
+                });
+            }
+
             // Push changes if masks differ
             if masks.masks.len() != grade.masks.masks.len()
                 || masks.masks.iter().zip(grade.masks.masks.iter()).any(|(a, b)| {
@@ -1019,7 +1187,23 @@ impl ColorPanel {
             (grade.global_mix,  "Mix",         |v| format!("{:.0}%", v * 100.0), 1.0, 0.0..=1.0, ColorGradeParam::GlobalMix),
         ];
 
+        // Keyframe time for diamonds
+        let clip_time_secs = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| state.playhead_smooth_secs - c.source_in.to_secs_f64())
+                .unwrap_or(0.0)
+        };
+
         for &(mut val, label, fmt, def, ref range, param) in global_sliders {
+            ui.horizontal(|ui| {
+                any_changed |= keyframe_diamond(
+                    ui, grade.keyframe_tracks.has_keyframes(param),
+                    clip_id, param, clip_time_secs, val, cmds,
+                );
+            });
             let wid = format!("whl_{label}");
             let resp = color_slider::color_slider_with_edit(
                 ui, theme, label, &mut val, range.clone(), def, fmt,
@@ -1263,8 +1447,22 @@ impl ColorPanel {
             }
         });
 
-        // ── Mix slider ──
+        // ── Mix slider with keyframe diamond ──
+        let clip_time_secs = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| state.playhead_smooth_secs - c.source_in.to_secs_f64())
+                .unwrap_or(0.0)
+        };
         ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            any_changed |= keyframe_diamond(
+                ui, grade.keyframe_tracks.has_keyframes(ColorGradeParam::CurvesMix),
+                clip_id, ColorGradeParam::CurvesMix, clip_time_secs, grade.curves_mix, cmds,
+            );
+        });
         let mut mix_val = grade.curves_mix;
         let mix_resp = color_slider::color_slider_with_edit(
             ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
@@ -1633,8 +1831,22 @@ impl ColorPanel {
             cmds.push(AppCommand::SetClipHueSatCurves { clip_id, huesat: huesat.clone() });
         }
 
-        // Mix slider
+        // Mix slider with keyframe diamond
+        let clip_time_secs = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| state.playhead_smooth_secs - c.source_in.to_secs_f64())
+                .unwrap_or(0.0)
+        };
         ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            any_changed |= keyframe_diamond(
+                ui, grade.keyframe_tracks.has_keyframes(ColorGradeParam::HueSatMix),
+                clip_id, ColorGradeParam::HueSatMix, clip_time_secs, grade.huesat_mix, cmds,
+            );
+        });
         let mut mix_val = grade.huesat_mix;
         let mix_resp = color_slider::color_slider_with_edit(
             ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
@@ -1779,11 +1991,12 @@ impl ColorPanel {
     }
 
     fn show_footer(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
         _theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
+        frame_buffer: &SharedFrameBuffer,
     ) {
         let btn_bg = egui::Color32::from_rgb(0x1a, 0x1a, 0x20);
         let border = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
@@ -1868,6 +2081,85 @@ impl ColorPanel {
                         },
                     });
                 }
+            }
+
+            ui.add_space(6.0);
+
+            // Export LUT
+            if footer_button(ui, "Export LUT", text_dim, btn_bg, border) {
+                if let Some(clip_id) = state.selected_clip {
+                    // Build ColorGradeParams from clip's grade
+                    let grade = state.sequences.get(state.active_sequence_idx)
+                        .and_then(|seq| seq.tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == clip_id))
+                        .map(|c| &c.color_grade);
+                    if let Some(g) = grade {
+                        // Build params (same as engine does)
+                        let curve_luts = {
+                            let c = &g.curves;
+                            let m_id = klipp_color::curves::is_identity(&c.master);
+                            let r_id = klipp_color::curves::is_identity(&c.red);
+                            let g_id = klipp_color::curves::is_identity(&c.green);
+                            let b_id = klipp_color::curves::is_identity(&c.blue);
+                            if m_id && r_id && g_id && b_id {
+                                None
+                            } else {
+                                Some(klipp_color::pipeline::CurveLuts {
+                                    master: klipp_color::curves::build_curve_lut(&c.master),
+                                    red: klipp_color::curves::build_curve_lut(&c.red),
+                                    green: klipp_color::curves::build_curve_lut(&c.green),
+                                    blue: klipp_color::curves::build_curve_lut(&c.blue),
+                                })
+                            }
+                        };
+                        let params = klipp_color::ColorGradeParams {
+                            exposure: g.exposure, contrast: g.contrast,
+                            saturation: g.saturation, temperature: g.temperature,
+                            tint: g.tint, highlights: g.highlights,
+                            shadows: g.shadows, whites: g.whites, blacks: g.blacks,
+                            lift: klipp_color::wheel_offset_to_rgb(g.lift_x, g.lift_y, g.lift_master),
+                            gamma: klipp_color::wheel_offset_to_rgb(g.gamma_x, g.gamma_y, g.gamma_master),
+                            gain: klipp_color::wheel_offset_to_rgb(g.gain_x, g.gain_y, g.gain_master),
+                            offset: klipp_color::wheel_offset_to_rgb(g.offset_x, g.offset_y, g.offset_master),
+                            lift_sat: g.lift_sat, lift_bri: g.lift_bri,
+                            gamma_sat: g.gamma_sat, gamma_bri: g.gamma_bri,
+                            gain_sat: g.gain_sat, gain_bri: g.gain_bri,
+                            offset_sat: g.offset_sat, offset_bri: g.offset_bri,
+                            hue: g.hue, global_mix: g.global_mix,
+                            curve_luts, curves_preserve_luma: g.curves_preserve_luma,
+                            curves_mix: g.curves_mix,
+                            huesat: g.huesat.clone(), huesat_mix: g.huesat_mix,
+                            qualifier: Default::default(),
+                            masks: Default::default(),
+                            input_log_format: Default::default(),
+                        };
+                        let pipeline = klipp_color::ColorPipeline::new();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Adobe Cube LUT", &["cube"])
+                            .set_file_name("grade.cube")
+                            .save_file()
+                        {
+                            let lut_data = klipp_color::bake_grade_to_lut(&params, &pipeline, 33);
+                            if let Err(e) = klipp_color::write_cube(&path, &lut_data, 33, "Klipp Grade Export") {
+                                tracing::error!("Failed to write LUT: {e}");
+                            } else {
+                                tracing::info!("LUT exported: {}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+            // Info label
+            ui.label(egui::RichText::new("Primary grade only").size(7.0).color(
+                egui::Color32::from_rgb(0x50, 0x50, 0x60),
+            ));
+
+            ui.add_space(6.0);
+
+            // Match Shot
+            if footer_button(ui, "Match Shot", text_dim, btn_bg, border) {
+                self.show_match_popup = !self.show_match_popup;
             }
 
             ui.add_space(6.0);
@@ -2089,6 +2381,114 @@ impl ColorPanel {
                                 }
                                 ui.label(egui::RichText::new("Enter to save").size(8.0).color(text_dim));
                             });
+                        });
+                });
+        }
+
+        // Match Shot popup — list clips as reference options
+        if self.show_match_popup {
+            let popup_id = ui.id().with("match_popup");
+            let menu_bg = egui::Color32::from_rgb(0x18, 0x18, 0x1e);
+            let menu_border = egui::Color32::from_rgb(0x3a, 0x3a, 0x44);
+            let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
+            let hover_bg = egui::Color32::from_rgb(0x28, 0x28, 0x32);
+
+            egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(ui.min_rect().min.x + 200.0, ui.min_rect().min.y - 150.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::none()
+                        .fill(menu_bg)
+                        .stroke(egui::Stroke::new(0.5, menu_border))
+                        .rounding(4.0)
+                        .inner_margin(8.0)
+                        .show(ui, |ui: &mut egui::Ui| {
+                            ui.set_min_width(180.0);
+                            ui.label(egui::RichText::new("Match to reference clip:").size(10.0).color(text_dim));
+                            ui.add_space(4.0);
+
+                            if let Some(selected_clip_id) = state.selected_clip {
+                                // List all video clips (excluding currently selected)
+                                let seq = &state.sequences[state.active_sequence_idx];
+                                let clips: Vec<_> = seq.tracks.iter()
+                                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                    .flat_map(|t| t.clips.iter())
+                                    .filter(|c| c.id != selected_clip_id)
+                                    .collect();
+
+                                if clips.is_empty() {
+                                    ui.label(egui::RichText::new("No other clips on timeline").size(9.0).color(text_dim));
+                                } else {
+                                    for clip in &clips {
+                                        let clip_name = clip.media_id()
+                                            .and_then(|mid| state.media_pool.get(&mid))
+                                            .map(|m| m.filename.as_str())
+                                            .unwrap_or("Untitled");
+                                        let resp = ui.selectable_label(false,
+                                            egui::RichText::new(clip_name).size(9.0).color(text_dim));
+                                        if resp.hovered() {
+                                            ui.painter().rect_filled(resp.rect, 2.0, hover_bg);
+                                        }
+                                        if resp.clicked() {
+                                            // Get reference frame from thumbnail cache
+                                            let ref_rgba = clip.media_id()
+                                                .and_then(|mid| state.thumbnail_cache.get(&mid))
+                                                .and_then(|entry| {
+                                                    if let klipp_media::ThumbnailEntry::Ready { rgba, .. } = entry {
+                                                        Some(rgba.as_slice())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+
+                                            if let Some(ref_rgba) = ref_rgba {
+                                                // Get source frame from frame buffer
+                                                if let Ok(fb) = frame_buffer.lock() {
+                                                    if !fb.data.is_empty() {
+                                                        let result = klipp_color::color_match::match_colors(
+                                                            &fb.data, ref_rgba,
+                                                        );
+                                                        // Apply as additive adjustments to current grade
+                                                        use ColorGradeParam as P;
+                                                        let grade = seq.tracks.iter()
+                                                            .flat_map(|t| t.clips.iter())
+                                                            .find(|c| c.id == selected_clip_id)
+                                                            .map(|c| &c.color_grade);
+                                                        if let Some(g) = grade {
+                                                            cmds.push(AppCommand::SetClipColorGradeParam {
+                                                                clip_id: selected_clip_id,
+                                                                param: P::Exposure,
+                                                                value: g.exposure + result.exposure_adjust,
+                                                            });
+                                                            cmds.push(AppCommand::SetClipColorGradeParam {
+                                                                clip_id: selected_clip_id,
+                                                                param: P::Temperature,
+                                                                value: (g.temperature + result.temperature_adjust).clamp(-100.0, 100.0),
+                                                            });
+                                                            cmds.push(AppCommand::SetClipColorGradeParam {
+                                                                clip_id: selected_clip_id,
+                                                                param: P::Tint,
+                                                                value: (g.tint + result.tint_adjust).clamp(-100.0, 100.0),
+                                                            });
+                                                            cmds.push(AppCommand::SetClipColorGradeParam {
+                                                                clip_id: selected_clip_id,
+                                                                param: P::Saturation,
+                                                                value: (g.saturation * result.saturation_adjust).clamp(0.0, 3.0),
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            self.show_match_popup = false;
+                                        }
+                                    }
+                                }
+                            }
+
+                            ui.add_space(4.0);
+                            if ui.small_button("Cancel").clicked() {
+                                self.show_match_popup = false;
+                            }
                         });
                 });
         }

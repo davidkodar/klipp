@@ -410,6 +410,7 @@ impl KlippApp {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
                             .unwrap_or(0),
+                        log_format: Default::default(),
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
@@ -909,6 +910,56 @@ impl KlippApp {
                     self.cmd_tx.send(AppCommand::SetClipColorGradeParam {
                         clip_id, param: klipp_core::ColorGradeParam::Tint,
                         value: tint.clamp(-100.0, 100.0),
+                    }).ok();
+                }
+            }
+        }
+
+        // Process qualifier eyedropper sample
+        if let Some((nx, ny)) = self.state.qualifier_sample_request.take() {
+            let px = (nx * (fb.width - 1) as f32) as usize;
+            let py = (ny * (fb.height - 1) as f32) as usize;
+            let idx = (py * fb.width as usize + px) * 4;
+            if idx + 2 < fb.data.len() {
+                let r = fb.data[idx] as f32 / 255.0;
+                let g = fb.data[idx + 1] as f32 / 255.0;
+                let b = fb.data[idx + 2] as f32 / 255.0;
+                // RGB → HSL
+                let max_c = r.max(g).max(b);
+                let min_c = r.min(g).min(b);
+                let delta = max_c - min_c;
+                let l = (max_c + min_c) * 0.5;
+                let s = if delta < 0.0001 {
+                    0.0
+                } else {
+                    (delta / (1.0 - (2.0 * l - 1.0).abs())).clamp(0.0, 1.0)
+                };
+                let h = if delta < 0.0001 {
+                    0.0
+                } else if max_c == r {
+                    ((g - b) / delta).rem_euclid(6.0) / 6.0
+                } else if max_c == g {
+                    ((b - r) / delta + 2.0) / 6.0
+                } else {
+                    ((r - g) / delta + 4.0) / 6.0
+                };
+                let hue_degrees = h * 360.0;
+
+                if let Some(clip_id) = self.state.selected_clip {
+                    // Build qualifier with sampled values + sensible defaults
+                    let mut qual = self.state.sequences.get(self.state.active_sequence_idx)
+                        .and_then(|seq| seq.tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == clip_id))
+                        .map(|c| c.color_grade.qualifier.clone())
+                        .unwrap_or_default();
+                    qual.enabled = true;
+                    qual.hue_center = hue_degrees;
+                    qual.hue_width = 30.0;
+                    qual.sat_low = (s - 0.2).max(0.0);
+                    qual.sat_high = (s + 0.2).min(1.0);
+                    self.cmd_tx.send(AppCommand::SetClipQualifier {
+                        clip_id, qualifier: qual,
                     }).ok();
                 }
             }
@@ -1677,6 +1728,48 @@ impl KlippApp {
                                 .position(|t| t.param == *param) {
                                 clip.color_grade.keyframe_tracks.tracks.remove(idx);
                             }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetKeyframeInterpolation { clip_id, param, time_secs, interpolation } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let track = clip.color_grade.keyframe_tracks.track_mut(*param);
+                            let epsilon = 0.01;
+                            if let Some(kf) = track.keyframes.iter_mut()
+                                .find(|kf| (kf.time_secs - time_secs).abs() < epsilon) {
+                                kf.interpolation = *interpolation;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetKeyframeTangents { clip_id, param, time_secs, tangent_in, tangent_out } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let track = clip.color_grade.keyframe_tracks.track_mut(*param);
+                            let epsilon = 0.01;
+                            if let Some(kf) = track.keyframes.iter_mut()
+                                .find(|kf| (kf.time_secs - time_secs).abs() < epsilon) {
+                                kf.tangent_in = *tangent_in;
+                                kf.tangent_out = *tangent_out;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipLogFormat { clip_id, log_format } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.log_format = *log_format;
+                            clip.color_grade.enabled = true;
                             break;
                         }
                     }
@@ -4282,8 +4375,17 @@ impl KlippApp {
             if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "'")) {
                 cmds.push(AppCommand::ExtractEdit);
             }
-            // M — Add marker
-            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl {
+            // Alt+M — Toggle matte preview
+            if i.key_pressed(egui::Key::M) && i.modifiers.alt && !i.modifiers.ctrl {
+                self.state.matte_preview_active = !self.state.matte_preview_active;
+                cmds.push(AppCommand::SetMattePreview(self.state.matte_preview_active));
+            }
+            // K — Toggle keyframe editor
+            if i.key_pressed(egui::Key::K) && !i.modifiers.ctrl && !i.modifiers.alt {
+                self.state.show_keyframe_editor = !self.state.show_keyframe_editor;
+            }
+            // M — Add marker (no modifiers)
+            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt {
                 cmds.push(AppCommand::AddMarker {
                     position: self.state.playhead,
                     label: String::new(),

@@ -115,7 +115,7 @@ impl InspectorPanel {
                 }
             }
             InspectorTab::Color => {
-                self.show_color_tab_redirect(ui, &mut cmds);
+                self.show_color_tab_redirect(ui, state, &mut cmds);
                 self.show_global_lut_section(ui, state, &mut cmds);
             }
             InspectorTab::Effects => {
@@ -371,12 +371,68 @@ impl InspectorPanel {
     fn show_color_tab_redirect(
         &self,
         ui: &mut egui::Ui,
+        state: &AppState,
         cmds: &mut Vec<AppCommand>,
     ) {
         let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
         let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
 
-        ui.add_space(24.0);
+        // Input Color Space / Log Format selector
+        if let Some(clip_id) = state.selected_clip {
+            let current_log = state.sequences.get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id))
+                .map(|c| c.color_grade.log_format)
+                .unwrap_or_default();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new("Input Color Space").size(10.0).color(text_dim));
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                use klipp_core::LogFormat as LF;
+                let formats = [
+                    (LF::Srgb, "sRGB / Rec.709 (Standard)"),
+                    (LF::Linear, "Linear"),
+                    (LF::LogC3, "ARRI LogC3"),
+                    (LF::LogC4, "ARRI LogC4"),
+                    (LF::SLog2, "Sony S-Log2"),
+                    (LF::SLog3, "Sony S-Log3"),
+                    (LF::CanonLog, "Canon Log"),
+                    (LF::CanonLog3, "Canon Log 3"),
+                    (LF::VLog, "Panasonic V-Log"),
+                    (LF::NLog, "Nikon N-Log"),
+                    (LF::FLog, "Fuji F-Log"),
+                    (LF::DJIDLog, "DJI D-Log"),
+                ];
+                let current_label = formats.iter()
+                    .find(|(f, _)| *f == current_log)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("sRGB / Rec.709 (Standard)");
+
+                egui::ComboBox::from_id_salt("log_format_selector")
+                    .selected_text(egui::RichText::new(current_label).size(9.0))
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for &(fmt, label) in &formats {
+                            if ui.selectable_label(current_log == fmt,
+                                egui::RichText::new(label).size(9.0),
+                            ).clicked() {
+                                cmds.push(AppCommand::SetClipLogFormat {
+                                    clip_id, log_format: fmt,
+                                });
+                            }
+                        }
+                    });
+            });
+            ui.add_space(8.0);
+        }
+
+        ui.add_space(12.0);
         ui.vertical_centered(|ui| {
             ui.label(
                 egui::RichText::new("Color grading has moved")
