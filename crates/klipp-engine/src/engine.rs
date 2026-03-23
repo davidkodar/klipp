@@ -2377,6 +2377,24 @@ impl PlaybackEngine {
         }
     }
 
+    /// Build packed LUT data for GPU hue/sat shader (6 × 256 f32 values).
+    fn build_huesat_lut_data(huesat: &klipp_core::HueSatCurves) -> [f32; 1536] {
+        let mut data = [0.5f32; 1536]; // 0.5 = identity for relative curves
+
+        let curves: [&Vec<[f32; 2]>; 6] = [
+            &huesat.hue_vs_hue, &huesat.hue_vs_sat, &huesat.hue_vs_lum,
+            &huesat.lum_vs_sat, &huesat.sat_vs_sat, &huesat.orange_vs_sat,
+        ];
+
+        for (i, pts) in curves.iter().enumerate() {
+            if pts.is_empty() { continue; }
+            let lut = klipp_color::curves::build_curve_lut_f32(pts);
+            data[i * 256..(i + 1) * 256].copy_from_slice(&lut);
+        }
+
+        data
+    }
+
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap();
@@ -2456,9 +2474,14 @@ impl PlaybackEngine {
                         params.lift, params.gamma, params.gain, params.offset,
                         params.hue, params.global_mix,
                     );
-                    // Hue rotation not in GPU shader — apply on CPU if needed
+                    // Hue rotation — apply on CPU (HSL conversion expensive on GPU for single param)
                     if params.hue.abs() > 0.01 {
                         klipp_color::transforms::apply_hue_rotation(&mut result, params.hue);
+                    }
+                    // Hue/Sat curves — GPU accelerated
+                    if !params.huesat.is_all_identity() {
+                        let lut_data = Self::build_huesat_lut_data(&params.huesat);
+                        result = gpu.apply_huesat_gpu(result, width, height, params.huesat_mix, &lut_data);
                     }
                     result
                 } else {

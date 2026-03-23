@@ -21,6 +21,9 @@ pub struct GpuEffectsPipeline {
     chroma_key_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
+    huesat_pipeline: wgpu::ComputePipeline,
+    huesat_bgl: wgpu::BindGroupLayout,
+    huesat_lut_buf: wgpu::Buffer,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
@@ -217,6 +220,64 @@ impl GpuEffectsPipeline {
         let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
         let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
+
+        // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
+        let huesat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("huesat_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let huesat_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("huesat_pl"),
+            bind_group_layouts: &[&huesat_bgl],
+            push_constant_ranges: &[],
+        });
+        let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
+
+        // LUT buffer: 6 curves × 256 entries × 4 bytes = 6144 bytes
+        let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("huesat_lut"),
+            size: 6 * 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
 
         // Check if any shader compilation failed
@@ -245,6 +306,9 @@ impl GpuEffectsPipeline {
             transform_pipeline,
             chroma_key_pipeline,
             color_grade_pipeline,
+            huesat_pipeline,
+            huesat_bgl,
+            huesat_lut_buf,
             transition_pipeline,
             bind_group_layout,
             transition_bgl,
@@ -383,6 +447,64 @@ impl GpuEffectsPipeline {
             _pad0: 0,
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply hue/sat curves on the GPU using pre-computed LUTs.
+    /// `lut_data` must be 6×256 f32 values (6 curves, 256 entries each).
+    pub fn apply_huesat_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        mix: f32,
+        lut_data: &[f32; 1536], // 6 × 256
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        // Upload LUT data
+        self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
+
+        // Write params
+        self.write_params(&GpuHueSatParams {
+            width,
+            height,
+            mix,
+            _pad0: 0,
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        // Create bind group with 4 bindings
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("huesat_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None, timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.huesat_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
 
         self.download(buf_b, byte_size)
     }
@@ -814,6 +936,16 @@ struct GpuColorGradeParams {
     _pad0: u32,
 }
 // 26 fields × 4 bytes = 104 bytes (well under 256-byte PARAMS_SIZE)
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuHueSatParams {
+    width: u32,
+    height: u32,
+    mix: f32,
+    _pad0: u32,
+}
+// 4 fields × 4 bytes = 16 bytes
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -1431,6 +1563,134 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     b = orig_b + (b - orig_b) * params.global_mix;
 
     // Pack result
+    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_HUESAT: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    mix: f32,
+    _pad0: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> lut: array<f32>;
+// LUT layout: 6 curves × 256 entries = indices 0..1535
+// Curve 0: hue_vs_hue   (0..255)
+// Curve 1: hue_vs_sat   (256..511)
+// Curve 2: hue_vs_lum   (512..767)
+// Curve 3: lum_vs_sat   (768..1023)
+// Curve 4: sat_vs_sat   (1024..1279)
+// Curve 5: orange_vs_sat (1280..1535)
+
+fn lut_lookup(curve: u32, t: f32) -> f32 {
+    let base = curve * 256u;
+    let idx_f = t * 255.0;
+    let idx0 = u32(clamp(idx_f, 0.0, 254.0));
+    let idx1 = idx0 + 1u;
+    let frac = idx_f - f32(idx0);
+    return lut[base + idx0] * (1.0 - frac) + lut[base + idx1] * frac;
+}
+
+fn rgb_to_hsl(r: f32, g: f32, b: f32) -> vec3<f32> {
+    let mx = max(max(r, g), b);
+    let mn = min(min(r, g), b);
+    let delta = mx - mn;
+    let l = (mx + mn) * 0.5;
+    if delta < 0.0001 {
+        return vec3<f32>(0.0, 0.0, l);
+    }
+    let s = delta / (1.0 - abs(2.0 * l - 1.0));
+    var h: f32;
+    if mx == r {
+        h = ((g - b) / delta) % 6.0;
+        if h < 0.0 { h = h + 6.0; }
+    } else if mx == g {
+        h = (b - r) / delta + 2.0;
+    } else {
+        h = (r - g) / delta + 4.0;
+    }
+    h = h / 6.0;
+    return vec3<f32>(h, clamp(s, 0.0, 1.0), l);
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> vec3<f32> {
+    if s < 0.0001 {
+        return vec3<f32>(l, l, l);
+    }
+    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
+    let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
+    let m = l - c * 0.5;
+    let h6 = u32(h * 6.0);
+    var rgb: vec3<f32>;
+    switch h6 {
+        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
+        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
+        case 2u: { rgb = vec3<f32>(0.0, c, x); }
+        case 3u: { rgb = vec3<f32>(0.0, x, c); }
+        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
+        default: { rgb = vec3<f32>(c, 0.0, x); }
+    }
+    return rgb + vec3<f32>(m, m, m);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    let orig_r = f32(pixel & 0xFFu) / 255.0;
+    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    let hsl = rgb_to_hsl(orig_r, orig_g, orig_b);
+    var h = hsl.x;
+    var s = hsl.y;
+    var l = hsl.z;
+
+    // Curve 0: Hue vs Hue (0.5 = no change)
+    let hvh = lut_lookup(0u, h);
+    h = (h + (hvh - 0.5) * 2.0) % 1.0;
+    if h < 0.0 { h = h + 1.0; }
+
+    // Curve 1: Hue vs Sat (0.5 = identity)
+    let hvs = lut_lookup(1u, hsl.x);
+    s = clamp(s * hvs * 2.0, 0.0, 1.0);
+
+    // Curve 2: Hue vs Lum (0.5 = no change)
+    let hvl = lut_lookup(2u, hsl.x);
+    l = clamp(l + (hvl - 0.5), 0.0, 1.0);
+
+    // Curve 3: Lum vs Sat (0.5 = identity)
+    let lvs = lut_lookup(3u, hsl.z);
+    s = clamp(s * lvs * 2.0, 0.0, 1.0);
+
+    // Curve 4: Sat vs Sat
+    let svs = lut_lookup(4u, hsl.y);
+    s = clamp(svs, 0.0, 1.0);
+
+    // Curve 5: Orange vs Sat (targeted at ~30°/360° ≈ 0.083)
+    let ovs = lut_lookup(5u, hsl.y);
+    let orange_dist = min(abs(hsl.x - 0.083), min(abs(hsl.x - 0.083 + 1.0), abs(hsl.x - 0.083 - 1.0)));
+    let weight = clamp(1.0 - orange_dist * 8.0, 0.0, 1.0);
+    s = s + (ovs - s) * weight;
+
+    let rgb = hsl_to_rgb(h, s, l);
+
+    // Mix with original
+    let r = orig_r + (rgb.x - orig_r) * params.mix;
+    let g = orig_g + (rgb.y - orig_g) * params.mix;
+    let b = orig_b + (rgb.z - orig_b) * params.mix;
+
     let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
     let go = u32(clamp(g, 0.0, 1.0) * 255.0);
     let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
