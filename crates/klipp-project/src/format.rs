@@ -243,6 +243,8 @@ pub struct ColorGradeJson {
     pub huesat: Option<klipp_core::HueSatCurves>,
     #[serde(default = "default_one")]
     pub huesat_mix: f32,
+    #[serde(default)]
+    pub qualifier: Option<klipp_core::QualifierSettings>,
 }
 
 fn default_one() -> f32 { 1.0 }

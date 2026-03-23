@@ -37,6 +37,7 @@ pub struct ColorGradeParams {
     pub curves_mix: f32,
     pub huesat: klipp_core::HueSatCurves,
     pub huesat_mix: f32,
+    pub qualifier: klipp_core::QualifierSettings,
 }
 
 /// Pre-computed 256-entry lookup tables for RGB curves.
@@ -89,7 +90,7 @@ impl ColorPipeline {
     }
 
     /// Apply per-clip color grade to an RGBA frame using the full parameter set.
-    pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams) -> Vec<u8> {
+    pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams, width: u32, height: u32) -> Vec<u8> {
         // Save original for global mix if needed
         let original = if params.global_mix < 0.999 { Some(rgba.clone()) } else { None };
 
@@ -157,6 +158,13 @@ impl ColorPipeline {
         // 11. Global mix
         if let Some(orig) = &original {
             transforms::apply_global_mix(&mut rgba, orig, params.global_mix);
+        }
+        // 12. Secondary color correction (qualifier)
+        if params.qualifier.enabled {
+            let matte = crate::qualifier::generate_qualifier_matte(
+                &rgba, width, height, &params.qualifier,
+            );
+            crate::qualifier::apply_qualified_grade(&mut rgba, &matte, &params.qualifier);
         }
         rgba
     }

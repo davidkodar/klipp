@@ -2464,6 +2464,7 @@ impl PlaybackEngine {
                     curves_mix: g.curves_mix,
                     huesat: g.huesat.clone(),
                     huesat_mix: g.huesat_mix,
+                    qualifier: g.qualifier.clone(),
                 };
                 if let Some(gpu) = &mut self.gpu_effects {
                     let mut result = gpu.apply_color_grade(
@@ -2485,7 +2486,7 @@ impl PlaybackEngine {
                     }
                     result
                 } else {
-                    self.color_pipeline.apply_clip_grade_full(rgba, &params)
+                    self.color_pipeline.apply_clip_grade_full(rgba, &params, width, height)
                 }
             } else { rgba }
         } else { rgba };

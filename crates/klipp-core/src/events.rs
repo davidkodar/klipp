@@ -207,6 +207,7 @@ pub enum AppCommand {
     SetClipColorGradeParam { clip_id: ClipId, param: ColorGradeParam, value: f32 },
     SetClipCurves { clip_id: ClipId, curves: crate::color_grade::CurveSet },
     SetClipHueSatCurves { clip_id: ClipId, huesat: crate::color_grade::HueSatCurves },
+    SetClipQualifier { clip_id: ClipId, qualifier: crate::color_grade::QualifierSettings },
     ToggleColorPanel,
     ToggleBeforeAfter,
 

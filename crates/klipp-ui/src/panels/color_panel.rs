@@ -441,6 +441,175 @@ impl ColorPanel {
             ui.add_space(3.0);
         }
 
+        // ── Qualifier (Secondary Color Correction) ──
+        ui.add_space(4.0);
+        let border_color2 = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+        let div_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
+            egui::vec2(ui.available_width() - 24.0, 0.5),
+        );
+        ui.painter().rect_filled(div_rect, 0.0, border_color2);
+        ui.add_space(4.0);
+
+        {
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let text_dim = egui::Color32::from_rgb(0x60, 0x60, 0x70);
+            let mut qual = grade.qualifier.clone();
+
+            // Header with enable toggle
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                let header_color = if qual.enabled { text_accent } else {
+                    egui::Color32::from_rgb(0x50, 0x50, 0x60)
+                };
+                ui.label(egui::RichText::new("QUALIFIER").size(9.0).color(header_color));
+                ui.add_space(8.0);
+                if ui.checkbox(&mut qual.enabled, "").changed() {
+                    // will be pushed below
+                }
+            });
+
+            if qual.enabled {
+                ui.add_space(4.0);
+
+                // Hue range
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Hue").size(10.0).color(text_dim));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(format!("{:.0}°", qual.hue_center)).size(9.0).color(text_accent));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Center").size(8.0).color(text_dim).weak());
+                    ui.add(egui::Slider::new(&mut qual.hue_center, 0.0..=360.0).show_value(false));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Width").size(8.0).color(text_dim).weak());
+                    ui.add(egui::Slider::new(&mut qual.hue_width, 0.0..=180.0).show_value(false));
+                    ui.label(egui::RichText::new(format!("±{:.0}°", qual.hue_width)).size(8.0).color(text_dim));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Soft").size(8.0).color(text_dim).weak());
+                    ui.add(egui::Slider::new(&mut qual.hue_soft, 0.0..=90.0).show_value(false));
+                });
+
+                ui.add_space(2.0);
+
+                // Saturation range
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Sat").size(10.0).color(text_dim));
+                    ui.label(egui::RichText::new(format!("{:.2}–{:.2}", qual.sat_low, qual.sat_high)).size(8.0).color(text_dim));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.add(egui::Slider::new(&mut qual.sat_low, 0.0..=1.0).show_value(false).text("Lo"));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.add(egui::Slider::new(&mut qual.sat_high, 0.0..=1.0).show_value(false).text("Hi"));
+                });
+
+                ui.add_space(2.0);
+
+                // Luminance range
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Lum").size(10.0).color(text_dim));
+                    ui.label(egui::RichText::new(format!("{:.2}–{:.2}", qual.lum_low, qual.lum_high)).size(8.0).color(text_dim));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.add(egui::Slider::new(&mut qual.lum_low, 0.0..=1.0).show_value(false).text("Lo"));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.add(egui::Slider::new(&mut qual.lum_high, 0.0..=1.0).show_value(false).text("Hi"));
+                });
+
+                ui.add_space(2.0);
+
+                // Invert
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.checkbox(&mut qual.invert, egui::RichText::new("Invert").size(9.0).color(text_dim));
+                });
+
+                ui.add_space(4.0);
+
+                // Secondary adjustments
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("SECONDARY GRADE").size(8.0).color(
+                        egui::Color32::from_rgb(0x50, 0x50, 0x60),
+                    ));
+                });
+                ui.add_space(2.0);
+
+                let mut exp = qual.exposure;
+                let exp_resp = color_slider::color_slider_with_edit(
+                    ui, theme, "Exposure", &mut exp, -3.0..=3.0, 0.0, |v| format!("{v:+.1}"),
+                    Some(("q_exp", &mut state.slider_edit)),
+                );
+                qual.exposure = exp;
+                any_drag_started |= exp_resp.drag_started;
+                any_drag_ended |= exp_resp.drag_ended;
+
+                let mut sat = qual.saturation;
+                let sat_resp = color_slider::color_slider_with_edit(
+                    ui, theme, "Saturation", &mut sat, 0.0..=2.0, 1.0, |v| format!("{v:.2}"),
+                    Some(("q_sat", &mut state.slider_edit)),
+                );
+                qual.saturation = sat;
+                any_drag_started |= sat_resp.drag_started;
+                any_drag_ended |= sat_resp.drag_ended;
+
+                let mut hue_s = qual.hue_shift;
+                let hue_resp = color_slider::color_slider_with_edit(
+                    ui, theme, "Hue Shift", &mut hue_s, -180.0..=180.0, 0.0, |v| format!("{v:+.0}°"),
+                    Some(("q_hue", &mut state.slider_edit)),
+                );
+                qual.hue_shift = hue_s;
+                any_drag_started |= hue_resp.drag_started;
+                any_drag_ended |= hue_resp.drag_ended;
+
+                let mut temp = qual.temperature;
+                let temp_resp = color_slider::color_slider_with_edit(
+                    ui, theme, "Temperature", &mut temp, -100.0..=100.0, 0.0, |v| format!("{v:+.0}"),
+                    Some(("q_temp", &mut state.slider_edit)),
+                );
+                qual.temperature = temp;
+                any_drag_started |= temp_resp.drag_started;
+                any_drag_ended |= temp_resp.drag_ended;
+
+                if exp_resp.changed || sat_resp.changed || hue_resp.changed || temp_resp.changed {
+                    any_changed = true;
+                }
+            }
+
+            // Push qualifier changes if anything changed
+            if qual.enabled != grade.qualifier.enabled
+                || qual.hue_center != grade.qualifier.hue_center
+                || qual.hue_width != grade.qualifier.hue_width
+                || qual.hue_soft != grade.qualifier.hue_soft
+                || qual.sat_low != grade.qualifier.sat_low
+                || qual.sat_high != grade.qualifier.sat_high
+                || qual.lum_low != grade.qualifier.lum_low
+                || qual.lum_high != grade.qualifier.lum_high
+                || qual.invert != grade.qualifier.invert
+                || qual.exposure != grade.qualifier.exposure
+                || qual.saturation != grade.qualifier.saturation
+                || qual.hue_shift != grade.qualifier.hue_shift
+                || qual.temperature != grade.qualifier.temperature
+            {
+                cmds.push(AppCommand::SetClipQualifier { clip_id, qualifier: qual });
+                any_changed = true;
+            }
+        }
+
         // ── Undo handling ──
         if any_drag_started {
             let pre_change_grade = {
