@@ -1189,6 +1189,8 @@ impl PlaybackEngine {
 
             // Check if we've passed source_out
             if frame.pts_secs() >= clip.source_out.to_secs_f64() - 0.01 {
+                info!("Clip source_out reached: pts={:.3} source_out={:.3} timeline_out={:.3}",
+                    frame.pts_secs(), clip.source_out.to_secs_f64(), clip.timeline_out.to_secs_f64());
                 self.playhead = clip.timeline_out;
                 self.advance_to_next_clip();
                 return;
@@ -1486,6 +1488,8 @@ impl PlaybackEngine {
     }
 
     fn stop_at_end(&mut self) {
+        info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
+            self.loop_enabled, self.playhead.to_secs_f64());
         // Loop: if enabled, seek back to in_point (or start)
         if self.loop_enabled {
             let seq = self.sequence.read().unwrap();
