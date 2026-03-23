@@ -209,6 +209,9 @@ pub enum AppCommand {
     SetClipHueSatCurves { clip_id: ClipId, huesat: crate::color_grade::HueSatCurves },
     SetClipQualifier { clip_id: ClipId, qualifier: crate::color_grade::QualifierSettings },
     SetClipMasks { clip_id: ClipId, masks: crate::color_grade::MaskStack },
+    AddKeyframe { clip_id: ClipId, param: ColorGradeParam, time_secs: f64, value: f32 },
+    RemoveKeyframe { clip_id: ClipId, param: ColorGradeParam, time_secs: f64 },
+    ClearKeyframes { clip_id: ClipId, param: ColorGradeParam },
     ToggleColorPanel,
     ToggleBeforeAfter,
 
@@ -349,8 +352,9 @@ pub enum Tool {
     Range,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ColorGradeParam {
+    #[default]
     Exposure,
     Contrast,
     Saturation,

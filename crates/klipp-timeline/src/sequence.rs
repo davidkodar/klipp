@@ -559,6 +559,9 @@ pub struct ClipColorGrade {
     // ── Power windows / masks ──
     #[serde(default)]
     pub masks: klipp_core::MaskStack,
+    // ── Keyframe animation ──
+    #[serde(default)]
+    pub keyframe_tracks: klipp_core::KeyframeTracks,
 }
 
 pub use klipp_core::CurveSet;
@@ -607,6 +610,7 @@ impl Default for ClipColorGrade {
             huesat_mix: 1.0,
             qualifier: Default::default(),
             masks: Default::default(),
+            keyframe_tracks: Default::default(),
         }
     }
 }

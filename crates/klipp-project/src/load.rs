@@ -193,6 +193,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                         huesat_mix: cg.huesat_mix,
                         qualifier: cg.qualifier.clone().unwrap_or_default(),
                         masks: cg.masks.clone().unwrap_or_default(),
+                        keyframe_tracks: cg.keyframe_tracks.clone().unwrap_or_default(),
                     }).unwrap_or_default(),
                     builtin_effects: c.builtin_effects.as_ref()
                         .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())

@@ -2402,6 +2402,7 @@ impl PlaybackEngine {
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clips.get(self.current_clip_index));
         let grade = clip.map(|c| c.color_grade.clone());
+        let clip_source_in_secs = clip.map(|c| c.source_in.to_secs_f64()).unwrap_or(0.0);
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
         drop(seq);
@@ -2467,6 +2468,32 @@ impl PlaybackEngine {
                     qualifier: g.qualifier.clone(),
                     masks: g.masks.clone(),
                 };
+
+                // Apply keyframe overrides
+                let mut params = params;
+                if !g.keyframe_tracks.is_empty() {
+                    let clip_time = self.playhead.to_secs_f64() - clip_source_in_secs;
+                    for (kf_param, kf_value) in g.keyframe_tracks.evaluate_all(clip_time) {
+                        use klipp_core::ColorGradeParam as P;
+                        match kf_param {
+                            P::Exposure => params.exposure = kf_value,
+                            P::Contrast => params.contrast = kf_value,
+                            P::Saturation => params.saturation = kf_value,
+                            P::Temperature => params.temperature = kf_value,
+                            P::Tint => params.tint = kf_value,
+                            P::Highlights => params.highlights = kf_value,
+                            P::Shadows => params.shadows = kf_value,
+                            P::Whites => params.whites = kf_value,
+                            P::Blacks => params.blacks = kf_value,
+                            P::Hue => params.hue = kf_value,
+                            P::GlobalMix => params.global_mix = kf_value,
+                            P::CurvesMix => params.curves_mix = kf_value,
+                            P::HueSatMix => params.huesat_mix = kf_value,
+                            _ => {} // wheel params would need re-conversion, skip for now
+                        }
+                    }
+                }
+
                 if let Some(gpu) = &mut self.gpu_effects {
                     let mut result = gpu.apply_color_grade(
                         rgba, width, height,

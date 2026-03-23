@@ -368,7 +368,59 @@ impl ColorPanel {
             (grade.blacks,     "Blacks",     |v| format!("{v:+.2}"),  0.0, -1.0..=1.0,   ColorGradeParam::Blacks),
         ];
 
+        // Get current clip time for keyframe evaluation
+        let clip_time_secs = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+                .map(|c| state.playhead_smooth_secs - c.source_in.to_secs_f64())
+                .unwrap_or(0.0)
+        };
+
         for &(mut val, label, fmt, def, ref range, param) in tone_sliders {
+            ui.horizontal(|ui| {
+                // Keyframe diamond (3px left of slider)
+                let has_kf = grade.keyframe_tracks.has_keyframes(param);
+                let diamond_color = if has_kf {
+                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                } else {
+                    egui::Color32::from_rgb(0x40, 0x40, 0x50)
+                };
+                let (diamond_rect, diamond_resp) = ui.allocate_exact_size(
+                    egui::vec2(10.0, 14.0), egui::Sense::click(),
+                );
+                let dc = diamond_rect.center();
+                let ds = 3.5;
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(dc.x, dc.y - ds),
+                        egui::pos2(dc.x + ds, dc.y),
+                        egui::pos2(dc.x, dc.y + ds),
+                        egui::pos2(dc.x - ds, dc.y),
+                    ],
+                    if has_kf { diamond_color } else { egui::Color32::TRANSPARENT },
+                    egui::Stroke::new(1.0, diamond_color),
+                ));
+                if diamond_resp.clicked() {
+                    if has_kf {
+                        // Remove keyframe at current time
+                        cmds.push(AppCommand::RemoveKeyframe {
+                            clip_id, param, time_secs: clip_time_secs,
+                        });
+                    } else {
+                        // Add keyframe at current time
+                        cmds.push(AppCommand::AddKeyframe {
+                            clip_id, param, time_secs: clip_time_secs, value: val,
+                        });
+                    }
+                    any_changed = true;
+                }
+                if diamond_resp.hovered() {
+                    diamond_resp.on_hover_text(if has_kf { "Remove keyframe" } else { "Add keyframe" });
+                }
+            });
+
             let resp = color_slider::color_slider_with_edit(
                 ui, theme, label, &mut val, range.clone(), def, fmt,
                 Some((label, &mut state.slider_edit)),
@@ -378,8 +430,14 @@ impl ColorPanel {
             if resp.changed {
                 any_changed = true;
                 cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param, value: val });
+                // Auto-add keyframe when changing a keyframed param
+                if grade.keyframe_tracks.has_keyframes(param) {
+                    cmds.push(AppCommand::AddKeyframe {
+                        clip_id, param, time_secs: clip_time_secs, value: val,
+                    });
+                }
             }
-            ui.add_space(3.0);
+            ui.add_space(2.0);
         }
 
         ui.add_space(4.0);

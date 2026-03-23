@@ -208,6 +208,7 @@ fn color_grade_to_json(cg: &klipp_timeline::ClipColorGrade) -> ColorGradeJson {
         huesat_mix: cg.huesat_mix,
         qualifier: if cg.qualifier.enabled { Some(cg.qualifier.clone()) } else { None },
         masks: if cg.masks.is_empty() { None } else { Some(cg.masks.clone()) },
+        keyframe_tracks: if cg.keyframe_tracks.is_empty() { None } else { Some(cg.keyframe_tracks.clone()) },
         curves: {
             let c = &cg.curves;
             let is_default = |pts: &[[f32; 2]]| pts.len() == 2

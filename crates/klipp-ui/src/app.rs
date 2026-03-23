@@ -1648,6 +1648,41 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     continue;
                 }
+                AppCommand::AddKeyframe { clip_id, param, time_secs, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.keyframe_tracks.track_mut(*param)
+                                .set_keyframe(*time_secs, *value);
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::RemoveKeyframe { clip_id, param, time_secs } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.keyframe_tracks.track_mut(*param)
+                                .remove_keyframe(*time_secs);
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::ClearKeyframes { clip_id, param } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(idx) = clip.color_grade.keyframe_tracks.tracks.iter()
+                                .position(|t| t.param == *param) {
+                                clip.color_grade.keyframe_tracks.tracks.remove(idx);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 AppCommand::ToggleColorPanel => {
                     self.state.show_color_panel = !self.state.show_color_panel;
                     continue;
