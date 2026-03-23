@@ -211,6 +211,10 @@ impl KlippApp {
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
+        // Sync loop state to engine (engine defaults to loop_enabled=false)
+        if app.state.loop_playback_enabled {
+            let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
+        }
 
         // Enrich any stale recent project entries with metadata from disk
         let mut prefs_changed = app.prefs.enrich_recent_projects();
