@@ -610,6 +610,129 @@ impl ColorPanel {
             }
         }
 
+        // ── Power Windows / Masks ──
+        ui.add_space(4.0);
+        {
+            let border_color3 = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+            let div_rect = egui::Rect::from_min_size(
+                egui::pos2(ui.min_rect().min.x + 12.0, ui.cursor().min.y),
+                egui::vec2(ui.available_width() - 24.0, 0.5),
+            );
+            ui.painter().rect_filled(div_rect, 0.0, border_color3);
+            ui.add_space(4.0);
+
+            let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let text_dim = egui::Color32::from_rgb(0x60, 0x60, 0x70);
+            let mut masks = grade.masks.clone();
+
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("MASKS").size(9.0).color(
+                    egui::Color32::from_rgb(0x50, 0x50, 0x60),
+                ));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    // Add circle mask
+                    let add_circle = ui.label(egui::RichText::new("+ ○").size(10.0).color(text_accent));
+                    if add_circle.interact(egui::Sense::click()).clicked() {
+                        masks.masks.push(klipp_core::Mask {
+                            shape: klipp_core::MaskShape::Circle {
+                                center_x: 0.5, center_y: 0.5, radius: 0.2,
+                            },
+                            ..Default::default()
+                        });
+                    }
+                    ui.add_space(6.0);
+                    // Add rectangle mask
+                    let add_rect = ui.label(egui::RichText::new("+ □").size(10.0).color(text_accent));
+                    if add_rect.interact(egui::Sense::click()).clicked() {
+                        masks.masks.push(klipp_core::Mask {
+                            shape: klipp_core::MaskShape::Rectangle {
+                                center_x: 0.5, center_y: 0.5, width: 0.3, height: 0.2, rotation: 0.0,
+                            },
+                            ..Default::default()
+                        });
+                    }
+                    ui.add_space(6.0);
+                    // Add gradient mask
+                    let add_grad = ui.label(egui::RichText::new("+ ◧").size(10.0).color(text_accent));
+                    if add_grad.interact(egui::Sense::click()).clicked() {
+                        masks.masks.push(klipp_core::Mask {
+                            shape: klipp_core::MaskShape::LinearGradient {
+                                start_x: 0.5, start_y: 0.3, end_x: 0.5, end_y: 0.7,
+                            },
+                            ..Default::default()
+                        });
+                    }
+                });
+            });
+
+            // Mask list
+            let mut remove_idx = None;
+            for (i, mask) in masks.masks.iter_mut().enumerate() {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+
+                    // Enable toggle
+                    ui.checkbox(&mut mask.enabled, "");
+
+                    // Shape label
+                    let shape_label = match &mask.shape {
+                        klipp_core::MaskShape::Circle { .. } => "○ Circle",
+                        klipp_core::MaskShape::Rectangle { .. } => "□ Rectangle",
+                        klipp_core::MaskShape::LinearGradient { .. } => "◧ Gradient",
+                    };
+                    ui.label(egui::RichText::new(shape_label).size(9.0).color(text_dim));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(16.0);
+                        // Delete button
+                        let del = ui.label(egui::RichText::new("×").size(11.0).color(
+                            egui::Color32::from_rgb(0xc0, 0x50, 0x50),
+                        ));
+                        if del.interact(egui::Sense::click()).clicked() {
+                            remove_idx = Some(i);
+                        }
+                        ui.add_space(4.0);
+                        // Invert toggle
+                        ui.checkbox(&mut mask.invert, egui::RichText::new("Inv").size(8.0).color(text_dim));
+                    });
+                });
+
+                // Feather slider
+                ui.horizontal(|ui| {
+                    ui.add_space(32.0);
+                    ui.label(egui::RichText::new("Feather").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut mask.feather, 0.0..=0.5).show_value(false));
+                });
+
+                // Opacity slider
+                ui.horizontal(|ui| {
+                    ui.add_space(32.0);
+                    ui.label(egui::RichText::new("Opacity").size(8.0).color(text_dim));
+                    ui.add(egui::Slider::new(&mut mask.opacity, 0.0..=1.0).show_value(false));
+                });
+            }
+
+            if let Some(idx) = remove_idx {
+                masks.masks.remove(idx);
+            }
+
+            // Push changes if masks differ
+            if masks.masks.len() != grade.masks.masks.len()
+                || masks.masks.iter().zip(grade.masks.masks.iter()).any(|(a, b)| {
+                    a.enabled != b.enabled || a.invert != b.invert
+                    || (a.feather - b.feather).abs() > 0.001
+                    || (a.opacity - b.opacity).abs() > 0.001
+                })
+                || remove_idx.is_some()
+            {
+                cmds.push(AppCommand::SetClipMasks { clip_id, masks });
+                any_changed = true;
+            }
+        }
+
         // ── Undo handling ──
         if any_drag_started {
             let pre_change_grade = {

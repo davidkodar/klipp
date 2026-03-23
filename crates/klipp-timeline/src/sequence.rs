@@ -556,6 +556,9 @@ pub struct ClipColorGrade {
     // ── Secondary color correction (qualifier) ──
     #[serde(default)]
     pub qualifier: klipp_core::QualifierSettings,
+    // ── Power windows / masks ──
+    #[serde(default)]
+    pub masks: klipp_core::MaskStack,
 }
 
 pub use klipp_core::CurveSet;
@@ -603,6 +606,7 @@ impl Default for ClipColorGrade {
             huesat: Default::default(),
             huesat_mix: 1.0,
             qualifier: Default::default(),
+            masks: Default::default(),
         }
     }
 }

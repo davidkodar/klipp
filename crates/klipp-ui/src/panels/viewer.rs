@@ -370,6 +370,71 @@ impl ViewerPanel {
             }
         }
 
+        // ── Mask outlines on viewer ──
+        if let Some(clip_id) = state.selected_clip {
+            let masks = state.sequences.get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id))
+                .map(|c| &c.color_grade.masks);
+
+            if let Some(masks) = masks {
+                let mask_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 160));
+                let aspect = image_rect.height() / image_rect.width();
+
+                for mask in &masks.masks {
+                    if !mask.enabled { continue; }
+                    match &mask.shape {
+                        klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
+                            let cx = image_rect.min.x + center_x * image_rect.width();
+                            let cy = image_rect.min.y + center_y * image_rect.height();
+                            let r = radius * image_rect.width();
+                            ui.painter().circle_stroke(egui::pos2(cx, cy), r, mask_stroke);
+                        }
+                        klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
+                            let cx = image_rect.min.x + center_x * image_rect.width();
+                            let cy = image_rect.min.y + center_y * image_rect.height();
+                            let hw = width / 2.0 * image_rect.width();
+                            let hh = height / 2.0 * image_rect.width(); // use width for aspect
+                            let rad = rotation.to_radians();
+                            let cos_r = rad.cos();
+                            let sin_r = rad.sin();
+                            // Four corners rotated
+                            let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
+                            let points: Vec<egui::Pos2> = corners.iter().map(|&(lx, ly)| {
+                                egui::pos2(
+                                    cx + lx * cos_r - ly * sin_r,
+                                    cy + lx * sin_r + ly * cos_r,
+                                )
+                            }).collect();
+                            for i in 0..4 {
+                                ui.painter().line_segment(
+                                    [points[i], points[(i + 1) % 4]],
+                                    mask_stroke,
+                                );
+                            }
+                            // Center dot
+                            ui.painter().circle_filled(egui::pos2(cx, cy), 3.0, mask_stroke.color);
+                        }
+                        klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                            let sx = image_rect.min.x + start_x * image_rect.width();
+                            let sy = image_rect.min.y + start_y * image_rect.height();
+                            let ex = image_rect.min.x + end_x * image_rect.width();
+                            let ey = image_rect.min.y + end_y * image_rect.height();
+                            // Draw gradient line with dots at start/end
+                            ui.painter().line_segment(
+                                [egui::pos2(sx, sy), egui::pos2(ex, ey)],
+                                mask_stroke,
+                            );
+                            ui.painter().circle_filled(egui::pos2(sx, sy), 4.0, mask_stroke.color);
+                            ui.painter().circle_stroke(egui::pos2(ex, ey), 4.0, mask_stroke);
+                        }
+                    }
+                }
+                let _ = aspect; // suppress unused warning
+            }
+        }
+
         // ── Overlay mode badge (top-right of video) ──
         {
             use crate::state::ViewerOverlay;

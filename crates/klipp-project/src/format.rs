@@ -245,6 +245,8 @@ pub struct ColorGradeJson {
     pub huesat_mix: f32,
     #[serde(default)]
     pub qualifier: Option<klipp_core::QualifierSettings>,
+    #[serde(default)]
+    pub masks: Option<klipp_core::MaskStack>,
 }
 
 fn default_one() -> f32 { 1.0 }

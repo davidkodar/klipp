@@ -1637,6 +1637,17 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     continue;
                 }
+                AppCommand::SetClipMasks { clip_id, masks } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.masks = masks.clone();
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 AppCommand::ToggleColorPanel => {
                     self.state.show_color_panel = !self.state.show_color_panel;
                     continue;

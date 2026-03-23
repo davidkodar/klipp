@@ -38,6 +38,7 @@ pub struct ColorGradeParams {
     pub huesat: klipp_core::HueSatCurves,
     pub huesat_mix: f32,
     pub qualifier: klipp_core::QualifierSettings,
+    pub masks: klipp_core::MaskStack,
 }
 
 /// Pre-computed 256-entry lookup tables for RGB curves.
@@ -159,12 +160,33 @@ impl ColorPipeline {
         if let Some(orig) = &original {
             transforms::apply_global_mix(&mut rgba, orig, params.global_mix);
         }
-        // 12. Secondary color correction (qualifier)
+        // 12. Secondary color correction (qualifier + masks)
         if params.qualifier.enabled {
-            let matte = crate::qualifier::generate_qualifier_matte(
+            let mut matte = crate::qualifier::generate_qualifier_matte(
                 &rgba, width, height, &params.qualifier,
             );
+            // Combine with mask matte (intersection: multiply)
+            if !params.masks.is_empty() {
+                let mask_matte = crate::masks::generate_mask_matte(width, height, &params.masks);
+                for (m, mm) in matte.iter_mut().zip(mask_matte.iter()) {
+                    *m *= mm;
+                }
+            }
             crate::qualifier::apply_qualified_grade(&mut rgba, &matte, &params.qualifier);
+        } else if !params.masks.is_empty() {
+            // Masks without qualifier: apply masks alone as a vignette/region effect
+            // For now, just darken outside the mask as a basic vignette
+            let mask_matte = crate::masks::generate_mask_matte(width, height, &params.masks);
+            for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+                let m = mask_matte.get(i).copied().unwrap_or(1.0);
+                if m < 0.999 {
+                    // Subtle vignette: darken outside mask
+                    let dim = 0.7 + 0.3 * m; // at m=0, dim=0.7 (30% darker)
+                    chunk[0] = (chunk[0] as f32 * dim) as u8;
+                    chunk[1] = (chunk[1] as f32 * dim) as u8;
+                    chunk[2] = (chunk[2] as f32 * dim) as u8;
+                }
+            }
         }
         rgba
     }

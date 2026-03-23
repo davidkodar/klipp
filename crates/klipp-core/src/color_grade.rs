@@ -99,6 +99,63 @@ impl Default for QualifierSettings {
     }
 }
 
+/// Shape-based mask for regional color grading (power windows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MaskShape {
+    Circle {
+        center_x: f32, // normalized 0-1
+        center_y: f32,
+        radius: f32,   // normalized to frame width
+    },
+    Rectangle {
+        center_x: f32,
+        center_y: f32,
+        width: f32,
+        height: f32,
+        rotation: f32, // degrees
+    },
+    LinearGradient {
+        start_x: f32,
+        start_y: f32,
+        end_x: f32,
+        end_y: f32,
+    },
+}
+
+/// A single mask with shape, feathering, and blend controls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mask {
+    pub shape: MaskShape,
+    pub feather: f32,   // 0-1, soft edge width
+    pub invert: bool,
+    pub opacity: f32,   // 0-1
+    pub enabled: bool,
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
+            feather: 0.1,
+            invert: false,
+            opacity: 1.0,
+            enabled: true,
+        }
+    }
+}
+
+/// Stack of masks applied to a clip's color grade.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaskStack {
+    pub masks: Vec<Mask>,
+}
+
+impl MaskStack {
+    pub fn is_empty(&self) -> bool {
+        self.masks.is_empty() || self.masks.iter().all(|m| !m.enabled)
+    }
+}
+
 impl HueSatCurves {
     pub fn is_all_identity(&self) -> bool {
         self.hue_vs_hue.is_empty()

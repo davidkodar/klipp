@@ -2465,6 +2465,7 @@ impl PlaybackEngine {
                     huesat: g.huesat.clone(),
                     huesat_mix: g.huesat_mix,
                     qualifier: g.qualifier.clone(),
+                    masks: g.masks.clone(),
                 };
                 if let Some(gpu) = &mut self.gpu_effects {
                     let mut result = gpu.apply_color_grade(
