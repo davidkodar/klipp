@@ -106,11 +106,17 @@ impl NewTimelinePanel {
         ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
 
         // Draw range selection visuals (ruler fill + handles + lollipops + labels)
+        // Clip handles/lollipops to the full timeline area (ruler + tracks)
+        let timeline_clip_rect = egui::Rect::from_min_max(
+            ruler_rect.min,
+            tracks_rect.max,
+        );
+        let timeline_painter = ui.painter().with_clip_rect(timeline_clip_rect);
         let loop_pulsing = state.loop_playback_enabled
             && state.playback == klipp_engine::PlaybackState::Playing;
         range_visuals::draw_range(
             &ruler_painter,
-            ui.painter(),
+            &timeline_painter,
             ruler_rect,
             tracks_rect.bottom(),
             state,

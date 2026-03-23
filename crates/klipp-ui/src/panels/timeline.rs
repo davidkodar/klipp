@@ -1115,13 +1115,12 @@ impl TimelinePanel {
                     egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120),
                 );
 
-                // Gap clips ARE selectable — handle click
+                // Gap clips ARE selectable — handle click (only inside visible content)
                 if let Some(pos) = pointer_pos {
-                    if clip_rect.contains(pos) && pointer_released {
-                        state.selected_clip = Some(clip.id);
-                        state.hovered_clip = Some(clip.id);
-                    }
-                    if clip_rect.contains(pos) {
+                    if clip_rect.contains(pos) && content_rect.contains(pos) {
+                        if pointer_released {
+                            state.selected_clip = Some(clip.id);
+                        }
                         state.hovered_clip = Some(clip.id);
                     }
                 }
@@ -1604,9 +1603,9 @@ impl TimelinePanel {
                 continue;
             }
 
-            // Hover detection
+            // Hover detection — only if pointer is inside the visible content area
             if let Some(pos) = pointer_pos {
-                if clip_rect.contains(pos) {
+                if clip_rect.contains(pos) && content_rect.contains(pos) {
                     state.hovered_clip = Some(clip.id);
 
                     // Timeline skimming: show frame at hover position in viewer
@@ -1693,7 +1692,7 @@ impl TimelinePanel {
             // Blade cursor/line with snap support
             if state.active_tool == Tool::Blade {
                 if let Some(pos) = pointer_pos {
-                    if clip_rect.contains(pos) {
+                    if clip_rect.contains(pos) && content_rect.contains(pos) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                         let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
                         let raw_x = pos.x - content_rect.left() + scroll;
