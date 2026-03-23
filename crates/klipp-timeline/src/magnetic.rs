@@ -1862,6 +1862,7 @@ mod tests {
             in_point: None,
             out_point: None,
             markers: Vec::new(),
+            last_playhead: None,
         }
     }
 
@@ -1889,6 +1890,7 @@ mod tests {
             in_point: None,
             out_point: None,
             markers: Vec::new(),
+            last_playhead: None,
         }
     }
 
