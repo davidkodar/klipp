@@ -233,11 +233,32 @@ impl NewTimelinePanel {
                     // Check 4px drag threshold
                     let dist = (pos.x - origin.x).abs();
                     if dist > 4.0 {
-                        // Start ruler range drag
-                        let anchor_secs = time_utils::x_to_time(origin.x - ruler_rect.left(), pps, scroll_x)
-                            .max(0.0).min(duration_secs);
+                        // If a range already exists, extend the nearest edge instead of creating new
+                        let has_range = state.sequence().in_point.is_some()
+                            && state.sequence().out_point.is_some();
+                        let drag_kind = if has_range {
+                            let click_secs = time_utils::x_to_time(
+                                origin.x - ruler_rect.left(), pps, scroll_x,
+                            );
+                            let in_secs = state.sequence().in_point
+                                .map(|t| t.to_secs_f64()).unwrap_or(0.0);
+                            let out_secs = state.sequence().out_point
+                                .map(|t| t.to_secs_f64()).unwrap_or(0.0);
+                            let mid = (in_secs + out_secs) / 2.0;
+                            // Click closer to in_point → drag in_point; closer to out_point → drag out_point
+                            if click_secs <= mid {
+                                crate::state::RangeDragKind::InHandle
+                            } else {
+                                crate::state::RangeDragKind::OutHandle
+                            }
+                        } else {
+                            let anchor_secs = time_utils::x_to_time(
+                                origin.x - ruler_rect.left(), pps, scroll_x,
+                            ).max(0.0).min(duration_secs);
+                            crate::state::RangeDragKind::RulerCreate { anchor_secs }
+                        };
                         state.range_drag = Some(crate::state::RangeDragState {
-                            kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
+                            kind: drag_kind,
                             original_in: state.sequence().in_point,
                             original_out: state.sequence().out_point,
                         });
