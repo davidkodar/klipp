@@ -369,7 +369,10 @@ impl ColorPanel {
         ];
 
         for &(mut val, label, fmt, def, ref range, param) in tone_sliders {
-            let resp = color_slider::color_slider(ui, theme, label, &mut val, range.clone(), def, fmt);
+            let resp = color_slider::color_slider_with_edit(
+                ui, theme, label, &mut val, range.clone(), def, fmt,
+                Some((label, &mut state.slider_edit)),
+            );
             any_drag_started |= resp.drag_started;
             any_drag_ended |= resp.drag_ended;
             if resp.changed {
@@ -408,7 +411,10 @@ impl ColorPanel {
         ];
 
         for &(mut val, label, fmt, def, ref range, param) in color_sliders {
-            let resp = color_slider::color_slider(ui, theme, label, &mut val, range.clone(), def, fmt);
+            let resp = color_slider::color_slider_with_edit(
+                ui, theme, label, &mut val, range.clone(), def, fmt,
+                Some((label, &mut state.slider_edit)),
+            );
             any_drag_started |= resp.drag_started;
             any_drag_ended |= resp.drag_ended;
             if resp.changed {
@@ -647,7 +653,11 @@ impl ColorPanel {
         ];
 
         for &(mut val, label, fmt, def, ref range, param) in global_sliders {
-            let resp = color_slider::color_slider(ui, theme, label, &mut val, range.clone(), def, fmt);
+            let wid = format!("whl_{label}");
+            let resp = color_slider::color_slider_with_edit(
+                ui, theme, label, &mut val, range.clone(), def, fmt,
+                Some((&wid, &mut state.slider_edit)),
+            );
             any_drag_started |= resp.drag_started;
             any_drag_ended |= resp.drag_ended;
             if resp.changed {
@@ -800,9 +810,9 @@ impl ColorPanel {
             ]
         };
 
-        // Compute histogram bins from cached frame (if available)
-        // TODO: hook up cached_curve_histograms from FrameReady events
+        // Histogram bins from cached frame data (computed in upload_frame_to_egui)
         let empty_hist = [0u32; 256];
+        let hist_data = &state.curve_histograms;
 
         for &(ch, label, height) in curve_defs {
             let curve_color = curves_editor::channel_color(ch);
@@ -836,7 +846,13 @@ impl ColorPanel {
                 curves_editor::CurveChannel::Blue => curves.blue.clone(),
             };
 
-            let hist = &empty_hist; // placeholder — will be wired in future
+            let hist: &[u32; 256] = match (ch, hist_data) {
+                (curves_editor::CurveChannel::Master, Some(h)) => &h.luma,
+                (curves_editor::CurveChannel::Red, Some(h)) => &h.r,
+                (curves_editor::CurveChannel::Green, Some(h)) => &h.g,
+                (curves_editor::CurveChannel::Blue, Some(h)) => &h.b,
+                _ => &empty_hist,
+            };
 
             let resp = {
                 let mut resp_out = None;
@@ -883,8 +899,9 @@ impl ColorPanel {
         // ── Mix slider ──
         ui.add_space(2.0);
         let mut mix_val = grade.curves_mix;
-        let mix_resp = color_slider::color_slider(
+        let mix_resp = color_slider::color_slider_with_edit(
             ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
+            Some(("crv_Mix", &mut state.slider_edit)),
         );
         any_drag_started |= mix_resp.drag_started;
         any_drag_ended |= mix_resp.drag_ended;
@@ -1188,8 +1205,12 @@ impl ColorPanel {
                     }
                     if let Some(i) = closest_idx {
                         if closest_dist < hit_radius || response.drag_started() {
-                            let new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
-                            let new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+                            let mut new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                            let mut new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+                            if ui.input(|inp| inp.modifiers.shift) {
+                                new_x = (new_x * 4.0).round() / 4.0;
+                                new_y = (new_y * 4.0).round() / 4.0;
+                            }
                             if i > 0 && i < points.len() - 1 {
                                 let x_min = points[i - 1][0] + 0.01;
                                 let x_max = points[i + 1][0] - 0.01;
@@ -1248,8 +1269,9 @@ impl ColorPanel {
         // Mix slider
         ui.add_space(4.0);
         let mut mix_val = grade.huesat_mix;
-        let mix_resp = color_slider::color_slider(
+        let mix_resp = color_slider::color_slider_with_edit(
             ui, theme, "Mix", &mut mix_val, 0.0..=1.0, 1.0, |v| format!("{:.0}%", v * 100.0),
+            Some(("hs_Mix", &mut state.slider_edit)),
         );
         any_drag_started |= mix_resp.drag_started;
         any_drag_ended |= mix_resp.drag_ended;
@@ -1379,7 +1401,7 @@ impl ColorPanel {
                 ui.add_space(16.0);
                 if footer_button(ui, "Browse LUT...", text_dim, btn_bg, border_color) {
                     if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("LUT files", &["cube"])
+                        .add_filter("LUT files", &["cube", "3dl", "csp"])
                         .pick_file()
                     {
                         cmds.push(AppCommand::LoadGlobalLut { path });

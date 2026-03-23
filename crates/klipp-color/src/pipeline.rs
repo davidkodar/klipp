@@ -73,9 +73,9 @@ impl ColorPipeline {
         Self::default()
     }
 
-    /// Load a .cube LUT file as the global LUT.
+    /// Load a LUT file (.cube, .3dl, .csp) as the global LUT.
     pub fn load_global_lut(&mut self, path: &Path) -> Result<(), lut::LutError> {
-        let lut_data = lut::load_cube(path)?;
+        let lut_data = lut::load_lut(path)?;
         self.global_lut = Some(lut_data);
         self.global_lut_path = Some(path.to_path_buf());
         self.enabled = true;

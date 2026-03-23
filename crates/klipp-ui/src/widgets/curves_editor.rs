@@ -130,8 +130,14 @@ pub fn curves_editor_sized(
 
             if let Some(idx) = closest_idx {
                 if closest_dist < hit_radius || response.drag_started() {
-                    let new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
-                    let new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+                    let mut new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                    let mut new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+
+                    // Shift-snap to 25% grid
+                    if ui.input(|i| i.modifiers.shift) {
+                        new_x = (new_x * 4.0).round() / 4.0;
+                        new_y = (new_y * 4.0).round() / 4.0;
+                    }
 
                     if idx > 0 && idx < points.len() - 1 {
                         let x_min = points[idx - 1][0] + 0.01;

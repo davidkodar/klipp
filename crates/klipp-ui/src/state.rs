@@ -186,6 +186,8 @@ pub struct AppState {
     pub color_grade_drag_start: Option<klipp_timeline::ClipColorGrade>,
     pub color_grade_clipboard: Option<klipp_timeline::ClipColorGrade>,
     pub curves_single_mode: bool,
+    pub curve_histograms: Option<klipp_color::scopes::HistogramData>,
+    pub slider_edit: crate::widgets::color_slider::SliderEditState,
     pub huesat_single_mode: bool,
     pub huesat_active_curve: u8, // 0-5 index for Single mode
 
@@ -412,6 +414,8 @@ impl Default for AppState {
             color_grade_drag_start: None,
             color_grade_clipboard: None,
             curves_single_mode: false,
+            curve_histograms: None,
+            slider_edit: Default::default(),
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,

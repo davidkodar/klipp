@@ -606,7 +606,7 @@ impl InspectorPanel {
             if ui.button("Load .cube LUT...").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .set_title("Load .cube LUT")
-                    .add_filter("Cube LUT", &["cube"])
+                    .add_filter("LUT files", &["cube", "3dl", "csp"])
                     .pick_file()
                 {
                     cmds.push(AppCommand::LoadGlobalLut { path });

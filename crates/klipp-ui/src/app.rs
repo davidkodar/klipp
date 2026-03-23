@@ -882,6 +882,12 @@ impl KlippApp {
             self.state.effect_registry.set_reference_frame(&fb.data, fb.width, fb.height);
         }
 
+        // Compute curve histograms for the color panel (throttled)
+        if self.state.show_color_panel {
+            let hist = klipp_color::scopes::compute_histogram(&fb.data, fb.width, fb.height);
+            self.state.curve_histograms = Some(hist);
+        }
+
         // Zero-copy: RGBA [u8;4] has the same layout as egui::Color32.
         // Take ownership of the data to avoid a copy.
         let rgba_bytes = std::mem::take(&mut fb.data);

@@ -98,6 +98,191 @@ pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
     Ok(LutData { size, data })
 }
 
+/// Load any supported LUT format by file extension (.cube, .3dl, .csp).
+pub fn load_lut(path: &Path) -> Result<LutData, LutError> {
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(path)?;
+    match ext.as_str() {
+        "cube" => parse_cube(&text),
+        "3dl" => parse_3dl(&text),
+        "csp" => parse_csp(&text),
+        _ => parse_cube(&text), // fallback to .cube
+    }
+}
+
+/// Parse Autodesk/Kodak .3dl 3D LUT format.
+/// Lines contain 3 integers (10-bit 0-1023 or 12-bit 0-4095). Size inferred from entry count.
+pub fn parse_3dl(text: &str) -> Result<LutData, LutError> {
+    let mut data = Vec::new();
+    let mut max_val: u32 = 0;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Skip header lines (often the first line is a mesh definition like "0 64 128 ...")
+        // Data lines have exactly 3 integer values
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() == 3 {
+            let mut vals = [0u32; 3];
+            let mut ok = true;
+            for (i, part) in parts.iter().enumerate() {
+                match part.parse::<u32>() {
+                    Ok(v) => {
+                        vals[i] = v;
+                        if v > max_val { max_val = v; }
+                    }
+                    Err(_) => {
+                        // Try as float (some .3dl files use floats)
+                        match part.parse::<f32>() {
+                            Ok(v) => {
+                                data.push(v.clamp(0.0, 1.0));
+                                ok = false; // handled as float
+                            }
+                            Err(_) => { ok = false; break; }
+                        }
+                    }
+                }
+            }
+            if ok {
+                // Store as raw integers, normalize later
+                for v in &vals {
+                    data.push(*v as f32);
+                }
+            }
+        } else if parts.len() > 3 {
+            // Skip mesh definition lines (e.g. "0 64 128 192 256 ...")
+            continue;
+        }
+    }
+
+    if data.is_empty() {
+        return Err(LutError::NotEnoughEntries { expected: 8, got: 0 });
+    }
+
+    // Normalize integer values to 0-1 range
+    if max_val > 1 {
+        let scale = 1.0 / max_val as f32;
+        for v in &mut data {
+            *v *= scale;
+        }
+    }
+
+    // Infer size from entry count: entries = size^3, data.len() = size^3 * 3
+    let entries = data.len() / 3;
+    let size = (entries as f64).cbrt().round() as usize;
+    if size * size * size != entries {
+        return Err(LutError::InvalidSize(size));
+    }
+    if !(2..=256).contains(&size) {
+        return Err(LutError::InvalidSize(size));
+    }
+
+    data.truncate(size * size * size * 3);
+    Ok(LutData { size, data })
+}
+
+/// Parse Rising Sun Research .csp LUT format.
+/// Header: CSPLUTV100 / 3D, optional 1D pre-LUTs, then 3D data as float triplets.
+pub fn parse_csp(text: &str) -> Result<LutData, LutError> {
+    let mut lines = text.lines().peekable();
+    let mut found_header = false;
+    let mut is_3d = false;
+
+    // Parse header
+    for line in lines.by_ref() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if line == "CSPLUTV100" {
+            found_header = true;
+            continue;
+        }
+        if found_header && line == "3D" {
+            is_3d = true;
+            break;
+        }
+        if found_header && line == "1D" {
+            // 1D CSP not supported as 3D LUT
+            return Err(LutError::MissingSize);
+        }
+    }
+
+    if !found_header || !is_3d {
+        return Err(LutError::MissingSize);
+    }
+
+    // Skip 1D pre-LUT sections (3 sections, each: count on one line, then count pairs)
+    for _ in 0..3 {
+        // Read count line
+        let count_line = loop {
+            match lines.next() {
+                Some(l) if !l.trim().is_empty() => break l.trim().to_string(),
+                Some(_) => continue,
+                None => return Err(LutError::MissingSize),
+            }
+        };
+        let count: usize = count_line.parse().unwrap_or(0);
+        // Skip `count` data lines
+        for _ in 0..count {
+            lines.next();
+        }
+    }
+
+    // Read 3D LUT size
+    let size_line = loop {
+        match lines.next() {
+            Some(l) if !l.trim().is_empty() => break l.trim().to_string(),
+            Some(_) => continue,
+            None => return Err(LutError::MissingSize),
+        }
+    };
+    let parts: Vec<&str> = size_line.split_whitespace().collect();
+    let size: usize = if parts.len() >= 3 {
+        // "N N N" format
+        parts[0].parse().map_err(|_| LutError::ParseFloat { line_num: 0, text: size_line.clone() })?
+    } else {
+        size_line.parse().map_err(|_| LutError::ParseFloat { line_num: 0, text: size_line.clone() })?
+    };
+
+    if !(2..=256).contains(&size) {
+        return Err(LutError::InvalidSize(size));
+    }
+
+    // Read 3D data: size^3 lines of "r g b" floats
+    let expected = size * size * size;
+    let mut data = Vec::with_capacity(expected * 3);
+    let mut line_num = 0;
+
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        line_num += 1;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            for part in parts.iter().take(3) {
+                let v: f32 = part.parse().map_err(|_| LutError::ParseFloat {
+                    line_num,
+                    text: part.to_string(),
+                })?;
+                data.push(v);
+            }
+        }
+        if data.len() >= expected * 3 { break; }
+    }
+
+    let got = data.len() / 3;
+    if got < expected {
+        return Err(LutError::NotEnoughEntries { expected, got });
+    }
+    data.truncate(expected * 3);
+
+    Ok(LutData { size, data })
+}
+
 /// Apply a 3D LUT with trilinear interpolation to an RGBA buffer.
 /// `opacity` controls blend: 0.0 = original, 1.0 = fully graded.
 pub fn apply_3d_lut(rgba: &mut [u8], lut: &LutData, opacity: f32) {
