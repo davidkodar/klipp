@@ -181,6 +181,34 @@ pub struct ColorGradeJson {
     pub temperature: f32,
     #[serde(default)]
     pub tint: f32,
+    #[serde(default)]
+    pub highlights: f32,
+    #[serde(default)]
+    pub shadows: f32,
+    #[serde(default)]
+    pub whites: f32,
+    #[serde(default)]
+    pub blacks: f32,
+    #[serde(default)]
+    pub lift_x: f32,
+    #[serde(default)]
+    pub lift_y: f32,
+    #[serde(default)]
+    pub lift_master: f32,
+    #[serde(default)]
+    pub gamma_x: f32,
+    #[serde(default)]
+    pub gamma_y: f32,
+    #[serde(default)]
+    pub gamma_master: f32,
+    #[serde(default)]
+    pub gain_x: f32,
+    #[serde(default)]
+    pub gain_y: f32,
+    #[serde(default)]
+    pub gain_master: f32,
+    #[serde(default)]
+    pub curves: Option<klipp_timeline::CurveSet>,
 }
 
 fn default_saturation() -> f32 { 1.0 }

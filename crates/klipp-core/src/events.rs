@@ -203,12 +203,11 @@ pub enum AppCommand {
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
 
     // Color
-    SetClipExposure { clip_id: ClipId, exposure: f32 },
-    SetClipContrast { clip_id: ClipId, contrast: f32 },
-    SetClipSaturation { clip_id: ClipId, saturation: f32 },
-    SetClipTemperature { clip_id: ClipId, temperature: f32 },
-    SetClipTint { clip_id: ClipId, tint: f32 },
     ResetClipColorGrade { clip_id: ClipId },
+    SetClipColorGradeParam { clip_id: ClipId, param: ColorGradeParam, value: f32 },
+    SetClipCurves { clip_id: ClipId, curves: crate::color_grade::CurveSet },
+    ToggleColorPanel,
+    ToggleBeforeAfter,
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },
@@ -345,6 +344,28 @@ pub enum Tool {
     Select,
     Blade,
     Range,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorGradeParam {
+    Exposure,
+    Contrast,
+    Saturation,
+    Temperature,
+    Tint,
+    Highlights,
+    Shadows,
+    Whites,
+    Blacks,
+    LiftX,
+    LiftY,
+    LiftMaster,
+    GammaX,
+    GammaY,
+    GammaMaster,
+    GainX,
+    GainY,
+    GainMaster,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

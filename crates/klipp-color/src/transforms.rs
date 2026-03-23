@@ -62,6 +62,63 @@ pub fn apply_temperature_tint(rgba: &mut [u8], temperature: f32, tint: f32) {
     }
 }
 
+/// Tone controls: highlights, shadows, whites, blacks.
+/// Each value in -1.0..+1.0, 0.0 is identity.
+/// Highlights affect bright pixels (luma > 0.5), shadows affect dark (luma < 0.5).
+/// Whites affect near-white (luma > 0.8), blacks affect near-black (luma < 0.2).
+pub fn apply_tone_controls(rgba: &mut [u8], highlights: f32, shadows: f32, whites: f32, blacks: f32) {
+    if highlights == 0.0 && shadows == 0.0 && whites == 0.0 && blacks == 0.0 {
+        return;
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        let hi_w = (luma - 0.5).max(0.0) * 2.0;
+        let lo_w = (0.5 - luma).max(0.0) * 2.0;
+        let white_w = (luma - 0.8).max(0.0) * 5.0;
+        let black_w = (0.2 - luma).max(0.0) * 5.0;
+
+        let adj = highlights * hi_w + shadows * lo_w + whites * white_w + blacks * black_w;
+
+        pixel[0] = ((r + adj).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((g + adj).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((b + adj).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Apply lift/gamma/gain color wheels.
+/// Each parameter is a pre-converted (r, g, b) shift from wheel_offset_to_rgb.
+/// Lift affects shadows (weight = 1-luma), Gamma midtones (weight = sin(luma*π)),
+/// Gain highlights (weight = luma). Uses BT.709 luma.
+pub fn apply_lift_gamma_gain(
+    rgba: &mut [u8],
+    lift: (f32, f32, f32),
+    gamma: (f32, f32, f32),
+    gain: (f32, f32, f32),
+) {
+    let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
+    if is_zero(lift) && is_zero(gamma) && is_zero(gain) {
+        return;
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        let lift_w = (1.0 - luma).max(0.0);
+        let gain_w = luma;
+        let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
+
+        pixel[0] = ((r + lift.0 * lift_w + gamma.0 * gamma_w + gain.0 * gain_w).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((g + lift.1 * lift_w + gamma.1 * gamma_w + gain.1 * gain_w).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((b + lift.2 * lift_w + gamma.2 * gamma_w + gain.2 * gain_w).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

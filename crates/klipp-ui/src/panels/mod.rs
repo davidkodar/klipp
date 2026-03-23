@@ -1,3 +1,4 @@
+pub mod color_panel;
 pub mod inspector;
 pub mod launch_screen;
 pub mod markers;

@@ -91,6 +91,8 @@ pub struct PlaybackEngine {
     last_playback_log: std::time::Instant,
     // Color pipeline — post-processing on RGBA frames before display
     color_pipeline: klipp_color::ColorPipeline,
+    // Before/After — when true, skip per-clip color grade to show ungraded frame
+    bypass_color_grade: bool,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -193,6 +195,7 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
+            bypass_color_grade: false,
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -517,6 +520,11 @@ impl PlaybackEngine {
                     self.pre_seek_generation += 1;
                     self.pre_seek_started = false;
                 }
+            }
+
+            AppCommand::ToggleBeforeAfter => {
+                self.bypass_color_grade = !self.bypass_color_grade;
+                debug!("Before/After: bypass_color_grade = {}", self.bypass_color_grade);
             }
 
             // UI-side commands — engine ignores them
@@ -2371,16 +2379,61 @@ impl PlaybackEngine {
         let clip = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clips.get(self.current_clip_index));
-        let grade = clip.map(|c| c.color_grade);
+        let grade = clip.map(|c| c.color_grade.clone());
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
         drop(seq);
 
-        // 1. Per-clip color grade
+        // 1. Per-clip color grade (skipped in before/after bypass mode)
         let t1 = std::time::Instant::now();
-        let rgba = if let Some(g) = grade {
+        let rgba = if self.bypass_color_grade {
+            rgba
+        } else if let Some(g) = grade {
             if g.enabled {
-                self.color_pipeline.apply_clip_grade(rgba, g.exposure, g.contrast, g.saturation, g.temperature, g.tint)
+                // Build curve LUTs if any curve is non-identity
+                let curve_luts = {
+                    let c = &g.curves;
+                    let m_id = klipp_color::curves::is_identity(&c.master);
+                    let r_id = klipp_color::curves::is_identity(&c.red);
+                    let g_id = klipp_color::curves::is_identity(&c.green);
+                    let b_id = klipp_color::curves::is_identity(&c.blue);
+                    if m_id && r_id && g_id && b_id {
+                        None
+                    } else {
+                        Some(klipp_color::pipeline::CurveLuts {
+                            master: klipp_color::curves::build_curve_lut(&c.master),
+                            red: klipp_color::curves::build_curve_lut(&c.red),
+                            green: klipp_color::curves::build_curve_lut(&c.green),
+                            blue: klipp_color::curves::build_curve_lut(&c.blue),
+                        })
+                    }
+                };
+                let params = klipp_color::ColorGradeParams {
+                    exposure: g.exposure,
+                    contrast: g.contrast,
+                    saturation: g.saturation,
+                    temperature: g.temperature,
+                    tint: g.tint,
+                    highlights: g.highlights,
+                    shadows: g.shadows,
+                    whites: g.whites,
+                    blacks: g.blacks,
+                    lift: klipp_color::wheel_offset_to_rgb(g.lift_x, g.lift_y, g.lift_master),
+                    gamma: klipp_color::wheel_offset_to_rgb(g.gamma_x, g.gamma_y, g.gamma_master),
+                    gain: klipp_color::wheel_offset_to_rgb(g.gain_x, g.gain_y, g.gain_master),
+                    curve_luts,
+                };
+                if let Some(gpu) = &mut self.gpu_effects {
+                    gpu.apply_color_grade(
+                        rgba, width, height,
+                        params.exposure, params.contrast, params.saturation,
+                        params.temperature, params.tint,
+                        params.highlights, params.shadows, params.whites, params.blacks,
+                        params.lift, params.gamma, params.gain,
+                    )
+                } else {
+                    self.color_pipeline.apply_clip_grade_full(rgba, &params)
+                }
             } else { rgba }
         } else { rgba };
         let t2 = std::time::Instant::now();

@@ -19,6 +19,8 @@ pub struct GpuEffectsPipeline {
     crop_pipeline: wgpu::ComputePipeline,
     transform_pipeline: wgpu::ComputePipeline,
     chroma_key_pipeline: wgpu::ComputePipeline,
+    // Compute pipelines — color grading (standalone, not part of effect chain)
+    color_grade_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
@@ -214,6 +216,7 @@ impl GpuEffectsPipeline {
         let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP);
         let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
         let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
+        let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
 
         // Check if any shader compilation failed
@@ -241,6 +244,7 @@ impl GpuEffectsPipeline {
             crop_pipeline,
             transform_pipeline,
             chroma_key_pipeline,
+            color_grade_pipeline,
             transition_pipeline,
             bind_group_layout,
             transition_bgl,
@@ -312,6 +316,67 @@ impl GpuEffectsPipeline {
                 },
             ],
         })
+    }
+
+    /// Apply per-clip color grading on the GPU. Returns the processed RGBA data.
+    /// Accepts the pre-converted lift/gamma/gain RGB tuples from wheel_offset_to_rgb.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_color_grade(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        exposure: f32,
+        contrast: f32,
+        saturation: f32,
+        temperature: f32,
+        tint: f32,
+        highlights: f32,
+        shadows: f32,
+        whites: f32,
+        blacks: f32,
+        lift: (f32, f32, f32),
+        gamma: (f32, f32, f32),
+        gain: (f32, f32, f32),
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.write_params(&GpuColorGradeParams {
+            width,
+            height,
+            exposure,
+            contrast,
+            saturation,
+            temperature,
+            tint,
+            highlights,
+            shadows,
+            whites,
+            blacks,
+            lift_r: lift.0,
+            lift_g: lift.1,
+            lift_b: lift.2,
+            gamma_r: gamma.0,
+            gamma_g: gamma.1,
+            gamma_b: gamma.2,
+            gain_r: gain.0,
+            gain_g: gain.1,
+            gain_b: gain.2,
+            _pad0: 0,
+            _pad1: 0,
+        });
+        self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
     }
 
     /// Apply a chain of effects on the GPU. Returns the processed RGBA data.
@@ -709,6 +774,34 @@ struct TransitionParams {
     progress: f32,
     kind_id: u32, // 0=CrossDissolve, 1=WipeLeft, 2=WipeRight, 3=WipeUp, 4=WipeDown, 5=DipToBlack, 6=DipToWhite
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuColorGradeParams {
+    width: u32,
+    height: u32,
+    exposure: f32,
+    contrast: f32,
+    saturation: f32,
+    temperature: f32,
+    tint: f32,
+    highlights: f32,
+    shadows: f32,
+    whites: f32,
+    blacks: f32,
+    lift_r: f32,
+    lift_g: f32,
+    lift_b: f32,
+    gamma_r: f32,
+    gamma_g: f32,
+    gamma_b: f32,
+    gain_r: f32,
+    gain_g: f32,
+    gain_b: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+// 22 fields × 4 bytes = 88 bytes (well under 256-byte PARAMS_SIZE)
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -1222,5 +1315,97 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     output[idx] = pack(result);
+}
+";
+
+const SHADER_COLOR_GRADE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    exposure: f32,
+    contrast: f32,
+    saturation: f32,
+    temperature: f32,
+    tint: f32,
+    highlights: f32,
+    shadows: f32,
+    whites: f32,
+    blacks: f32,
+    lift_r: f32,
+    lift_g: f32,
+    lift_b: f32,
+    gamma_r: f32,
+    gamma_g: f32,
+    gamma_b: f32,
+    gain_r: f32,
+    gain_g: f32,
+    gain_b: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    var r = f32(pixel & 0xFFu) / 255.0;
+    var g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    var b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    // 1. Exposure (2^stops)
+    let exp_factor = pow(2.0, params.exposure);
+    r = r * exp_factor;
+    g = g * exp_factor;
+    b = b * exp_factor;
+
+    // 2. Tone controls (highlights/shadows/whites/blacks)
+    let luma1 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let hi_w = max(luma1 - 0.5, 0.0) * 2.0;
+    let lo_w = max(0.5 - luma1, 0.0) * 2.0;
+    let white_w = max(luma1 - 0.8, 0.0) * 5.0;
+    let black_w = max(0.2 - luma1, 0.0) * 5.0;
+    let tone_adj = params.highlights * hi_w + params.shadows * lo_w + params.whites * white_w + params.blacks * black_w;
+    r = r + tone_adj;
+    g = g + tone_adj;
+    b = b + tone_adj;
+
+    // 3. Lift/Gamma/Gain color wheels
+    let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let lift_w = max(1.0 - luma2, 0.0);
+    let gain_w = max(luma2, 0.0);
+    let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
+    r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w;
+    g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w;
+    b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w;
+
+    // 4. Contrast (S-curve around 0.5)
+    let cs = 1.0 + params.contrast;
+    r = (r - 0.5) * cs + 0.5;
+    g = (g - 0.5) * cs + 0.5;
+    b = (b - 0.5) * cs + 0.5;
+
+    // 5. Saturation (BT.709 luma lerp)
+    let luma3 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = luma3 + (r - luma3) * params.saturation;
+    g = luma3 + (g - luma3) * params.saturation;
+    b = luma3 + (b - luma3) * params.saturation;
+
+    // 6. Temperature / Tint
+    r = r + params.temperature * 0.001;
+    b = b - params.temperature * 0.001;
+    g = g + params.tint * 0.001;
+
+    // Pack result
+    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
 }
 ";

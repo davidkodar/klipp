@@ -138,6 +138,8 @@ pub struct KlippApp {
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
+    // Color grading panel
+    color_panel: crate::panels::color_panel::ColorPanel,
 }
 
 impl KlippApp {
@@ -204,6 +206,7 @@ impl KlippApp {
             cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
+            color_panel: crate::panels::color_panel::ColorPanel::default(),
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
@@ -1430,61 +1433,6 @@ impl KlippApp {
                     // Fall through to forward to engine
                 }
                 // Color grading
-                AppCommand::SetClipExposure { clip_id, exposure } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.exposure = *exposure;
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::SetClipContrast { clip_id, contrast } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.contrast = *contrast;
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::SetClipSaturation { clip_id, saturation } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.saturation = *saturation;
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::SetClipTemperature { clip_id, temperature } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.temperature = *temperature;
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::SetClipTint { clip_id, tint } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.tint = *tint;
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
                 AppCommand::ResetClipColorGrade { clip_id } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1493,6 +1441,57 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipColorGradeParam { clip_id, param, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            use klipp_core::ColorGradeParam as P;
+                            let g = &mut clip.color_grade;
+                            match param {
+                                P::Exposure => g.exposure = *value,
+                                P::Contrast => g.contrast = *value,
+                                P::Saturation => g.saturation = *value,
+                                P::Temperature => g.temperature = *value,
+                                P::Tint => g.tint = *value,
+                                P::Highlights => g.highlights = *value,
+                                P::Shadows => g.shadows = *value,
+                                P::Whites => g.whites = *value,
+                                P::Blacks => g.blacks = *value,
+                                P::LiftX => g.lift_x = *value,
+                                P::LiftY => g.lift_y = *value,
+                                P::LiftMaster => g.lift_master = *value,
+                                P::GammaX => g.gamma_x = *value,
+                                P::GammaY => g.gamma_y = *value,
+                                P::GammaMaster => g.gamma_master = *value,
+                                P::GainX => g.gain_x = *value,
+                                P::GainY => g.gain_y = *value,
+                                P::GainMaster => g.gain_master = *value,
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipCurves { clip_id, curves } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.color_grade.enabled = true;
+                            clip.color_grade.curves = curves.clone();
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::ToggleColorPanel => {
+                    self.state.show_color_panel = !self.state.show_color_panel;
+                    continue;
+                }
+                AppCommand::ToggleBeforeAfter => {
+                    self.state.before_after_active = !self.state.before_after_active;
                     continue;
                 }
 
@@ -1902,7 +1901,7 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in: clip.source_in,
                                     source_out: clip.source_out,
-                                    color_grade: clip.color_grade,
+                                    color_grade: clip.color_grade.clone(),
                                     effects: clip.effects.clone(),
                                     builtin_effects: clip.builtin_effects.clone(),
                                     linked_clip_id: None,
@@ -3009,6 +3008,14 @@ impl KlippApp {
                 seq.in_point = *old_in;
                 seq.out_point = *old_out;
             }
+            EditCommand::SetColorGrade { clip_id, old_grade, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.color_grade = old_grade.clone();
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -3119,6 +3126,14 @@ impl KlippApp {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 seq.in_point = *new_in;
                 seq.out_point = *new_out;
+            }
+            EditCommand::SetColorGrade { clip_id, new_grade, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.color_grade = new_grade.clone();
+                        break;
+                    }
+                }
             }
         }
     }
@@ -3813,6 +3828,18 @@ impl KlippApp {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CutClip { clip_id });
                 }
+            }
+            // B key (bare) — toggle before/after
+            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
+                && i.key_pressed(egui::Key::B)
+            {
+                cmds.push(AppCommand::ToggleBeforeAfter);
+            }
+            // C key (bare) — toggle color panel
+            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
+                && i.key_pressed(egui::Key::C)
+            {
+                cmds.push(AppCommand::ToggleColorPanel);
             }
             // Ctrl+C — Copy
             if i.modifiers.ctrl && i.key_pressed(egui::Key::C) {
@@ -4552,15 +4579,39 @@ impl eframe::App for KlippApp {
                     let center_right = right_resizer_rect.min.x;
                     let center_w = (center_right - center_left).max(100.0);
 
-                    // Timeline (bottom of center)
-                    let max_timeline_h = main_height * theme::TIMELINE_MAX_H_PCT;
+                    // Color panel (bottom of center, if open)
+                    let color_panel_open = self.state.show_color_panel;
+                    let color_panel_h = if color_panel_open {
+                        self.layout.color_panel_height.clamp(120.0, main_height * 0.40)
+                    } else {
+                        0.0
+                    };
+                    let color_resizer_h = if color_panel_open {
+                        theme::RESIZER_THICKNESS
+                    } else {
+                        0.0
+                    };
+
+                    let color_panel_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, main_bottom - color_panel_h),
+                        egui::vec2(center_w, color_panel_h),
+                    );
+                    let color_resizer_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, color_panel_rect.min.y - color_resizer_h),
+                        egui::vec2(center_w, color_resizer_h),
+                    );
+
+                    // Timeline (above color panel/resizer)
+                    let timeline_bottom = color_resizer_rect.min.y;
+                    let max_timeline_h = (timeline_bottom - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT;
+                    let timeline_min_h = if color_panel_open { 120.0 } else { theme::TIMELINE_MIN_H };
                     let timeline_h = self
                         .layout
                         .timeline_height
-                        .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
+                        .clamp(timeline_min_h, max_timeline_h);
 
                     let timeline_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, main_bottom - timeline_h),
+                        egui::pos2(center_left, timeline_bottom - timeline_h),
                         egui::vec2(center_w, timeline_h),
                     );
 
@@ -4686,6 +4737,18 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
+                    // Color panel (below timeline, if open)
+                    let color_resizer_delta = if color_panel_open {
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(color_panel_rect), |ui| {
+                            ui.set_min_size(color_panel_rect.size());
+                            let cmds = self.color_panel.show(ui, &mut self.state, &self.theme, &self.frame_buffer);
+                            all_cmds.extend(cmds);
+                        });
+                        resizer::horizontal_resizer(ui, color_resizer_rect, theme)
+                    } else {
+                        0.0
+                    };
+
                     // ── Draw resizers AFTER panels (so they get interaction priority) ──
                     let left_delta =
                         resizer::vertical_resizer(ui, left_resizer_rect, theme);
@@ -4708,13 +4771,19 @@ impl eframe::App for KlippApp {
                     if h_delta != 0.0 {
                         self.layout.timeline_height = (self.layout.timeline_height
                             - h_delta)
-                            .clamp(theme::TIMELINE_MIN_H, max_timeline_h);
+                            .clamp(timeline_min_h, max_timeline_h);
+                    }
+                    if color_resizer_delta != 0.0 {
+                        self.layout.color_panel_height = (self.layout.color_panel_height
+                            - color_resizer_delta)
+                            .clamp(120.0, main_height * 0.40);
                     }
 
                     // Track layout dirty for persistence
                     let resizer_active = left_delta != 0.0
                         || right_delta != 0.0
-                        || h_delta != 0.0;
+                        || h_delta != 0.0
+                        || color_resizer_delta != 0.0;
                     if resizer_active {
                         self.layout_dirty = true;
                     }

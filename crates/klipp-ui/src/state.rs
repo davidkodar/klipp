@@ -181,6 +181,18 @@ pub struct AppState {
     pub global_lut_path: Option<PathBuf>,
     pub global_lut_opacity: f32,
 
+    // Color panel
+    pub show_color_panel: bool,
+    pub color_grade_drag_start: Option<klipp_timeline::ClipColorGrade>,
+    pub color_grade_clipboard: Option<klipp_timeline::ClipColorGrade>,
+
+    // Scopes
+    pub show_scopes: bool,
+    pub scope_mode: ScopeMode,
+
+    // Before/After
+    pub before_after_active: bool,
+
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
@@ -251,6 +263,14 @@ pub struct AppState {
     pub proxy_status_message: Option<(String, std::time::Instant)>,
     /// Whether the proxy toast was dismissed by the user
     pub proxy_toast_dismissed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeMode {
+    #[default]
+    Waveform,
+    Vectorscope,
+    Histogram,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -384,6 +404,12 @@ impl Default for AppState {
             perf_prev_wall_time: std::time::Instant::now(),
             global_lut_path: None,
             global_lut_opacity: 1.0,
+            show_color_panel: false,
+            color_grade_drag_start: None,
+            color_grade_clipboard: None,
+            show_scopes: false,
+            scope_mode: ScopeMode::Waveform,
+            before_after_active: false,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),

@@ -377,7 +377,7 @@ impl InspectorPanel {
         cmds: &mut Vec<AppCommand>,
     ) {
         let clip_id = clip.id;
-        let grade = clip.color_grade;
+        let grade = clip.color_grade.clone();
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Color Grade").strong().size(12.0));
@@ -390,7 +390,7 @@ impl InspectorPanel {
             .step_by(0.05).suffix(" stops").min_decimals(1)
             .custom_formatter(|v, _| format!("{v:+.1}"))
         ).changed() {
-            cmds.push(AppCommand::SetClipExposure { clip_id, exposure });
+            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Exposure, value: exposure });
         }
         ui.add_space(6.0);
 
@@ -400,7 +400,7 @@ impl InspectorPanel {
             .step_by(0.01).min_decimals(2)
             .custom_formatter(|v, _| format!("{v:+.2}"))
         ).changed() {
-            cmds.push(AppCommand::SetClipContrast { clip_id, contrast });
+            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Contrast, value: contrast });
         }
         ui.add_space(6.0);
 
@@ -409,7 +409,7 @@ impl InspectorPanel {
         if ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0)
             .step_by(0.01).min_decimals(2)
         ).changed() {
-            cmds.push(AppCommand::SetClipSaturation { clip_id, saturation });
+            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Saturation, value: saturation });
         }
         ui.add_space(6.0);
 
@@ -418,7 +418,7 @@ impl InspectorPanel {
         if ui.add(egui::Slider::new(&mut temperature, -100.0..=100.0)
             .step_by(1.0).min_decimals(0)
         ).changed() {
-            cmds.push(AppCommand::SetClipTemperature { clip_id, temperature });
+            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Temperature, value: temperature });
         }
         ui.add_space(6.0);
 
@@ -427,7 +427,7 @@ impl InspectorPanel {
         if ui.add(egui::Slider::new(&mut tint, -100.0..=100.0)
             .step_by(1.0).min_decimals(0)
         ).changed() {
-            cmds.push(AppCommand::SetClipTint { clip_id, tint });
+            cmds.push(AppCommand::SetClipColorGradeParam { clip_id, param: klipp_core::ColorGradeParam::Tint, value: tint });
         }
 
         ui.add_space(12.0);

@@ -2098,6 +2098,7 @@ dependencies = [
  "eframe",
  "egui",
  "klipp-audio",
+ "klipp-color",
  "klipp-core",
  "klipp-effects",
  "klipp-engine",

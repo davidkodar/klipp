@@ -2,6 +2,35 @@ use crate::lut::{self, LutData};
 use crate::transforms;
 use std::path::{Path, PathBuf};
 
+/// All color grade parameters in a single struct (no klipp-timeline dependency).
+#[derive(Debug, Clone)]
+pub struct ColorGradeParams {
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature: f32,
+    pub tint: f32,
+    pub highlights: f32,
+    pub shadows: f32,
+    pub whites: f32,
+    pub blacks: f32,
+    /// Pre-converted RGB shift from wheel_offset_to_rgb
+    pub lift: (f32, f32, f32),
+    pub gamma: (f32, f32, f32),
+    pub gain: (f32, f32, f32),
+    /// Pre-computed curve LUTs (None = identity/skip)
+    pub curve_luts: Option<CurveLuts>,
+}
+
+/// Pre-computed 256-entry lookup tables for RGB curves.
+#[derive(Debug, Clone)]
+pub struct CurveLuts {
+    pub master: [u8; 256],
+    pub red: [u8; 256],
+    pub green: [u8; 256],
+    pub blue: [u8; 256],
+}
+
 /// Global color pipeline — post-processing step on RGBA frames.
 /// Disabled by default (pure passthrough, zero cost).
 pub struct ColorPipeline {
@@ -42,8 +71,21 @@ impl ColorPipeline {
         self.global_lut_path = None;
     }
 
-    /// Apply per-clip color grade to an RGBA frame.
-    /// Pass the individual grade parameters — avoids coupling klipp-color to klipp-timeline.
+    /// Apply per-clip color grade to an RGBA frame using the full parameter set.
+    pub fn apply_clip_grade_full(&self, mut rgba: Vec<u8>, params: &ColorGradeParams) -> Vec<u8> {
+        transforms::apply_exposure(&mut rgba, params.exposure);
+        transforms::apply_tone_controls(&mut rgba, params.highlights, params.shadows, params.whites, params.blacks);
+        transforms::apply_lift_gamma_gain(&mut rgba, params.lift, params.gamma, params.gain);
+        transforms::apply_contrast(&mut rgba, params.contrast);
+        transforms::apply_saturation(&mut rgba, params.saturation);
+        if let Some(luts) = &params.curve_luts {
+            crate::curves::apply_curves(&mut rgba, &luts.master, &luts.red, &luts.green, &luts.blue);
+        }
+        transforms::apply_temperature_tint(&mut rgba, params.temperature, params.tint);
+        rgba
+    }
+
+    /// Legacy: apply per-clip color grade with basic parameters only.
     pub fn apply_clip_grade(
         &self,
         mut rgba: Vec<u8>,

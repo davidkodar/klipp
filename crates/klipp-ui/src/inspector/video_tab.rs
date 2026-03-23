@@ -64,6 +64,20 @@ pub fn show(
     let rate_display = format!("{:.0}%", rate);
     inspector_row_slider(ui, theme, "Rate", &mut rate, 10.0..=400.0, &rate_display);
     inspector_row_value(ui, theme, "Direction", "Forward");
+
+    ui.add_space(16.0);
+
+    // Color grading — link to dedicated panel
+    section_header(ui, theme, "Color");
+    if ui.add(egui::Button::new(
+        egui::RichText::new("Open Color Panel (C)")
+            .size(11.0)
+            .color(theme.accent),
+    ).fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border)))
+    .clicked()
+    {
+        cmds.push(AppCommand::ToggleColorPanel);
+    }
 }
 
 fn section_header(ui: &mut egui::Ui, theme: &KlippTheme, label: &str) {

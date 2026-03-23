@@ -81,19 +81,31 @@ impl ToolbarPanel {
 
         // Color Grading (icon 3)
         rx -= 32.0;
+        let color_active = state.show_color_panel;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, false);
+        let ic = icon_color(&resp, color_active);
+        let bg = icon_bg(&resp, color_active);
+        painter.rect_filled(resp.rect, 6.0, bg);
         draw_color_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Color Grading", Some("C"));
+        if resp.clicked() {
+            cmds.push(AppCommand::ToggleColorPanel);
+        }
 
         rx -= 2.0;
 
         // Scopes (icon 2)
         rx -= 32.0;
+        let scopes_active = state.show_scopes;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, false);
+        let ic = icon_color(&resp, scopes_active);
+        let bg = icon_bg(&resp, scopes_active);
+        painter.rect_filled(resp.rect, 6.0, bg);
         draw_scopes_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Scopes", None);
+        if resp.clicked() {
+            state.show_scopes = !state.show_scopes;
+        }
 
         rx -= 2.0;
 

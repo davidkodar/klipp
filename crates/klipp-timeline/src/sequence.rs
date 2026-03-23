@@ -413,7 +413,7 @@ impl Track {
             timeline_out: cut_at,
             source_in: clip.source_in,
             source_out: clip.source_in + offset,
-            color_grade: clip.color_grade,
+            color_grade: clip.color_grade.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
@@ -427,7 +427,7 @@ impl Track {
             timeline_out: clip.timeline_out,
             source_in: clip.source_in + offset,
             source_out: clip.source_out,
-            color_grade: clip.color_grade,
+            color_grade: clip.color_grade.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
@@ -470,7 +470,8 @@ pub enum TrackKind {
 }
 
 /// Per-clip color grade. All fields default to identity (no change).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// NOTE: Not Copy — contains Vec fields (curves). Use .clone() where needed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipColorGrade {
     pub enabled: bool,
     /// Exposure in stops: -5.0 to +5.0, default 0.0
@@ -483,7 +484,40 @@ pub struct ClipColorGrade {
     pub temperature: f32,
     /// Tint offset: -100.0 to +100.0, default 0.0
     pub tint: f32,
+    // ── Tone controls ──
+    #[serde(default)]
+    pub highlights: f32,
+    #[serde(default)]
+    pub shadows: f32,
+    #[serde(default)]
+    pub whites: f32,
+    #[serde(default)]
+    pub blacks: f32,
+    // ── Color wheels: Lift/Gamma/Gain ──
+    #[serde(default)]
+    pub lift_x: f32,
+    #[serde(default)]
+    pub lift_y: f32,
+    #[serde(default)]
+    pub lift_master: f32,
+    #[serde(default)]
+    pub gamma_x: f32,
+    #[serde(default)]
+    pub gamma_y: f32,
+    #[serde(default)]
+    pub gamma_master: f32,
+    #[serde(default)]
+    pub gain_x: f32,
+    #[serde(default)]
+    pub gain_y: f32,
+    #[serde(default)]
+    pub gain_master: f32,
+    // ── RGB Curves ──
+    #[serde(default)]
+    pub curves: CurveSet,
 }
+
+pub use klipp_core::CurveSet;
 
 impl Default for ClipColorGrade {
     fn default() -> Self {
@@ -494,6 +528,20 @@ impl Default for ClipColorGrade {
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            whites: 0.0,
+            blacks: 0.0,
+            lift_x: 0.0,
+            lift_y: 0.0,
+            lift_master: 0.0,
+            gamma_x: 0.0,
+            gamma_y: 0.0,
+            gamma_master: 0.0,
+            gain_x: 0.0,
+            gain_y: 0.0,
+            gain_master: 0.0,
+            curves: CurveSet::default(),
         }
     }
 }

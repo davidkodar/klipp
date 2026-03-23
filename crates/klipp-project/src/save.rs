@@ -135,6 +135,19 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                             || c.color_grade.saturation != 1.0
                             || c.color_grade.temperature != 0.0
                             || c.color_grade.tint != 0.0
+                            || c.color_grade.highlights != 0.0
+                            || c.color_grade.shadows != 0.0
+                            || c.color_grade.whites != 0.0
+                            || c.color_grade.blacks != 0.0
+                            || c.color_grade.lift_x != 0.0
+                            || c.color_grade.lift_y != 0.0
+                            || c.color_grade.lift_master != 0.0
+                            || c.color_grade.gamma_x != 0.0
+                            || c.color_grade.gamma_y != 0.0
+                            || c.color_grade.gamma_master != 0.0
+                            || c.color_grade.gain_x != 0.0
+                            || c.color_grade.gain_y != 0.0
+                            || c.color_grade.gain_master != 0.0
                         {
                             Some(color_grade_to_json(&c.color_grade))
                         } else {
@@ -163,6 +176,30 @@ fn color_grade_to_json(cg: &klipp_timeline::ClipColorGrade) -> ColorGradeJson {
         saturation: cg.saturation,
         temperature: cg.temperature,
         tint: cg.tint,
+        highlights: cg.highlights,
+        shadows: cg.shadows,
+        whites: cg.whites,
+        blacks: cg.blacks,
+        lift_x: cg.lift_x,
+        lift_y: cg.lift_y,
+        lift_master: cg.lift_master,
+        gamma_x: cg.gamma_x,
+        gamma_y: cg.gamma_y,
+        gamma_master: cg.gamma_master,
+        gain_x: cg.gain_x,
+        gain_y: cg.gain_y,
+        gain_master: cg.gain_master,
+        curves: {
+            let c = &cg.curves;
+            let is_default = |pts: &[[f32; 2]]| pts.len() == 2
+                && pts[0] == [0.0, 0.0] && pts[1] == [1.0, 1.0];
+            if is_default(&c.master) && is_default(&c.red)
+                && is_default(&c.green) && is_default(&c.blue) {
+                None
+            } else {
+                Some(c.clone())
+            }
+        },
     }
 }
 

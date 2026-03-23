@@ -13,7 +13,11 @@ pub struct LayoutState {
     pub active_tool: EditTool,
     pub skimming_enabled: bool,
     pub snap_enabled: bool,
+    #[serde(default = "default_color_panel_height")]
+    pub color_panel_height: f32,
 }
+
+fn default_color_panel_height() -> f32 { 200.0 }
 
 impl Default for LayoutState {
     fn default() -> Self {
@@ -26,6 +30,7 @@ impl Default for LayoutState {
             active_tool: EditTool::Select,
             skimming_enabled: true,
             snap_enabled: true,
+            color_panel_height: default_color_panel_height(),
         }
     }
 }

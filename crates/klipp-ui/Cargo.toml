@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-engine = { workspace = true }

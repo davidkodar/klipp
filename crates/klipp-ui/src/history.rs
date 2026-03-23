@@ -80,6 +80,13 @@ pub enum EditCommand {
         new_in: Option<RationalTime>,
         new_out: Option<RationalTime>,
     },
+
+    // === COLOR GRADE ===
+    SetColorGrade {
+        clip_id: ClipId,
+        old_grade: klipp_timeline::ClipColorGrade,
+        new_grade: klipp_timeline::ClipColorGrade,
+    },
 }
 
 impl EditCommand {
@@ -95,6 +102,7 @@ impl EditCommand {
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::SetRange { .. } => "Set Range",
+            EditCommand::SetColorGrade { .. } => "Color Grade",
         }
     }
 }
