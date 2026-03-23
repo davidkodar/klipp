@@ -370,6 +370,35 @@ impl ViewerPanel {
             }
         }
 
+        // ── Overlay mode badge (top-right of video) ──
+        {
+            use crate::state::ViewerOverlay;
+            let overlay_label = match state.viewer_overlay {
+                ViewerOverlay::Zebra => Some("ZEBRA"),
+                ViewerOverlay::FalseColor => Some("FALSE COLOR"),
+                ViewerOverlay::None => None,
+            };
+            if let Some(label) = overlay_label {
+                let badge_pos = egui::pos2(image_rect.max.x - 8.0, image_rect.min.y + 12.0);
+                let badge_color = egui::Color32::from_rgb(0xff, 0x40, 0x40);
+                // Shadow
+                ui.painter().text(
+                    egui::pos2(badge_pos.x + 0.5, badge_pos.y + 0.5),
+                    egui::Align2::RIGHT_CENTER,
+                    label,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_rgb(0x00, 0x00, 0x00),
+                );
+                ui.painter().text(
+                    badge_pos,
+                    egui::Align2::RIGHT_CENTER,
+                    label,
+                    egui::FontId::proportional(10.0),
+                    badge_color,
+                );
+            }
+        }
+
         // Safe area overlay removed — it looked like a viewer border
 
         // ── Viewer overlay (bottom, above letterbox) ──

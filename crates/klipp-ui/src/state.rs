@@ -208,6 +208,10 @@ pub struct AppState {
     pub before_after_active: bool,
     pub split_position: f32, // 0.0-1.0, default 0.5
 
+    // Viewer overlay (zebra / false color)
+    pub viewer_overlay: ViewerOverlay,
+    pub frame_count: u64, // for zebra animation
+
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
@@ -278,6 +282,14 @@ pub struct AppState {
     pub proxy_status_message: Option<(String, std::time::Instant)>,
     /// Whether the proxy toast was dismissed by the user
     pub proxy_toast_dismissed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewerOverlay {
+    #[default]
+    None,
+    Zebra,
+    FalseColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -438,6 +450,8 @@ impl Default for AppState {
             wb_sample_request: None,
             before_after_active: false,
             split_position: 0.5,
+            viewer_overlay: ViewerOverlay::None,
+            frame_count: 0,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
