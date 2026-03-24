@@ -5813,9 +5813,48 @@ impl KlippApp {
                         klipp_export::RenderJobStatus::Cancelled => "Cancelled".to_string(),
                         klipp_export::RenderJobStatus::Queued => "Queued".to_string(),
                     };
-                    let progress = egui::ProgressBar::new(job.progress)
-                        .text(overlay_text);
-                    ui.add(progress);
+                    // Custom progress bar with high-contrast text
+                    let bar_height = 20.0;
+                    let (bar_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), bar_height),
+                        egui::Sense::hover(),
+                    );
+                    let painter = ui.painter_at(bar_rect);
+                    // Background
+                    painter.rect_filled(bar_rect, 3.0, egui::Color32::from_rgb(40, 40, 48));
+                    // Fill
+                    let fill_width = bar_rect.width() * job.progress;
+                    if fill_width > 0.5 {
+                        let fill_rect = egui::Rect::from_min_size(
+                            bar_rect.min,
+                            egui::vec2(fill_width, bar_height),
+                        );
+                        let fill_color = match job.status {
+                            klipp_export::RenderJobStatus::Rendering => egui::Color32::from_rgb(60, 140, 220),
+                            klipp_export::RenderJobStatus::Complete => egui::Color32::from_rgb(60, 180, 90),
+                            klipp_export::RenderJobStatus::Failed => egui::Color32::from_rgb(200, 60, 60),
+                            _ => egui::Color32::from_rgb(100, 100, 110),
+                        };
+                        painter.rect_filled(fill_rect, 3.0, fill_color);
+                    }
+                    // Text with black shadow for readability
+                    let text_pos = bar_rect.center();
+                    let font = egui::FontId::proportional(13.0);
+                    let shadow_offset = egui::vec2(1.0, 1.0);
+                    painter.text(
+                        text_pos + shadow_offset,
+                        egui::Align2::CENTER_CENTER,
+                        &overlay_text,
+                        font.clone(),
+                        egui::Color32::from_rgb(0, 0, 0),
+                    );
+                    painter.text(
+                        text_pos,
+                        egui::Align2::CENTER_CENTER,
+                        &overlay_text,
+                        font,
+                        egui::Color32::WHITE,
+                    );
 
                     // Hardware info + error
                     if !job.hw_info.is_empty() {
