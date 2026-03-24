@@ -33,9 +33,44 @@ impl ExportJob {
     /// Called from a background thread.
     pub fn run(self) -> Result<(), RenderError> {
         info!(
-            "ExportJob {}: starting {} frames → {:?}",
-            self.id, self.total_frames, self.output_path
+            "ExportJob {}: {}x{} @{:.3}fps ({}/{}), {} total frames, range {:?} → {:?}",
+            self.id,
+            self.snapshot.width,
+            self.snapshot.height,
+            self.snapshot.fps,
+            self.snapshot.fps_num,
+            self.snapshot.fps_den,
+            self.total_frames,
+            self.snapshot.start_frame(),
+            self.output_path,
         );
+        info!(
+            "ExportJob {}: {} video tracks, {} audio tracks, duration_frames={}",
+            self.id,
+            self.snapshot.video_tracks.len(),
+            self.snapshot.audio_tracks.len(),
+            self.snapshot.duration_frames,
+        );
+        for (ti, track) in self.snapshot.video_tracks.iter().enumerate() {
+            info!(
+                "  V{}: {} clips, visible={}, opacity={}",
+                ti, track.clips.len(), track.visible, track.opacity,
+            );
+            for (ci, clip) in track.clips.iter().enumerate() {
+                let kind = match &clip.kind {
+                    ClipKindSnapshot::Media { path, .. } => format!("Media({})", path.file_name().unwrap_or_default().to_string_lossy()),
+                    ClipKindSnapshot::Title(_) => "Title".to_string(),
+                    ClipKindSnapshot::Gap => "Gap".to_string(),
+                };
+                info!(
+                    "    clip[{}]: {} frames [{}-{}), src [{:.3}s-{:.3}s], kind={}",
+                    ci, clip.timeline_end_frame - clip.timeline_start_frame,
+                    clip.timeline_start_frame, clip.timeline_end_frame,
+                    clip.source_start_secs, clip.source_end_secs,
+                    kind,
+                );
+            }
+        }
 
         // ─── Initialise all systems ───────────────────────────────
         // Gap 11: one pipeline per video track
