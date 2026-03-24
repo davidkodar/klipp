@@ -5753,11 +5753,11 @@ impl KlippApp {
                     // ── File name + status icon ──
                     ui.horizontal(|ui| {
                         let (icon, color) = match job.status {
-                            klipp_export::RenderJobStatus::Queued => ("\u{23F3}", dim),
-                            klipp_export::RenderJobStatus::Rendering => ("\u{25B6}", egui::Color32::from_rgb(100, 180, 255)),
-                            klipp_export::RenderJobStatus::Complete => ("\u{2713}", egui::Color32::from_rgb(100, 200, 120)),
-                            klipp_export::RenderJobStatus::Failed => ("\u{2717}", egui::Color32::from_rgb(255, 100, 100)),
-                            klipp_export::RenderJobStatus::Cancelled => ("\u{2014}", dim),
+                            klipp_export::RenderJobStatus::Queued => ("||", dim),
+                            klipp_export::RenderJobStatus::Rendering => (">", egui::Color32::from_rgb(100, 180, 255)),
+                            klipp_export::RenderJobStatus::Complete => ("OK", egui::Color32::from_rgb(100, 200, 120)),
+                            klipp_export::RenderJobStatus::Failed => ("!!", egui::Color32::from_rgb(255, 100, 100)),
+                            klipp_export::RenderJobStatus::Cancelled => ("--", dim),
                         };
                         ui.colored_label(color, icon);
                         ui.strong(&job.label);
@@ -5897,7 +5897,7 @@ impl KlippApp {
                         // Use a stable ID not dependent on ui.id() (which changes inside horizontal)
                         let details_id = egui::Id::new("render_details").with(job.id);
                         let mut show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
-                        let details_text = if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" };
+                        let details_text = if show_details { "v Details" } else { "> Details" };
                         let details_btn = ui.add(
                             egui::Button::new(egui::RichText::new(details_text).color(bg_dim).size(12.0))
                                 .frame(false)
