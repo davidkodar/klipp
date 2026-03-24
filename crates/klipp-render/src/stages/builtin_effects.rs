@@ -1,8 +1,27 @@
 use crate::stage::{FrameContext, ProcessingStage};
+use klipp_effects::gpu::GpuEffectsPipeline;
 
-/// Processing stage that applies built-in GPU/CPU effects (blur, crop, transform, etc.).
-/// Stateless — all effect data comes from the clip snapshot.
-pub struct BuiltinEffectsStage;
+/// Processing stage that applies built-in effects (blur, crop, transform, etc.).
+/// Uses GPU (wgpu compute shaders) when available, CPU fallback otherwise.
+pub struct BuiltinEffectsStage {
+    gpu: Option<GpuEffectsPipeline>,
+}
+
+impl BuiltinEffectsStage {
+    pub fn new() -> Self {
+        let gpu = GpuEffectsPipeline::new();
+        if gpu.is_some() {
+            tracing::info!("BuiltinEffectsStage: GPU pipeline available");
+        }
+        Self { gpu }
+    }
+}
+
+impl Default for BuiltinEffectsStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ProcessingStage for BuiltinEffectsStage {
     fn name(&self) -> &'static str {
@@ -25,6 +44,12 @@ impl ProcessingStage for BuiltinEffectsStage {
             return frame;
         }
 
+        // Prefer GPU path
+        if let Some(ref mut gpu) = self.gpu {
+            return gpu.apply_effects(&clip.builtin_effects, frame, width, height);
+        }
+
+        // CPU fallback
         klipp_effects::apply_effects(&clip.builtin_effects, frame, width, height)
     }
 }

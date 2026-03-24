@@ -2,7 +2,7 @@ use crate::error::RenderError;
 use crate::snapshot::SequenceSnapshot;
 use klipp_core::{ExportSettings, ExportVideoCodec};
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// In-process encoder using ffmpeg-next (replaces the ffmpeg CLI subprocess).
 ///
@@ -42,6 +42,44 @@ pub struct Encoder {
     audio_sample_format: Option<ffmpeg_next::format::Sample>,
 }
 
+/// Pick the best available video encoder for the given codec.
+/// Returns (encoder_name, is_hw_accelerated).
+/// Tries NVENC (NVIDIA) → AMF (AMD) → software fallback.
+/// NVENC requires minimum 128x128 resolution.
+fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'static str, bool) {
+    // NVENC/AMF have minimum resolution requirements (~128x128)
+    let hw_eligible = width >= 128 && height >= 128;
+
+    match codec {
+        ExportVideoCodec::H264 => {
+            if hw_eligible {
+                if ffmpeg_next::encoder::find_by_name("h264_nvenc").is_some() {
+                    return ("h264_nvenc", true);
+                }
+                if ffmpeg_next::encoder::find_by_name("h264_amf").is_some() {
+                    return ("h264_amf", true);
+                }
+            }
+            ("libx264", false)
+        }
+        ExportVideoCodec::H265 => {
+            if hw_eligible {
+                if ffmpeg_next::encoder::find_by_name("hevc_nvenc").is_some() {
+                    return ("hevc_nvenc", true);
+                }
+                if ffmpeg_next::encoder::find_by_name("hevc_amf").is_some() {
+                    return ("hevc_amf", true);
+                }
+            }
+            ("libx265", false)
+        }
+        ExportVideoCodec::ProRes422
+        | ExportVideoCodec::ProRes422HQ
+        | ExportVideoCodec::ProRes4444 => ("prores_ks", false),
+        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => ("dnxhd", false),
+    }
+}
+
 impl Encoder {
     /// Open the encoder for the given output path and settings.
     pub fn open(
@@ -72,9 +110,14 @@ impl Encoder {
         // VIDEO ENCODER
         // ═══════════════════════════════════════════════════════════
 
-        let video_codec_name = settings.video_codec.ffmpeg_codec();
+        // Try GPU-accelerated encoder first (NVENC for NVIDIA, AMF for AMD),
+        // fall back to software (libx264/libx265).
+        let (video_codec_name, is_hw_encoder) =
+            pick_video_encoder(&settings.video_codec, snapshot.width, snapshot.height);
         let video_codec = ffmpeg_next::encoder::find_by_name(video_codec_name)
             .ok_or_else(|| RenderError::Encode(format!("codec not found: {video_codec_name}")))?;
+
+        info!("Video encoder: {} (hw={})", video_codec_name, is_hw_encoder);
 
         // Create encoder context
         let mut video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec)
@@ -93,7 +136,7 @@ impl Encoder {
             snapshot.fps_num as i32,
         ));
 
-        // Set pixel format based on codec
+        // Set pixel format based on codec + HW/SW
         let pix_fmt = match settings.video_codec {
             ExportVideoCodec::ProRes4444 => ffmpeg_next::format::Pixel::YUV444P10LE,
             ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
@@ -103,7 +146,12 @@ impl Encoder {
                 ffmpeg_next::format::Pixel::YUV422P
             }
             ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
-                ffmpeg_next::format::Pixel::YUV420P
+                if is_hw_encoder {
+                    // NVENC/AMF prefer NV12 or P010
+                    ffmpeg_next::format::Pixel::NV12
+                } else {
+                    ffmpeg_next::format::Pixel::YUV420P
+                }
             }
         };
         video_ctx.set_format(pix_fmt);
@@ -111,11 +159,52 @@ impl Encoder {
         // Codec-specific options
         let mut video_opts = ffmpeg_next::Dictionary::new();
         match settings.video_codec {
+            ExportVideoCodec::H264 if is_hw_encoder => {
+                // NVENC/AMF quality settings
+                // Map CRF 0-51 to constqp/cq range (lower = better, NVENC uses 0-51 too)
+                video_opts.set("rc", "constqp");
+                video_opts.set("qp", &settings.crf.to_string());
+                // NVENC preset: p1(fastest)..p7(best quality)
+                let nvenc_preset = match settings.preset {
+                    klipp_core::EncoderPreset::Fast => "p4",
+                    klipp_core::EncoderPreset::Medium => "p5",
+                    klipp_core::EncoderPreset::Slow => "p6",
+                    klipp_core::EncoderPreset::VerySlow => "p7",
+                };
+                video_opts.set("preset", nvenc_preset);
+                // Rec.709 colour space tagging
+                unsafe {
+                    (*video_ctx.as_mut_ptr()).color_primaries =
+                        ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+                    (*video_ctx.as_mut_ptr()).color_trc =
+                        ffmpeg_next::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+                    (*video_ctx.as_mut_ptr()).colorspace =
+                        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT709;
+                }
+            }
             ExportVideoCodec::H264 => {
                 video_ctx.set_bit_rate(0); // CRF mode
                 video_opts.set("crf", &settings.crf.to_string());
                 video_opts.set("preset", settings.preset.ffmpeg_value());
-                // Rec.709 colour space tagging
+                unsafe {
+                    (*video_ctx.as_mut_ptr()).color_primaries =
+                        ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+                    (*video_ctx.as_mut_ptr()).color_trc =
+                        ffmpeg_next::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+                    (*video_ctx.as_mut_ptr()).colorspace =
+                        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT709;
+                }
+            }
+            ExportVideoCodec::H265 if is_hw_encoder => {
+                video_opts.set("rc", "constqp");
+                video_opts.set("qp", &settings.crf.to_string());
+                let nvenc_preset = match settings.preset {
+                    klipp_core::EncoderPreset::Fast => "p4",
+                    klipp_core::EncoderPreset::Medium => "p5",
+                    klipp_core::EncoderPreset::Slow => "p6",
+                    klipp_core::EncoderPreset::VerySlow => "p7",
+                };
+                video_opts.set("preset", nvenc_preset);
                 unsafe {
                     (*video_ctx.as_mut_ptr()).color_primaries =
                         ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
@@ -135,13 +224,13 @@ impl Encoder {
                 );
             }
             ExportVideoCodec::ProRes422 => {
-                video_opts.set("profile:v", "2"); // ProRes 422
+                video_opts.set("profile:v", "2");
             }
             ExportVideoCodec::ProRes422HQ => {
-                video_opts.set("profile:v", "3"); // ProRes 422 HQ
+                video_opts.set("profile:v", "3");
             }
             ExportVideoCodec::ProRes4444 => {
-                video_opts.set("profile:v", "4"); // ProRes 4444
+                video_opts.set("profile:v", "4");
             }
             ExportVideoCodec::DNxHD115 => {
                 video_ctx.set_bit_rate(115_000_000);

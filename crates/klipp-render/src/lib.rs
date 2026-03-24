@@ -11,7 +11,7 @@ pub mod encoder;
 pub mod export_job;
 
 pub use audio_mixdown::AudioMixdown;
-pub use clip_decoder::RenderDecoder;
+pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};
 pub use encoder::Encoder;
 pub use export_job::ExportJob;
 pub use compositor::FrameCompositor;

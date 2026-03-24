@@ -21,7 +21,7 @@ impl RenderPipeline {
             stages: vec![
                 Box::new(ColorGradeStage::new(global_lut_path)),
                 Box::new(OFXEffectsStage::new()),
-                Box::new(BuiltinEffectsStage),
+                Box::new(BuiltinEffectsStage::new()),
             ],
         }
     }

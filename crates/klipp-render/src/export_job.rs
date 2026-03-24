@@ -32,6 +32,11 @@ impl ExportJob {
     /// Run the export. Blocks until complete, cancelled, or error.
     /// Called from a background thread.
     pub fn run(self) -> Result<(), RenderError> {
+        // Early cancellation check before any initialization
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(RenderError::Cancelled);
+        }
+
         info!(
             "ExportJob {}: {}x{} @{:.3}fps ({}/{}), {} total frames, range {:?} → {:?}",
             self.id,
@@ -270,7 +275,7 @@ mod tests {
             width: 64,
             height: 64,
             sample_rate: 48000,
-            duration_frames: 10,
+            duration_frames: 100,
             export_range: None,
             video_tracks: vec![],
             audio_tracks: vec![],
@@ -284,6 +289,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("cancel_test.mp4");
 
+        let _ = std::fs::remove_file(&path); // Clean up from previous runs
         let cancel = Arc::new(AtomicBool::new(true)); // Cancel immediately
 
         let job = ExportJob {
@@ -303,7 +309,7 @@ mod tests {
             snapshot: make_test_snapshot(),
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),
-            total_frames: 10,
+            total_frames: 100,
         };
 
         let result = job.run();
