@@ -5863,16 +5863,31 @@ impl KlippApp {
                         ui.end_row();
 
                         ui.label("Format:");
+                        let prev_format = self.export_dialog.format;
                         egui::ComboBox::from_id_salt("export_format")
                             .selected_text(self.export_dialog.format.label())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mp4, "MP4");
-                                ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
-                                ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                // Only show MOV for ProRes/DNxHD codecs; show all for H.264/H.265
+                                let codec_requires_mov = self.export_dialog.video_codec.requires_mov();
+                                if codec_requires_mov {
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                } else {
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mp4, "MP4");
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                }
                             });
+                        // If format changed away from MOV, reset codec if it requires MOV
+                        if self.export_dialog.format != prev_format
+                            && self.export_dialog.format != ExportFormat::Mov
+                            && self.export_dialog.video_codec.requires_mov()
+                        {
+                            self.export_dialog.video_codec = ExportVideoCodec::H264;
+                        }
                         ui.end_row();
 
                         ui.label("Video codec:");
+                        let prev_codec = self.export_dialog.video_codec;
                         egui::ComboBox::from_id_salt("export_vcodec")
                             .selected_text(self.export_dialog.video_codec.label())
                             .show_ui(ui, |ui| {
@@ -5888,6 +5903,12 @@ impl KlippApp {
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145");
                                 }
                             });
+                        // Auto-switch to MOV when ProRes/DNxHD codec is selected
+                        if self.export_dialog.video_codec != prev_codec
+                            && self.export_dialog.video_codec.requires_mov()
+                        {
+                            self.export_dialog.format = ExportFormat::Mov;
+                        }
                         ui.end_row();
 
                         ui.label("Quality (CRF):");

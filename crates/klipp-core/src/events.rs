@@ -116,6 +116,14 @@ impl ExportVideoCodec {
     pub fn supports_preset(&self) -> bool {
         matches!(self, Self::H264 | Self::H265)
     }
+
+    /// Whether this codec requires a MOV container (not compatible with MP4/MKV).
+    pub fn requires_mov(&self) -> bool {
+        matches!(
+            self,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
