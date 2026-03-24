@@ -5746,61 +5746,56 @@ impl KlippApp {
                 }
 
                 let mut cancel_id = None;
+                let dim = egui::Color32::from_rgb(110, 115, 125);
+                let subtle = egui::Color32::from_rgb(140, 150, 165);
+
                 for job in &self.state.render_queue.jobs {
+                    // ── File name + status icon ──
                     ui.horizontal(|ui| {
                         let (icon, color) = match job.status {
-                            klipp_export::RenderJobStatus::Queued => {
-                                ("\u{23F3}", egui::Color32::from_rgb(180, 180, 100))
-                            }
-                            klipp_export::RenderJobStatus::Rendering => {
-                                ("\u{25B6}", egui::Color32::from_rgb(100, 180, 255))
-                            }
-                            klipp_export::RenderJobStatus::Complete => {
-                                ("\u{2713}", egui::Color32::from_rgb(100, 200, 120))
-                            }
-                            klipp_export::RenderJobStatus::Failed => {
-                                ("\u{2717}", egui::Color32::from_rgb(255, 100, 100))
-                            }
-                            klipp_export::RenderJobStatus::Cancelled => {
-                                ("\u{2014}", egui::Color32::from_rgb(120, 120, 120))
-                            }
+                            klipp_export::RenderJobStatus::Queued => ("\u{23F3}", dim),
+                            klipp_export::RenderJobStatus::Rendering => ("\u{25B6}", egui::Color32::from_rgb(100, 180, 255)),
+                            klipp_export::RenderJobStatus::Complete => ("\u{2713}", egui::Color32::from_rgb(100, 200, 120)),
+                            klipp_export::RenderJobStatus::Failed => ("\u{2717}", egui::Color32::from_rgb(255, 100, 100)),
+                            klipp_export::RenderJobStatus::Cancelled => ("\u{2014}", dim),
                         };
                         ui.colored_label(color, icon);
-                        ui.label(&job.label);
+                        ui.strong(&job.label);
+
+                        // Codec badge
+                        let codec_badge = job.settings.video_codec.label();
+                        ui.colored_label(dim, format!(" \u{2022} {codec_badge}"));
                     });
 
-                    // Progress bar with detailed overlay text
-                    let overlay_text = match job.status {
+                    // ── Progress bar (primary: percentage + ETA) ──
+                    let elapsed_secs = job.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+
+                    let bar_text = match job.status {
                         klipp_export::RenderJobStatus::Rendering => {
                             let pct = (job.progress * 100.0) as u32;
-                            let elapsed = job.started_at
-                                .map(|t| t.elapsed().as_secs())
-                                .unwrap_or(0);
-                            let eta_str = if job.progress > 0.01 && elapsed > 2 {
-                                let total_est = elapsed as f64 / job.progress as f64;
-                                let remaining = (total_est - elapsed as f64).max(0.0) as u64;
+                            let remaining_str = if job.progress > 0.01 && elapsed_secs > 2 {
+                                let total_est = elapsed_secs as f64 / job.progress as f64;
+                                let remaining = (total_est - elapsed_secs as f64).max(0.0) as u64;
                                 let m = remaining / 60;
                                 let s = remaining % 60;
                                 if m > 0 {
-                                    format!(" — ETA {m}m {s:02}s")
+                                    format!(" \u{2014} {m}m {s:02}s remaining")
                                 } else {
-                                    format!(" — ETA {s}s")
+                                    format!(" \u{2014} {s}s remaining")
                                 }
                             } else {
-                                String::new()
+                                " \u{2014} calculating\u{2026}".to_string()
                             };
-                            let fps_str = if elapsed > 0 && job.frames_done > 0 {
-                                let render_fps = job.frames_done as f64 / elapsed as f64;
-                                let speed = if job.timeline_fps > 0.0 {
-                                    render_fps / job.timeline_fps
-                                } else {
-                                    0.0
-                                };
-                                format!(" ({:.1}× real-time, {:.0} fps)", speed, render_fps)
+                            // Total duration context
+                            let total_dur = if job.total_frames > 0 && job.timeline_fps > 0.0 {
+                                let dur_secs = job.total_frames as f64 / job.timeline_fps;
+                                let dm = dur_secs as u64 / 60;
+                                let ds = dur_secs as u64 % 60;
+                                format!(" ({dm}:{ds:02} total)")
                             } else {
                                 String::new()
                             };
-                            format!("{pct}%{fps_str}{eta_str}")
+                            format!("{pct}%{remaining_str}{total_dur}")
                         }
                         klipp_export::RenderJobStatus::Complete => {
                             match (job.started_at, job.completed_at) {
@@ -5811,85 +5806,114 @@ impl KlippApp {
                                     let elapsed = if m > 0 { format!("{m}m {s:02}s") } else { format!("{s}s") };
                                     let avg_speed = if secs > 0 && job.total_frames > 0 && job.timeline_fps > 0.0 {
                                         let render_fps = job.total_frames as f64 / secs as f64;
-                                        format!(" ({:.1}× real-time)", render_fps / job.timeline_fps)
+                                        format!(" \u{2022} {:.1}\u{00D7} real-time", render_fps / job.timeline_fps)
                                     } else {
                                         String::new()
                                     };
-                                    format!("Done in {elapsed}{avg_speed}")
+                                    format!("Completed in {elapsed}{avg_speed}")
                                 }
-                                _ => "Done".to_string(),
+                                _ => "Completed".to_string(),
                             }
                         }
-                        klipp_export::RenderJobStatus::Failed => "Failed".to_string(),
+                        klipp_export::RenderJobStatus::Failed => "Export failed".to_string(),
                         klipp_export::RenderJobStatus::Cancelled => "Cancelled".to_string(),
-                        klipp_export::RenderJobStatus::Queued => "Queued".to_string(),
+                        klipp_export::RenderJobStatus::Queued => "Waiting in queue\u{2026}".to_string(),
                     };
-                    // Custom progress bar with high-contrast text
-                    let bar_height = 20.0;
+
+                    // Draw custom progress bar
+                    let bar_height = 22.0;
                     let (bar_rect, _) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), bar_height),
                         egui::Sense::hover(),
                     );
                     let painter = ui.painter_at(bar_rect);
-                    // Background
-                    painter.rect_filled(bar_rect, 3.0, egui::Color32::from_rgb(40, 40, 48));
-                    // Fill
+                    painter.rect_filled(bar_rect, 4.0, egui::Color32::from_rgb(35, 37, 42));
                     let fill_width = bar_rect.width() * job.progress;
                     if fill_width > 0.5 {
-                        let fill_rect = egui::Rect::from_min_size(
-                            bar_rect.min,
-                            egui::vec2(fill_width, bar_height),
-                        );
+                        let fill_rect = egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height));
                         let fill_color = match job.status {
-                            klipp_export::RenderJobStatus::Rendering => egui::Color32::from_rgb(60, 140, 220),
-                            klipp_export::RenderJobStatus::Complete => egui::Color32::from_rgb(60, 180, 90),
-                            klipp_export::RenderJobStatus::Failed => egui::Color32::from_rgb(200, 60, 60),
-                            _ => egui::Color32::from_rgb(100, 100, 110),
+                            klipp_export::RenderJobStatus::Rendering => egui::Color32::from_rgb(55, 130, 210),
+                            klipp_export::RenderJobStatus::Complete => egui::Color32::from_rgb(50, 170, 85),
+                            klipp_export::RenderJobStatus::Failed => egui::Color32::from_rgb(190, 55, 55),
+                            _ => egui::Color32::from_rgb(80, 85, 95),
                         };
-                        painter.rect_filled(fill_rect, 3.0, fill_color);
+                        painter.rect_filled(fill_rect, 4.0, fill_color);
                     }
-                    // Text with black shadow for readability
+                    // White text with black shadow
+                    let font = egui::FontId::proportional(12.0);
                     let text_pos = bar_rect.center();
-                    let font = egui::FontId::proportional(13.0);
-                    let shadow_offset = egui::vec2(1.0, 1.0);
-                    painter.text(
-                        text_pos + shadow_offset,
-                        egui::Align2::CENTER_CENTER,
-                        &overlay_text,
-                        font.clone(),
-                        egui::Color32::from_rgb(0, 0, 0),
-                    );
-                    painter.text(
-                        text_pos,
-                        egui::Align2::CENTER_CENTER,
-                        &overlay_text,
-                        font,
-                        egui::Color32::WHITE,
-                    );
+                    painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, &bar_text, font.clone(), egui::Color32::from_rgb(0, 0, 0));
+                    painter.text(text_pos, egui::Align2::CENTER_CENTER, &bar_text, font, egui::Color32::WHITE);
 
-                    // Hardware info + error
-                    if !job.hw_info.is_empty() {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(120, 160, 200),
-                            format!("\u{1F4BB} {}", job.hw_info),
-                        );
+                    // ── Secondary info line: speed + hardware ──
+                    if job.status == klipp_export::RenderJobStatus::Rendering {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if elapsed_secs > 0 && job.frames_done > 0 {
+                                let render_fps = job.frames_done as f64 / elapsed_secs as f64;
+                                let speed = if job.timeline_fps > 0.0 { render_fps / job.timeline_fps } else { 0.0 };
+                                ui.colored_label(subtle, format!("{:.1}\u{00D7} real-time ({:.0} fps)", speed, render_fps));
+                            }
+                            if !job.hw_info.is_empty() {
+                                ui.colored_label(dim, format!("  \u{2022}  {}", job.hw_info));
+                            }
+                        });
+                    } else if !job.hw_info.is_empty() && job.status == klipp_export::RenderJobStatus::Complete {
+                        ui.colored_label(dim, &job.hw_info);
                     }
+
+                    // ── Error message ──
                     if let Some(err) = &job.error {
                         ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
                     }
 
+                    // ── Action buttons ──
                     ui.horizontal(|ui| {
                         match job.status {
                             klipp_export::RenderJobStatus::Queued
                             | klipp_export::RenderJobStatus::Rendering => {
-                                if ui.small_button("Cancel").clicked() {
+                                let btn = egui::Button::new("Stop Render")
+                                    .fill(egui::Color32::from_rgb(160, 50, 50));
+                                if ui.add(btn).clicked() {
                                     cancel_id = Some(job.id);
                                 }
                             }
                             _ => {}
                         }
+
+                        // Collapsible details
+                        let details_id = ui.id().with("details").with(job.id);
+                        let mut show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
+                        if ui.small_button(if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" }).clicked() {
+                            show_details = !show_details;
+                        }
+                        ui.data_mut(|d| d.insert_temp(details_id, show_details));
+
+                        if show_details {
+                            ui.end_row();
+                            let res = job.settings.resolution.as_ref()
+                                .map(|r| format!("{}×{}", r.width, r.height))
+                                .unwrap_or_else(|| "Sequence".into());
+                            let audio_str = format!("{}", job.settings.audio_codec.label());
+                            let bitrate_str = job.settings.audio_bitrate_kbps
+                                .map(|b| format!(" {b} kbps"))
+                                .unwrap_or_default();
+
+                            ui.colored_label(dim, format!(
+                                "Codec: {} \u{2022} {} \u{2022} CRF {} \u{2022} Audio: {}{} \u{2022} {} frames",
+                                job.settings.video_codec.label(),
+                                res,
+                                job.settings.crf,
+                                audio_str,
+                                bitrate_str,
+                                job.total_frames,
+                            ));
+                        }
                     });
+
+                    ui.add_space(4.0);
                     ui.separator();
+                    ui.add_space(2.0);
                 }
 
                 if let Some(id) = cancel_id {
