@@ -5997,18 +5997,28 @@ impl KlippApp {
                         egui::ComboBox::from_id_salt("export_vcodec")
                             .selected_text(self.export_dialog.video_codec.label())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "H.264");
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "H.265");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "\u{26A1} H.264 — GPU accelerated");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "\u{26A1} H.265 — GPU accelerated, best quality/size");
                                 if self.export_dialog.format == ExportFormat::Mov {
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — CPU only, NLE interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — CPU only, high quality");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — CPU only, alpha/mastering");
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — CPU only, Avid interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — CPU only, Avid high bitrate");
                                 }
                             });
+                        ui.end_row();
+
+                        // Codec hint
+                        ui.label("");
+                        ui.colored_label(
+                            egui::Color32::from_rgb(130, 150, 170),
+                            self.export_dialog.video_codec.hint(),
+                        );
+                        ui.end_row();
+
                         // Auto-switch to MOV when ProRes/DNxHD codec is selected
                         if self.export_dialog.video_codec != prev_codec
                             && self.export_dialog.video_codec.requires_mov()

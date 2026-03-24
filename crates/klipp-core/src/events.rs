@@ -107,6 +107,19 @@ impl ExportVideoCodec {
         }
     }
 
+    /// Short description shown next to the codec in the export dialog.
+    pub fn hint(&self) -> &'static str {
+        match self {
+            Self::H264 => "GPU accelerated \u{26A1} — fast, universal",
+            Self::H265 => "GPU accelerated \u{26A1} — best quality/size",
+            Self::ProRes422 => "CPU only — NLE interchange, large files",
+            Self::ProRes422HQ => "CPU only — high quality NLE interchange",
+            Self::ProRes4444 => "CPU only — alpha channel, mastering",
+            Self::DNxHD115 => "CPU only — Avid interchange",
+            Self::DNxHD145 => "CPU only — Avid interchange, high bitrate",
+        }
+    }
+
     /// Whether this codec uses CRF-based quality (H.264/H.265) or fixed profile/bitrate.
     pub fn uses_crf(&self) -> bool {
         matches!(self, Self::H264 | Self::H265)
