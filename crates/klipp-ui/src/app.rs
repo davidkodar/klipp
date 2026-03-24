@@ -1521,6 +1521,7 @@ impl KlippApp {
                         &self.state.media_pool,
                         &settings,
                         None, // TODO: pass global_lut_path from engine
+                        self.export_dialog.marked_range,
                     );
                     let label = settings.output_path.file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -5970,6 +5971,7 @@ impl KlippApp {
                             &self.state.media_pool,
                             &settings,
                             None, // TODO: pass global_lut_path from engine
+                            self.export_dialog.marked_range,
                         );
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())

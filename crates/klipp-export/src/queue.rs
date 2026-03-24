@@ -51,9 +51,10 @@ impl RenderSnapshot {
         media_pool: &MediaPool,
         settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
+        use_marked_range: bool,
     ) -> Result<Self, klipp_render::RenderError> {
         let snapshot =
-            SequenceSnapshot::from_sequence(sequence, media_pool, settings, global_lut_path)?;
+            SequenceSnapshot::from_sequence(sequence, media_pool, settings, global_lut_path, use_marked_range)?;
         let total_frames = snapshot.frames_to_export();
         Ok(Self {
             sequence_snapshot: snapshot,

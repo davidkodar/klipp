@@ -210,21 +210,28 @@ impl SequenceSnapshot {
     /// to file paths via `media_pool`. RationalTime values are converted to
     /// frame numbers and f64 seconds. The `global_lut_path` is passed from
     /// the engine's ColorPipeline.
+    /// `use_marked_range`: if true AND the sequence has in/out points set,
+    /// only export that range. If false, export the entire sequence.
     pub fn from_sequence(
         seq: &Sequence,
         media_pool: &MediaPool,
         _settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
+        use_marked_range: bool,
     ) -> Result<Self, RenderError> {
         let fps = seq.fps.as_f64();
 
-        let export_range = match (&seq.in_point, &seq.out_point) {
-            (Some(in_pt), Some(out_pt)) => {
-                let start = time_to_frame(in_pt, fps);
-                let end = time_to_frame(out_pt, fps);
-                Some((start, end))
+        let export_range = if use_marked_range {
+            match (&seq.in_point, &seq.out_point) {
+                (Some(in_pt), Some(out_pt)) => {
+                    let start = time_to_frame(in_pt, fps);
+                    let end = time_to_frame(out_pt, fps);
+                    Some((start, end))
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
 
         let total_duration = seq.total_duration();
@@ -476,7 +483,7 @@ mod tests {
         seq.tracks[1].clips.push(clip.clone()); // Video 1 is tracks[1] (V2, V1, A1)
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         assert_eq!(snap.fps, 24.0);
         assert_eq!(snap.width, 1920);
@@ -531,7 +538,7 @@ mod tests {
         seq.out_point = Some(make_rational(120, 24)); // 5 seconds in
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true).unwrap();
 
         assert_eq!(snap.export_range, Some((24, 120)));
         assert_eq!(snap.frames_to_export(), 96);
@@ -571,7 +578,7 @@ mod tests {
         seq.tracks[1].clips.push(clip);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         let sc = &v1.clips[0];
@@ -605,7 +612,7 @@ mod tests {
         seq.tracks[1].clips.push(clip);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         match &v1.clips[0].kind {
@@ -638,7 +645,7 @@ mod tests {
         seq.tracks[1].clips.push(clip);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         assert!(matches!(v1.clips[0].kind, ClipKindSnapshot::Gap));
@@ -688,7 +695,7 @@ mod tests {
         seq.tracks[1].clips.push(clip_a); // V1
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         // Tracks are reversed to bottom-to-top: A1 last in seq, but we skip audio in video_tracks
         // Video tracks should have V1 first (bottom), V2 second (top) after reversal
@@ -749,7 +756,7 @@ mod tests {
         seq.tracks[1].transitions.push(transition);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         assert_eq!(v1.transitions.len(), 1);
@@ -786,7 +793,7 @@ mod tests {
         seq.tracks[2].pan = -0.5;
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         assert_eq!(snap.audio_tracks.len(), 1);
         let at = &snap.audio_tracks[0];
