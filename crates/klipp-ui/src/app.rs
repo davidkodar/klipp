@@ -5786,16 +5786,7 @@ impl KlippApp {
                             } else {
                                 " \u{2014} calculating\u{2026}".to_string()
                             };
-                            // Total duration context
-                            let total_dur = if job.total_frames > 0 && job.timeline_fps > 0.0 {
-                                let dur_secs = job.total_frames as f64 / job.timeline_fps;
-                                let dm = dur_secs as u64 / 60;
-                                let ds = dur_secs as u64 % 60;
-                                format!(" \u{2022} clip length {dm}:{ds:02}")
-                            } else {
-                                String::new()
-                            };
-                            format!("{pct}%{remaining_str}{total_dur}")
+                            format!("{pct}%{remaining_str}")
                         }
                         klipp_export::RenderJobStatus::Complete => {
                             match (job.started_at, job.completed_at) {
@@ -5846,6 +5837,17 @@ impl KlippApp {
                     painter.text(text_pos, egui::Align2::CENTER_CENTER, &bar_text, font, egui::Color32::WHITE);
 
                     ui.add_space(2.0);
+
+                    // ── Clip duration (separate line, clear context) ──
+                    if job.status == klipp_export::RenderJobStatus::Rendering
+                        && job.total_frames > 0
+                        && job.timeline_fps > 0.0
+                    {
+                        let dur_secs = job.total_frames as f64 / job.timeline_fps;
+                        let dm = dur_secs as u64 / 60;
+                        let ds = dur_secs as u64 % 60;
+                        ui.colored_label(subtle, format!("Clip duration: {dm}:{ds:02}"));
+                    }
 
                     // ── Render stage (what's happening now) ──
                     if job.status == klipp_export::RenderJobStatus::Rendering && !job.render_stage.is_empty() {
