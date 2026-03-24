@@ -32,6 +32,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
             ui.painter().rect_filled(rect, 5.0, bg);
             draw_fn(ui.painter(), rect, fg);
             styled_tooltip(&resp, theme, tip, Some(key));
+            if resp.clicked() {
+                state.active_tool = *tool;
+            }
         }
 
         separator(ui, theme);

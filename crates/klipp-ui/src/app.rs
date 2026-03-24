@@ -4425,6 +4425,22 @@ impl KlippApp {
                 }
             }
 
+            // Alt+X — clear both in/out points (standard NLE shortcut)
+            if i.modifiers.alt && i.key_pressed(egui::Key::X) {
+                let old_in = self.state.sequence().in_point;
+                let old_out = self.state.sequence().out_point;
+                if old_in.is_some() || old_out.is_some() {
+                    cmds.push(AppCommand::ClearSequenceInPoint);
+                    cmds.push(AppCommand::ClearSequenceOutPoint);
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::SetRange {
+                            old_in, old_out, new_in: None, new_out: None,
+                        },
+                    });
+                }
+            }
+
             // Escape — clear active range drag OR return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 if let Some(drag) = self.state.range_drag.take() {
