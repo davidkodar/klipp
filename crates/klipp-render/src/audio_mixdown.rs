@@ -228,16 +228,39 @@ fn decode_clip_audio(
 
     let mut decoder = codec_ctx.decoder().audio().map_err(RenderError::Decode)?;
 
-    // Ensure channel layout is valid
-    let src_layout = if decoder.channel_layout().bits() == 0 {
-        if decoder.channels() >= 2 {
-            ffmpeg_next::ChannelLayout::STEREO
+    // Determine source channel layout.
+    // FFmpeg 8+ uses ch_layout (not the legacy channel_layout bitmask).
+    // If bits() returns 0, construct a default layout from the channel count.
+    let src_channels = decoder.channels();
+    let src_layout = {
+        let layout = decoder.channel_layout();
+        if layout.bits() != 0 {
+            layout
         } else {
-            ffmpeg_next::ChannelLayout::MONO
+            // Construct layout from channel count
+            match src_channels {
+                1 => ffmpeg_next::ChannelLayout::MONO,
+                2 => ffmpeg_next::ChannelLayout::STEREO,
+                6 => ffmpeg_next::ChannelLayout::_5POINT1,
+                8 => ffmpeg_next::ChannelLayout::_7POINT1,
+                _ => {
+                    // Fallback: use default layout for this channel count
+                    unsafe {
+                        let mut ch_layout: ffmpeg_next::ffi::AVChannelLayout = std::mem::zeroed();
+                        ffmpeg_next::ffi::av_channel_layout_default(
+                            &mut ch_layout,
+                            src_channels as i32,
+                        );
+                        ffmpeg_next::ChannelLayout::from(ch_layout)
+                    }
+                }
+            }
         }
-    } else {
-        decoder.channel_layout()
     };
+    tracing::debug!(
+        "AudioMixdown: source channels={}, layout_bits={:#x}",
+        src_channels, src_layout.bits()
+    );
 
     // Set up resampler: source format → f32 interleaved stereo at output_rate
     let mut resampler = ffmpeg_next::software::resampling::Context::get(
