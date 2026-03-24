@@ -49,8 +49,24 @@ impl Encoder {
         settings: &ExportSettings,
         snapshot: &SequenceSnapshot,
     ) -> Result<Self, RenderError> {
-        let mut output_ctx = ffmpeg_next::format::output(output_path)
-            .map_err(|e| RenderError::Encode(format!("output context: {e}")))?;
+        // Force the correct container format based on codec.
+        // ProRes and DNxHD require MOV; H.264/H.265 work in MP4/MKV/MOV.
+        let forced_format = match settings.video_codec {
+            ExportVideoCodec::ProRes422
+            | ExportVideoCodec::ProRes422HQ
+            | ExportVideoCodec::ProRes4444
+            | ExportVideoCodec::DNxHD115
+            | ExportVideoCodec::DNxHD145 => Some("mov"),
+            _ => None,
+        };
+
+        let mut output_ctx = if let Some(fmt) = forced_format {
+            ffmpeg_next::format::output_as(output_path, fmt)
+                .map_err(|e| RenderError::Encode(format!("output context (forced {fmt}): {e}")))?
+        } else {
+            ffmpeg_next::format::output(output_path)
+                .map_err(|e| RenderError::Encode(format!("output context: {e}")))?
+        };
 
         // ═══════════════════════════════════════════════════════════
         // VIDEO ENCODER
