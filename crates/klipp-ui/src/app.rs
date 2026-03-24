@@ -5769,11 +5769,61 @@ impl KlippApp {
                         ui.label(&job.label);
                     });
 
-                    // Progress bar
+                    // Progress bar with detailed overlay text
+                    let overlay_text = match job.status {
+                        klipp_export::RenderJobStatus::Rendering => {
+                            let pct = (job.progress * 100.0) as u32;
+                            let elapsed = job.started_at
+                                .map(|t| t.elapsed().as_secs())
+                                .unwrap_or(0);
+                            let eta_str = if job.progress > 0.01 && elapsed > 2 {
+                                let total_est = elapsed as f64 / job.progress as f64;
+                                let remaining = (total_est - elapsed as f64).max(0.0) as u64;
+                                let m = remaining / 60;
+                                let s = remaining % 60;
+                                if m > 0 {
+                                    format!(" — ETA {m}m {s:02}s")
+                                } else {
+                                    format!(" — ETA {s}s")
+                                }
+                            } else {
+                                String::new()
+                            };
+                            let fps_str = if elapsed > 0 && job.frames_done > 0 {
+                                let fps = job.frames_done as f64 / elapsed as f64;
+                                format!(" ({:.1} fps)", fps)
+                            } else {
+                                String::new()
+                            };
+                            format!("{pct}%{fps_str}{eta_str}")
+                        }
+                        klipp_export::RenderJobStatus::Complete => {
+                            let elapsed = match (job.started_at, job.completed_at) {
+                                (Some(start), Some(end)) => {
+                                    let secs = end.duration_since(start).as_secs();
+                                    let m = secs / 60;
+                                    let s = secs % 60;
+                                    if m > 0 { format!("{m}m {s:02}s") } else { format!("{s}s") }
+                                }
+                                _ => String::new(),
+                            };
+                            format!("Done in {elapsed}")
+                        }
+                        klipp_export::RenderJobStatus::Failed => "Failed".to_string(),
+                        klipp_export::RenderJobStatus::Cancelled => "Cancelled".to_string(),
+                        klipp_export::RenderJobStatus::Queued => "Queued".to_string(),
+                    };
                     let progress = egui::ProgressBar::new(job.progress)
-                        .show_percentage();
+                        .text(overlay_text);
                     ui.add(progress);
 
+                    // Hardware info + error
+                    if !job.hw_info.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(120, 160, 200),
+                            format!("\u{1F4BB} {}", job.hw_info),
+                        );
+                    }
                     if let Some(err) = &job.error {
                         ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
                     }

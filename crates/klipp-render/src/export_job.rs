@@ -26,6 +26,8 @@ pub struct ExportJob {
     pub cancel: Arc<AtomicBool>,
     pub progress: Arc<AtomicU64>,
     pub total_frames: u64,
+    /// Shared string for hardware info reporting (set early in run()).
+    pub hw_info: Arc<std::sync::Mutex<String>>,
 }
 
 impl ExportJob {
@@ -110,6 +112,21 @@ impl ExportJob {
                     )?;
                     decoders.insert(clip.id, decoder);
                 }
+            }
+        }
+
+        // Report hardware info
+        {
+            let decode_hw = decoders
+                .values()
+                .next()
+                .map(|d| d.hw_accel_name())
+                .unwrap_or("N/A");
+            let encode_hw = encoder.hw_info();
+            let hw_str = format!("Decode: {} | Encode: {}", decode_hw, encode_hw);
+            info!("ExportJob {}: {}", self.id, hw_str);
+            if let Ok(mut hw) = self.hw_info.lock() {
+                *hw = hw_str;
             }
         }
 
@@ -309,6 +326,7 @@ mod tests {
             snapshot: make_test_snapshot(),
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),
+            hw_info: Arc::new(std::sync::Mutex::new(String::new())),
             total_frames: 100,
         };
 

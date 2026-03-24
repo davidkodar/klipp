@@ -28,6 +28,12 @@ pub struct RenderJob {
     pub started_at: Option<std::time::Instant>,
     pub completed_at: Option<std::time::Instant>,
     pub error: Option<String>,
+    /// Total frames in this job (for ETA calculation).
+    pub total_frames: u64,
+    /// Frames completed so far (raw counter).
+    pub frames_done: u64,
+    /// Hardware info string (e.g. "NVENC + CUDA" or "Software").
+    pub hw_info: String,
 }
 
 pub enum RenderQueueEvent {
@@ -74,9 +80,12 @@ pub struct RenderQueue {
     active_progress: Option<(Uuid, Arc<AtomicU64>, u64)>, // (id, counter, total_frames)
     /// Channel for completion/failure events from the render thread.
     event_rx: Option<crossbeam_channel::Receiver<RenderThreadEvent>>,
+    /// Shared hw_info from the active export job.
+    active_hw_info: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 enum RenderThreadEvent {
+    Started { id: Uuid, hw_info: String },
     Completed { id: Uuid },
     Failed { id: Uuid, error: String },
     Cancelled { id: Uuid },
@@ -97,6 +106,7 @@ impl RenderQueue {
             active_cancel: None,
             active_progress: None,
             event_rx: None,
+            active_hw_info: None,
         }
     }
 
@@ -108,6 +118,7 @@ impl RenderQueue {
         snapshot: RenderSnapshot,
     ) -> Uuid {
         let id = Uuid::new_v4();
+        let total_frames = snapshot.total_frames;
         self.jobs.push(RenderJob {
             id,
             label,
@@ -119,6 +130,9 @@ impl RenderQueue {
             started_at: None,
             completed_at: None,
             error: None,
+            total_frames,
+            frames_done: 0,
+            hw_info: String::new(),
         });
         self.snapshots.push((id, snapshot));
         self.start_next_if_idle();
@@ -135,6 +149,7 @@ impl RenderQueue {
         self.active_cancel = None;
         self.active_progress = None;
         self.event_rx = None;
+        self.active_hw_info = None;
     }
 
     pub fn cancel_job(&mut self, id: Uuid) {
@@ -153,6 +168,7 @@ impl RenderQueue {
                     self.active_cancel = None;
                     self.active_progress = None;
                     self.event_rx = None;
+                    self.active_hw_info = None;
                     self.start_next_if_idle();
                 }
                 _ => {}
@@ -181,9 +197,25 @@ impl RenderQueue {
                 0.0
             };
             if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                job.frames_done = frames_done;
                 if job.progress != pct {
                     job.progress = pct;
                     events.push(RenderQueueEvent::Progress { id, progress: pct });
+                }
+            }
+        }
+
+        // Read hw_info from shared mutex
+        if let Some(ref hw) = self.active_hw_info {
+            if let Ok(info) = hw.lock() {
+                if !info.is_empty() {
+                    if let Some((id, _, _)) = self.active_progress {
+                        if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                            if job.hw_info.is_empty() {
+                                job.hw_info = info.clone();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -201,6 +233,11 @@ impl RenderQueue {
 
         for event in thread_events {
             match event {
+                RenderThreadEvent::Started { id, hw_info: info } => {
+                    if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                        job.hw_info = info;
+                    }
+                }
                 RenderThreadEvent::Completed { id } => {
                     if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                         job.status = RenderJobStatus::Complete;
@@ -216,6 +253,7 @@ impl RenderQueue {
                     self.active_cancel = None;
                     self.active_progress = None;
                     self.event_rx = None;
+                    self.active_hw_info = None;
                     self.start_next_if_idle();
                 }
                 RenderThreadEvent::Cancelled { id } => {
@@ -226,6 +264,7 @@ impl RenderQueue {
                     self.active_cancel = None;
                     self.active_progress = None;
                     self.event_rx = None;
+                    self.active_hw_info = None;
                     self.start_next_if_idle();
                 }
                 RenderThreadEvent::Failed { id, error } => {
@@ -238,6 +277,7 @@ impl RenderQueue {
                     self.active_cancel = None;
                     self.active_progress = None;
                     self.event_rx = None;
+                    self.active_hw_info = None;
                     self.start_next_if_idle();
                 }
             }
@@ -295,12 +335,14 @@ impl RenderQueue {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(AtomicU64::new(0));
+        let hw_info = Arc::new(std::sync::Mutex::new(String::new()));
         let total_frames = snapshot.total_frames;
         let settings = job.settings.clone();
         let output_path = job.output_path.clone();
 
         let cancel_clone = cancel.clone();
         let progress_clone = progress.clone();
+        let hw_info_clone = hw_info.clone();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let handle = std::thread::Builder::new()
@@ -314,7 +356,27 @@ impl RenderQueue {
                     cancel: cancel_clone,
                     progress: progress_clone,
                     total_frames,
+                    hw_info: hw_info_clone.clone(),
                 };
+
+                // Send hw_info as soon as it's available (after decoder/encoder init)
+                let event_tx2 = event_tx.clone();
+                let hw_info_ref = hw_info_clone;
+                std::thread::spawn(move || {
+                    // Poll for hw_info to be set (usually within 1-2 seconds of job start)
+                    for _ in 0..100 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        if let Ok(info) = hw_info_ref.lock() {
+                            if !info.is_empty() {
+                                let _ = event_tx2.send(RenderThreadEvent::Started {
+                                    id,
+                                    hw_info: info.clone(),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                });
 
                 let result = export_job.run();
                 let event = match result {
@@ -335,5 +397,6 @@ impl RenderQueue {
         self.active_cancel = Some(cancel);
         self.active_progress = Some((id, progress, total_frames));
         self.event_rx = Some(event_rx);
+        self.active_hw_info = Some(hw_info);
     }
 }

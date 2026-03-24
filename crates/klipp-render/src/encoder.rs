@@ -34,6 +34,8 @@ pub struct Encoder {
     audio_frame_size: Option<usize>,
     /// Pending audio samples (accumulate until we have a full encoder frame).
     audio_buffer: Vec<f32>,
+    /// Name of the video encoder in use (for reporting).
+    video_codec_name: &'static str,
     /// Audio resampler (f32 packed stereo → encoder's required format).
     /// Reserved for future use when format conversion is needed beyond FLTP.
     #[allow(dead_code)]
@@ -437,7 +439,23 @@ impl Encoder {
             audio_buffer: Vec::new(),
             audio_resampler,
             audio_sample_format: audio_sample_fmt,
+            video_codec_name,
         })
+    }
+
+    /// Human-readable hardware info for the video encoder.
+    pub fn hw_info(&self) -> &'static str {
+        if self.video_codec_name.contains("nvenc") {
+            "NVENC (NVIDIA)"
+        } else if self.video_codec_name.contains("amf") {
+            "AMF (AMD)"
+        } else if self.video_codec_name.contains("prores") {
+            "ProRes (CPU)"
+        } else if self.video_codec_name.contains("dnxhd") {
+            "DNxHD (CPU)"
+        } else {
+            "Software (CPU)"
+        }
     }
 
     /// Encode one RGBA video frame.
