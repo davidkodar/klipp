@@ -34,6 +34,8 @@ pub struct RenderJob {
     pub frames_done: u64,
     /// Hardware info string (e.g. "NVENC + CUDA" or "Software").
     pub hw_info: String,
+    /// Timeline fps (for speed-vs-realtime display).
+    pub timeline_fps: f64,
 }
 
 pub enum RenderQueueEvent {
@@ -119,6 +121,7 @@ impl RenderQueue {
     ) -> Uuid {
         let id = Uuid::new_v4();
         let total_frames = snapshot.total_frames;
+        let timeline_fps = snapshot.sequence_snapshot.fps;
         self.jobs.push(RenderJob {
             id,
             label,
@@ -133,6 +136,7 @@ impl RenderQueue {
             total_frames,
             frames_done: 0,
             hw_info: String::new(),
+            timeline_fps,
         });
         self.snapshots.push((id, snapshot));
         self.start_next_if_idle();

@@ -5790,24 +5790,35 @@ impl KlippApp {
                                 String::new()
                             };
                             let fps_str = if elapsed > 0 && job.frames_done > 0 {
-                                let fps = job.frames_done as f64 / elapsed as f64;
-                                format!(" ({:.1} fps)", fps)
+                                let render_fps = job.frames_done as f64 / elapsed as f64;
+                                let speed = if job.timeline_fps > 0.0 {
+                                    render_fps / job.timeline_fps
+                                } else {
+                                    0.0
+                                };
+                                format!(" ({:.1}× real-time, {:.0} fps)", speed, render_fps)
                             } else {
                                 String::new()
                             };
                             format!("{pct}%{fps_str}{eta_str}")
                         }
                         klipp_export::RenderJobStatus::Complete => {
-                            let elapsed = match (job.started_at, job.completed_at) {
+                            match (job.started_at, job.completed_at) {
                                 (Some(start), Some(end)) => {
                                     let secs = end.duration_since(start).as_secs();
                                     let m = secs / 60;
                                     let s = secs % 60;
-                                    if m > 0 { format!("{m}m {s:02}s") } else { format!("{s}s") }
+                                    let elapsed = if m > 0 { format!("{m}m {s:02}s") } else { format!("{s}s") };
+                                    let avg_speed = if secs > 0 && job.total_frames > 0 && job.timeline_fps > 0.0 {
+                                        let render_fps = job.total_frames as f64 / secs as f64;
+                                        format!(" ({:.1}× real-time)", render_fps / job.timeline_fps)
+                                    } else {
+                                        String::new()
+                                    };
+                                    format!("Done in {elapsed}{avg_speed}")
                                 }
-                                _ => String::new(),
-                            };
-                            format!("Done in {elapsed}")
+                                _ => "Done".to_string(),
+                            }
                         }
                         klipp_export::RenderJobStatus::Failed => "Failed".to_string(),
                         klipp_export::RenderJobStatus::Cancelled => "Cancelled".to_string(),
