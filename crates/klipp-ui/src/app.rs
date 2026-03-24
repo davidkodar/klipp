@@ -5791,7 +5791,7 @@ impl KlippApp {
                                 let dur_secs = job.total_frames as f64 / job.timeline_fps;
                                 let dm = dur_secs as u64 / 60;
                                 let ds = dur_secs as u64 % 60;
-                                format!(" ({dm}:{ds:02} total)")
+                                format!(" \u{2022} clip length {dm}:{ds:02}")
                             } else {
                                 String::new()
                             };
