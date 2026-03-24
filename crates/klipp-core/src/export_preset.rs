@@ -195,6 +195,21 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             },
         },
         ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000b".into(),
+            name: "H.265 HQ (GPU)".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H265,
+                resolution: None,
+                fps: None,
+                crf: 16,
+                preset: EncoderPreset::Slow,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: Some(256),
+            },
+        },
+        ExportPreset {
             id: "00000000-0000-4000-a000-00000000000a".into(),
             name: "Audio Only MP3".into(),
             built_in: true,
