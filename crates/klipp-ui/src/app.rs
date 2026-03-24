@@ -5892,11 +5892,13 @@ impl KlippApp {
                         }
 
                         // Collapsible details (default: hidden)
-                        let details_id = ui.id().with("details").with(job.id);
+                        // Use a stable ID not dependent on ui.id() (which changes inside horizontal)
+                        let details_id = egui::Id::new("render_details").with(job.id);
                         let mut show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
-                        let details_btn = ui.colored_label(
-                            bg_dim,
-                            if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" },
+                        let details_text = if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" };
+                        let details_btn = ui.add(
+                            egui::Button::new(egui::RichText::new(details_text).color(bg_dim).size(12.0))
+                                .frame(false)
                         );
                         if details_btn.clicked() {
                             show_details = !show_details;
@@ -5905,7 +5907,7 @@ impl KlippApp {
                     });
 
                     // ── Details panel (collapsed by default) ──
-                    let details_id = ui.id().with("details").with(job.id);
+                    let details_id = egui::Id::new("render_details").with(job.id);
                     let show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
                     if show_details {
                         ui.add_space(2.0);
