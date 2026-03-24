@@ -81,11 +81,11 @@ pub enum EditCommand {
         new_out: Option<RationalTime>,
     },
 
-    // === COLOR GRADE ===
-    SetColorGrade {
+    // === NODE GRAPH (color grading) ===
+    SetNodeGraph {
         clip_id: ClipId,
-        old_grade: klipp_timeline::ClipColorGrade,
-        new_grade: klipp_timeline::ClipColorGrade,
+        old_graph: klipp_nodes::NodeGraph,
+        new_graph: klipp_nodes::NodeGraph,
     },
 }
 
@@ -102,7 +102,7 @@ impl EditCommand {
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::SetRange { .. } => "Set Range",
-            EditCommand::SetColorGrade { .. } => "Color Grade",
+            EditCommand::SetNodeGraph { .. } => "Color Grade",
         }
     }
 }

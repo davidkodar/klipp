@@ -2009,6 +2009,7 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-media",
+ "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",
  "klipp-title",
@@ -2043,6 +2044,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-nodes"
+version = "0.1.0"
+dependencies = [
+ "klipp-color",
+ "klipp-core",
+ "klipp-effects",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "klipp-plugin"
 version = "0.1.0"
 dependencies = [
@@ -2060,6 +2075,7 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-media",
+ "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",
  "serde",
@@ -2079,6 +2095,7 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-media",
+ "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",
  "klipp-title",
@@ -2094,6 +2111,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "klipp-effects",
+ "klipp-nodes",
  "klipp-plugin",
  "serde",
  "serde_json",
@@ -2124,6 +2142,7 @@ dependencies = [
  "klipp-engine",
  "klipp-export",
  "klipp-media",
+ "klipp-nodes",
  "klipp-plugin",
  "klipp-project",
  "klipp-timeline",

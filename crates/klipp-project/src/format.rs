@@ -122,8 +122,13 @@ pub struct ClipJson {
     pub source_out: i64,
     #[serde(default = "default_rate")]
     pub rate: u32,
+    /// Node-based color grading graph (new format).
+    /// Missing → default 12-node pipeline. Old `color_grade` field is ignored on load.
     #[serde(default)]
-    pub color_grade: Option<ColorGradeJson>,
+    pub node_graph: Option<klipp_nodes::NodeGraph>,
+    /// Legacy color_grade field — kept only so old project files still parse.
+    #[serde(default)]
+    pub color_grade: Option<serde_json::Value>,
     #[serde(default)]
     pub effects: Vec<EffectJson>,
     #[serde(default)]
@@ -167,97 +172,6 @@ fn default_font_name() -> String { "sans-serif".to_string() }
 fn default_color_white() -> [u8; 4] { [255, 255, 255, 255] }
 fn default_alignment() -> String { "Center".to_string() }
 fn default_half() -> f32 { 0.5 }
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ColorGradeJson {
-    pub enabled: bool,
-    #[serde(default)]
-    pub exposure: f32,
-    #[serde(default)]
-    pub contrast: f32,
-    #[serde(default = "default_saturation")]
-    pub saturation: f32,
-    #[serde(default)]
-    pub temperature: f32,
-    #[serde(default)]
-    pub tint: f32,
-    #[serde(default)]
-    pub highlights: f32,
-    #[serde(default)]
-    pub shadows: f32,
-    #[serde(default)]
-    pub whites: f32,
-    #[serde(default)]
-    pub blacks: f32,
-    #[serde(default)]
-    pub lift_x: f32,
-    #[serde(default)]
-    pub lift_y: f32,
-    #[serde(default)]
-    pub lift_master: f32,
-    #[serde(default)]
-    pub gamma_x: f32,
-    #[serde(default)]
-    pub gamma_y: f32,
-    #[serde(default)]
-    pub gamma_master: f32,
-    #[serde(default)]
-    pub gain_x: f32,
-    #[serde(default)]
-    pub gain_y: f32,
-    #[serde(default)]
-    pub gain_master: f32,
-    #[serde(default)]
-    pub offset_x: f32,
-    #[serde(default)]
-    pub offset_y: f32,
-    #[serde(default)]
-    pub offset_master: f32,
-    #[serde(default)]
-    pub lift_sat: f32,
-    #[serde(default)]
-    pub lift_bri: f32,
-    #[serde(default)]
-    pub gamma_sat: f32,
-    #[serde(default)]
-    pub gamma_bri: f32,
-    #[serde(default)]
-    pub gain_sat: f32,
-    #[serde(default)]
-    pub gain_bri: f32,
-    #[serde(default)]
-    pub offset_sat: f32,
-    #[serde(default)]
-    pub offset_bri: f32,
-    #[serde(default)]
-    pub hue: f32,
-    #[serde(default = "default_one")]
-    pub global_mix: f32,
-    #[serde(default)]
-    pub curves: Option<klipp_timeline::CurveSet>,
-    #[serde(default)]
-    pub curves_preserve_luma: bool,
-    #[serde(default = "default_one")]
-    pub curves_mix: f32,
-    #[serde(default)]
-    pub huesat: Option<klipp_core::HueSatCurves>,
-    #[serde(default = "default_one")]
-    pub huesat_mix: f32,
-    #[serde(default)]
-    pub qualifier: Option<klipp_core::QualifierSettings>,
-    #[serde(default)]
-    pub masks: Option<klipp_core::MaskStack>,
-    #[serde(default)]
-    pub keyframe_tracks: Option<klipp_core::KeyframeTracks>,
-    #[serde(default)]
-    pub grain: Option<klipp_core::FilmGrainSettings>,
-    #[serde(default)]
-    pub log_format: Option<klipp_core::LogFormat>,
-}
-
-fn default_one() -> f32 { 1.0 }
-
-fn default_saturation() -> f32 { 1.0 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EffectJson {

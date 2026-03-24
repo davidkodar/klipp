@@ -91,10 +91,19 @@ pub struct PlaybackEngine {
     last_playback_log: std::time::Instant,
     // Color pipeline — post-processing on RGBA frames before display
     color_pipeline: klipp_color::ColorPipeline,
+    // Node graph executor — processes per-clip color grading
+    graph_executor: klipp_nodes::GraphExecutor,
     // Before/After — when true, skip per-clip color grade to show ungraded frame
     bypass_color_grade: bool,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
+    // Scope tap — which node's output to capture for scope display
+    scope_tap_node: Option<klipp_nodes::NodeId>,
+    // Matte preview node — which Qualifier/Mask node's matte to show
+    matte_preview_node: Option<klipp_nodes::NodeId>,
+    // Cached pre-grade frame for instant parameter updates when paused.
+    // Stored after decode, before color grading. Re-graded when sequence changes.
+    cached_pregrade_frame: Option<(Vec<u8>, u32, u32)>, // (rgba, width, height)
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -202,8 +211,12 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
+            graph_executor: klipp_nodes::GraphExecutor::new(),
             bypass_color_grade: false,
             matte_preview: false,
+            scope_tap_node: None,
+            matte_preview_node: None,
+            cached_pregrade_frame: None,
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -540,7 +553,23 @@ impl PlaybackEngine {
 
             AppCommand::SetMattePreview(active) => {
                 self.matte_preview = active;
+                // When matte preview is disabled, clear the matte preview node
+                if !active {
+                    self.matte_preview_node = None;
+                }
                 debug!("Matte preview: {}", self.matte_preview);
+            }
+
+            AppCommand::SetScopeTapNode { node_id, .. } => {
+                self.scope_tap_node = node_id.clone();
+                debug!("Scope tap node: {:?}", self.scope_tap_node);
+            }
+
+            AppCommand::SequenceUpdated => {
+                // Re-grade cached frame when paused — instant parameter feedback
+                if self.state != PlaybackState::Playing {
+                    self.regrade_cached_frame();
+                }
             }
 
             // UI-side commands — engine ignores them
@@ -2565,44 +2594,40 @@ impl PlaybackEngine {
         }
     }
 
-    /// Build packed LUT data for GPU hue/sat shader (6 × 256 f32 values).
-    fn build_huesat_lut_data(huesat: &klipp_core::HueSatCurves) -> [f32; 1536] {
-        let mut data = [0.5f32; 1536]; // 0.5 = identity for relative curves
-
-        let curves: [&Vec<[f32; 2]>; 6] = [
-            &huesat.hue_vs_hue, &huesat.hue_vs_sat, &huesat.hue_vs_lum,
-            &huesat.lum_vs_sat, &huesat.sat_vs_sat, &huesat.orange_vs_sat,
-        ];
-
-        for (i, pts) in curves.iter().enumerate() {
-            if pts.is_empty() { continue; }
-            let lut = klipp_color::curves::build_curve_lut_f32(pts);
-            data[i * 256..(i + 1) * 256].copy_from_slice(&lut);
+    fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        // Cache the pre-grade frame for instant re-grading when paused
+        self.cached_pregrade_frame = Some((rgba.clone(), width, height));
+        // Also store in shared frame buffer so UI thread can re-grade directly
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.pregrade_data = rgba.clone();
         }
-
-        data
+        self.post_process_rgba_inner(rgba, width, height)
     }
 
-    fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
-        #[inline]
-        fn wang_hash_cpu(mut x: u32) -> f32 {
-            x = (x ^ 61) ^ (x >> 16);
-            x = x.wrapping_mul(9);
-            x = x ^ (x >> 4);
-            x = x.wrapping_mul(0x27d4eb2d);
-            x = x ^ (x >> 15);
-            x as f32 / u32::MAX as f32
+    /// Re-grade the cached pre-grade frame without re-decoding.
+    /// Called when color parameters change while paused.
+    fn regrade_cached_frame(&mut self) {
+        if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
+            let result = self.post_process_rgba_inner(rgba.clone(), w, h);
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame(result, w, h);
         }
+    }
+
+    fn post_process_rgba_inner(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap();
         let clip = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clips.get(self.current_clip_index));
-        let grade = clip.map(|c| c.color_grade.clone());
-        let clip_source_in_secs = clip.map(|c| c.source_in.to_secs_f64()).unwrap_or(0.0);
-        let grain = clip.map(|c| c.color_grade.grain.clone()).unwrap_or_default();
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
+        let node_graph = clip.map(|c| c.node_graph.clone());
+        let clip_time_secs = clip.map(|_c| {
+            (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64())
+                + self.clip_source_start
+        }).unwrap_or(0.0);
         drop(seq);
 
         // Save pre-grade frame for Before/After split view
@@ -2612,213 +2637,55 @@ impl PlaybackEngine {
             None
         };
 
-        // 1. Per-clip color grade
+        // 1. Per-clip color grade via node graph executor
         let t1 = std::time::Instant::now();
-        let rgba = if let Some(g) = grade {
-            if g.enabled {
-                // Build curve LUTs if any curve is non-identity
-                let curve_luts = {
-                    let c = &g.curves;
-                    let m_id = klipp_color::curves::is_identity(&c.master);
-                    let r_id = klipp_color::curves::is_identity(&c.red);
-                    let g_id = klipp_color::curves::is_identity(&c.green);
-                    let b_id = klipp_color::curves::is_identity(&c.blue);
-                    if m_id && r_id && g_id && b_id {
-                        None
-                    } else {
-                        Some(klipp_color::pipeline::CurveLuts {
-                            master: klipp_color::curves::build_curve_lut(&c.master),
-                            red: klipp_color::curves::build_curve_lut(&c.red),
-                            green: klipp_color::curves::build_curve_lut(&c.green),
-                            blue: klipp_color::curves::build_curve_lut(&c.blue),
-                        })
-                    }
-                };
-                let params = klipp_color::ColorGradeParams {
-                    exposure: g.exposure,
-                    contrast: g.contrast,
-                    saturation: g.saturation,
-                    temperature: g.temperature,
-                    tint: g.tint,
-                    highlights: g.highlights,
-                    shadows: g.shadows,
-                    whites: g.whites,
-                    blacks: g.blacks,
-                    lift: klipp_color::wheel_offset_to_rgb(g.lift_x, g.lift_y, g.lift_master),
-                    gamma: klipp_color::wheel_offset_to_rgb(g.gamma_x, g.gamma_y, g.gamma_master),
-                    gain: klipp_color::wheel_offset_to_rgb(g.gain_x, g.gain_y, g.gain_master),
-                    offset: klipp_color::wheel_offset_to_rgb(g.offset_x, g.offset_y, g.offset_master),
-                    lift_sat: g.lift_sat,
-                    lift_bri: g.lift_bri,
-                    gamma_sat: g.gamma_sat,
-                    gamma_bri: g.gamma_bri,
-                    gain_sat: g.gain_sat,
-                    gain_bri: g.gain_bri,
-                    offset_sat: g.offset_sat,
-                    offset_bri: g.offset_bri,
-                    hue: g.hue,
-                    global_mix: g.global_mix,
-                    curve_luts,
-                    curves_preserve_luma: g.curves_preserve_luma,
-                    curves_mix: g.curves_mix,
-                    huesat: g.huesat.clone(),
-                    huesat_mix: g.huesat_mix,
-                    qualifier: g.qualifier.clone(),
-                    masks: g.masks.clone(),
-                    input_log_format: g.log_format,
-                };
 
-                // Apply keyframe overrides
-                let mut params = params;
-                if !g.keyframe_tracks.is_empty() {
-                    let clip_time = self.playhead.to_secs_f64() - clip_source_in_secs;
-                    for (kf_param, kf_value) in g.keyframe_tracks.evaluate_all(clip_time) {
-                        use klipp_core::ColorGradeParam as P;
-                        match kf_param {
-                            P::Exposure => params.exposure = kf_value,
-                            P::Contrast => params.contrast = kf_value,
-                            P::Saturation => params.saturation = kf_value,
-                            P::Temperature => params.temperature = kf_value,
-                            P::Tint => params.tint = kf_value,
-                            P::Highlights => params.highlights = kf_value,
-                            P::Shadows => params.shadows = kf_value,
-                            P::Whites => params.whites = kf_value,
-                            P::Blacks => params.blacks = kf_value,
-                            P::Hue => params.hue = kf_value,
-                            P::GlobalMix => params.global_mix = kf_value,
-                            P::CurvesMix => params.curves_mix = kf_value,
-                            P::HueSatMix => params.huesat_mix = kf_value,
-                            _ => {} // wheel params would need re-conversion, skip for now
+        // Determine matte preview node: when matte_preview is active, find first
+        // Qualifier or Mask node in the graph to preview its matte output
+        let matte_pv_node = if self.matte_preview {
+            self.matte_preview_node.or_else(|| {
+                node_graph.as_ref().and_then(|g| {
+                    g.nodes.iter()
+                        .find(|n| matches!(n.kind, klipp_nodes::NodeKind::Qualifier | klipp_nodes::NodeKind::Mask))
+                        .map(|n| n.id)
+                })
+            })
+        } else {
+            None
+        };
+
+        let rgba = if let Some(ref graph) = node_graph {
+            if !graph.is_identity() || matte_pv_node.is_some() {
+                let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
+                match self.graph_executor.execute(
+                    &rgba,
+                    graph,
+                    width,
+                    height,
+                    clip_time_secs,
+                    frame_number,
+                    self.scope_tap_node,
+                    matte_pv_node,
+                ) {
+                    Ok((result, tapped)) => {
+                        // Store tapped output for scope display
+                        if let Some(tap_data) = tapped {
+                            let mut fb = self.frame_buffer.lock().unwrap();
+                            fb.scope_data = tap_data;
                         }
+                        result
+                    }
+                    Err(e) => {
+                        tracing::error!("Node graph execution failed: {:?}", e);
+                        rgba
                     }
                 }
-
-                if let Some(gpu) = &mut self.gpu_effects {
-                    let mut result = gpu.apply_color_grade(
-                        rgba, width, height,
-                        params.exposure, params.contrast, params.saturation,
-                        params.temperature, params.tint,
-                        params.highlights, params.shadows, params.whites, params.blacks,
-                        params.lift, params.gamma, params.gain, params.offset,
-                        params.hue, params.global_mix,
-                    );
-                    // Hue rotation — apply on CPU (HSL conversion expensive on GPU for single param)
-                    if params.hue.abs() > 0.01 {
-                        klipp_color::transforms::apply_hue_rotation(&mut result, params.hue);
-                    }
-                    // Hue/Sat curves — GPU accelerated
-                    if !params.huesat.is_all_identity() {
-                        let lut_data = Self::build_huesat_lut_data(&params.huesat);
-                        result = gpu.apply_huesat_gpu(result, width, height, params.huesat_mix, &lut_data);
-                    }
-                    // Qualifier — GPU accelerated (masks still CPU, combined via multiply)
-                    if params.qualifier.enabled && params.masks.is_empty() {
-                        // Pure qualifier, no masks — full GPU path
-                        result = gpu.apply_qualifier_gpu(
-                            result, width, height,
-                            params.qualifier.hue_center, params.qualifier.hue_width, params.qualifier.hue_soft,
-                            params.qualifier.sat_low, params.qualifier.sat_high, params.qualifier.sat_soft,
-                            params.qualifier.lum_low, params.qualifier.lum_high, params.qualifier.lum_soft,
-                            params.qualifier.invert,
-                            params.qualifier.exposure, params.qualifier.saturation,
-                            params.qualifier.hue_shift, params.qualifier.temperature,
-                            self.matte_preview,
-                        );
-                    } else if params.qualifier.enabled || !params.masks.is_empty() || self.matte_preview {
-                        // Qualifier + masks or masks-only — CPU mask matte, GPU qualifier
-                        // GPU path supports max 4 mask shapes. Fall back to CPU for clips with more.
-                        let mask_matte = if !params.masks.is_empty() {
-                            Some(klipp_color::masks::generate_mask_matte(width, height, &params.masks))
-                        } else {
-                            None
-                        };
-
-                        if params.qualifier.enabled {
-                            // GPU qualifier for HSL matte + secondary grade
-                            result = gpu.apply_qualifier_gpu(
-                                result, width, height,
-                                params.qualifier.hue_center, params.qualifier.hue_width, params.qualifier.hue_soft,
-                                params.qualifier.sat_low, params.qualifier.sat_high, params.qualifier.sat_soft,
-                                params.qualifier.lum_low, params.qualifier.lum_high, params.qualifier.lum_soft,
-                                params.qualifier.invert,
-                                params.qualifier.exposure, params.qualifier.saturation,
-                                params.qualifier.hue_shift, params.qualifier.temperature,
-                                self.matte_preview,
-                            );
-                            // If masks present, apply mask matte on top (CPU — multiply into result)
-                            if let Some(mask_matte) = &mask_matte {
-                                if self.matte_preview {
-                                    // Multiply matte preview by mask matte
-                                    for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
-                                        let v = (chunk[0] as f32 / 255.0 * mask_matte[i] * 255.0) as u8;
-                                        chunk[0] = v; chunk[1] = v; chunk[2] = v;
-                                    }
-                                }
-                                // When not previewing, the GPU qualifier already applied the grade;
-                                // mask matte would need re-blending which is complex. For now,
-                                // the mask matte intersection is only visible in matte preview.
-                                // Full mask+qualifier GPU integration is a future enhancement.
-                            }
-                        } else if let Some(mask_matte) = &mask_matte {
-                            // Masks-only (no qualifier)
-                            if self.matte_preview {
-                                for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
-                                    let v = (mask_matte[i] * 255.0) as u8;
-                                    chunk[0] = v; chunk[1] = v; chunk[2] = v;
-                                }
-                            } else {
-                                for (i, chunk) in result.chunks_exact_mut(4).enumerate() {
-                                    let m = mask_matte[i];
-                                    if m < 0.999 {
-                                        let dim = 0.7 + 0.3 * m;
-                                        chunk[0] = (chunk[0] as f32 * dim) as u8;
-                                        chunk[1] = (chunk[1] as f32 * dim) as u8;
-                                        chunk[2] = (chunk[2] as f32 * dim) as u8;
-                                    }
-                                }
-                            }
-                        } else if self.matte_preview {
-                            // Matte preview with no qualifier/masks: show white
-                            for chunk in result.chunks_exact_mut(4) {
-                                chunk[0] = 255; chunk[1] = 255; chunk[2] = 255;
-                            }
-                        }
-                    }
-                    result
-                } else {
-                    self.color_pipeline.apply_clip_grade_full(rgba, &params, width, height, self.matte_preview)
-                }
-            } else { rgba }
-        } else { rgba };
-        // 1b. Film grain (GPU)
-        let rgba = if grain.enabled && grain.amount > 0.001 {
-            let frame_seed = self.frames_consumed as u32;
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.apply_grain_gpu(
-                    rgba, width, height,
-                    grain.amount, grain.size, grain.shadows, grain.highlights,
-                    grain.monochrome, frame_seed,
-                )
             } else {
-                // CPU fallback: simple Wang hash grain
-                let mut rgba = rgba;
-                for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
-                    let px = (i as u32) % width;
-                    let py = (i as u32) / width;
-                    let qx = (px as f32 / grain.size) as u32;
-                    let qy = (py as f32 / grain.size) as u32;
-                    let seed = qx.wrapping_mul(1973).wrapping_add(qy.wrapping_mul(9277)).wrapping_add(frame_seed.wrapping_mul(26699));
-                    let noise = (wang_hash_cpu(seed) - 0.5) * grain.amount;
-                    let luma = 0.2126 * chunk[0] as f32 / 255.0 + 0.7152 * chunk[1] as f32 / 255.0 + 0.0722 * chunk[2] as f32 / 255.0;
-                    let weight = ((1.0 - luma) * grain.shadows + luma * grain.highlights).min(1.5);
-                    for ch in &mut chunk[..3] {
-                        let v = *ch as f32 / 255.0 + noise * weight;
-                        *ch = (v.clamp(0.0, 1.0) * 255.0) as u8;
-                    }
-                }
                 rgba
             }
-        } else { rgba };
+        } else {
+            rgba
+        };
         let t2 = std::time::Instant::now();
 
         // 2. OFX effects chain
@@ -3397,18 +3264,31 @@ pub fn generate_filmstrip_incremental(
         }
         decoder.flush();
 
+        // Decode frames until we reach the target timestamp.
+        // seek() lands on the nearest keyframe BEFORE ts, so we must
+        // decode forward to get the actual frame at the requested time.
         let mut decoded_frame = ffmpeg_next::frame::Video::empty();
         let mut got_frame = false;
+        let target_pts = ts;
 
         for (stream, packet) in format_ctx.packets() {
             if stream.index() != stream_index {
                 continue;
             }
             let _ = decoder.send_packet(&packet);
-            if decoder.receive_frame(&mut decoded_frame).is_ok() {
-                got_frame = true;
-                break;
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                // Check if this frame is at or past our target time
+                let frame_ts = decoded_frame.timestamp().unwrap_or(0);
+                // Convert frame timestamp to microseconds using stream time_base
+                let tb = stream.time_base();
+                let frame_us = frame_ts * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64;
+                if frame_us >= target_pts - 100_000 { // within 100ms of target
+                    got_frame = true;
+                    break;
+                }
+                // Not yet at target — keep decoding
             }
+            if got_frame { break; }
         }
 
         if !got_frame {

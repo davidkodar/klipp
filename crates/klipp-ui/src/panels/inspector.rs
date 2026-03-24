@@ -383,7 +383,8 @@ impl InspectorPanel {
                 .and_then(|seq| seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id))
-                .map(|c| c.color_grade.log_format)
+                .and_then(|c| c.node_graph.nodes.iter()
+                    .find_map(|n| n.params.log_format))
                 .unwrap_or_default();
 
             ui.add_space(8.0);

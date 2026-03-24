@@ -1,5 +1,6 @@
-pub mod color_panel;
 pub mod inspector;
+pub mod node_graph;
+pub mod node_inspector;
 pub mod launch_screen;
 pub mod markers;
 pub mod new_project_dialog;

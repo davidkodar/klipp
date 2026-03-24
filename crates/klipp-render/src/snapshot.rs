@@ -1,13 +1,11 @@
 use crate::error::RenderError;
-use klipp_core::{
-    ClipId, ExportSettings, FilmGrainSettings, HueSatCurves, KeyframeTracks, LogFormat,
-    MaskStack, QualifierSettings, RationalTime, TransitionId,
-};
+use klipp_core::{ClipId, ExportSettings, RationalTime, TransitionId};
 use klipp_effects::BuiltinEffect;
 use klipp_media::MediaPool;
+use klipp_nodes::NodeGraph;
 use klipp_plugin::AppliedEffect;
 use klipp_timeline::{
-    ClipColorGrade, ClipKind, Sequence, TitleData, Track, TrackKind, Transition, TransitionKind,
+    ClipKind, Sequence, TitleData, Track, TrackKind, Transition, TransitionKind,
 };
 use std::path::PathBuf;
 
@@ -58,8 +56,8 @@ pub struct ClipSnapshot {
     pub source_start_secs: f64,
     /// Where the clip ends in the source file (seconds).
     pub source_end_secs: f64,
-    /// Full clone of all color grade fields.
-    pub color_grade: ClipColorGradeSnapshot,
+    /// Node-based color processing graph.
+    pub node_graph: NodeGraph,
     /// OFX effects chain.
     pub effects: Vec<AppliedEffect>,
     /// Built-in effects chain (GPU/CPU).
@@ -71,108 +69,6 @@ pub enum ClipKindSnapshot {
     Media { path: PathBuf, has_audio: bool },
     Title(TitleData),
     Gap,
-}
-
-#[derive(Clone)]
-pub struct ClipColorGradeSnapshot {
-    pub enabled: bool,
-    pub exposure: f32,
-    pub contrast: f32,
-    pub saturation: f32,
-    pub temperature: f32,
-    pub tint: f32,
-    pub highlights: f32,
-    pub shadows: f32,
-    pub whites: f32,
-    pub blacks: f32,
-    pub lift_x: f32,
-    pub lift_y: f32,
-    pub lift_master: f32,
-    pub gamma_x: f32,
-    pub gamma_y: f32,
-    pub gamma_master: f32,
-    pub gain_x: f32,
-    pub gain_y: f32,
-    pub gain_master: f32,
-    pub offset_x: f32,
-    pub offset_y: f32,
-    pub offset_master: f32,
-    pub lift_sat: f32,
-    pub lift_bri: f32,
-    pub gamma_sat: f32,
-    pub gamma_bri: f32,
-    pub gain_sat: f32,
-    pub gain_bri: f32,
-    pub offset_sat: f32,
-    pub offset_bri: f32,
-    pub hue: f32,
-    pub global_mix: f32,
-    pub curves: klipp_core::CurveSet,
-    pub curves_preserve_luma: bool,
-    pub curves_mix: f32,
-    pub huesat: HueSatCurves,
-    pub huesat_mix: f32,
-    pub qualifier: QualifierSettings,
-    pub masks: MaskStack,
-    pub log_format: LogFormat,
-    pub grain: FilmGrainSettings,
-    pub keyframe_tracks: KeyframeTracks,
-}
-
-impl ClipColorGradeSnapshot {
-    /// Default identity grade (no changes applied).
-    pub fn default_identity() -> Self {
-        Self::from(&ClipColorGrade::default())
-    }
-}
-
-impl From<&ClipColorGrade> for ClipColorGradeSnapshot {
-    fn from(g: &ClipColorGrade) -> Self {
-        Self {
-            enabled: g.enabled,
-            exposure: g.exposure,
-            contrast: g.contrast,
-            saturation: g.saturation,
-            temperature: g.temperature,
-            tint: g.tint,
-            highlights: g.highlights,
-            shadows: g.shadows,
-            whites: g.whites,
-            blacks: g.blacks,
-            lift_x: g.lift_x,
-            lift_y: g.lift_y,
-            lift_master: g.lift_master,
-            gamma_x: g.gamma_x,
-            gamma_y: g.gamma_y,
-            gamma_master: g.gamma_master,
-            gain_x: g.gain_x,
-            gain_y: g.gain_y,
-            gain_master: g.gain_master,
-            offset_x: g.offset_x,
-            offset_y: g.offset_y,
-            offset_master: g.offset_master,
-            lift_sat: g.lift_sat,
-            lift_bri: g.lift_bri,
-            gamma_sat: g.gamma_sat,
-            gamma_bri: g.gamma_bri,
-            gain_sat: g.gain_sat,
-            gain_bri: g.gain_bri,
-            offset_sat: g.offset_sat,
-            offset_bri: g.offset_bri,
-            hue: g.hue,
-            global_mix: g.global_mix,
-            curves: g.curves.clone(),
-            curves_preserve_luma: g.curves_preserve_luma,
-            curves_mix: g.curves_mix,
-            huesat: g.huesat.clone(),
-            huesat_mix: g.huesat_mix,
-            qualifier: g.qualifier.clone(),
-            masks: g.masks.clone(),
-            log_format: g.log_format,
-            grain: g.grain.clone(),
-            keyframe_tracks: g.keyframe_tracks.clone(),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -367,7 +263,7 @@ fn snapshot_clip(
         timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
         source_start_secs: clip.source_in.to_secs_f64(),
         source_end_secs: clip.source_out.to_secs_f64(),
-        color_grade: ClipColorGradeSnapshot::from(&clip.color_grade),
+        node_graph: clip.node_graph.clone(),
         effects: clip.effects.clone(),
         builtin_effects: clip.builtin_effects.clone(),
     })
@@ -398,6 +294,7 @@ mod tests {
     use super::*;
     use klipp_core::{ClipId, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
     use klipp_media::{MediaItem, MediaPool};
+    use klipp_nodes::NodeGraph;
     use klipp_timeline::{Clip, ClipKind, Sequence};
 
     fn make_fps24() -> Fps {
@@ -471,7 +368,7 @@ mod tests {
             timeline_out: make_rational(48, 24),
             source_in: make_rational(24, 24),
             source_out: make_rational(72, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -524,7 +421,7 @@ mod tests {
             timeline_out: make_rational(240, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(240, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -547,17 +444,12 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_captures_color_grade() {
+    fn snapshot_captures_node_graph() {
         let media_id = MediaId::new();
         let mut pool = MediaPool::new();
         pool.add(make_media_item(media_id, "/media/clip1.mp4"));
 
-        let mut grade = ClipColorGrade::default();
-        grade.enabled = true;
-        grade.exposure = 1.5;
-        grade.contrast = 0.3;
-        grade.saturation = 1.2;
-        grade.temperature = -20.0;
+        let graph = NodeGraph::default();
 
         let clip = Clip {
             id: ClipId::new(),
@@ -566,7 +458,7 @@ mod tests {
             timeline_out: make_rational(24, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(24, 24),
-            color_grade: grade,
+            node_graph: graph.clone(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -582,11 +474,8 @@ mod tests {
 
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         let sc = &v1.clips[0];
-        assert!(sc.color_grade.enabled);
-        assert_eq!(sc.color_grade.exposure, 1.5);
-        assert_eq!(sc.color_grade.contrast, 0.3);
-        assert_eq!(sc.color_grade.saturation, 1.2);
-        assert_eq!(sc.color_grade.temperature, -20.0);
+        // Verify node graph was cloned into snapshot
+        assert_eq!(sc.node_graph.nodes.len(), graph.nodes.len());
     }
 
     #[test]
@@ -599,7 +488,7 @@ mod tests {
             timeline_out: make_rational(72, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(72, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -632,7 +521,7 @@ mod tests {
             timeline_out: make_rational(24, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(24, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -666,7 +555,7 @@ mod tests {
             timeline_out: make_rational(48, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(48, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -681,7 +570,7 @@ mod tests {
             timeline_out: make_rational(24, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(24, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -720,7 +609,7 @@ mod tests {
             timeline_out: make_rational(48, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(48, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -734,7 +623,7 @@ mod tests {
             timeline_out: make_rational(96, 24),
             source_in: make_rational(0, 24),
             source_out: make_rational(60, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,
@@ -779,7 +668,7 @@ mod tests {
             timeline_out: make_rational(48, 24),
             source_in: make_rational(24, 24),
             source_out: make_rational(72, 24),
-            color_grade: ClipColorGrade::default(),
+            node_graph: NodeGraph::default(),
             effects: vec![],
             builtin_effects: vec![],
             linked_clip_id: None,

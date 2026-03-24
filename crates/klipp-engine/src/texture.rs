@@ -4,6 +4,10 @@ pub struct FrameBuffer {
     pub data: Vec<u8>,
     /// Pre-grade original frame for Before/After split view.
     pub original_data: Vec<u8>,
+    /// Pre-grade decoded frame — used by UI thread to re-grade without engine round-trip.
+    pub pregrade_data: Vec<u8>,
+    /// Tapped node output for scope display (empty = use main data).
+    pub scope_data: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -14,6 +18,8 @@ impl FrameBuffer {
         Self {
             data: vec![0u8; (width * height * 4) as usize],
             original_data: Vec::new(),
+            pregrade_data: Vec::new(),
+            scope_data: Vec::new(),
             width,
             height,
             dirty: false,

@@ -9,6 +9,7 @@ klipp-timeline = { workspace = true }
 klipp-media    = { workspace = true }
 klipp-color    = { workspace = true }
 klipp-effects  = { workspace = true }
+klipp-nodes    = { workspace = true }
 klipp-plugin   = { workspace = true }
 klipp-title    = { workspace = true }
 ffmpeg-next    = { workspace = true }
@@ -22,3 +23,4 @@ thiserror      = { workspace = true }
 klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media    = { workspace = true }
+klipp-nodes    = { workspace = true }

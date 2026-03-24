@@ -1305,7 +1305,7 @@ impl TimelinePanel {
                             let secs_per_tile = (clip_out_secs - clip_in_secs) / num_tiles.max(1) as f64;
                             let min_interval = clip.media_id().and_then(|mid| state.thumbnail_cache.filmstrip_min_interval(&mid));
                             let debounce_ok = self.last_refine_request
-                                .map(|t| t.elapsed().as_secs_f64() > 2.0)
+                                .map(|t| t.elapsed().as_secs_f64() > 0.5)
                                 .unwrap_or(true);
                             if let Some(min_iv) = min_interval {
                                 if secs_per_tile < min_iv * 0.5 && !state.filmstrip_generating && debounce_ok {

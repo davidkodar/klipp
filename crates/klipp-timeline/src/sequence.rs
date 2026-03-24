@@ -307,7 +307,7 @@ impl Track {
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
-            color_grade: ClipColorGrade::default(),
+            node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             linked_clip_id: None,
@@ -413,7 +413,7 @@ impl Track {
             timeline_out: cut_at,
             source_in: clip.source_in,
             source_out: clip.source_in + offset,
-            color_grade: clip.color_grade.clone(),
+            node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
@@ -427,7 +427,7 @@ impl Track {
             timeline_out: clip.timeline_out,
             source_in: clip.source_in + offset,
             source_out: clip.source_out,
-            color_grade: clip.color_grade.clone(),
+            node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             linked_clip_id: clip.linked_clip_id,
@@ -469,160 +469,6 @@ pub enum TrackKind {
     Audio,
 }
 
-/// Per-clip color grade. All fields default to identity (no change).
-/// NOTE: Not Copy — contains Vec fields (curves). Use .clone() where needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipColorGrade {
-    pub enabled: bool,
-    /// Exposure in stops: -5.0 to +5.0, default 0.0
-    pub exposure: f32,
-    /// Contrast: -1.0 to +1.0, default 0.0
-    pub contrast: f32,
-    /// Saturation: 0.0 to 2.0, default 1.0
-    pub saturation: f32,
-    /// Temperature offset: -100.0 to +100.0, default 0.0
-    pub temperature: f32,
-    /// Tint offset: -100.0 to +100.0, default 0.0
-    pub tint: f32,
-    // ── Tone controls ──
-    #[serde(default)]
-    pub highlights: f32,
-    #[serde(default)]
-    pub shadows: f32,
-    #[serde(default)]
-    pub whites: f32,
-    #[serde(default)]
-    pub blacks: f32,
-    // ── Color wheels: Lift/Gamma/Gain ──
-    #[serde(default)]
-    pub lift_x: f32,
-    #[serde(default)]
-    pub lift_y: f32,
-    #[serde(default)]
-    pub lift_master: f32,
-    #[serde(default)]
-    pub gamma_x: f32,
-    #[serde(default)]
-    pub gamma_y: f32,
-    #[serde(default)]
-    pub gamma_master: f32,
-    #[serde(default)]
-    pub gain_x: f32,
-    #[serde(default)]
-    pub gain_y: f32,
-    #[serde(default)]
-    pub gain_master: f32,
-    // ── Offset wheel ──
-    #[serde(default)]
-    pub offset_x: f32,
-    #[serde(default)]
-    pub offset_y: f32,
-    #[serde(default)]
-    pub offset_master: f32,
-    // ── Per-wheel Sat/Bri (Wheels tab flanking sliders) ──
-    #[serde(default)]
-    pub lift_sat: f32,
-    #[serde(default)]
-    pub lift_bri: f32,
-    #[serde(default)]
-    pub gamma_sat: f32,
-    #[serde(default)]
-    pub gamma_bri: f32,
-    #[serde(default)]
-    pub gain_sat: f32,
-    #[serde(default)]
-    pub gain_bri: f32,
-    #[serde(default)]
-    pub offset_sat: f32,
-    #[serde(default)]
-    pub offset_bri: f32,
-    // ── Global controls (Wheels tab) ──
-    #[serde(default)]
-    pub hue: f32,
-    #[serde(default = "default_one")]
-    pub global_mix: f32,
-    // ── RGB Curves ──
-    #[serde(default)]
-    pub curves: CurveSet,
-    #[serde(default)]
-    pub curves_preserve_luma: bool,
-    #[serde(default = "default_one")]
-    pub curves_mix: f32,
-    // ── Hue/Sat curves ──
-    #[serde(default)]
-    pub huesat: klipp_core::HueSatCurves,
-    #[serde(default = "default_one")]
-    pub huesat_mix: f32,
-    // ── Secondary color correction (qualifier) ──
-    #[serde(default)]
-    pub qualifier: klipp_core::QualifierSettings,
-    // ── Power windows / masks ──
-    #[serde(default)]
-    pub masks: klipp_core::MaskStack,
-    // ── Input device transform ──
-    #[serde(default)]
-    pub log_format: klipp_core::LogFormat,
-    // ── Film grain ──
-    #[serde(default)]
-    pub grain: klipp_core::FilmGrainSettings,
-    // ── Keyframe animation ──
-    #[serde(default)]
-    pub keyframe_tracks: klipp_core::KeyframeTracks,
-}
-
-pub use klipp_core::CurveSet;
-
-fn default_one() -> f32 { 1.0 }
-
-impl Default for ClipColorGrade {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            exposure: 0.0,
-            contrast: 0.0,
-            saturation: 1.0,
-            temperature: 0.0,
-            tint: 0.0,
-            highlights: 0.0,
-            shadows: 0.0,
-            whites: 0.0,
-            blacks: 0.0,
-            lift_x: 0.0,
-            lift_y: 0.0,
-            lift_master: 0.0,
-            gamma_x: 0.0,
-            gamma_y: 0.0,
-            gamma_master: 0.0,
-            gain_x: 0.0,
-            gain_y: 0.0,
-            gain_master: 0.0,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            offset_master: 0.0,
-            lift_sat: 0.0,
-            lift_bri: 0.0,
-            gamma_sat: 0.0,
-            gamma_bri: 0.0,
-            gain_sat: 0.0,
-            gain_bri: 0.0,
-            offset_sat: 0.0,
-            offset_bri: 0.0,
-            hue: 0.0,
-            global_mix: 1.0,
-            curves: CurveSet::default(),
-            curves_preserve_luma: false,
-            curves_mix: 1.0,
-            huesat: Default::default(),
-            huesat_mix: 1.0,
-            qualifier: Default::default(),
-            masks: Default::default(),
-            log_format: Default::default(),
-            grain: Default::default(),
-            keyframe_tracks: Default::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clip {
     pub id: ClipId,
@@ -632,7 +478,7 @@ pub struct Clip {
     pub source_in: Timecode,
     pub source_out: Timecode,
     #[serde(default)]
-    pub color_grade: ClipColorGrade,
+    pub node_graph: klipp_nodes::NodeGraph,
     #[serde(default)]
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     #[serde(default)]
@@ -684,7 +530,7 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: timeline_out - timeline_in,
-            color_grade: ClipColorGrade::default(),
+            node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             linked_clip_id: None,
@@ -708,7 +554,7 @@ impl Clip {
             timeline_out,
             source_in,
             source_out,
-            color_grade: ClipColorGrade::default(),
+            node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             linked_clip_id: None,

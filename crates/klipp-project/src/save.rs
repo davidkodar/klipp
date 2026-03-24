@@ -129,30 +129,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                         source_in: c.source_in.value,
                         source_out: c.source_out.value,
                         rate: c.timeline_in.rate,
-                        color_grade: if c.color_grade.enabled
-                            || c.color_grade.exposure != 0.0
-                            || c.color_grade.contrast != 0.0
-                            || c.color_grade.saturation != 1.0
-                            || c.color_grade.temperature != 0.0
-                            || c.color_grade.tint != 0.0
-                            || c.color_grade.highlights != 0.0
-                            || c.color_grade.shadows != 0.0
-                            || c.color_grade.whites != 0.0
-                            || c.color_grade.blacks != 0.0
-                            || c.color_grade.lift_x != 0.0
-                            || c.color_grade.lift_y != 0.0
-                            || c.color_grade.lift_master != 0.0
-                            || c.color_grade.gamma_x != 0.0
-                            || c.color_grade.gamma_y != 0.0
-                            || c.color_grade.gamma_master != 0.0
-                            || c.color_grade.gain_x != 0.0
-                            || c.color_grade.gain_y != 0.0
-                            || c.color_grade.gain_master != 0.0
-                        {
-                            Some(color_grade_to_json(&c.color_grade))
-                        } else {
-                            None
-                        },
+                        node_graph: Some(c.node_graph.clone()),
+                        color_grade: None,
                         effects: c.effects.iter().map(effect_to_json).collect(),
                         builtin_effects: if c.builtin_effects.is_empty() {
                             None
@@ -165,63 +143,6 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 }).collect(),
             }
         }).collect(),
-    }
-}
-
-fn color_grade_to_json(cg: &klipp_timeline::ClipColorGrade) -> ColorGradeJson {
-    ColorGradeJson {
-        enabled: cg.enabled,
-        exposure: cg.exposure,
-        contrast: cg.contrast,
-        saturation: cg.saturation,
-        temperature: cg.temperature,
-        tint: cg.tint,
-        highlights: cg.highlights,
-        shadows: cg.shadows,
-        whites: cg.whites,
-        blacks: cg.blacks,
-        lift_x: cg.lift_x,
-        lift_y: cg.lift_y,
-        lift_master: cg.lift_master,
-        gamma_x: cg.gamma_x,
-        gamma_y: cg.gamma_y,
-        gamma_master: cg.gamma_master,
-        gain_x: cg.gain_x,
-        gain_y: cg.gain_y,
-        gain_master: cg.gain_master,
-        offset_x: cg.offset_x,
-        offset_y: cg.offset_y,
-        offset_master: cg.offset_master,
-        lift_sat: cg.lift_sat,
-        lift_bri: cg.lift_bri,
-        gamma_sat: cg.gamma_sat,
-        gamma_bri: cg.gamma_bri,
-        gain_sat: cg.gain_sat,
-        gain_bri: cg.gain_bri,
-        offset_sat: cg.offset_sat,
-        offset_bri: cg.offset_bri,
-        hue: cg.hue,
-        global_mix: cg.global_mix,
-        curves_preserve_luma: cg.curves_preserve_luma,
-        curves_mix: cg.curves_mix,
-        huesat: if cg.huesat.is_all_identity() { None } else { Some(cg.huesat.clone()) },
-        huesat_mix: cg.huesat_mix,
-        qualifier: if cg.qualifier.enabled { Some(cg.qualifier.clone()) } else { None },
-        masks: if cg.masks.is_empty() { None } else { Some(cg.masks.clone()) },
-        keyframe_tracks: if cg.keyframe_tracks.is_empty() { None } else { Some(cg.keyframe_tracks.clone()) },
-        grain: if cg.grain.enabled { Some(cg.grain.clone()) } else { None },
-        log_format: if cg.log_format != klipp_core::LogFormat::Srgb { Some(cg.log_format) } else { None },
-        curves: {
-            let c = &cg.curves;
-            let is_default = |pts: &[[f32; 2]]| pts.len() == 2
-                && pts[0] == [0.0, 0.0] && pts[1] == [1.0, 1.0];
-            if is_default(&c.master) && is_default(&c.red)
-                && is_default(&c.green) && is_default(&c.blue) {
-                None
-            } else {
-                Some(c.clone())
-            }
-        },
     }
 }
 

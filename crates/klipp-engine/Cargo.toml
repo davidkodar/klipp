@@ -8,6 +8,7 @@ klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
+klipp-nodes = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-color = { workspace = true }
 klipp-plugin = { workspace = true }

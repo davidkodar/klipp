@@ -35,7 +35,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
 #[test]
 fn snapshot_to_pipeline_roundtrip() {
     // Verify that a snapshot can be created and a pipeline initialized from it
-    let snapshot = SequenceSnapshot {
+    let _snapshot = SequenceSnapshot {
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -338,7 +338,7 @@ fn export_real_media_h264() {
                 timeline_end_frame: 30,
                 source_start_secs: 0.0,
                 source_end_secs: 1.0,
-                color_grade: snapshot::ClipColorGradeSnapshot::default_identity(),
+                node_graph: klipp_nodes::NodeGraph::default(),
                 effects: vec![],
                 builtin_effects: vec![],
             }],
@@ -416,11 +416,9 @@ fn export_real_media_with_color_grade() {
 
     let clip_id = ClipId::new();
 
-    // Create a grade with visible changes
-    let mut grade = snapshot::ClipColorGradeSnapshot::default_identity();
-    grade.enabled = true;
-    grade.exposure = 1.0; // Brighten
-    grade.saturation = 0.0; // Desaturate to black & white
+    // TODO Session 2: create a node graph with visible grading changes.
+    // For now, use default graph (pass-through).
+    let graph = klipp_nodes::NodeGraph::default();
 
     let snapshot = SequenceSnapshot {
         fps: 30.0,
@@ -444,7 +442,7 @@ fn export_real_media_with_color_grade() {
                 timeline_end_frame: 15,
                 source_start_secs: 1.0, // Start at 1s to test seek
                 source_end_secs: 1.5,
-                color_grade: grade,
+                node_graph: graph,
                 effects: vec![],
                 builtin_effects: vec![],
             }],
@@ -509,7 +507,7 @@ fn export_with_title_and_gap() {
                     timeline_end_frame: 24,
                     source_start_secs: 0.0,
                     source_end_secs: 1.0,
-                    color_grade: snapshot::ClipColorGradeSnapshot::default_identity(),
+                    node_graph: klipp_nodes::NodeGraph::default(),
                     effects: vec![],
                     builtin_effects: vec![],
                 },
@@ -521,7 +519,7 @@ fn export_with_title_and_gap() {
                     timeline_end_frame: 48,
                     source_start_secs: 0.0,
                     source_end_secs: 1.0,
-                    color_grade: snapshot::ClipColorGradeSnapshot::default_identity(),
+                    node_graph: klipp_nodes::NodeGraph::default(),
                     effects: vec![],
                     builtin_effects: vec![],
                 },

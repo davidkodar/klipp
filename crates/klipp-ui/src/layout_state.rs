@@ -15,9 +15,19 @@ pub struct LayoutState {
     pub snap_enabled: bool,
     #[serde(default = "default_color_panel_height")]
     pub color_panel_height: f32,
+
+    // ── Color workspace layout ──
+    /// Fraction of center height allocated to viewer (vs node graph below). 0.0-1.0.
+    #[serde(default = "default_color_viewer_ratio")]
+    pub color_viewer_height_ratio: f32,
+    /// Right-side inspector width in color workspace.
+    #[serde(default = "default_color_inspector_width")]
+    pub color_inspector_width: f32,
 }
 
 fn default_color_panel_height() -> f32 { 200.0 }
+fn default_color_viewer_ratio() -> f32 { 0.55 }
+fn default_color_inspector_width() -> f32 { 300.0 }
 
 impl Default for LayoutState {
     fn default() -> Self {
@@ -31,6 +41,8 @@ impl Default for LayoutState {
             skimming_enabled: true,
             snap_enabled: true,
             color_panel_height: default_color_panel_height(),
+            color_viewer_height_ratio: default_color_viewer_ratio(),
+            color_inspector_width: default_color_inspector_width(),
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::layout_state::EditTool;
 use crate::prefs::RecentProject;
-use crate::state::{AppState, PlayheadFollow};
+use crate::state::{AppState, PlayheadFollow, Workspace};
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::{AppCommand, Tool};
@@ -79,17 +79,23 @@ impl ToolbarPanel {
 
         rx -= 2.0;
 
-        // Color Grading (icon 3)
+        // Color Grading (icon 3) — switches to Color workspace
         rx -= 32.0;
-        let color_active = state.show_color_panel;
+        let color_active = state.active_workspace == Workspace::Color;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, color_active);
         let bg = icon_bg(&resp, color_active);
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_color_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Color Grading", Some("C"));
+        styled_tooltip(&resp, theme, "Color Workspace", Some("C"));
         if resp.clicked() {
-            cmds.push(AppCommand::ToggleColorPanel);
+            if color_active {
+                state.active_workspace = Workspace::Edit;
+                state.show_color_panel = false;
+            } else {
+                state.active_workspace = Workspace::Color;
+                state.show_color_panel = true;
+            }
         }
 
         rx -= 2.0;
@@ -119,10 +125,42 @@ impl ToolbarPanel {
         let right_edge = rx - 10.0;
 
         // ═══════════════════════════════════════════
-        // CENTRE GROUP — transport, absolutely centred
+        // WORKSPACE TABS — compact pills left of transport
         // ═══════════════════════════════════════════
+        let ws_tab_w = 150.0;
         let transport_w = 260.0;
         let tx_start = toolbar_rect.center().x - transport_w / 2.0;
+        let ws_rect = egui::Rect::from_min_size(
+            egui::pos2(tx_start - ws_tab_w - 8.0, toolbar_rect.min.y),
+            egui::vec2(ws_tab_w, toolbar_rect.height()),
+        );
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(ws_rect), |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                for (ws, label) in [
+                    (Workspace::Edit, "Edit"),
+                    (Workspace::Color, "Color"),
+                    (Workspace::Export, "Export"),
+                ] {
+                    let active = state.active_workspace == ws;
+                    let text = egui::RichText::new(label).size(10.0);
+                    let text = if active {
+                        text.strong().color(theme.text_accent)
+                    } else {
+                        text.color(theme.text_dim)
+                    };
+                    let resp = ui.selectable_label(active, text);
+                    if resp.clicked() {
+                        state.active_workspace = ws;
+                        state.show_color_panel = ws == Workspace::Color;
+                    }
+                }
+            });
+        });
+
+        // ═══════════════════════════════════════════
+        // CENTRE GROUP — transport, absolutely centred
+        // ═══════════════════════════════════════════
         let transport_rect = egui::Rect::from_min_size(
             egui::pos2(tx_start, toolbar_rect.min.y),
             egui::vec2(transport_w, toolbar_rect.height()),
@@ -169,7 +207,7 @@ impl ToolbarPanel {
 
                 sep(ui, theme);
 
-                // Edit tool buttons
+                // Edit tool buttons (only shown when there's enough space)
                 let tools = [
                     (EditTool::Select, "Select Tool", "V"),
                     (EditTool::Trim, "Trim Tool", "T"),

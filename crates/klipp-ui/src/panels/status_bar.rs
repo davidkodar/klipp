@@ -111,6 +111,18 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             // Audio info
             status_item(ui, theme, "PipeWire \u{00b7} 48kHz");
 
+            // Filmstrip generation progress
+            if state.filmstrip_generating {
+                let elapsed = state.filmstrip_generate_start.elapsed().as_secs_f64();
+                ui.label(
+                    egui::RichText::new(format!("Filmstrip {elapsed:.0}s"))
+                        .size(10.0)
+                        .monospace()
+                        .color(theme.text_dim),
+                );
+                ui.spinner();
+            }
+
             // Skim pre-render progress (active or recently completed)
             let skim_done_fade = state.skim_transcode_done_at.map(|t| {
                 let elapsed = t.elapsed().as_secs_f32();

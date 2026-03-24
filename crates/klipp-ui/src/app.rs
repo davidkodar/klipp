@@ -140,8 +140,11 @@ pub struct KlippApp {
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
-    // Color grading panel
-    color_panel: crate::panels::color_panel::ColorPanel,
+    // Node graph and inspector panels (Color workspace)
+    node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
+    node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
+    /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
+    ui_executor: klipp_nodes::GraphExecutor,
 }
 
 impl KlippApp {
@@ -208,7 +211,9 @@ impl KlippApp {
             cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
-            color_panel: crate::panels::color_panel::ColorPanel::default(),
+            node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
+            node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
+            ui_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
@@ -543,9 +548,10 @@ impl KlippApp {
     ) {
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
-        // Target ~60 filmstrip frames max — enough for visual coverage without
-        // hammering the CPU. For a 5-min clip this means one frame every ~5 seconds.
-        let interval = (duration_secs / 60.0).max(1.0);
+        // Dense filmstrip: max 1.5-second gaps so zoomed-in timeline always
+        // has representative thumbnails. Target ~400 frames.
+        // A 15-min clip: every 2.25s. A 1-min clip: every 0.25s.
+        let interval = (duration_secs / 400.0).clamp(0.2, 1.5);
         std::thread::Builder::new()
             .name("klipp-filmstrip".into())
             .spawn(move || {
@@ -825,8 +831,8 @@ impl KlippApp {
                 result.height,
             );
         }
-        // Process up to 10 filmstrip frames per UI tick to avoid stalling the UI
-        for _ in 0..10 {
+        // Process up to 50 filmstrip frames per UI tick for fast progressive updates
+        for _ in 0..50 {
             match self.filmstrip_rx.try_recv() {
                 Ok(FilmstripResult::Frame { media_id, frame }) => {
                     self.state.thumbnail_cache.push_filmstrip_frame(media_id, frame);
@@ -905,12 +911,14 @@ impl KlippApp {
                 let temp = -(r - b) * 200.0;
                 let tint = -(g - (r + b) / 2.0) * 200.0;
                 if let Some(clip_id) = self.state.selected_clip {
-                    self.cmd_tx.send(AppCommand::SetClipColorGradeParam {
-                        clip_id, param: klipp_core::ColorGradeParam::Temperature,
+                    // TODO(Session 4+): find the appropriate node_id for WB adjustments
+                    let node_id = uuid::Uuid::nil();
+                    self.cmd_tx.send(AppCommand::SetNodeParam {
+                        clip_id, node_id, param: "temperature".into(),
                         value: temp.clamp(-100.0, 100.0),
                     }).ok();
-                    self.cmd_tx.send(AppCommand::SetClipColorGradeParam {
-                        clip_id, param: klipp_core::ColorGradeParam::Tint,
+                    self.cmd_tx.send(AppCommand::SetNodeParam {
+                        clip_id, node_id, param: "tint".into(),
                         value: tint.clamp(-100.0, 100.0),
                     }).ok();
                 }
@@ -949,19 +957,15 @@ impl KlippApp {
 
                 if let Some(clip_id) = self.state.selected_clip {
                     // Build qualifier with sampled values + sensible defaults
-                    let mut qual = self.state.sequences.get(self.state.active_sequence_idx)
-                        .and_then(|seq| seq.tracks.iter()
-                            .flat_map(|t| t.clips.iter())
-                            .find(|c| c.id == clip_id))
-                        .map(|c| c.color_grade.qualifier.clone())
-                        .unwrap_or_default();
+                    // TODO(Session 4+): find the appropriate qualifier node_id
+                    let mut qual = klipp_core::QualifierSettings::default();
                     qual.enabled = true;
                     qual.hue_center = hue_degrees;
                     qual.hue_width = 30.0;
                     qual.sat_low = (s - 0.2).max(0.0);
                     qual.sat_high = (s + 0.2).min(1.0);
-                    self.cmd_tx.send(AppCommand::SetClipQualifier {
-                        clip_id, qualifier: qual,
+                    self.cmd_tx.send(AppCommand::SetNodeQualifier {
+                        clip_id, node_id: uuid::Uuid::nil(), qualifier: qual,
                     }).ok();
                 }
             }
@@ -1083,6 +1087,49 @@ impl KlippApp {
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap();
         *seq = self.state.sequences[self.state.active_sequence_idx].clone();
+    }
+
+    /// Sync sequence and re-grade the cached frame directly on the UI thread.
+    /// Zero latency — scopes see the result on the same frame as the slider change.
+    fn sync_and_refresh_frame(&mut self) {
+        self.sync_sequence_to_engine();
+
+        // Re-grade on UI thread using the pre-grade frame from the shared buffer
+        let pregrade = {
+            let fb = self.frame_buffer.lock().unwrap();
+            if fb.pregrade_data.is_empty() { return; }
+            (fb.pregrade_data.clone(), fb.width, fb.height)
+        };
+
+        // Find the current clip's node graph
+        let clip_id = self.state.selected_clip;
+        if let Some(cid) = clip_id {
+            let seq_idx = self.state.active_sequence_idx;
+            if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
+                .find_map(|t| t.clips.iter().find(|c| c.id == cid))
+            {
+                let graph = &clip.node_graph;
+                if !graph.is_identity() {
+                    let clip_time = 0.0; // Approximate — exact time not critical for preview
+                    match self.ui_executor.execute(
+                        &pregrade.0, graph, pregrade.1, pregrade.2,
+                        clip_time, 0, None, None,
+                    ) {
+                        Ok((graded, _)) => {
+                            let mut fb = self.frame_buffer.lock().unwrap();
+                            fb.write_frame(graded, pregrade.1, pregrade.2);
+                        }
+                        Err(_) => {}
+                    }
+                } else {
+                    let mut fb = self.frame_buffer.lock().unwrap();
+                    fb.write_frame(pregrade.0, pregrade.1, pregrade.2);
+                }
+            }
+        }
+
+        // Also tell the engine so it stays in sync
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
     fn sync_media_pool_to_engine(&self) {
@@ -1602,188 +1649,340 @@ impl KlippApp {
                     }
                     // Fall through to forward to engine
                 }
-                // Color grading
-                AppCommand::ResetClipColorGrade { clip_id } => {
+                // Node graph structure commands
+                AppCommand::AddNode { clip_id, ref kind, position } => {
+                    let node_kind = match kind.as_str() {
+                        "Exposure" => klipp_nodes::NodeKind::Exposure,
+                        "Contrast" => klipp_nodes::NodeKind::Contrast,
+                        "Saturation" => klipp_nodes::NodeKind::Saturation,
+                        "ToneControls" => klipp_nodes::NodeKind::ToneControls,
+                        "ColorWheels" => klipp_nodes::NodeKind::ColorWheels,
+                        "WheelSatBri" => klipp_nodes::NodeKind::WheelSatBri,
+                        "RGBCurves" => klipp_nodes::NodeKind::RGBCurves,
+                        "HueSatCurves" => klipp_nodes::NodeKind::HueSatCurves,
+                        "ColorBalance" => klipp_nodes::NodeKind::ColorBalance,
+                        "InputTransform" => klipp_nodes::NodeKind::InputTransform,
+                        "Qualifier" => klipp_nodes::NodeKind::Qualifier,
+                        "Mask" => klipp_nodes::NodeKind::Mask,
+                        "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
+                        "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
+                        "Blend" => klipp_nodes::NodeKind::Blend,
+                        "Layer" => klipp_nodes::NodeKind::Layer,
+                        "Lut3D" => klipp_nodes::NodeKind::Lut3D,
+                        "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
+                        "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
+                        _ => { continue; }
+                    };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade = klipp_timeline::ClipColorGrade::default();
+                            let old_graph = clip.node_graph.clone();
+                            let new_id = klipp_nodes::NodeId::new_v4();
+                            clip.node_graph.nodes.push(klipp_nodes::Node {
+                                id: new_id,
+                                kind: node_kind.clone(),
+                                label: node_kind.display_name().to_string(),
+                                enabled: true,
+                                params: klipp_nodes::NodeParams::default(),
+                                keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                            });
+                            clip.node_graph.node_positions.insert(
+                                new_id,
+                                klipp_nodes::NodePos { x: position.0, y: position.1 },
+                            );
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph: clip.node_graph.clone(),
+                                },
+                            });
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetClipColorGradeParam { clip_id, param, value } => {
+                AppCommand::RemoveNode { clip_id, node_id } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            use klipp_core::ColorGradeParam as P;
-                            let g = &mut clip.color_grade;
-                            match param {
-                                P::Exposure => g.exposure = *value,
-                                P::Contrast => g.contrast = *value,
-                                P::Saturation => g.saturation = *value,
-                                P::Temperature => g.temperature = *value,
-                                P::Tint => g.tint = *value,
-                                P::Highlights => g.highlights = *value,
-                                P::Shadows => g.shadows = *value,
-                                P::Whites => g.whites = *value,
-                                P::Blacks => g.blacks = *value,
-                                P::LiftX => g.lift_x = *value,
-                                P::LiftY => g.lift_y = *value,
-                                P::LiftMaster => g.lift_master = *value,
-                                P::GammaX => g.gamma_x = *value,
-                                P::GammaY => g.gamma_y = *value,
-                                P::GammaMaster => g.gamma_master = *value,
-                                P::GainX => g.gain_x = *value,
-                                P::GainY => g.gain_y = *value,
-                                P::GainMaster => g.gain_master = *value,
-                                P::OffsetX => g.offset_x = *value,
-                                P::OffsetY => g.offset_y = *value,
-                                P::OffsetMaster => g.offset_master = *value,
-                                P::LiftSat => g.lift_sat = *value,
-                                P::LiftBri => g.lift_bri = *value,
-                                P::GammaSat => g.gamma_sat = *value,
-                                P::GammaBri => g.gamma_bri = *value,
-                                P::GainSat => g.gain_sat = *value,
-                                P::GainBri => g.gain_bri = *value,
-                                P::OffsetSat => g.offset_sat = *value,
-                                P::OffsetBri => g.offset_bri = *value,
-                                P::Hue => g.hue = *value,
-                                P::GlobalMix => g.global_mix = *value,
-                                P::CurvesPreserveLuma => g.curves_preserve_luma = *value > 0.5,
-                                P::CurvesMix => g.curves_mix = *value,
-                                P::HueSatMix => g.huesat_mix = *value,
+                            let old_graph = clip.node_graph.clone();
+                            clip.node_graph.nodes.retain(|n| n.id != *node_id);
+                            clip.node_graph.edges.retain(|e| e.from_node != *node_id && e.to_node != *node_id);
+                            clip.node_graph.node_positions.remove(node_id);
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph: clip.node_graph.clone(),
+                                },
+                            });
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let old_graph = clip.node_graph.clone();
+                            // Remove existing edge to this input port
+                            clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
+                            clip.node_graph.edges.push(klipp_nodes::Edge {
+                                from_node: *from,
+                                from_port: *from_port,
+                                to_node: *to,
+                                to_port: *to_port,
+                            });
+                            // Validate no cycle
+                            if clip.node_graph.topo_sort().is_err() {
+                                clip.node_graph = old_graph;
+                            } else {
+                                self.state.history.push(crate::history::HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: crate::history::EditCommand::SetNodeGraph {
+                                        clip_id: *clip_id,
+                                        old_graph,
+                                        new_graph: clip.node_graph.clone(),
+                                    },
+                                });
                             }
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetClipCurves { clip_id, curves } => {
+                AppCommand::DisconnectEdge { clip_id, to, to_port } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.curves = curves.clone();
+                            let old_graph = clip.node_graph.clone();
+                            clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph: clip.node_graph.clone(),
+                                },
+                            });
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetClipHueSatCurves { clip_id, huesat } => {
+                AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.huesat = huesat.clone();
+                            let pos = clip.node_graph.node_positions.entry(*node_id).or_default();
+                            pos.x += delta_x;
+                            pos.y += delta_y;
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    // No undo for continuous drag — undo pushed on drag_stopped via SetNodeGraph
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetClipQualifier { clip_id, qualifier } => {
+                AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.qualifier = qualifier.clone();
+                            let old_graph = clip.node_graph.clone();
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.enabled = !node.enabled;
+                            }
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph: clip.node_graph.clone(),
+                                },
+                            });
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetClipMasks { clip_id, masks } => {
+                AppCommand::RenameNode { clip_id, node_id, ref label } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.enabled = true;
-                            clip.color_grade.masks = masks.clone();
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::AddKeyframe { clip_id, param, time_secs, value } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.keyframe_tracks.track_mut(*param)
-                                .set_keyframe(*time_secs, *value);
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::RemoveKeyframe { clip_id, param, time_secs } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.keyframe_tracks.track_mut(*param)
-                                .remove_keyframe(*time_secs);
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    continue;
-                }
-                AppCommand::ClearKeyframes { clip_id, param } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(idx) = clip.color_grade.keyframe_tracks.tracks.iter()
-                                .position(|t| t.param == *param) {
-                                clip.color_grade.keyframe_tracks.tracks.remove(idx);
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.label = label.clone();
                             }
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetKeyframeInterpolation { clip_id, param, time_secs, interpolation } => {
+                AppCommand::SetScopeTapNode { .. } => {
+                    // Scope tap is forwarded to engine
+                    continue;
+                }
+                AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let track = clip.color_grade.keyframe_tracks.track_mut(*param);
-                            let epsilon = 0.01;
-                            if let Some(kf) = track.keyframes.iter_mut()
-                                .find(|kf| (kf.time_secs - time_secs).abs() < epsilon) {
-                                kf.interpolation = *interpolation;
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.apply_override(param, *value);
+                                node.enabled = true;
                             }
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
-                AppCommand::SetKeyframeTangents { clip_id, param, time_secs, tangent_in, tangent_out } => {
+                AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let track = clip.color_grade.keyframe_tracks.track_mut(*param);
-                            let epsilon = 0.01;
-                            if let Some(kf) = track.keyframes.iter_mut()
-                                .find(|kf| (kf.time_secs - time_secs).abs() < epsilon) {
-                                kf.tangent_in = *tangent_in;
-                                kf.tangent_out = *tangent_out;
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.curves = Some(curves.clone());
+                                node.enabled = true;
                             }
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.huesat = Some(huesat.clone());
+                                node.enabled = true;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetNodeQualifier { clip_id, node_id, qualifier } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.qualifier = Some(qualifier.clone());
+                                node.enabled = true;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.masks = Some(masks.clone());
+                                node.enabled = true;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.keyframes.track_mut(param).set_keyframe(*time_secs, *value);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::RemoveKeyframe { clip_id, node_id, ref param, time_secs } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.keyframes.track_mut(param).remove_keyframe(*time_secs);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::ClearKeyframes { clip_id, node_id, ref param } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.keyframes.tracks.retain(|t| t.param_name != *param);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetKeyframeInterpolation { clip_id, node_id, ref param, time_secs, interpolation } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                let track = node.keyframes.track_mut(param);
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.interpolation = *interpolation;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetKeyframeTangents { clip_id, node_id, ref param, time_secs, tangent_in, tangent_out } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                let track = node.keyframes.track_mut(param);
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.tangent_in = *tangent_in;
+                                    kf.tangent_out = *tangent_out;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
                     continue;
                 }
                 AppCommand::SetClipLogFormat { clip_id, log_format } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.color_grade.log_format = *log_format;
-                            clip.color_grade.enabled = true;
+                            // Find the InputTransform node specifically
+                            if let Some(node) = clip.node_graph.nodes.iter_mut()
+                                .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
+                            {
+                                node.params.log_format = Some(*log_format);
+                            }
                             break;
                         }
                     }
-                    self.sync_sequence_to_engine();
+                    self.sync_and_refresh_frame();
                     continue;
                 }
                 AppCommand::ToggleColorPanel => {
-                    self.state.show_color_panel = !self.state.show_color_panel;
+                    // Toggle between Edit and Color workspace
+                    use crate::state::Workspace;
+                    if self.state.active_workspace == Workspace::Color {
+                        self.state.active_workspace = Workspace::Edit;
+                        self.state.show_color_panel = false;
+                    } else {
+                        self.state.active_workspace = Workspace::Color;
+                        self.state.show_color_panel = true;
+                    }
                     continue;
                 }
                 AppCommand::ToggleBeforeAfter => {
@@ -2000,7 +2199,7 @@ impl KlippApp {
                         timeline_out,
                         source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
                         source_out: duration,
-                        color_grade: klipp_timeline::ClipColorGrade::default(),
+                        node_graph: klipp_nodes::NodeGraph::default(),
                         builtin_effects: Vec::new(),
                         effects: Vec::new(),
                         linked_clip_id: None,
@@ -2269,7 +2468,7 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in: clip.source_in,
                                     source_out: clip.source_out,
-                                    color_grade: clip.color_grade.clone(),
+                                    node_graph: clip.node_graph.clone(),
                                     effects: clip.effects.clone(),
                                     builtin_effects: clip.builtin_effects.clone(),
                                     linked_clip_id: None,
@@ -2372,7 +2571,7 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in,
                                     source_out,
-                                    color_grade: klipp_timeline::ClipColorGrade::default(),
+                                    node_graph: klipp_nodes::NodeGraph::default(),
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
@@ -2430,7 +2629,7 @@ impl KlippApp {
                                     timeline_out: timeline_in + dur,
                                     source_in,
                                     source_out,
-                                    color_grade: klipp_timeline::ClipColorGrade::default(),
+                                    node_graph: klipp_nodes::NodeGraph::default(),
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
                                     linked_clip_id: None,
@@ -3376,10 +3575,10 @@ impl KlippApp {
                 seq.in_point = *old_in;
                 seq.out_point = *old_out;
             }
-            EditCommand::SetColorGrade { clip_id, old_grade, .. } => {
+            EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.color_grade = old_grade.clone();
+                        clip.node_graph = old_graph.clone();
                         break;
                     }
                 }
@@ -3495,10 +3694,10 @@ impl KlippApp {
                 seq.in_point = *new_in;
                 seq.out_point = *new_out;
             }
-            EditCommand::SetColorGrade { clip_id, new_grade, .. } => {
+            EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.color_grade = new_grade.clone();
+                        clip.node_graph = new_graph.clone();
                         break;
                     }
                 }
@@ -3563,7 +3762,7 @@ impl KlippApp {
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
-                color_grade: clip.color_grade,
+                node_graph: clip.node_graph,
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
@@ -3646,7 +3845,7 @@ impl KlippApp {
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
-                color_grade: clip.color_grade,
+                node_graph: clip.node_graph,
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 linked_clip_id: clip.linked_clip_id,
@@ -3834,8 +4033,10 @@ impl KlippApp {
                         path: path.clone(),
                         media_id: id,
                     }).ok();
-                    self.spawn_thumbnail(id, path, duration);
+                    self.spawn_thumbnail(id, path.clone(), duration);
+                    self.spawn_filmstrip(id, path, duration);
                 }
+                self.state.filmstrip_generating = true;
 
                 tracing::info!("Project loaded from {:?}", path);
             }
@@ -4594,6 +4795,10 @@ impl eframe::App for KlippApp {
         // 1. Drain events from engine
         self.drain_events(ctx);
         self.drain_thumbnails();
+        // Keep repainting while filmstrip is generating so timeline updates progressively
+        if self.state.filmstrip_generating {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.drain_audio_conforms();
         self.drain_proxy_events();
         self.drain_proxy_progress();
@@ -4686,6 +4891,11 @@ impl eframe::App for KlippApp {
         // Upload pending skim frame texture
         // TODO: apply clip effects during skim (requires stable OFX render on UI thread)
         if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
+            // Write to frame buffer so scopes update during skimming
+            {
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(rgba.clone(), width, height);
+            }
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [width as usize, height as usize],
                 &rgba,
@@ -4997,32 +5207,51 @@ impl eframe::App for KlippApp {
                     let center_right = right_resizer_rect.min.x;
                     let center_w = (center_right - center_left).max(100.0);
 
-                    // Color panel (bottom of center, if open)
-                    let color_panel_open = self.state.show_color_panel;
-                    let color_panel_h = if color_panel_open {
-                        self.layout.color_panel_height.clamp(120.0, main_height * 0.40)
-                    } else {
-                        0.0
-                    };
-                    let color_resizer_h = if color_panel_open {
-                        theme::RESIZER_THICKNESS
+                    // ── Color workspace: viewer + toggle bar + scopes + nodes ──
+                    let in_color_ws = self.state.show_color_panel;
+                    let show_scopes_bar = in_color_ws && self.state.show_scopes;
+                    let show_nodes_bar = in_color_ws && self.state.show_node_strip;
+
+                    // In Color workspace: allocate bottom space for toggle + scopes + nodes
+                    // Use ratio to split between viewer and bottom panels
+                    let toggle_bar_h: f32 = if in_color_ws { 22.0 } else { 0.0 };
+                    let nodes_h: f32 = if show_nodes_bar { 70.0 } else { 0.0 };
+                    let center_total = main_bottom - main_top;
+
+                    // Scopes get remaining space between toggle bar, nodes, and viewer
+                    // Use persisted ratio: viewer gets ratio of (center - fixed elements)
+                    let fixed_h = toggle_bar_h + nodes_h + theme::RESIZER_THICKNESS;
+                    let flexible_h = (center_total - fixed_h).max(200.0);
+                    let scopes_h: f32 = if show_scopes_bar {
+                        let viewer_ratio = self.layout.color_viewer_height_ratio.clamp(0.4, 0.85);
+                        (flexible_h * (1.0 - viewer_ratio)).clamp(80.0, flexible_h * 0.5)
                     } else {
                         0.0
                     };
 
-                    let color_panel_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, main_bottom - color_panel_h),
-                        egui::vec2(center_w, color_panel_h),
+                    let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
+                    let color_bottom_top = main_bottom - color_bottom_total;
+
+                    let toggle_bar_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, color_bottom_top),
+                        egui::vec2(center_w, toggle_bar_h),
                     );
-                    let color_resizer_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, color_panel_rect.min.y - color_resizer_h),
-                        egui::vec2(center_w, color_resizer_h),
+                    let scopes_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, toggle_bar_rect.max.y),
+                        egui::vec2(center_w, scopes_h),
+                    );
+                    let nodes_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, scopes_rect.max.y),
+                        egui::vec2(center_w, nodes_h),
                     );
 
-                    // Timeline (above color panel/resizer)
-                    let timeline_bottom = color_resizer_rect.min.y;
+                    let _color_panel_open = false;
+
+                    // Timeline: hidden in Color workspace, normal otherwise
+                    // Timeline sits above the scopes/nodes area (or fills to bottom if none)
+                    let timeline_bottom = color_bottom_top;
                     let max_timeline_h = (timeline_bottom - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT;
-                    let timeline_min_h = if color_panel_open { 120.0 } else { theme::TIMELINE_MIN_H };
+                    let timeline_min_h = theme::TIMELINE_MIN_H;
                     let timeline_h = self
                         .layout
                         .timeline_height
@@ -5108,18 +5337,46 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
-                    // Inspector (right panel)
+                    // Inspector (right panel) — contextual based on workspace
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inspector_rect), |ui| {
                         ui.set_min_size(inspector_rect.size());
-                        ui.painter()
-                            .rect_filled(inspector_rect, 0.0, theme.bg_panel);
-                        let cmds = self.new_inspector.show(
-                            ui,
-                            &self.state,
-                            &self.theme,
-                            &mut self.layout.active_inspector_tab,
-                        );
-                        all_cmds.extend(cmds);
+                        ui.painter().rect_filled(inspector_rect, 0.0, theme.bg_panel);
+
+                        let in_color_workspace = self.state.show_color_panel
+                            && self.state.selected_clip.is_some();
+
+                        if in_color_workspace {
+                            // Color workspace: tabbed simple inspector
+                            let clip_id = self.state.selected_clip.unwrap();
+                            let seq_idx = self.state.active_sequence_idx;
+                            let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                                .find_map(|t| t.find_clip_mut(clip_id));
+                            if let Some(clip) = clip {
+                                if self.state.show_node_strip && self.state.selected_node_id.is_some() {
+                                    // Node strip visible + node selected → show that node's params
+                                    let cmds = self.node_inspector_panel.show(
+                                        ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme,
+                                    );
+                                    all_cmds.extend(cmds);
+                                } else {
+                                    // Simple tabbed mode (default)
+                                    let cmds = self.node_inspector_panel.show_simple(
+                                        ui, &mut clip.node_graph, clip_id,
+                                        &mut self.state.selected_node_id,
+                                        &mut self.state.color_tab,
+                                        &self.theme,
+                                    );
+                                    all_cmds.extend(cmds);
+                                }
+                            }
+                        } else {
+                            // Edit workspace: standard clip inspector
+                            let cmds = self.new_inspector.show(
+                                ui, &self.state, &self.theme,
+                                &mut self.layout.active_inspector_tab,
+                            );
+                            all_cmds.extend(cmds);
+                        }
                     });
 
                     // Viewer (center top) — pure black, absolutely no border
@@ -5143,7 +5400,7 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
-                    // Timeline (center bottom)
+                    // Timeline (center bottom) — always visible
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(timeline_rect), |ui| {
                         ui.set_min_size(timeline_rect.size());
                         let cmds = self.new_timeline.show(
@@ -5155,17 +5412,126 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
-                    // Color panel (below timeline, if open)
-                    let color_resizer_delta = if color_panel_open {
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(color_panel_rect), |ui| {
-                            ui.set_min_size(color_panel_rect.size());
-                            let cmds = self.color_panel.show(ui, &mut self.state, &self.theme, &self.frame_buffer);
-                            all_cmds.extend(cmds);
-                        });
-                        resizer::horizontal_resizer(ui, color_resizer_rect, theme)
-                    } else {
-                        0.0
-                    };
+                    // ── Color workspace bottom panels ──
+                    if in_color_ws {
+                        // Resizer between viewer and bottom panels (draggable)
+                        if show_scopes_bar || show_nodes_bar {
+                            let resizer_rect = egui::Rect::from_min_size(
+                                egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
+                                egui::vec2(center_w, theme::RESIZER_THICKNESS),
+                            );
+                            let delta = resizer::horizontal_resizer(ui, resizer_rect, theme);
+                            if delta != 0.0 {
+                                // Adjust the viewer ratio based on drag
+                                let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
+                                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.85);
+                                self.layout_dirty = true;
+                            }
+                        }
+
+                        // Toggle bar: [Scopes] [Nodes] toggle buttons
+                        if toggle_bar_h > 0.0 {
+                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toggle_bar_rect), |ui| {
+                                ui.set_min_size(toggle_bar_rect.size());
+                                ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
+                                ui.painter().hline(
+                                    toggle_bar_rect.x_range(),
+                                    toggle_bar_rect.min.y,
+                                    egui::Stroke::new(0.5, theme.border),
+                                );
+                                ui.horizontal_centered(|ui| {
+                                    ui.add_space(8.0);
+                                    let scope_label = if self.state.show_scopes {
+                                        egui::RichText::new("Scopes").size(10.0).color(theme.text_accent)
+                                    } else {
+                                        egui::RichText::new("Scopes").size(10.0).color(theme.text_dim)
+                                    };
+                                    if ui.selectable_label(self.state.show_scopes, scope_label).clicked() {
+                                        self.state.show_scopes = !self.state.show_scopes;
+                                        ui.ctx().request_repaint();
+                                    }
+                                    ui.separator();
+                                    let nodes_label = if self.state.show_node_strip {
+                                        egui::RichText::new("Nodes").size(10.0).color(theme.text_accent)
+                                    } else {
+                                        egui::RichText::new("Nodes").size(10.0).color(theme.text_dim)
+                                    };
+                                    if ui.selectable_label(self.state.show_node_strip, nodes_label).clicked() {
+                                        self.state.show_node_strip = !self.state.show_node_strip;
+                                    }
+
+                                    // Scope mode selector (when scopes visible)
+                                    if self.state.show_scopes {
+                                        ui.separator();
+                                        use crate::state::ScopeMode;
+                                        for (mode, label) in [
+                                            (ScopeMode::Waveform, "Wave"),
+                                            (ScopeMode::Parade, "Parade"),
+                                            (ScopeMode::Vectorscope, "Vector"),
+                                            (ScopeMode::Histogram, "Hist"),
+                                        ] {
+                                            let active = self.state.scope_mode == mode;
+                                            let text = egui::RichText::new(label).size(9.0);
+                                            let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
+                                            if ui.selectable_label(active, text).clicked() {
+                                                self.state.scope_mode = mode;
+                                                // Force immediate repaint so scopes update instantly
+                                                ui.ctx().request_repaint();
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                        }
+
+                        // Scopes panel — read live state (toggle bar may have changed it this frame)
+                        if self.state.show_scopes {
+                            // Compute rect dynamically from current state
+                            let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
+                                // Scopes just got enabled this frame — give it reasonable default
+                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.4, 0.85);
+                                let flex = (main_bottom - main_top - toggle_bar_h - nodes_h - theme::RESIZER_THICKNESS).max(200.0);
+                                (flex * (1.0 - ratio)).clamp(80.0, flex * 0.5)
+                            };
+                            let live_scopes_rect = egui::Rect::from_min_size(
+                                egui::pos2(center_left, toggle_bar_rect.max.y),
+                                egui::vec2(center_w, live_scopes_h),
+                            );
+                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(live_scopes_rect), |ui| {
+                                ui.set_min_size(live_scopes_rect.size());
+                                ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
+                                crate::widgets::scopes::show_scopes(
+                                    ui,
+                                    &mut self.state.scope_state,
+                                    self.state.scope_mode,
+                                    &self.frame_buffer,
+                                );
+                            });
+                            // Force repaint to recalculate layout on next frame
+                            ui.ctx().request_repaint();
+                        }
+
+                        // Node strip panel — read live state
+                        if self.state.show_node_strip {
+                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nodes_rect), |ui| {
+                                ui.set_min_size(nodes_rect.size());
+                                ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
+                                let clip_id = self.state.selected_clip;
+                                if let Some(cid) = clip_id {
+                                    let seq_idx = self.state.active_sequence_idx;
+                                    if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
+                                        .find_map(|t| t.find_clip_mut(cid))
+                                    {
+                                        let cmds = self.node_graph_panel.show(
+                                            ui, &mut self.state.selected_node_id,
+                                            &mut clip.node_graph, cid, &self.theme,
+                                        );
+                                        all_cmds.extend(cmds);
+                                    }
+                                }
+                            });
+                        }
+                    }
 
                     // ── Draw resizers AFTER panels (so they get interaction priority) ──
                     let left_delta =
@@ -5191,17 +5557,10 @@ impl eframe::App for KlippApp {
                             - h_delta)
                             .clamp(timeline_min_h, max_timeline_h);
                     }
-                    if color_resizer_delta != 0.0 {
-                        self.layout.color_panel_height = (self.layout.color_panel_height
-                            - color_resizer_delta)
-                            .clamp(120.0, main_height * 0.40);
-                    }
-
                     // Track layout dirty for persistence
                     let resizer_active = left_delta != 0.0
                         || right_delta != 0.0
-                        || h_delta != 0.0
-                        || color_resizer_delta != 0.0;
+                        || h_delta != 0.0;
                     if resizer_active {
                         self.layout_dirty = true;
                     }
@@ -5351,39 +5710,7 @@ impl eframe::App for KlippApp {
         self.state.toast.cleanup();
         self.state.drag_drop.frame_start();
 
-        // 12. Filmstrip generation toast
-        if self.state.filmstrip_generating && !self.state.filmstrip_toast_dismissed {
-            let elapsed = self.state.filmstrip_generate_start.elapsed().as_secs_f64();
-            egui::Area::new(egui::Id::new("filmstrip_toast"))
-                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    egui::Frame::popup(ui.style())
-                        .fill(egui::Color32::from_rgb(35, 35, 42))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 85)))
-                        .rounding(6.0)
-                        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.add_space(8.0);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Generating filmstrip frames... ({:.1}s)",
-                                        elapsed
-                                    ))
-                                    .color(egui::Color32::from_rgb(200, 200, 210))
-                                    .size(12.0),
-                                );
-                                ui.add_space(8.0);
-                                if ui.small_button("\u{2715}").on_hover_text("Dismiss").clicked() {
-                                    self.state.filmstrip_toast_dismissed = true;
-                                }
-                            });
-                        });
-                });
-            ctx.request_repaint();
-        }
+        // 12. Filmstrip generation — shown in status bar now (no popup)
 
         // 12b. Proxy generation toast
         if !self.state.proxy_toast_dismissed {
@@ -6328,8 +6655,10 @@ impl KlippApp {
                 }
             }
 
-            // Upload filmstrip textures if not yet done (independent of thumbnail)
-            if !self.state.filmstrip_textures.contains_key(&media_id) {
+            // Upload filmstrip textures — rebuild when new frames arrive from background thread
+            let existing_count = self.state.filmstrip_textures.get(&media_id).map(|t| t.len()).unwrap_or(0);
+            let cache_count = self.state.thumbnail_cache.filmstrip(&media_id).map(|f| f.len()).unwrap_or(0);
+            if cache_count > existing_count {
                 if let Some(frames) = self.state.thumbnail_cache.filmstrip(&media_id) {
                     if !frames.is_empty() {
                         let textures: Vec<(f64, egui::TextureHandle)> = frames

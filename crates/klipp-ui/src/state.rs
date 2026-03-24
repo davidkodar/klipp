@@ -31,12 +31,34 @@ pub enum RangeDragKind {
     RulerCreate { anchor_secs: f64 },
 }
 
+/// Workspace mode — determines panel arrangement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Workspace {
+    #[default]
+    Edit,
+    Color,
+    Export,
+}
+
+/// Active tab in the simple color inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorTab {
+    #[default]
+    Adjustments,
+    Wheels,
+    Curves,
+    HueSat,
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
     pub fps: Fps,
     pub playback_speed: f64,
     pub loop_playback_enabled: bool,
+
+    // Active workspace
+    pub active_workspace: Workspace,
 
     // Project
     pub sequences: Vec<Sequence>,
@@ -181,17 +203,23 @@ pub struct AppState {
     pub global_lut_path: Option<PathBuf>,
     pub global_lut_opacity: f32,
 
-    // Color panel
+    // Color panel / node graph
     pub show_color_panel: bool,
-    pub color_grade_drag_start: Option<klipp_timeline::ClipColorGrade>,
-    pub color_grade_clipboard: Option<klipp_timeline::ClipColorGrade>,
+    /// Selected node in the node graph (shared between canvas and inspector).
+    pub selected_node_id: Option<klipp_nodes::NodeId>,
+    /// Whether the compact node strip is visible in Color workspace.
+    pub show_node_strip: bool,
+    /// Active tab in the simple (non-node) color inspector.
+    pub color_tab: ColorTab,
+    pub color_grade_drag_start: Option<klipp_nodes::NodeGraph>,
+    pub color_grade_clipboard: Option<klipp_nodes::NodeGraph>,
     pub curves_single_mode: bool,
     pub curve_histograms: Option<klipp_color::scopes::HistogramData>,
     pub slider_edit: crate::widgets::color_slider::SliderEditState,
     pub show_preset_menu: bool,
     pub preset_save_name: String,
     pub show_preset_save: bool,
-    pub grade_presets: Vec<(String, klipp_timeline::ClipColorGrade)>,
+    pub grade_presets: Vec<(String, klipp_nodes::NodeGraph)>,
     pub huesat_single_mode: bool,
     pub huesat_active_curve: u8, // 0-5 index for Single mode
 
@@ -199,6 +227,7 @@ pub struct AppState {
     pub show_scopes: bool,
     pub show_keyframe_editor: bool,
     pub scope_mode: ScopeMode,
+    pub scope_state: crate::widgets::scopes::ScopeState,
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
@@ -367,6 +396,7 @@ impl Default for AppState {
             fps: Fps::film_24(),
             playback_speed: 1.0,
             loop_playback_enabled: false,
+            active_workspace: Workspace::default(),
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
             media_pool: MediaPool::new(),
@@ -447,6 +477,9 @@ impl Default for AppState {
             global_lut_path: None,
             global_lut_opacity: 1.0,
             show_color_panel: false,
+            selected_node_id: None,
+            show_node_strip: false,
+            color_tab: ColorTab::default(),
             color_grade_drag_start: None,
             color_grade_clipboard: None,
             curves_single_mode: false,
@@ -459,6 +492,7 @@ impl Default for AppState {
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,
+            scope_state: Default::default(),
             show_keyframe_editor: false,
             scope_mode: ScopeMode::Waveform,
             eyedropper_mode: EyedropperMode::None,

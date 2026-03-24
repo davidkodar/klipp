@@ -3,82 +3,171 @@ use klipp_engine::SharedFrameBuffer;
 
 /// Persistent state for scope rendering (texture cache + throttling).
 pub struct ScopeState {
-    texture: Option<egui::TextureHandle>,
+    /// One cached texture per scope mode — switching is instant.
+    textures: [Option<egui::TextureHandle>; 4], // Waveform, Parade, Vectorscope, Histogram
     last_update: std::time::Instant,
-    last_mode: Option<ScopeMode>,
-    /// Cached vectorscope points for egui painter rendering.
-    cached_vs_points: Vec<(f32, f32)>,
+    /// Hash of the frame data used for each cached texture.
+    frame_hashes: [u64; 4],
+    /// Render sizes used for each cached texture.
+    render_sizes: [(usize, usize); 4],
+}
+
+fn mode_index(mode: ScopeMode) -> usize {
+    match mode {
+        ScopeMode::Waveform => 0,
+        ScopeMode::Parade => 1,
+        ScopeMode::Vectorscope => 2,
+        ScopeMode::Histogram => 3,
+    }
 }
 
 impl Default for ScopeState {
     fn default() -> Self {
         Self {
-            texture: None,
+            textures: [None, None, None, None],
             last_update: std::time::Instant::now(),
-            last_mode: None,
-            cached_vs_points: Vec::new(),
+            frame_hashes: [0; 4],
+            render_sizes: [(0, 0); 4],
         }
     }
 }
+const UPDATE_INTERVAL_MS: u128 = 32; // ~30fps for background pre-render of other modes
 
-const SCOPE_W: usize = 384;
-const SCOPE_H: usize = 300;
-const UPDATE_INTERVAL_MS: u128 = 100; // ~10fps
+
+/// Quick hash of frame data (sample a few bytes to detect changes).
+fn quick_frame_hash(data: &[u8]) -> u64 {
+    if data.len() < 32 { return 0; }
+    let mut h: u64 = data.len() as u64;
+    // Sample 8 positions spread across the frame
+    let step = data.len() / 8;
+    for i in 0..8 {
+        let idx = i * step;
+        if idx + 7 < data.len() {
+            let bytes = [data[idx], data[idx+1], data[idx+2], data[idx+3],
+                         data[idx+4], data[idx+5], data[idx+6], data[idx+7]];
+            h ^= u64::from_le_bytes(bytes).wrapping_mul(0x517cc1b727220a95);
+            h = h.rotate_left(17);
+        }
+    }
+    h
+}
 
 /// Render scopes into the given UI area.
+/// Each scope mode has its own cached texture — switching modes is instant.
 pub fn show_scopes(
     ui: &mut egui::Ui,
     state: &mut ScopeState,
     mode: ScopeMode,
     frame_buffer: &SharedFrameBuffer,
 ) {
+    let available = ui.available_size();
+    let ppp = ui.ctx().pixels_per_point();
+    let render_w = ((available.x * ppp) as usize).clamp(100, 640);
+    let render_h = ((available.y * ppp) as usize).clamp(60, 400);
+
+    let mi = mode_index(mode);
     let now = std::time::Instant::now();
-    let mode_changed = state.last_mode != Some(mode);
-    let should_update = mode_changed || now.duration_since(state.last_update).as_millis() >= UPDATE_INTERVAL_MS;
+    let elapsed = now.duration_since(state.last_update).as_millis();
 
-    if should_update {
-        state.last_update = now;
-        state.last_mode = Some(mode);
+    // Lock frame buffer
+    let fb = frame_buffer.lock().unwrap();
+    let has_data = fb.width > 0 && fb.height > 0 && !fb.data.is_empty();
 
-        let fb = frame_buffer.lock().unwrap();
-        if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
-            if mode == ScopeMode::Vectorscope {
-                // Cache points for painter-based rendering
-                let vs = klipp_color::scopes::compute_vectorscope(&fb.data, fb.width, fb.height);
-                state.cached_vs_points = vs.points;
-                state.texture = None; // not used for vectorscope
+    if has_data {
+        let frame_hash = quick_frame_hash(&fb.data);
+        let step: u32 = if fb.width > 1280 { 3 } else if fb.width > 640 { 2 } else { 1 };
+
+        // ALWAYS ensure the current mode's texture exists — instant display on tab switch
+        let current_stale = state.textures[mi].is_none()
+            || state.frame_hashes[mi] != frame_hash
+            || state.render_sizes[mi] != (render_w, render_h);
+
+        if current_stale {
+            // Render the CURRENT mode immediately — no throttle
+            state.frame_hashes[mi] = frame_hash;
+            state.render_sizes[mi] = (render_w, render_h);
+
+            let image = match mode {
+                ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h),
+            };
+
+            if let Some(ref mut tex) = state.textures[mi] {
+                tex.set(image, egui::TextureOptions::LINEAR);
             } else {
-                let image = match mode {
-                    ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height),
-                    ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height),
-                    ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height),
-                    ScopeMode::Vectorscope => unreachable!(),
-                };
-                state.texture = Some(ui.ctx().load_texture(
-                    "scope",
-                    image,
-                    egui::TextureOptions::LINEAR,
+                state.textures[mi] = Some(ui.ctx().load_texture(
+                    format!("scope_{mi}"), image, egui::TextureOptions::LINEAR,
                 ));
             }
         }
+
+        // Pre-render OTHER modes in the background (throttled — don't block the UI)
+        if elapsed >= UPDATE_INTERVAL_MS {
+            let all_modes = [ScopeMode::Waveform, ScopeMode::Parade, ScopeMode::Vectorscope, ScopeMode::Histogram];
+            for m in all_modes {
+                let idx = mode_index(m);
+                if idx == mi { continue; } // Already rendered above
+                let stale = state.textures[idx].is_none()
+                    || state.frame_hashes[idx] != frame_hash
+                    || state.render_sizes[idx] != (render_w, render_h);
+                if stale {
+                    state.frame_hashes[idx] = frame_hash;
+                    state.render_sizes[idx] = (render_w, render_h);
+                    let image = match m {
+                        ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                        ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                        ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                        ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                    };
+                    if let Some(ref mut tex) = state.textures[idx] {
+                        tex.set(image, egui::TextureOptions::LINEAR);
+                    } else {
+                        state.textures[idx] = Some(ui.ctx().load_texture(
+                            format!("scope_{idx}"), image, egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+            state.last_update = now;
+        }
+
+        // Request repaint to keep scopes tracking slider changes
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
+    drop(fb);
 
-    if mode == ScopeMode::Vectorscope {
-        draw_vectorscope_painter(ui, &state.cached_vs_points);
-    } else if let Some(tex) = &state.texture {
-        let available = ui.available_size();
-        let aspect = SCOPE_H as f32 / SCOPE_W as f32;
-        let scope_w = available.x.min(SCOPE_W as f32 * 2.0);
-        let scope_h = (scope_w * aspect).min(available.y - 4.0);
-        let scope_w = if scope_h < scope_w * aspect {
-            scope_h / aspect
+    // Display the cached texture for this mode
+    if let Some(tex) = &state.textures[mi] {
+        ui.ctx().request_repaint();
+
+        // Vectorscope must be displayed as a perfect square (centered)
+        // Other scopes fill the available area
+        let is_vector = mode == ScopeMode::Vectorscope;
+        let display_size = if is_vector {
+            let side = available.x.min(available.y);
+            egui::vec2(side, side)
         } else {
-            scope_w
+            available
         };
-        let size = egui::vec2(scope_w, scope_h.max(20.0));
 
-        // Allocate rect, draw image, then overlay labels
-        let (img_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        // Center the scope in the available area
+        let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+        let img_rect = if is_vector {
+            // Center square in the allocated rect
+            let offset_x = (full_rect.width() - display_size.x) / 2.0;
+            let offset_y = (full_rect.height() - display_size.y) / 2.0;
+            egui::Rect::from_min_size(
+                egui::pos2(full_rect.min.x + offset_x, full_rect.min.y + offset_y),
+                display_size,
+            )
+        } else {
+            full_rect
+        };
+
+        // Dark background behind the scope
+        ui.painter().rect_filled(full_rect, 0.0, egui::Color32::from_rgb(0x04, 0x04, 0x07));
         ui.painter().image(
             tex.id(), img_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -92,11 +181,9 @@ pub fn show_scopes(
 
         match mode {
             ScopeMode::Waveform | ScopeMode::Parade => {
-                // IRE labels on left edge: 0, 25, 50, 75, 100
                 for &(ire, label) in &[(100, "100"), (75, "75"), (50, "50"), (25, "25"), (0, "0")] {
                     let y = img_rect.max.y - (ire as f32 / 100.0) * img_rect.height();
                     let pos = egui::pos2(img_rect.min.x + 2.0, y);
-                    // Shadow
                     ui.painter().text(egui::pos2(pos.x + 0.5, pos.y + 0.5),
                         egui::Align2::LEFT_CENTER, label, label_font.clone(), shadow_color);
                     ui.painter().text(pos,
@@ -104,7 +191,6 @@ pub fn show_scopes(
                 }
             }
             ScopeMode::Histogram => {
-                // Bottom axis: 0 and 255 at edges, 128 at midpoint
                 let bottom_y = img_rect.max.y - 2.0;
                 for &(val, x_frac) in &[("0", 0.0_f32), ("128", 0.5), ("255", 1.0)] {
                     let x = img_rect.min.x + x_frac * img_rect.width();
@@ -117,325 +203,441 @@ pub fn show_scopes(
                         align, val, label_font.clone(), label_color);
                 }
             }
-            _ => {}
+            ScopeMode::Vectorscope => {
+                // Labels at color target positions
+                let cx = img_rect.center().x;
+                let cy = img_rect.center().y;
+                let r = img_rect.width().min(img_rect.height()) / 2.0 - 4.0;
+                let labels = [("R", 0.17_f32, 0.29_f32), ("Mg", 0.28, -0.05), ("B", 0.12, -0.34),
+                              ("Cy", -0.17, -0.29), ("G", -0.28, 0.05), ("Yl", -0.12, 0.34)];
+                for (name, cb, cr) in &labels {
+                    let tx = cx + cb * r * 2.0;
+                    let ty = cy - cr * r * 2.0 - 6.0;
+                    ui.painter().text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM,
+                        name, label_font.clone(), label_color);
+                }
+            }
         }
     } else {
-        let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
-        ui.label(egui::RichText::new("No frame data").color(text_dim).size(10.0));
+        ui.label(egui::RichText::new("No frame data").color(egui::Color32::from_rgb(0x50, 0x50, 0x60)).size(10.0));
     }
 }
 
-fn render_waveform(rgba: &[u8], width: u32, height: u32) -> egui::ColorImage {
-    let wf = klipp_color::scopes::compute_waveform(rgba, width, height, SCOPE_W as u32);
-    let mut pixels = vec![egui::Color32::from_rgb(0x0a, 0x0a, 0x10); SCOPE_W * SCOPE_H];
+// ── Professional scope rendering pipeline ──────────────────────────────────
+//
+// Technique (matching FCP/DaVinci quality):
+// 1. Accumulate into f32 RGB buffer (no clamping — allows values > 1.0)
+// 2. Apply bloom: extract bright areas, gaussian blur, blend back
+// 3. Tone-map from HDR accumulation to display range
+// 4. Apply gamma correction for perceptual brightness
+// 5. Convert to u8 ColorImage
 
-    // Find max bin count for normalization
-    let max_count = wf.bins.iter()
-        .flat_map(|col| col.iter())
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1);
+/// Accumulation buffer — f32 per channel, allows HDR values > 1.0
+struct AccumBuffer {
+    data: Vec<[f32; 3]>,
+    w: usize,
+    h: usize,
+}
 
-    for (col_idx, col) in wf.bins.iter().enumerate() {
-        for (bin_idx, &count) in col.iter().enumerate() {
-            if count == 0 { continue; }
-            // bin_idx 0 = bottom, 255 = top → invert y
-            let y = SCOPE_H - 1 - (bin_idx * SCOPE_H / 256);
-            if y >= SCOPE_H || col_idx >= SCOPE_W { continue; }
+impl AccumBuffer {
+    fn new(w: usize, h: usize) -> Self {
+        Self { data: vec![[0.0; 3]; w * h], w, h }
+    }
 
-            let intensity = (count as f32 / max_count as f32).sqrt(); // sqrt for better visibility
-            let brightness = (intensity * 255.0).min(255.0) as u8;
+    #[inline]
+    fn add(&mut self, x: usize, y: usize, r: f32, g: f32, b: f32) {
+        if x < self.w && y < self.h {
+            let idx = y * self.w + x;
+            self.data[idx][0] += r;
+            self.data[idx][1] += g;
+            self.data[idx][2] += b;
+        }
+    }
 
-            // Color: green in safe range (16-235), amber near clip, red at illegal
-            let color = if !(8..=247).contains(&bin_idx) {
-                egui::Color32::from_rgb(brightness, brightness / 4, brightness / 6) // red: illegal
-            } else if !(16..=235).contains(&bin_idx) {
-                egui::Color32::from_rgb(brightness, brightness * 2 / 3, brightness / 4) // amber: warning
+    /// Apply bloom: extract bright pixels, blur, blend back
+    #[inline(never)]
+    fn apply_bloom(&mut self, radius: usize, threshold: f32, strength: f32) {
+        let w = self.w;
+        let h = self.h;
+        // Extract bright pixels
+        let mut bright: Vec<[f32; 3]> = self.data.iter().map(|p| {
+            let lum = p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722;
+            if lum > threshold {
+                let excess = lum - threshold;
+                [p[0] * excess, p[1] * excess, p[2] * excess]
             } else {
-                egui::Color32::from_rgb(brightness / 3, brightness, brightness / 3) // green: safe
+                [0.0; 3]
+            }
+        }).collect();
+
+        // Simple box blur (fast approximation of gaussian)
+        for _pass in 0..2 {
+            // Horizontal
+            let mut temp = bright.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let mut sum = [0.0_f32; 3];
+                    let mut count = 0.0;
+                    let x_start = x.saturating_sub(radius);
+                    let x_end = (x + radius + 1).min(w);
+                    for bx in x_start..x_end {
+                        sum[0] += bright[y * w + bx][0];
+                        sum[1] += bright[y * w + bx][1];
+                        sum[2] += bright[y * w + bx][2];
+                        count += 1.0;
+                    }
+                    temp[y * w + x] = [sum[0] / count, sum[1] / count, sum[2] / count];
+                }
+            }
+            bright = temp;
+            // Vertical
+            let mut temp = bright.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let mut sum = [0.0_f32; 3];
+                    let mut count = 0.0;
+                    let y_start = y.saturating_sub(radius);
+                    let y_end = (y + radius + 1).min(h);
+                    for by in y_start..y_end {
+                        sum[0] += bright[by * w + x][0];
+                        sum[1] += bright[by * w + x][1];
+                        sum[2] += bright[by * w + x][2];
+                        count += 1.0;
+                    }
+                    temp[y * w + x] = [sum[0] / count, sum[1] / count, sum[2] / count];
+                }
+            }
+            bright = temp;
+        }
+
+        // Blend bloom back
+        for (p, b) in self.data.iter_mut().zip(bright.iter()) {
+            p[0] += b[0] * strength;
+            p[1] += b[1] * strength;
+            p[2] += b[2] * strength;
+        }
+    }
+
+    /// Convert to ColorImage with tone mapping + gamma correction.
+    /// Uses filmic tone mapping for vivid, saturated output (not Reinhard which is too dull).
+    fn to_image(&self, bg: [f32; 3], gamma: f32) -> egui::ColorImage {
+        let pixels = self.data.iter().map(|p| {
+            // Filmic/ACES-like tone mapping — preserves saturation better than Reinhard
+            // Attempt to keep vivid colors while controlling highlights
+            let tone = |x: f32| -> f32 {
+                let x = x.max(0.0);
+                // Lift shadows, preserve midtones, gentle highlight rolloff
+                let a = x * (x * 0.6 + 0.4);
+                let b = x * (x * 0.6 + 0.85) + 0.15;
+                (a / b).min(1.0)
             };
 
-            pixels[y * SCOPE_W + col_idx] = color;
-        }
-    }
+            let r = tone(p[0]);
+            let g = tone(p[1]);
+            let b = tone(p[2]);
 
-    // Draw IRE scale lines at 0%, 25%, 50%, 75%, 100%
-    draw_ire_lines(&mut pixels, SCOPE_W, SCOPE_H);
+            // Gamma correction — higher gamma = brighter midtones
+            let r = (r.powf(1.0 / gamma) * 255.0 + bg[0]).min(255.0) as u8;
+            let g = (g.powf(1.0 / gamma) * 255.0 + bg[1]).min(255.0) as u8;
+            let b = (b.powf(1.0 / gamma) * 255.0 + bg[2]).min(255.0) as u8;
+            egui::Color32::from_rgb(r, g, b)
+        }).collect();
 
-    egui::ColorImage {
-        size: [SCOPE_W, SCOPE_H],
-        pixels,
+        egui::ColorImage { size: [self.w, self.h], pixels }
     }
 }
 
-/// Draw IRE scale lines (0%, 25%, 50%, 75%, 100%) on a scope image.
-/// Uses dashed lines for subtlety and small tick marks on the left edge.
-fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
-    let line_color = egui::Color32::from_rgb(0x50, 0x44, 0x20); // subtle amber
-    let tick_color = egui::Color32::from_rgb(0x90, 0x70, 0x28); // brighter for ticks
-    let ire_levels: [(f32, bool); 5] = [
-        (0.0, true), (0.25, false), (0.50, true), (0.75, false), (1.0, true),
+#[inline(never)]
+fn render_waveform(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+    let wf = klipp_color::scopes::compute_waveform_sampled(rgba, width, height, rw as u32, step);
+    let mut buf = AccumBuffer::new(rw, rh);
+
+    // Use percentile-based normalization for better contrast (not max which makes everything dim)
+    let mut all_counts: Vec<u32> = wf.bins.iter().flat_map(|c| c.iter()).copied().filter(|&c| c > 0).collect();
+    all_counts.sort_unstable();
+    let p95 = if all_counts.len() > 20 {
+        all_counts[all_counts.len() * 95 / 100] as f32
+    } else {
+        all_counts.last().copied().unwrap_or(1) as f32
+    }.max(1.0);
+
+    for (col_idx, col) in wf.bins.iter().enumerate() {
+        if col_idx >= rw { continue; }
+        for (bin_idx, &count) in col.iter().enumerate() {
+            if count == 0 { continue; }
+            let y = rh - 1 - (bin_idx * rh / 256);
+            if y >= rh { continue; }
+            // Normalize to p95 so most traces are visible, hot spots bloom
+            let raw = count as f32 / p95;
+            let intensity = raw.min(4.0);
+
+            let is_safe = (16..=235).contains(&bin_idx);
+            let (cr, cg, cb) = if is_safe { (0.3, 1.6, 0.3) } else { (1.6, 0.3, 0.15) };
+            let white_shift = (raw * 0.8 - 0.2).clamp(0.0, 1.0);
+            let r = cr * intensity + 0.5 * white_shift * intensity;
+            let g = cg * intensity + 0.3 * white_shift * intensity;
+            let b = cb * intensity + 0.5 * white_shift * intensity;
+            buf.add(col_idx, y, r, g, b);
+        }
+    }
+
+    buf.apply_bloom(3, 0.3, 0.5);
+    let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
+    draw_ire_lines(&mut img.pixels, rw, rh);
+    img
+}
+
+#[inline(never)]
+fn render_parade(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+    let gap = 4;
+    let section_w = (rw - gap * 2) / 3;
+    let parade = klipp_color::scopes::compute_parade_sampled(rgba, width, height, section_w as u32, step);
+    let mut buf = AccumBuffer::new(rw, rh);
+
+    // Percentile normalization for each channel independently for best contrast
+    let all_data: Vec<&Vec<[u32; 256]>> = vec![&parade.red, &parade.green, &parade.blue];
+    let mut all_counts: Vec<u32> = all_data.iter()
+        .flat_map(|d| d.iter().flat_map(|c| c.iter()))
+        .copied().filter(|&c| c > 0).collect();
+    all_counts.sort_unstable();
+    let p95 = if all_counts.len() > 20 {
+        all_counts[all_counts.len() * 95 / 100] as f32
+    } else {
+        all_counts.last().copied().unwrap_or(1) as f32
+    }.max(1.0);
+
+    // FCP aurora/norrsken look:
+    // - Sparse traces: pure vivid saturated color
+    // - Dense traces: color shifts toward bright white (white-hot core)
+    // - Very high primary color values (1.6+) with secondary bleed for shimmering
+    let channels: [(&Vec<[u32; 256]>, usize, (f32, f32, f32), (f32, f32, f32)); 3] = [
+        //                                      base color          white-hot secondary bleed
+        (&parade.red,   0,                    (1.6, 0.08, 0.05),  (0.3, 0.5, 0.6)),
+        (&parade.green, section_w + gap,       (0.05, 1.6, 0.08),  (0.5, 0.3, 0.6)),
+        (&parade.blue,  (section_w + gap) * 2, (0.08, 0.15, 1.6),  (0.6, 0.5, 0.3)),
     ];
 
-    for &(ire, is_major) in &ire_levels {
-        let y = h - 1 - ((ire * (h - 1) as f32) as usize).min(h - 1);
-        let dash_color = if is_major { line_color } else {
-            egui::Color32::from_rgb(0x30, 0x2c, 0x18)
-        };
+    for (data, x_off, (cr, cg, cb), (wr, wg, wb)) in &channels {
+        for (ci, col) in data.iter().enumerate() {
+            let px_x = x_off + ci;
+            if px_x >= rw { continue; }
+            for (bi, &count) in col.iter().enumerate() {
+                if count == 0 { continue; }
+                let y = rh - 1 - (bi * rh / 256);
+                if y >= rh { continue; }
+                let raw = count as f32 / p95;
+                let intensity = raw.min(4.0);
 
-        // Dashed horizontal line (4px on, 4px off)
-        for x in 0..w {
-            if (x / 4) % 2 == 0 {
-                let idx = y * w + x;
-                if idx < pixels.len() {
-                    let existing = pixels[idx];
-                    let r = (existing.r() as u16 + dash_color.r() as u16).min(255) as u8;
-                    let g = (existing.g() as u16 + dash_color.g() as u16).min(255) as u8;
-                    let b = (existing.b() as u16 + dash_color.b() as u16).min(255) as u8;
-                    pixels[idx] = egui::Color32::from_rgb(r, g, b);
+                // Aurora effect: at high intensity, bleed secondary colors for shimmer
+                let white_shift = (raw * 0.8 - 0.2).clamp(0.0, 1.0);
+                let r = cr * intensity + wr * white_shift * intensity;
+                let g = cg * intensity + wg * white_shift * intensity;
+                let b = cb * intensity + wb * white_shift * intensity;
+
+                buf.add(px_x, y, r, g, b);
+            }
+        }
+    }
+
+    buf.apply_bloom(3, 0.3, 0.5);
+    let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
+
+    // Channel separator lines — subtle
+    for &gap_x in &[section_w, (section_w + gap) * 2 - gap] {
+        if gap_x < rw {
+            for y in 0..rh {
+                img.pixels[y * rw + gap_x] = egui::Color32::from_rgb(0x14, 0x14, 0x1c);
+            }
+        }
+    }
+
+    draw_ire_lines(&mut img.pixels, rw, rh);
+    img
+}
+
+#[inline(never)]
+fn render_histogram(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+    let hist = klipp_color::scopes::compute_histogram_sampled(rgba, width, height, step);
+    let mut buf = AccumBuffer::new(rw, rh);
+
+    let max_count = hist.r.iter().chain(hist.g.iter()).chain(hist.b.iter())
+        .copied().max().unwrap_or(1).max(1) as f32;
+
+    let bin_scale = rw as f32 / 256.0;
+    let channels: [(&[u32; 256], f32, f32, f32); 4] = [
+        (&hist.luma, 0.4, 0.4, 0.4),
+        (&hist.r,    1.0, 0.12, 0.08),
+        (&hist.g,    0.08, 0.95, 0.12),
+        (&hist.b,    0.12, 0.25, 1.0),
+    ];
+
+    for (data, cr, cg, cb) in &channels {
+        for px_x in 0..rw {
+            let bin = ((px_x as f32 / bin_scale) as usize).min(255);
+            let count = data[bin];
+            if count == 0 { continue; }
+            let height_frac = (count as f32 / max_count).sqrt();
+            let height_px = (height_frac * rh as f32) as usize;
+
+            for dy in 0..height_px.min(rh) {
+                let y = rh - 1 - dy;
+                let fade = 1.0 - (dy as f32 / height_px.max(1) as f32) * 0.6;
+                buf.add(px_x, y, cr * fade * 0.7, cg * fade * 0.7, cb * fade * 0.7);
+            }
+        }
+    }
+
+    buf.apply_bloom(2, 0.3, 0.5);
+    buf.to_image([6.0, 6.0, 10.0], 1.6)
+}
+
+#[inline(never)]
+fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+    let size = rw.min(rh);
+    let mut buf = AccumBuffer::new(size, size);
+    let center = size as f32 / 2.0;
+    let radius = center - 8.0;
+
+    // 1. Rainbow-colored outer ring (hue spectrum like FCP)
+    for gy in 0..size {
+        for gx in 0..size {
+            let dx = gx as f32 - center;
+            let dy = gy as f32 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            // Outer rainbow ring at 100% radius
+            if (dist - radius).abs() < 1.5 {
+                // Angle → hue color
+                let angle = dy.atan2(dx); // -PI to PI
+                let hue = (angle / std::f32::consts::PI * 0.5 + 0.5).fract(); // 0..1
+                let (r, g, b) = hue_to_rgb(hue);
+                let alpha = 1.0 - ((dist - radius).abs() / 1.5); // anti-alias
+                buf.add(gx, gy, r * 0.25 * alpha, g * 0.25 * alpha, b * 0.25 * alpha);
+            }
+
+            // Inner guide circles — very subtle grey
+            for frac in [0.25_f32, 0.50, 0.75] {
+                if (dist - radius * frac).abs() < 0.6 {
+                    let alpha = 1.0 - ((dist - radius * frac).abs() / 0.6);
+                    buf.add(gx, gy, 0.025 * alpha, 0.025 * alpha, 0.035 * alpha);
+                }
+            }
+
+            // Crosshairs — very subtle
+            if dist < radius {
+                if dx.abs() < 0.5 {
+                    buf.add(gx, gy, 0.02, 0.02, 0.03);
+                }
+                if dy.abs() < 0.5 {
+                    buf.add(gx, gy, 0.02, 0.02, 0.03);
                 }
             }
         }
-
-        // Left edge tick mark (solid, 6px wide)
-        let tick_w = if is_major { 8 } else { 4 };
-        for x in 0..tick_w.min(w) {
-            let idx = y * w + x;
-            if idx < pixels.len() {
-                pixels[idx] = tick_color;
-            }
-        }
-    }
-}
-
-fn render_parade(rgba: &[u8], width: u32, height: u32) -> egui::ColorImage {
-    // Each channel gets 1/3 of the display width with 1px gap
-    let section_w = (SCOPE_W - 2) / 3; // 2px for gaps
-    let parade = klipp_color::scopes::compute_parade(rgba, width, height, section_w as u32);
-    let mut pixels = vec![egui::Color32::from_rgb(0x0a, 0x0a, 0x10); SCOPE_W * SCOPE_H];
-
-    // Find max across all channels
-    let max_count = parade.red.iter()
-        .flat_map(|col| col.iter())
-        .chain(parade.green.iter().flat_map(|col| col.iter()))
-        .chain(parade.blue.iter().flat_map(|col| col.iter()))
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1);
-
-    type ParadeChannel<'a> = (&'a Vec<[u32; 256]>, usize, fn(u8) -> egui::Color32);
-    let channels: [ParadeChannel; 3] = [
-        (&parade.red,   0,                  |b| egui::Color32::from_rgb(b, b / 4, b / 6)),
-        (&parade.green, section_w + 1,      |b| egui::Color32::from_rgb(b / 4, b, b / 4)),
-        (&parade.blue,  (section_w + 1) * 2, |b| egui::Color32::from_rgb(b / 4, b / 3, b)),
-    ];
-
-    for (data, x_offset, color_fn) in &channels {
-        for (col_idx, col) in data.iter().enumerate() {
-            let px_x = x_offset + col_idx;
-            if px_x >= SCOPE_W { continue; }
-            for (bin_idx, &count) in col.iter().enumerate() {
-                if count == 0 { continue; }
-                let y = SCOPE_H - 1 - (bin_idx * SCOPE_H / 256);
-                if y >= SCOPE_H { continue; }
-                let intensity = (count as f32 / max_count as f32).sqrt();
-                let brightness = (intensity * 255.0).min(255.0) as u8;
-                pixels[y * SCOPE_W + px_x] = color_fn(brightness);
-            }
-        }
     }
 
-    // Draw 1px gap lines between channels
-    let gap_color = egui::Color32::from_rgb(0x18, 0x18, 0x20);
-    for y in 0..SCOPE_H {
-        pixels[y * SCOPE_W + section_w] = gap_color;
-        pixels[y * SCOPE_W + (section_w + 1) * 2] = gap_color;
-    }
-
-    // IRE scale lines
-    draw_ire_lines(&mut pixels, SCOPE_W, SCOPE_H);
-
-    egui::ColorImage {
-        size: [SCOPE_W, SCOPE_H],
-        pixels,
-    }
-}
-
-/// Draw vectorscope using egui's anti-aliased painter (no pixel buffer).
-fn draw_vectorscope_painter(ui: &mut egui::Ui, points: &[(f32, f32)]) {
-    let available = ui.available_size();
-    let scope_size = available.x.min(available.y).clamp(100.0, 500.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(scope_size, scope_size), egui::Sense::hover());
-
-    let painter = ui.painter_at(rect);
-    let center = rect.center();
-    let radius = scope_size / 2.0 - 8.0;
-
-    // Background
-    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0a, 0x0a, 0x10));
-
-    // Guide circles: 25%, 50%, 75%, 100%
-    let ring_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x28);
-    let ring_stroke = egui::Stroke::new(0.5, ring_color);
-    painter.circle_stroke(center, radius * 0.25, ring_stroke);
-    painter.circle_stroke(center, radius * 0.50, ring_stroke);
-    painter.circle_stroke(center, radius * 0.75, ring_stroke);
-    let outer_stroke = egui::Stroke::new(0.8, egui::Color32::from_rgb(0x2a, 0x2a, 0x36));
-    painter.circle_stroke(center, radius, outer_stroke);
-
-    // Crosshair
-    let cross_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x28);
-    let cross_stroke = egui::Stroke::new(0.5, cross_color);
-    painter.line_segment(
-        [egui::pos2(rect.min.x, center.y), egui::pos2(rect.max.x, center.y)],
-        cross_stroke,
-    );
-    painter.line_segment(
-        [egui::pos2(center.x, rect.min.y), egui::pos2(center.x, rect.max.y)],
-        cross_stroke,
-    );
-
-    // Color target boxes at standard hue positions (R, Mg, B, Cy, G, Yl) — 75% color bars
-    let targets: [(f32, f32, egui::Color32); 6] = [
-        ( 0.1688,  0.2933, egui::Color32::from_rgb(0x60, 0x30, 0x30)), // Red
-        ( 0.2833, -0.0500, egui::Color32::from_rgb(0x55, 0x28, 0x50)), // Magenta
-        ( 0.1150, -0.3433, egui::Color32::from_rgb(0x30, 0x30, 0x60)), // Blue
-        (-0.1688, -0.2933, egui::Color32::from_rgb(0x28, 0x50, 0x50)), // Cyan
-        (-0.2833,  0.0500, egui::Color32::from_rgb(0x28, 0x50, 0x28)), // Green
-        (-0.1150,  0.3433, egui::Color32::from_rgb(0x50, 0x50, 0x28)), // Yellow
-    ];
-    for (cb, cr, color) in &targets {
-        let tx = center.x + cb * radius * 2.0;
-        let ty = center.y - cr * radius * 2.0;
-        let target_rect = egui::Rect::from_center_size(
-            egui::pos2(tx, ty),
-            egui::vec2(6.0, 6.0),
-        );
-        painter.rect_stroke(target_rect, 0.0, egui::Stroke::new(1.0, *color));
-    }
-
-    // Plot data points — use tiny semi-transparent dots for density visualization
-    if !points.is_empty() {
-        let dot_color = egui::Color32::from_rgba_unmultiplied(0x60, 0xdd, 0x60, 18);
-        let bright_color = egui::Color32::from_rgba_unmultiplied(0xaa, 0xff, 0xaa, 40);
-
-        // Bin into a grid for density-based rendering
-        let grid_size = 128usize;
-        let mut density = vec![0u32; grid_size * grid_size];
-        for &(cb, cr) in points {
-            let nx = 0.5 + cb; // 0..1
-            let ny = 0.5 - cr; // 0..1
-            let gx = (nx * (grid_size - 1) as f32) as usize;
-            let gy = (ny * (grid_size - 1) as f32) as usize;
-            if gx < grid_size && gy < grid_size {
-                density[gy * grid_size + gx] += 1;
-            }
-        }
-
-        let max_density = density.iter().max().copied().unwrap_or(1).max(1);
-
-        // Draw density as circles
-        for gy in 0..grid_size {
-            for gx in 0..grid_size {
-                let count = density[gy * grid_size + gx];
-                if count == 0 { continue; }
-
-                let nx = gx as f32 / (grid_size - 1) as f32;
-                let ny = gy as f32 / (grid_size - 1) as f32;
-                let px = center.x + (nx - 0.5) * radius * 2.0;
-                let py = center.y + (ny - 0.5) * radius * 2.0;
-
-                let intensity = (count as f32 / max_density as f32).sqrt();
-                let color = if intensity > 0.3 { bright_color } else { dot_color };
-                let dot_r = 1.0 + intensity * 2.0;
-                painter.circle_filled(egui::pos2(px, py), dot_r, color);
-            }
-        }
-    }
-
-    // Skin tone reference line (~123° from positive Cr axis, i.e. ~33° from horizontal)
-    // In Cb/Cr space: angle ≈ 33° → direction (cos33°, sin33°) ≈ (0.838, 0.545)
+    // 2. Skin tone reference line (from center toward ~123° / I-line)
     let skin_angle = 33.0_f32.to_radians();
-    let skin_color = egui::Color32::from_rgba_unmultiplied(0x90, 0x70, 0x40, 60);
-    painter.line_segment(
-        [center, egui::pos2(
-            center.x + skin_angle.cos() * radius,
-            center.y - skin_angle.sin() * radius,
-        )],
-        egui::Stroke::new(1.0, skin_color),
-    );
-
-    // Labels at target positions
-    let label_color = egui::Color32::from_rgb(0x60, 0x60, 0x70);
-    let label_font = egui::FontId::proportional(9.0);
-    let shadow_color = egui::Color32::from_rgb(0x06, 0x06, 0x0a);
-    let labels = [("R", 0.1688_f32, 0.2933_f32), ("Mg", 0.2833, -0.0500), ("B", 0.1150, -0.3433),
-                  ("Cy", -0.1688, -0.2933), ("G", -0.2833, 0.0500), ("Yl", -0.1150, 0.3433)];
-    for (name, cb, cr) in &labels {
-        let tx = center.x + cb * radius * 2.0;
-        let ty = center.y - cr * radius * 2.0 - 8.0;
-        // Shadow then label
-        painter.text(egui::pos2(tx + 0.5, ty + 0.5), egui::Align2::CENTER_BOTTOM, name, label_font.clone(), shadow_color);
-        painter.text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM, name, label_font.clone(), label_color);
+    for i in 0..(radius as usize) {
+        let t = i as f32;
+        let sx = (center + skin_angle.cos() * t) as usize;
+        let sy = (center - skin_angle.sin() * t) as usize;
+        if sx < size && sy < size {
+            buf.add(sx, sy, 0.06, 0.04, 0.02);
+        }
     }
 
-    // "Skin" label on the skin tone line
-    let skin_label_x = center.x + skin_angle.cos() * radius * 0.55;
-    let skin_label_y = center.y - skin_angle.sin() * radius * 0.55 - 6.0;
-    painter.text(
-        egui::pos2(skin_label_x, skin_label_y),
-        egui::Align2::CENTER_BOTTOM,
-        "I",
-        egui::FontId::proportional(8.0),
-        egui::Color32::from_rgb(0x70, 0x58, 0x30),
-    );
-}
-
-fn render_histogram(rgba: &[u8], width: u32, height: u32) -> egui::ColorImage {
-    let hist = klipp_color::scopes::compute_histogram(rgba, width, height);
-    let mut pixels = vec![egui::Color32::from_rgb(0x0a, 0x0a, 0x10); SCOPE_W * SCOPE_H];
-
-    // Find max across all channels for normalization
-    let max_count = hist.r.iter()
-        .chain(hist.g.iter())
-        .chain(hist.b.iter())
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1);
-
-    // Draw each channel as a filled area with alpha-weighted additive blend
-    // Histogram uses bins scaled to display width
-    let bin_scale = SCOPE_W as f32 / 256.0;
-    let channels: [(&[u32; 256], u8, u8, u8, f32); 4] = [
-        (&hist.luma, 140, 140, 140, 0.15),
-        (&hist.r,    220,  40,  40, 0.20),
-        (&hist.g,     40, 200,  40, 0.20),
-        (&hist.b,     40,  60, 220, 0.20),
+    // 3. Color target boxes at standard positions
+    let targets = [
+        (0.1688_f32, 0.2933_f32, "R"),
+        (0.2833, -0.0500, "MG"),
+        (0.1150, -0.3433, "B"),
+        (-0.1688, -0.2933, "CY"),
+        (-0.2833, 0.0500, "G"),
+        (-0.1150, 0.3433, "YL"),
     ];
-
-    for (data, cr, cg, cb, alpha) in &channels {
-        for (bin, &count) in data.iter().enumerate() {
-            let x_start = (bin as f32 * bin_scale) as usize;
-            let x_end = (((bin + 1) as f32 * bin_scale) as usize).min(SCOPE_W);
-            let height_px = ((count as f64 / max_count as f64).sqrt() * SCOPE_H as f64) as usize;
-            for x in x_start..x_end {
-                for dy in 0..height_px.min(SCOPE_H) {
-                    let y = SCOPE_H - 1 - dy;
-                    let existing = pixels[y * SCOPE_W + x];
-                    let r = (existing.r() as f32 + *cr as f32 * alpha).min(255.0) as u8;
-                    let g = (existing.g() as f32 + *cg as f32 * alpha).min(255.0) as u8;
-                    let b = (existing.b() as f32 + *cb as f32 * alpha).min(255.0) as u8;
-                    pixels[y * SCOPE_W + x] = egui::Color32::from_rgb(r, g, b);
+    for (cb_t, cr_t, _label) in &targets {
+        let tx = (center + cb_t * radius * 2.0) as usize;
+        let ty = (center - cr_t * radius * 2.0) as usize;
+        // Draw small box outline
+        for dx in 0..5_usize {
+            for dy in 0..5_usize {
+                let bx = tx.saturating_sub(2) + dx;
+                let by = ty.saturating_sub(2) + dy;
+                if bx < size && by < size && (dx == 0 || dx == 4 || dy == 0 || dy == 4) {
+                    buf.add(bx, by, 0.12, 0.12, 0.15);
                 }
             }
         }
     }
 
-    egui::ColorImage {
-        size: [SCOPE_W, SCOPE_H],
-        pixels,
+    // 4. Plot data points with ACTUAL pixel color + saturation-weighted brightness
+    // Pixels with more color (higher saturation) plot brighter — low-saturation pixels
+    // near center are dimmed to prevent the white blob from drowning everything out.
+    let sample_step = (step * 3).max(3) as usize;
+    for y in (0..height).step_by(sample_step) {
+        for x in (0..width).step_by(sample_step) {
+            let idx = ((y * width + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { continue; }
+            let r = rgba[idx] as f32 / 255.0;
+            let g = rgba[idx + 1] as f32 / 255.0;
+            let b = rgba[idx + 2] as f32 / 255.0;
+            let cb = -0.1146 * r - 0.3854 * g + 0.5000 * b;
+            let cr = 0.5000 * r - 0.4542 * g - 0.0458 * b;
+
+            let px = (center + cb * radius * 2.0) as usize;
+            let py = (center - cr * radius * 2.0) as usize;
+            if px < size && py < size {
+                // Distance from center = saturation level
+                let sat = (cb * cb + cr * cr).sqrt() * 2.0; // 0..~1
+                // Boost colored pixels, dim neutral ones
+                // This prevents the neutral white blob from drowning out colors
+                let boost = 0.1 + sat * 1.5; // neutral=0.1, saturated=1.6
+                // Use the actual pixel color, boosted by saturation
+                buf.add(px, py, r * boost, g * boost, b * boost);
+            }
+        }
+    }
+
+    buf.apply_bloom(3, 0.15, 0.7);
+    buf.to_image([4.0, 4.0, 7.0], 2.2)
+}
+
+/// Convert hue (0..1) to RGB for the rainbow ring
+fn hue_to_rgb(h: f32) -> (f32, f32, f32) {
+    let h = h * 6.0;
+    let c = 1.0_f32;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    }
+}
+
+fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
+    // Very subtle dashed lines — should not compete with the trace data
+    let line_color = egui::Color32::from_rgb(0x24, 0x22, 0x14);
+    for &ire in &[0.0_f32, 0.25, 0.50, 0.75, 1.0] {
+        let y = h - 1 - ((ire * (h - 1) as f32) as usize).min(h - 1);
+        for x in (0..w).step_by(8) {
+            // 2-on 6-off — very sparse dashes
+            for dx in 0..2 {
+                let px = x + dx;
+                if px < w {
+                    let idx = y * w + px;
+                    if idx < pixels.len() {
+                        // Blend with existing — don't overwrite trace data
+                        let existing = pixels[idx];
+                        let r = (existing.r() as u16 + line_color.r() as u16).min(255) as u8;
+                        let g = (existing.g() as u16 + line_color.g() as u16).min(255) as u8;
+                        let b = (existing.b() as u16 + line_color.b() as u16).min(255) as u8;
+                        pixels[idx] = egui::Color32::from_rgb(r, g, b);
+                    }
+                }
+            }
+        }
     }
 }
