@@ -544,20 +544,18 @@ impl Encoder {
             // Fill the pre-allocated frame
             if let Some(ref mut frame) = self.audio_frame {
                 if is_planar {
-                    let plane0 = frame.data_mut(0);
-                    for i in 0..frame_size {
-                        let val = self.audio_buffer[i * 2];
-                        let off = i * 4;
-                        if off + 4 <= plane0.len() {
-                            plane0[off..off + 4].copy_from_slice(&val.to_le_bytes());
-                        }
-                    }
-                    let plane1 = frame.data_mut(1);
-                    for i in 0..frame_size {
-                        let val = self.audio_buffer[i * 2 + 1];
-                        let off = i * 4;
-                        if off + 4 <= plane1.len() {
-                            plane1[off..off + 4].copy_from_slice(&val.to_le_bytes());
+                    // Write both planes via raw pointers to ensure we hit the
+                    // actual AVFrame data planes (not ffmpeg-next's wrapper which
+                    // may return incorrect slice lengths for plane 1).
+                    unsafe {
+                        let ptr = frame.as_mut_ptr();
+                        let p0 = (*ptr).data[0] as *mut f32;
+                        let p1 = (*ptr).data[1] as *mut f32;
+                        if !p0.is_null() && !p1.is_null() {
+                            for i in 0..frame_size {
+                                *p0.add(i) = self.audio_buffer[i * 2];
+                                *p1.add(i) = self.audio_buffer[i * 2 + 1];
+                            }
                         }
                     }
                 } else {
@@ -643,20 +641,15 @@ impl Encoder {
                 );
                 match enc_fmt {
                     ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar) => {
-                        let plane0 = frame.data_mut(0);
-                        for i in 0..frame_size {
-                            let val = self.audio_buffer.get(i * 2).copied().unwrap_or(0.0);
-                            let off = i * 4;
-                            if off + 4 <= plane0.len() {
-                                plane0[off..off + 4].copy_from_slice(&val.to_le_bytes());
-                            }
-                        }
-                        let plane1 = frame.data_mut(1);
-                        for i in 0..frame_size {
-                            let val = self.audio_buffer.get(i * 2 + 1).copied().unwrap_or(0.0);
-                            let off = i * 4;
-                            if off + 4 <= plane1.len() {
-                                plane1[off..off + 4].copy_from_slice(&val.to_le_bytes());
+                        unsafe {
+                            let ptr = frame.as_mut_ptr();
+                            let p0 = (*ptr).data[0] as *mut f32;
+                            let p1 = (*ptr).data[1] as *mut f32;
+                            if !p0.is_null() && !p1.is_null() {
+                                for i in 0..frame_size {
+                                    *p0.add(i) = self.audio_buffer.get(i * 2).copied().unwrap_or(0.0);
+                                    *p1.add(i) = self.audio_buffer.get(i * 2 + 1).copied().unwrap_or(0.0);
+                                }
                             }
                         }
                     }
