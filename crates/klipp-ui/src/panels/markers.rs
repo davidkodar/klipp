@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use klipp_core::{AppCommand, MarkerColor, MarkerId};
 
@@ -99,7 +100,7 @@ impl MarkersPanel {
 
                             // Delete button
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("x").clicked() {
+                                if ui.add(egui::Button::image(Icon::X.image(10.0).tint(egui::Color32::from_rgb(220, 220, 230)))).clicked() {
                                     remove_id = Some(*id);
                                 }
                             });

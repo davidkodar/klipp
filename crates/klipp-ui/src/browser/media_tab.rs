@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, MediaId, ViewerMode};
@@ -419,24 +420,16 @@ fn render_grid_view(
                 }
             } else {
                 ui.painter().rect_filled(thumb_rect, 0.0, theme.bg_raised);
-                ui.painter().text(
-                    thumb_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{1F3AC}",
-                    egui::FontId::proportional(24.0),
-                    theme.text_dim,
-                );
+                let icon_size = 24.0;
+                let icon_rect = egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(icon_size, icon_size));
+                Icon::FilmSlate.image(icon_size).tint(theme.text_dim).paint_at(ui, icon_rect);
             }
 
             // Skim indicator: if transcoding, show subtle spinner overlay
             if state.skim_transcoding.contains(&item.id) {
-                ui.painter().text(
-                    egui::pos2(thumb_rect.max.x - 14.0, thumb_rect.min.y + 10.0),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{21BB}", // ↻
-                    egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 140),
-                );
+                let spin_center = egui::pos2(thumb_rect.max.x - 14.0, thumb_rect.min.y + 10.0);
+                let spin_rect = egui::Rect::from_center_size(spin_center, egui::vec2(12.0, 12.0));
+                Icon::ArrowClockwise.image(12.0).tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 140)).paint_at(ui, spin_rect);
             }
 
             // Card border (drawn after thumbnail so it's on top)
@@ -623,11 +616,7 @@ fn render_bin_header(
             let old_clone = old_name.clone();
             let resp = ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new("\u{1F4C1}")
-                        .size(10.0)
-                        .color(theme.text_dim),
-                );
+                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
                 let text_resp = ui.add(
                     egui::TextEdit::singleline(edit_text)
                         .desired_width(120.0)

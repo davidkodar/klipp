@@ -1,4 +1,5 @@
 use crate::history::{EditCommand, HistoryEntry};
+use crate::icons::Icon;
 use crate::layout_state::LayoutState;
 use crate::panels::inspector::InspectorPanel;
 use crate::panels::markers::MarkersPanel;
@@ -165,6 +166,7 @@ impl KlippApp {
         let theme = KlippTheme::default();
         theme.apply_to_egui(&cc.egui_ctx);
         theme.apply_fonts(&cc.egui_ctx);
+        crate::icons::install(&cc.egui_ctx);
         let layout = LayoutState::load();
 
         let mut app = Self {
@@ -5628,7 +5630,7 @@ impl eframe::App for KlippApp {
                     for mid in &offline_ids {
                         if let Some(item) = self.state.media_pool.get(mid) {
                             ui.horizontal(|ui| {
-                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "\u{2717}");
+                                ui.add(Icon::XCircle.image(14.0).tint(egui::Color32::from_rgb(255, 100, 100)));
                                 ui.label(&item.filename);
                                 ui.label(item.path.to_string_lossy().to_string());
                             });
@@ -5780,7 +5782,7 @@ impl eframe::App for KlippApp {
                                             );
                                         }
                                         ui.add_space(8.0);
-                                        if ui.small_button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Dismiss").clicked() {
                                             self.state.proxy_toast_dismissed = true;
                                         }
                                     });

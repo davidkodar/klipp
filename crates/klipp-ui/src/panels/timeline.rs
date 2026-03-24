@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::{AppState, PlayheadFollow};
 use klipp_core::{AppCommand, ClipId, RationalTime, Timecode, Tool};
 use klipp_engine::PlaybackState;
@@ -391,9 +392,9 @@ impl TimelinePanel {
                             egui::Color32::from_rgb(35, 35, 42)
                         };
                         bg_painter.rect_filled(l_rect, 2.0, l_bg);
-                        bg_painter.text(l_rect.center(), egui::Align2::CENTER_CENTER, "L",
-                            egui::FontId::proportional(9.0),
-                            if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
+                        let l_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
+                        let l_color = if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) };
+                        l_icon.image(10.0).tint(l_color).paint_at(ui, l_rect.shrink(2.0));
                         if l_resp.clicked() {
                             let track_id = state.sequence().tracks[track_idx].id;
                             cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
@@ -415,8 +416,8 @@ impl TimelinePanel {
                         } else {
                             egui::Color32::from_rgb(35, 35, 42)
                         });
-                        bg_painter.text(v_rect.center(), egui::Align2::CENTER_CENTER, "V",
-                            egui::FontId::proportional(9.0), v_col);
+                        let v_icon = if track.visible { Icon::Eye } else { Icon::EyeSlash };
+                        v_icon.image(10.0).tint(v_col).paint_at(ui, v_rect.shrink(2.0));
                         if v_resp.clicked() {
                             cmds.push(AppCommand::SetTrackVisibility {
                                 track_index: track_idx,
@@ -482,9 +483,9 @@ impl TimelinePanel {
                             egui::Color32::from_rgb(35, 35, 42)
                         };
                         bg_painter.rect_filled(al_rect, 2.0, al_bg);
-                        bg_painter.text(al_rect.center(), egui::Align2::CENTER_CENTER, "L",
-                            egui::FontId::proportional(9.0),
-                            if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) });
+                        let al_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
+                        let al_color = if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) };
+                        al_icon.image(10.0).tint(al_color).paint_at(ui, al_rect.shrink(2.0));
                         if al_resp.clicked() {
                             let track_id = state.sequence().tracks[track_idx].id;
                             cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
@@ -505,8 +506,8 @@ impl TimelinePanel {
                             egui::Color32::from_rgb(35, 35, 42)
                         };
                         bg_painter.rect_filled(m_rect, 2.0, m_bg);
-                        bg_painter.text(m_rect.center(), egui::Align2::CENTER_CENTER, "M",
-                            egui::FontId::proportional(9.0), egui::Color32::WHITE);
+                        let m_icon = if track.muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+                        m_icon.image(10.0).tint(egui::Color32::WHITE).paint_at(ui, m_rect.shrink(1.0));
                         if m_resp.clicked() {
                             cmds.push(AppCommand::SetTrackMute {
                                 track_index: track_idx,
@@ -3487,7 +3488,7 @@ impl TimelinePanel {
             egui::Color32::from_rgb(40, 40, 48)
         });
         painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER, "Fit",
-            egui::FontId::proportional(8.0), egui::Color32::from_rgb(160, 160, 170));
+            egui::FontId::proportional(8.0), egui::Color32::from_rgb(220, 220, 230));
         if fit_resp.clicked() {
             let dur_secs = state.sequence_duration().to_secs_f64() as f32;
             if dur_secs > 0.0 {
@@ -3507,8 +3508,7 @@ impl TimelinePanel {
         } else {
             egui::Color32::from_rgb(40, 40, 48)
         });
-        painter.text(minus_rect.center(), egui::Align2::CENTER_CENTER, "\u{2212}",
-            egui::FontId::proportional(11.0), egui::Color32::from_rgb(160, 160, 170));
+        Icon::Minus.bold(12.0).tint(egui::Color32::from_rgb(220, 220, 230)).paint_at(ui, minus_rect.shrink(2.0));
         if minus_resp.clicked() {
             state.timeline_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
         }
@@ -3522,8 +3522,7 @@ impl TimelinePanel {
         } else {
             egui::Color32::from_rgb(40, 40, 48)
         });
-        painter.text(plus_rect.center(), egui::Align2::CENTER_CENTER, "+",
-            egui::FontId::proportional(11.0), egui::Color32::from_rgb(160, 160, 170));
+        Icon::Plus.bold(12.0).tint(egui::Color32::from_rgb(220, 220, 230)).paint_at(ui, plus_rect.shrink(2.0));
         if plus_resp.clicked() {
             state.timeline_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
         }

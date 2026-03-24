@@ -27,3 +27,4 @@ rfd = "0.15"
 png = "0.17"
 dirs = { workspace = true }
 walkdir = { workspace = true }
+egui_extras = { workspace = true }

@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use klipp_core::{AppCommand, Fps, RationalTime};
 use klipp_engine::PlaybackState;
@@ -19,9 +20,11 @@ impl TransportBar {
         ui.horizontal_centered(|ui| {
             ui.add_space(16.0);
 
+            let icon_tint = egui::Color32::from_rgb(220, 220, 230);
+
             // Go to start
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{23EE}").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::SkipBack.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Go to start")
                 .clicked()
             {
@@ -30,7 +33,7 @@ impl TransportBar {
 
             // -10s
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{23EA}").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::Rewind.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("-10s")
                 .clicked()
             {
@@ -39,7 +42,7 @@ impl TransportBar {
 
             // Step back (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::new("|<").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::CaretLeft.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Step back 1 frame")
                 .clicked()
             {
@@ -47,15 +50,15 @@ impl TransportBar {
             }
 
             // Play / Pause
-            let play_label = if state.playback == PlaybackState::Playing {
-                "\u{23F8}"
+            let play_icon = if state.playback == PlaybackState::Playing {
+                Icon::Pause
             } else {
-                "\u{25B6}"
+                Icon::Play
             };
             if ui
                 .add_enabled(
                     enabled,
-                    egui::Button::new(play_label).min_size(egui::vec2(40.0, 40.0)),
+                    egui::Button::image(play_icon.bold(20.0).tint(icon_tint)).min_size(egui::vec2(40.0, 40.0)),
                 )
                 .on_hover_text("Play/Pause")
                 .clicked()
@@ -69,7 +72,7 @@ impl TransportBar {
 
             // Step forward (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::new(">|").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::CaretRight.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Step forward 1 frame")
                 .clicked()
             {
@@ -78,7 +81,7 @@ impl TransportBar {
 
             // +10s
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{23E9}").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::FastForward.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("+10s")
                 .clicked()
             {
@@ -87,7 +90,7 @@ impl TransportBar {
 
             // Go to end
             if ui
-                .add_enabled(enabled, egui::Button::new("\u{23ED}").min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::SkipForward.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Go to end")
                 .clicked()
             {
@@ -214,7 +217,7 @@ impl TransportBar {
 
                 // Clear button
                 let clear_resp = ui.add(
-                    egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(amber))
+                    egui::Button::image(Icon::X.image(12.0).tint(amber))
                         .frame(false)
                 );
                 if clear_resp.clicked() {
@@ -234,9 +237,9 @@ impl TransportBar {
             } else {
                 egui::Color32::from_rgb(100, 100, 110)
             };
-            if ui.add(egui::Button::new(
-                egui::RichText::new("M").size(10.0).color(mute_color),
-            ).min_size(egui::vec2(18.0, 16.0))).clicked() {
+            let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+            if ui.add(egui::Button::image(mute_icon.image(12.0).tint(mute_color))
+                .min_size(egui::vec2(18.0, 16.0))).clicked() {
                 state.master_muted = !state.master_muted;
                 let effective = if state.master_muted { 0.0 } else { state.master_volume };
                 cmds.push(AppCommand::SetMasterVolume(effective));
@@ -308,9 +311,8 @@ impl TransportBar {
                 }
 
                 // Cancel button
-                if ui.add(egui::Button::new(
-                    egui::RichText::new("\u{2717}").size(12.0).color(egui::Color32::from_rgb(200, 80, 80)),
-                ).min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
+                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(egui::Color32::from_rgb(200, 80, 80)))
+                    .min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
                     cmds.push(AppCommand::CancelExport);
                 }
             }

@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -103,13 +104,8 @@ pub fn show(
                         ui.painter()
                             .rect_stroke(icon_rect, 6.0, egui::Stroke::new(1.0, icon_border));
                         // Waveform icon
-                        ui.painter().text(
-                            icon_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "\u{223F}",
-                            egui::FontId::proportional(14.0),
-                            fx.color,
-                        );
+                        let wf_rect = egui::Rect::from_center_size(icon_rect.center(), egui::vec2(14.0, 14.0));
+                        Icon::Waveform.image(14.0).tint(fx.color).paint_at(ui, wf_rect);
 
                         ui.add_space(6.0);
 

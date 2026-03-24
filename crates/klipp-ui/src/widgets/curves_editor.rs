@@ -36,7 +36,7 @@ pub fn curves_editor_sized(
 ) -> CurvesResponse {
     let mut changed = false;
 
-    let canvas_width = ui.available_width().clamp(150.0, 400.0);
+    let canvas_width = ui.available_width().clamp(100.0, 800.0);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(canvas_width, height),
         egui::Sense::click_and_drag(),
@@ -46,8 +46,8 @@ pub fn curves_editor_sized(
     let drag_ended = response.drag_stopped();
 
     let painter = ui.painter_at(rect);
-    let bg_color = egui::Color32::from_rgb(0x16, 0x16, 0x1a);
-    let border_color = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+    let bg_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x22);
+    let border_color = egui::Color32::from_rgb(0x34, 0x34, 0x3c);
 
     // Background
     painter.rect_filled(rect, 4.0, bg_color);
@@ -90,60 +90,118 @@ pub fn curves_editor_sized(
         );
     }
 
-    // Identity diagonal (thicker, brighter than grid — key reference line)
+    // Identity diagonal — the reference "shadow" curve that's always visible
+    // This is the unmodified straight line so user can see deviation
     painter.line_segment(
         [egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.min.y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x3a, 0x4a)),
+        egui::Stroke::new(1.2, egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)),
     );
+
+    // Ensure minimum identity endpoints exist — empty curves get [0,0] and [1,1]
+    if points.len() < 2 {
+        points.clear();
+        points.push([0.0, 0.0]);
+        points.push([1.0, 1.0]);
+    }
 
     // Build spline LUT for drawing
     let lut = klipp_color::curves::build_curve_lut(points);
     let curve_color = channel_color(channel);
 
-    // Draw curve
+    // Draw filled areas on BOTH sides of the curve vs the identity diagonal.
+    // Above identity = brighter fill, Below identity = darker fill.
+    // This shows the deviation from neutral — like in professional curve editors.
     let mut curve_points = Vec::with_capacity(256);
+    let px_step = (rect.width() / 256.0).max(1.0);
+    let fill_above = egui::Color32::from_rgba_premultiplied(
+        (curve_color.r() as u16 * 2 / 3) as u8,
+        (curve_color.g() as u16 * 2 / 3) as u8,
+        (curve_color.b() as u16 * 2 / 3) as u8,
+        10,
+    );
+    let fill_below = egui::Color32::from_rgba_premultiplied(
+        curve_color.r() / 4, curve_color.g() / 4, curve_color.b() / 4, 8,
+    );
+
     for (i, &lut_val) in lut.iter().enumerate() {
-        let x = rect.min.x + (i as f32 / 255.0) * rect.width();
-        let y = rect.max.y - (lut_val as f32 / 255.0) * rect.height();
-        curve_points.push(egui::pos2(x, y));
+        let t = i as f32 / 255.0;
+        let x = rect.min.x + t * rect.width();
+        let curve_y = rect.max.y - (lut_val as f32 / 255.0) * rect.height();
+        let identity_y = rect.max.y - t * rect.height(); // diagonal reference
+        curve_points.push(egui::pos2(x, curve_y));
+
+        // Fill between curve and identity diagonal
+        if (curve_y - identity_y).abs() > 1.0 {
+            let (top, bottom, color) = if curve_y < identity_y {
+                // Curve above identity (brighter)
+                (curve_y, identity_y, fill_above)
+            } else {
+                // Curve below identity (darker)
+                (identity_y, curve_y, fill_below)
+            };
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + px_step, bottom)),
+                0.0, color,
+            );
+        }
     }
+
+    // Draw curve line on top
     for window in curve_points.windows(2) {
-        painter.line_segment([window[0], window[1]], egui::Stroke::new(1.5, curve_color));
+        painter.line_segment([window[0], window[1]], egui::Stroke::new(2.0, curve_color));
     }
 
-    // Point interaction
-    let hit_radius = 10.0;
+    // ── Point interaction — fast, locked drag, no re-search per frame ──
+    let hit_radius = 12.0;
 
-    if let Some(pointer_pos) = response.interact_pointer_pos() {
-        if response.dragged() {
-            let mut closest_idx = None;
-            let mut closest_dist = f32::MAX;
+    // Use egui memory to persist which point is being dragged
+    let drag_id = response.id.with("curve_drag");
+    let mut dragging_idx: Option<usize> = ui.data(|d| d.get_temp(drag_id)).flatten();
+
+    if response.drag_started() {
+        // Lock onto the closest point at drag start
+        if let Some(pos) = response.interact_pointer_pos() {
+            let mut best_idx = None;
+            let mut best_dist = f32::MAX;
             for (i, pt) in points.iter().enumerate() {
                 let px = rect.min.x + pt[0] * rect.width();
                 let py = rect.max.y - pt[1] * rect.height();
-                let dist = (egui::pos2(px, py) - pointer_pos).length();
-                if dist < closest_dist {
-                    closest_dist = dist;
-                    closest_idx = Some(i);
+                let dist = (egui::pos2(px, py) - pos).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(i);
                 }
             }
+            if best_dist < hit_radius {
+                dragging_idx = best_idx;
+            } else {
+                // Clicked empty area during drag start — add a new point and drag it
+                let new_x = ((pos.x - rect.min.x) / rect.width()).clamp(0.01, 0.99);
+                let new_y = ((rect.max.y - pos.y) / rect.height()).clamp(0.0, 1.0);
+                let insert_idx = points.iter().position(|pt| pt[0] > new_x).unwrap_or(points.len());
+                points.insert(insert_idx, [new_x, new_y]);
+                dragging_idx = Some(insert_idx);
+                changed = true;
+            }
+            ui.data_mut(|d| d.insert_temp(drag_id, dragging_idx));
+        }
+    }
 
-            if let Some(idx) = closest_idx {
-                if closest_dist < hit_radius || response.drag_started() {
-                    let mut new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
-                    let mut new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
+    // Continue dragging the locked point
+    if response.dragged() {
+        if let Some(idx) = dragging_idx {
+            if idx < points.len() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let new_x = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                    let new_y = ((rect.max.y - pos.y) / rect.height()).clamp(0.0, 1.0);
 
-                    // Shift-snap to 25% grid
-                    if ui.input(|i| i.modifiers.shift) {
-                        new_x = (new_x * 4.0).round() / 4.0;
-                        new_y = (new_y * 4.0).round() / 4.0;
-                    }
-
+                    // Constrain X between neighbors (don't cross)
                     if idx > 0 && idx < points.len() - 1 {
-                        let x_min = points[idx - 1][0] + 0.01;
-                        let x_max = points[idx + 1][0] - 0.01;
+                        let x_min = points[idx - 1][0] + 0.005;
+                        let x_max = points[idx + 1][0] - 0.005;
                         points[idx][0] = new_x.clamp(x_min, x_max);
                     }
+                    // Endpoints: only move Y
                     points[idx][1] = new_y;
                     changed = true;
                 }
@@ -151,13 +209,17 @@ pub fn curves_editor_sized(
         }
     }
 
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.insert_temp::<Option<usize>>(drag_id, None));
+    }
+
     // Double-click: remove point (if not endpoint)
     if response.double_clicked() {
-        if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             for i in (1..points.len().saturating_sub(1)).rev() {
                 let px = rect.min.x + points[i][0] * rect.width();
                 let py = rect.max.y - points[i][1] * rect.height();
-                if (egui::pos2(px, py) - pointer_pos).length() < hit_radius {
+                if (egui::pos2(px, py) - pos).length() < hit_radius {
                     points.remove(i);
                     changed = true;
                     break;
@@ -166,33 +228,14 @@ pub fn curves_editor_sized(
         }
     }
 
-    // Single click: add point
-    if response.clicked() && !changed {
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let new_x = ((pointer_pos.x - rect.min.x) / rect.width()).clamp(0.01, 0.99);
-            let new_y = ((rect.max.y - pointer_pos.y) / rect.height()).clamp(0.0, 1.0);
-
-            let near_point = points.iter().any(|pt| {
-                let px = rect.min.x + pt[0] * rect.width();
-                let py = rect.max.y - pt[1] * rect.height();
-                (egui::pos2(px, py) - pointer_pos).length() < hit_radius
-            });
-
-            if !near_point {
-                let insert_idx = points.iter().position(|pt| pt[0] > new_x).unwrap_or(points.len());
-                points.insert(insert_idx, [new_x, new_y]);
-                changed = true;
-            }
-        }
-    }
-
-    // Draw control points — HOLLOW ring style (dark fill + thick coloured stroke)
+    // Draw control points — hollow ring style matching the reference
+    // Larger circle (5px), dark fill, 2px colored stroke
     for pt in points.iter() {
         let px = rect.min.x + pt[0] * rect.width();
         let py = rect.max.y - pt[1] * rect.height();
         let center = egui::pos2(px, py);
-        painter.circle_filled(center, 4.0, egui::Color32::from_rgb(0x12, 0x12, 0x18));
-        painter.circle_stroke(center, 4.0, egui::Stroke::new(2.0, curve_color));
+        painter.circle_filled(center, 5.0, egui::Color32::from_rgb(0x14, 0x14, 0x1a));
+        painter.circle_stroke(center, 5.0, egui::Stroke::new(1.5, curve_color));
     }
 
     CurvesResponse {

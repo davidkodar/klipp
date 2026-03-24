@@ -603,7 +603,7 @@ fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize
 }
 
 /// Convert hue (0..1) to RGB for the rainbow ring
-fn hue_to_rgb(h: f32) -> (f32, f32, f32) {
+pub fn hue_to_rgb(h: f32) -> (f32, f32, f32) {
     let h = h * 6.0;
     let c = 1.0_f32;
     let x = c * (1.0 - (h % 2.0 - 1.0).abs());

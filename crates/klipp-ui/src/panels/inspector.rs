@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use klipp_core::AppCommand;
 
@@ -268,7 +269,10 @@ impl InspectorPanel {
         let is_generating = state.proxy_generating.contains(&media.id);
 
         if media.proxy_ready {
-            ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "\u{2713} Ready");
+            ui.horizontal(|ui| {
+                ui.add(Icon::CheckCircle.image(14.0).tint(egui::Color32::from_rgb(100, 200, 120)));
+                ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Ready");
+            });
             if let Some(proxy_path) = &media.proxy_path {
                 // Show proxy file details
                 let file_size = std::fs::metadata(proxy_path).map(|m| m.len()).unwrap_or(0);
@@ -349,10 +353,10 @@ impl InspectorPanel {
         // Offline warning
         if media.offline {
             ui.add_space(8.0);
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 160, 80),
-                "\u{26A0} Media Offline",
-            );
+            ui.horizontal(|ui| {
+                ui.add(Icon::Warning.image(14.0).tint(egui::Color32::from_rgb(255, 160, 80)));
+                ui.colored_label(egui::Color32::from_rgb(255, 160, 80), "Media Offline");
+            });
             ui.label(format!("Path: {}", media.path.display()));
             if ui.small_button("Relink...").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
@@ -715,16 +719,16 @@ impl InspectorPanel {
                 .show_header(ui, |ui| {
                     ui.label(egui::RichText::new(name).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Remove").clicked() {
                             builtin_remove = Some(i);
                         }
                         if i + 1 < clip.builtin_effects.len()
-                            && ui.small_button("\u{25BC}").on_hover_text("Move down").clicked()
+                            && ui.add(egui::Button::image(Icon::CaretDown.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Move down").clicked()
                         {
                             builtin_move_down = Some(i);
                         }
                         if i > 0
-                            && ui.small_button("\u{25B2}").on_hover_text("Move up").clicked()
+                            && ui.add(egui::Button::image(Icon::CaretUp.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Move up").clicked()
                         {
                             builtin_move_up = Some(i);
                         }
@@ -838,16 +842,16 @@ impl InspectorPanel {
                 ui.label(display_name);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                    if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Remove").clicked() {
                         remove_idx = Some(i);
                     }
                     if i + 1 < clip.effects.len()
-                        && ui.small_button("\u{25BC}").on_hover_text("Move down").clicked()
+                        && ui.add(egui::Button::image(Icon::CaretDown.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Move down").clicked()
                     {
                         move_down_idx = Some(i);
                     }
                     if i > 0
-                        && ui.small_button("\u{25B2}").on_hover_text("Move up").clicked()
+                        && ui.add(egui::Button::image(Icon::CaretUp.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Move up").clicked()
                     {
                         move_up_idx = Some(i);
                     }

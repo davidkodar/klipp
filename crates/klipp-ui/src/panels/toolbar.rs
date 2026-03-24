@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::layout_state::EditTool;
 use crate::prefs::RecentProject;
 use crate::state::{AppState, PlayheadFollow, Workspace};
@@ -306,28 +307,28 @@ impl ToolbarPanel {
         let enabled = state.playback != PlaybackState::Idle;
         let fps_val = state.fps.as_f64();
 
-        let resp = transport_btn(ui, "\u{23EE}", 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
+        let resp = transport_btn(ui, Icon::SkipBack, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
         styled_tooltip(&resp, theme, "Go to Start", Some("Home"));
         if resp.clicked() { cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero())); }
 
-        let resp = transport_btn(ui, "\u{23EA}", 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
+        let resp = transport_btn(ui, Icon::Rewind, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
         styled_tooltip(&resp, theme, "Rewind", Some("J"));
         if resp.clicked() { cmds.push(AppCommand::SeekRelative(-(fps_val * 10.0) as i64)); }
 
         // Play/Pause — amber circle
         let is_playing = state.playback == PlaybackState::Playing;
-        let play_icon = if is_playing { "\u{23F8}" } else { "\u{25B6}" };
+        let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
         let resp = transport_btn(ui, play_icon, 38.0, egui::Color32::BLACK, theme.accent, enabled);
         styled_tooltip(&resp, theme, "Play / Pause", Some("Space"));
         if resp.clicked() {
             if is_playing { cmds.push(AppCommand::Pause); } else { cmds.push(AppCommand::Play); }
         }
 
-        let resp = transport_btn(ui, "\u{23E9}", 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
+        let resp = transport_btn(ui, Icon::FastForward, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
         styled_tooltip(&resp, theme, "Fast Forward", Some("L"));
         if resp.clicked() { cmds.push(AppCommand::SeekRelative((fps_val * 10.0) as i64)); }
 
-        let resp = transport_btn(ui, "\u{23ED}", 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
+        let resp = transport_btn(ui, Icon::SkipForward, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
         styled_tooltip(&resp, theme, "Go to End", Some("End"));
         if resp.clicked() { let dur = state.sequence_duration(); cmds.push(AppCommand::SeekTo(dur)); }
 
@@ -539,8 +540,9 @@ fn icon_rect(btn: egui::Rect) -> egui::Rect {
     egui::Rect::from_center_size(btn.center(), egui::vec2(16.0, 16.0))
 }
 
-fn transport_btn(ui: &mut egui::Ui, icon: &str, size: f32, fg: egui::Color32, bg: egui::Color32, enabled: bool) -> egui::Response {
-    ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(icon).size(if size > 34.0 { 15.0 } else { 14.0 }).color(fg)).fill(bg).rounding(size / 2.0).min_size(egui::vec2(size, size)))
+fn transport_btn(ui: &mut egui::Ui, icon: Icon, size: f32, fg: egui::Color32, bg: egui::Color32, enabled: bool) -> egui::Response {
+    let icon_size = if size > 34.0 { 18.0 } else { 16.0 };
+    ui.add_enabled(enabled, egui::Button::image(icon.bold(icon_size).tint(fg)).fill(bg).rounding(size / 2.0).min_size(egui::vec2(size, size)))
 }
 
 fn sep(ui: &mut egui::Ui, theme: &KlippTheme) {

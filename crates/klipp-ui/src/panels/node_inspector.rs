@@ -66,9 +66,7 @@ impl NodeInspectorPanel {
         cmds
     }
 
-    /// Simple tabbed view for new users — hides node complexity.
-    /// Tabs: Adjustments / Wheels / Curves / HueSat.
-    /// Each tab finds the corresponding node by kind and shows its params.
+    /// Simple tabbed view matching the HTML mockup design.
     pub fn show_simple(
         &mut self,
         ui: &mut egui::Ui,
@@ -80,64 +78,240 @@ impl NodeInspectorPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        // Padding
-        ui.add_space(4.0);
+        // ── Tab row (equal-width, amber underline on active) ──
+        let tab_h = 28.0;
+        let avail_w = ui.available_width();
+        let tab_w = avail_w / 4.0;
 
-        // Tab bar
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            for (tab, label) in [
-                (ColorTab::Adjustments, "Adjust"),
+        let (tab_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, tab_h), egui::Sense::hover());
+
+        // Draw tabs using painter clone to avoid borrow conflict
+        {
+            let painter = ui.painter().clone();
+            painter.line_segment(
+                [egui::pos2(tab_rect.min.x, tab_rect.max.y), egui::pos2(tab_rect.max.x, tab_rect.max.y)],
+                egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)),
+            );
+
+            for (i, (tab, label)) in [
+                (ColorTab::Adjustments, "Color"),
                 (ColorTab::Wheels, "Wheels"),
                 (ColorTab::Curves, "Curves"),
-                (ColorTab::HueSat, "HueSat"),
-            ] {
-                let active = *color_tab == tab;
-                let text = egui::RichText::new(label).size(11.0);
-                let text = if active { text.strong().color(theme.text_accent) } else { text.color(theme.text_secondary) };
-                if ui.selectable_label(active, text).clicked() {
-                    *color_tab = tab;
+                (ColorTab::HueSat, "Hue/Sat"),
+            ].iter().enumerate() {
+                let active = *color_tab == *tab;
+                let x = tab_rect.min.x + i as f32 * tab_w;
+                let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
+
+                let color = if active { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 107) };
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, label,
+                    egui::FontId::proportional(11.0), color);
+
+                if active {
+                    painter.line_segment(
+                        [egui::pos2(rect.min.x + 4.0, rect.max.y), egui::pos2(rect.max.x - 4.0, rect.max.y)],
+                        egui::Stroke::new(1.5, theme.text_accent),
+                    );
                 }
             }
-        });
-        ui.separator();
-        ui.add_space(4.0);
+        }
 
-        // Map tab to node kinds and auto-select the right node
-        let target_kinds: Vec<NodeKind> = match color_tab {
-            ColorTab::Adjustments => vec![
-                NodeKind::Exposure, NodeKind::Contrast, NodeKind::Saturation,
-                NodeKind::ToneControls, NodeKind::ColorBalance,
-            ],
-            ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
-            ColorTab::Curves => vec![NodeKind::RGBCurves],
-            ColorTab::HueSat => vec![NodeKind::HueSatCurves],
-        };
+        // Tab click interaction (separate pass)
+        for (i, (tab, _label)) in [
+            (ColorTab::Adjustments, "Color"),
+            (ColorTab::Wheels, "Wheels"),
+            (ColorTab::Curves, "Curves"),
+            (ColorTab::HueSat, "Hue/Sat"),
+        ].iter().enumerate() {
+            let x = tab_rect.min.x + i as f32 * tab_w;
+            let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
+            let resp = ui.allocate_rect(rect, egui::Sense::click());
+            if resp.clicked() { *color_tab = *tab; }
+        }
 
-        // Render params for each matching node kind in this tab
+        // ── Tab content ──
         egui::ScrollArea::vertical()
             .id_salt("simple_inspector_scroll")
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
 
-                for target_kind in &target_kinds {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
-                        let node_id = node.id;
-                        let node_kind = node.kind.clone();
-                        *selected_node = Some(node_id);
-                        let node_enabled = &mut node.enabled;
-                        let params = &mut node.params;
-                        let keyframes = &mut node.keyframes;
-                        self.show_inspector(
-                            ui, node_id, &node_kind, node_enabled,
-                            params, keyframes, clip_id, &mut cmds, theme,
-                        );
-                        ui.add_space(8.0);
+                match color_tab {
+                    ColorTab::Adjustments => {
+                        self.show_adjustments_tab(ui, graph, clip_id, selected_node, &mut cmds, theme);
+                    }
+                    _ => {
+                        // Other tabs: find matching nodes and show their inspector
+                        let target_kinds: Vec<NodeKind> = match color_tab {
+                            ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
+                            ColorTab::Curves => vec![NodeKind::RGBCurves],
+                            ColorTab::HueSat => vec![NodeKind::HueSatCurves],
+                            _ => vec![],
+                        };
+                        for target_kind in &target_kinds {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
+                                let node_id = node.id;
+                                let node_kind = node.kind.clone();
+                                *selected_node = Some(node_id);
+                                let node_enabled = &mut node.enabled;
+                                let params = &mut node.params;
+                                let keyframes = &mut node.keyframes;
+                                self.show_inspector(ui, node_id, &node_kind, node_enabled,
+                                    params, keyframes, clip_id, &mut cmds, theme);
+                            }
+                        }
                     }
                 }
             });
 
         cmds
+    }
+
+    /// Adjustments tab — matches the HTML mockup layout exactly.
+    fn show_adjustments_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        selected_node: &mut Option<NodeId>,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        // Helper: find a node by kind
+        let find_node = |graph: &mut NodeGraph, kind: NodeKind| -> Option<(NodeId, bool)> {
+            graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
+        };
+
+        // ── Exposure section ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::Exposure) {
+            *selected_node = Some(nid);
+            let reset = section_header(ui, "EXPOSURE", enabled, theme);
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                if reset {
+                    node.params.exposure = Some(0.0);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
+                }
+                let mut val = node.params.exposure.unwrap_or(0.0);
+                if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, "stops", theme) {
+                    node.params.exposure = Some(val);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
+                }
+            }
+            section_divider(ui);
+        }
+
+        // ── Contrast section ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::Contrast) {
+            let reset = section_header(ui, "CONTRAST", enabled, theme);
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                if reset {
+                    node.params.contrast = Some(0.0);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
+                }
+                let mut val = node.params.contrast.unwrap_or(0.0);
+                if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme) {
+                    node.params.contrast = Some(val);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
+                }
+            }
+            section_divider(ui);
+        }
+
+        // ── Saturation section ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::Saturation) {
+            let reset = section_header(ui, "SATURATION", enabled, theme);
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                if reset {
+                    node.params.saturation = Some(1.0);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
+                }
+                let mut val = node.params.saturation.unwrap_or(1.0);
+                if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme) {
+                    node.params.saturation = Some(val);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
+                }
+            }
+            section_divider(ui);
+        }
+
+        // ── Tone Controls section ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::ToneControls) {
+            let reset = section_header(ui, "TONE CONTROLS", enabled, theme);
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                if reset {
+                    for p in ["highlights", "shadows", "whites", "blacks"] {
+                        node.params.apply_override(p, 0.0);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: 0.0 });
+                    }
+                }
+                for (label, param_name, default) in [
+                    ("Highlights", "highlights", 0.0_f32),
+                    ("Shadows", "shadows", 0.0),
+                    ("Whites", "whites", 0.0),
+                    ("Blacks", "blacks", 0.0),
+                ] {
+                    let mut val = match param_name {
+                        "highlights" => node.params.highlights.unwrap_or(default),
+                        "shadows" => node.params.shadows.unwrap_or(default),
+                        "whites" => node.params.whites.unwrap_or(default),
+                        _ => node.params.blacks.unwrap_or(default),
+                    };
+                    if inspector_row(ui, label, &mut val, -1.0..=1.0, "", theme) {
+                        node.params.apply_override(param_name, val);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
+                    }
+                }
+            }
+            section_divider(ui);
+        }
+
+        // ── Color Balance section — with gradient sliders ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::ColorBalance) {
+            let reset = section_header(ui, "COLOR BALANCE", enabled, theme);
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                if reset {
+                    for (p, d) in [("temperature", 0.0), ("tint", 0.0), ("hue", 0.0), ("global_mix", 1.0)] {
+                        node.params.apply_override(p, d);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: d });
+                    }
+                }
+                // Temperature: blue → orange gradient
+                let mut temp = node.params.temperature.unwrap_or(0.0);
+                if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0,
+                    egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
+                    egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme)
+                {
+                    node.params.temperature = Some(temp);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "temperature".into(), value: temp });
+                }
+
+                // Tint: green → pink gradient
+                let mut tint = node.params.tint.unwrap_or(0.0);
+                if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0,
+                    egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
+                    egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme)
+                {
+                    node.params.tint = Some(tint);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
+                }
+
+                // Hue: rainbow spectrum
+                let mut hue = node.params.hue.unwrap_or(0.0);
+                if hue_slider_row(ui, "Hue", &mut hue, theme) {
+                    node.params.hue = Some(hue);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
+                }
+
+                // Global Mix: subtle grey → white
+                let mut mix = node.params.global_mix.unwrap_or(1.0);
+                if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0,
+                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 20),
+                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 90), theme)
+                {
+                    node.params.global_mix = Some(mix);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
+                }
+            }
+        }
     }
 
     // ── Inspector ───────────────────────────────────────────────────────────
@@ -236,8 +410,12 @@ impl NodeInspectorPanel {
                 };
 
                 if two_col {
-                    // 2x2 grid using horizontal pairs
+                    // 2x2 grid, centered horizontally
+                    let pair_w = (wheel_d + 10.0) * 2.0;
+                    let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
+
                     ui.horizontal_wrapped(|ui| {
+                        ui.add_space(center_pad);
                         ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
                             show_wheel(ui, "Lift", &mut self.lift_wheel,
                                 &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
@@ -248,6 +426,7 @@ impl NodeInspectorPanel {
                         });
                     });
                     ui.horizontal_wrapped(|ui| {
+                        ui.add_space(center_pad);
                         ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
                             show_wheel(ui, "Gain", &mut self.gain_wheel,
                                 &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
@@ -270,69 +449,268 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::WheelSatBri => {
-                for (label, sat_name, bri_name, sat_val, bri_val) in [
-                    ("Lift", "lift_sat", "lift_bri", params.lift_sat.unwrap_or(0.0), params.lift_bri.unwrap_or(0.0)),
-                    ("Gamma", "gamma_sat", "gamma_bri", params.gamma_sat.unwrap_or(0.0), params.gamma_bri.unwrap_or(0.0)),
-                    ("Gain", "gain_sat", "gain_bri", params.gain_sat.unwrap_or(0.0), params.gain_bri.unwrap_or(0.0)),
-                    ("Offset", "offset_sat", "offset_bri", params.offset_sat.unwrap_or(0.0), params.offset_bri.unwrap_or(0.0)),
+                for (group_label, sat_name, bri_name, sat_val, bri_val) in [
+                    ("LIFT", "lift_sat", "lift_bri", params.lift_sat.unwrap_or(0.0), params.lift_bri.unwrap_or(0.0)),
+                    ("GAMMA", "gamma_sat", "gamma_bri", params.gamma_sat.unwrap_or(0.0), params.gamma_bri.unwrap_or(0.0)),
+                    ("GAIN", "gain_sat", "gain_bri", params.gain_sat.unwrap_or(0.0), params.gain_bri.unwrap_or(0.0)),
+                    ("OFFSET", "offset_sat", "offset_bri", params.offset_sat.unwrap_or(0.0), params.offset_bri.unwrap_or(0.0)),
                 ] {
-                    ui.label(egui::RichText::new(label).size(10.0).color(theme.text_dim));
+                    let reset = section_header(ui, group_label, true, theme);
+                    if reset {
+                        params.apply_override(sat_name, 0.0);
+                        params.apply_override(bri_name, 0.0);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                    }
                     let mut s = sat_val;
-                    if grade_slider(ui, "Sat", &mut s, -1.0..=1.0, "") {
+                    if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme) {
                         params.apply_override(sat_name, s);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
                     }
                     let mut b = bri_val;
-                    if grade_slider(ui, "Bri", &mut b, -1.0..=1.0, "") {
+                    if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme) {
                         params.apply_override(bri_name, b);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
                     }
+                    section_divider(ui);
                 }
             }
             NodeKind::RGBCurves => {
+                // Section header: "RGB CURVES" with reset + enable
+                let reset = section_header(ui, "RGB CURVES", *enabled, theme);
+                if reset {
+                    // Reset all curves to identity (2 points: [0,0] and [1,1])
+                    if let Some(c) = &mut params.curves {
+                        c.master = vec![[0.0, 0.0], [1.0, 1.0]];
+                        c.red = vec![[0.0, 0.0], [1.0, 1.0]];
+                        c.green = vec![[0.0, 0.0], [1.0, 1.0]];
+                        c.blue = vec![[0.0, 0.0], [1.0, 1.0]];
+                    }
+                    params.curves_mix = Some(1.0);
+                    params.curves_preserve_luma = Some(false);
+                    cmds.push(AppCommand::SetNodeCurves {
+                        clip_id, node_id,
+                        curves: params.curves.clone().unwrap_or_default(),
+                    });
+                }
+
+                // Channel selector pills + eyedropper icon
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    for ch in [CurveChannel::Master, CurveChannel::Red, CurveChannel::Green, CurveChannel::Blue] {
-                        let label = match ch { CurveChannel::Master => "M", CurveChannel::Red => "R", CurveChannel::Green => "G", CurveChannel::Blue => "B" };
-                        if ui.selectable_label(self.active_curve_channel == ch, label).clicked() {
-                            self.active_curve_channel = ch;
-                        }
+                    ui.add_space(PAD);
+                    for (ch, label, color) in [
+                        (CurveChannel::Master, "M", theme.text_accent),
+                        (CurveChannel::Red, "R", egui::Color32::from_rgb(0xc0, 0x60, 0x60)),
+                        (CurveChannel::Green, "G", egui::Color32::from_rgb(0x60, 0xb0, 0x60)),
+                        (CurveChannel::Blue, "B", egui::Color32::from_rgb(0x60, 0x70, 0xc0)),
+                    ] {
+                        let active = self.active_curve_channel == ch;
+                        let size = egui::vec2(26.0, 22.0);
+                        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                        let bg = if active { color } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 18) };
+                        let text_color = if active { egui::Color32::from_rgb(0x1a, 0x1a, 0x1c) } else { color };
+                        ui.painter().rect_filled(rect, 4.0, bg);
+                        ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5,
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
+                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
+                            label, egui::FontId::proportional(11.0), text_color);
+                        if resp.clicked() { self.active_curve_channel = ch; }
+                    }
+
+                    // Eyedropper button — pushed to the right
+                    let remaining = ui.available_width() - PAD;
+                    if remaining > 30.0 {
+                        ui.add_space(remaining - 28.0);
+                        let resp = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+                        let r = resp.0;
+                        let p = ui.painter();
+                        // Button bg
+                        let bg = if resp.1.hovered() {
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)
+                        } else {
+                            egui::Color32::from_rgb(0x2a, 0x2a, 0x2e)
+                        };
+                        p.rect_filled(r, 5.0, bg);
+                        p.rect_stroke(r, 5.0, egui::Stroke::new(0.5,
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 38)));
+                        // Pen icon using lines
+                        let c = egui::Color32::from_rgba_premultiplied(255, 255, 255, 140);
+                        let cx = r.center().x;
+                        let cy = r.center().y;
+                        p.line_segment([egui::pos2(cx+3.0, cy-7.0), egui::pos2(cx+7.0, cy-3.0)], egui::Stroke::new(3.0, c));
+                        p.line_segment([egui::pos2(cx+4.0, cy-4.0), egui::pos2(cx-3.0, cy+3.0)], egui::Stroke::new(1.5, c));
+                        p.line_segment([egui::pos2(cx-3.0, cy+3.0), egui::pos2(cx-6.0, cy+7.0)], egui::Stroke::new(1.0, c));
+                        p.circle_filled(egui::pos2(cx-6.0, cy+7.0), 1.5, c);
                     }
                 });
+                ui.add_space(6.0);
+
+                // Curve editor — fill available width, make it roughly square
                 let curves = params.curves.get_or_insert_with(Default::default);
-                let points = match self.active_curve_channel {
-                    CurveChannel::Master => &mut curves.master, CurveChannel::Red => &mut curves.red,
-                    CurveChannel::Green => &mut curves.green, CurveChannel::Blue => &mut curves.blue,
-                };
-                let curve_h = ui.available_width().clamp(100.0, 200.0);
-                let resp = curves_editor::curves_editor_sized(ui, theme, self.active_curve_channel, points, curve_h, None);
-                if resp.changed {
+                let curve_w = ui.available_width() - PAD * 2.0;
+                let curve_h = curve_w.clamp(100.0, 500.0);
+                let ch = self.active_curve_channel;
+                let mut curves_changed = false;
+                {
+                    let points = match ch {
+                        CurveChannel::Master => &mut curves.master, CurveChannel::Red => &mut curves.red,
+                        CurveChannel::Green => &mut curves.green, CurveChannel::Blue => &mut curves.blue,
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add_space(PAD);
+                        let resp = curves_editor::curves_editor_sized(ui, theme, ch, points, curve_h, None);
+                        if resp.changed { curves_changed = true; }
+                    });
+                }
+                if curves_changed {
                     cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: curves.clone() });
                 }
-                let mut preserve = params.curves_preserve_luma.unwrap_or(false);
-                if ui.checkbox(&mut preserve, "Preserve Luma").changed() { params.curves_preserve_luma = Some(preserve); }
+                ui.add_space(6.0);
+
+                // Preserve Luma checkbox
+                ui.horizontal(|ui| {
+                    ui.add_space(PAD);
+                    let mut preserve = params.curves_preserve_luma.unwrap_or(false);
+                    if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
+                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 140))).changed()
+                    {
+                        params.curves_preserve_luma = Some(preserve);
+                    }
+                });
+                ui.add_space(2.0);
+
+                // Mix slider — same style as Color tab
                 let mut mix = params.curves_mix.unwrap_or(1.0);
-                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "") {
+                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, "", theme) {
                     params.curves_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: mix });
                 }
             }
             NodeKind::HueSatCurves => {
                 let huesat = params.huesat.get_or_insert_with(Default::default);
-                for (i, label) in ["HvH", "HvS", "HvL", "LvS", "SvS", "OvS"].iter().enumerate() {
-                    let points = match i {
-                        0 => &mut huesat.hue_vs_hue, 1 => &mut huesat.hue_vs_sat,
-                        2 => &mut huesat.hue_vs_lum, 3 => &mut huesat.lum_vs_sat,
-                        4 => &mut huesat.sat_vs_sat, _ => &mut huesat.orange_vs_sat,
-                    };
-                    ui.label(egui::RichText::new(*label).size(10.0).color(theme.text_dim));
-                    let hs_h = ui.available_width().clamp(50.0, 100.0);
-                    let resp = curves_editor::curves_editor_sized(ui, theme, CurveChannel::Master, points, hs_h, None);
-                    if resp.changed {
-                        cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
+
+                // Stacked curve editors: LUMA (HvH), RED (HvS), GREEN (HvL), BLUE (LvS)
+                // Plus SvS and OvS as additional curves
+                // Matching FCP's Color Curves layout
+                let curve_entries: Vec<(&str, egui::Color32, CurveChannel, usize)> = vec![
+                    ("LUMA", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc), CurveChannel::Master, 0),
+                    ("RED", egui::Color32::from_rgb(0xff, 0x50, 0x50), CurveChannel::Red, 1),
+                    ("GREEN", egui::Color32::from_rgb(0x40, 0xcc, 0x50), CurveChannel::Green, 2),
+                    ("BLUE", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
+                ];
+
+                let curve_h = 90.0_f32;
+
+                let mut huesat_changed = false;
+
+                for (label, color, channel, curve_idx) in &curve_entries {
+                    // Header: colored dot + label + reset icon + eyedropper
+                    let mut reset_clicked = false;
+                    ui.horizontal(|ui| {
+                        ui.add_space(PAD);
+                        // Colored dot
+                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot_rect.center(), 4.0, *color);
+                        // Label
+                        ui.label(egui::RichText::new(*label).size(10.0)
+                            .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)));
+
+                        // Push icons to the right
+                        let remaining = ui.available_width() - PAD;
+                        if remaining > 60.0 {
+                            ui.add_space(remaining - 56.0);
+
+                            // Eyedropper icon button
+                            let (ed_rect, _ed_resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                            let p = ui.painter();
+                            let c = egui::Color32::from_rgba_premultiplied(255, 255, 255, 80);
+                            let cx = ed_rect.center().x;
+                            let cy = ed_rect.center().y;
+                            p.line_segment([egui::pos2(cx+2.0, cy-5.0), egui::pos2(cx+5.0, cy-2.0)], egui::Stroke::new(2.0, c));
+                            p.line_segment([egui::pos2(cx+3.0, cy-3.0), egui::pos2(cx-2.0, cy+2.0)], egui::Stroke::new(1.2, c));
+                            p.line_segment([egui::pos2(cx-2.0, cy+2.0), egui::pos2(cx-4.0, cy+5.0)], egui::Stroke::new(0.8, c));
+                            p.circle_filled(egui::pos2(cx-4.0, cy+5.0), 1.0, c);
+
+                            ui.add_space(4.0);
+
+                            // Reset icon button
+                            let (rs_rect, rs_resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                            let icon_color = if rs_resp.hovered() {
+                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 160)
+                            } else {
+                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 80)
+                            };
+                            let ix = rs_rect.center().x;
+                            let iy = rs_rect.center().y;
+                            let ir = 4.5;
+                            for s in 0..6 {
+                                let a1 = std::f32::consts::PI * 0.2 + (s as f32 / 6.0) * std::f32::consts::PI * 1.5;
+                                let a2 = std::f32::consts::PI * 0.2 + ((s + 1) as f32 / 6.0) * std::f32::consts::PI * 1.5;
+                                ui.painter().line_segment([
+                                    egui::pos2(ix + a1.cos() * ir, iy + a1.sin() * ir),
+                                    egui::pos2(ix + a2.cos() * ir, iy + a2.sin() * ir),
+                                ], egui::Stroke::new(1.0, icon_color));
+                            }
+                            // Arrow tip
+                            let end_a = std::f32::consts::PI * 0.2;
+                            let ax = ix + end_a.cos() * ir;
+                            let ay = iy + end_a.sin() * ir;
+                            ui.painter().line_segment([egui::pos2(ax, ay), egui::pos2(ax-2.5, ay-1.5)], egui::Stroke::new(1.0, icon_color));
+                            ui.painter().line_segment([egui::pos2(ax, ay), egui::pos2(ax+0.5, ay-2.5)], egui::Stroke::new(1.0, icon_color));
+
+                            if rs_resp.clicked() {
+                                reset_clicked = true;
+                            }
+                        }
+                    });
+
+                    // Handle reset
+                    if reset_clicked {
+                        match curve_idx {
+                            0 => huesat.hue_vs_hue.clear(),
+                            1 => huesat.hue_vs_sat.clear(),
+                            2 => huesat.hue_vs_lum.clear(),
+                            _ => huesat.lum_vs_sat.clear(),
+                        }
+                        huesat_changed = true;
                     }
+
+                    // Curve editor
+                    let points = match curve_idx {
+                        0 => &mut huesat.hue_vs_hue,
+                        1 => &mut huesat.hue_vs_sat,
+                        2 => &mut huesat.hue_vs_lum,
+                        _ => &mut huesat.lum_vs_sat,
+                    };
+
+                    let resp = curves_editor::curves_editor_sized(
+                        ui, theme, *channel, points, curve_h, None,
+                    );
+                    if resp.changed { huesat_changed = true; }
+                    ui.add_space(4.0);
                 }
+
+                if huesat_changed {
+                    cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
+                }
+
+                ui.add_space(4.0);
+
+                // Preserve Luma checkbox
+                ui.horizontal(|ui| {
+                    ui.add_space(PAD);
+                    let mut preserve = params.curves_preserve_luma.unwrap_or(false);
+                    if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
+                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 128))).changed()
+                    {
+                        params.curves_preserve_luma = Some(preserve);
+                    }
+                });
+                ui.add_space(2.0);
+
+                // Mix slider
                 let mut mix = params.huesat_mix.unwrap_or(1.0);
-                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "") {
+                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, "", theme) {
                     params.huesat_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "huesat_mix".into(), value: mix });
                 }
@@ -429,25 +807,362 @@ impl NodeInspectorPanel {
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Mockup-matching helpers ──────────────────────────────────────────────────
 
-fn grade_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> bool {
-    let pad = 12.0;
-    let w = (ui.available_width() - pad * 2.0).max(60.0);
+const PAD: f32 = 14.0;
+const ROW_H: f32 = 28.0;
 
-    // Drag speed: how many units per pixel of mouse movement
-    // Smaller = more precision. Based on range span.
+/// Section header: "EXPOSURE" with enabled dot and reset icon.
+/// Returns true if the reset button was clicked.
+fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTheme) -> bool {
+    ui.add_space(2.0);
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 26.0), egui::Sense::hover());
+
+    let icon_x = rect.max.x - PAD - 6.0;
+    let cy = rect.center().y;
+
+    {
+        let painter = ui.painter().clone();
+
+        // Section title
+        painter.text(
+            egui::pos2(rect.min.x + PAD, cy),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 71),
+        );
+
+        // Enabled dot
+        let dot_x = rect.max.x - PAD - 22.0;
+        let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
+        painter.circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
+
+        // Reset icon (circular arrow)
+        let icon_r = 5.0;
+        let icon_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 100);
+        let segments = 8;
+        for i in 0..segments {
+            let a1 = std::f32::consts::PI * 0.2 + (i as f32 / segments as f32) * std::f32::consts::PI * 1.5;
+            let a2 = std::f32::consts::PI * 0.2 + ((i + 1) as f32 / segments as f32) * std::f32::consts::PI * 1.5;
+            painter.line_segment(
+                [
+                    egui::pos2(icon_x + a1.cos() * icon_r, cy + a1.sin() * icon_r),
+                    egui::pos2(icon_x + a2.cos() * icon_r, cy + a2.sin() * icon_r),
+                ],
+                egui::Stroke::new(1.0, icon_color),
+            );
+        }
+        let end_a = std::f32::consts::PI * 0.2;
+        let ax = icon_x + end_a.cos() * icon_r;
+        let ay = cy + end_a.sin() * icon_r;
+        painter.line_segment([egui::pos2(ax, ay), egui::pos2(ax - 3.0, ay - 2.0)], egui::Stroke::new(1.0, icon_color));
+        painter.line_segment([egui::pos2(ax, ay), egui::pos2(ax + 1.0, ay - 3.0)], egui::Stroke::new(1.0, icon_color));
+    }
+
+    // Clickable reset button area
+    let reset_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(16.0, 16.0));
+    let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
+    reset_resp.clicked()
+}
+
+/// 0.5px divider line between sections
+fn section_divider(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18));
+    ui.add_space(4.0);
+}
+
+/// Single parameter row: [label] [==slider==] [value] [suffix]
+/// Matches the HTML mockup — shorter slider, proper proportions.
+fn inspector_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    theme: &KlippTheme,
+) -> bool {
+    let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
-    let speed = range_span / 800.0; // 800px of drag to cover full range — very precise
+    let speed = range_span / 800.0;
 
+    // Proportions matching the mockup:
+    // Label: ~28% | Slider: ~38% | Value: ~18% | Suffix: ~12% | Padding: rest
+    let label_w = (avail_w * 0.28).max(50.0);
+    let suffix_w = if suffix.is_empty() { 0.0 } else { (avail_w * 0.10).max(28.0) };
+    let value_w = (avail_w * 0.14).max(32.0);
+    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - suffix_w - 8.0).max(40.0);
+
+    let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
+
+    if resp.hovered() {
+        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+    }
+
+    let cy = row_rect.center().y;
+    let pct = ((*value - range.start()) / range_span).clamp(0.0, 1.0);
+
+    {
+        let painter = ui.painter().clone();
+
+        // Label
+        painter.text(
+            egui::pos2(row_rect.min.x + PAD, cy),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+        );
+
+        // Slider track
+        let slider_x = row_rect.min.x + PAD + label_w;
+        let track_y = cy - 1.5;
+
+        // Filled portion (amber, left of thumb)
+        let fill_w = slider_w * pct;
+        if fill_w > 0.5 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(slider_x, track_y), egui::vec2(fill_w, 3.0)),
+                1.5,
+                egui::Color32::from_rgba_premultiplied(
+                    theme.text_accent.r(), theme.text_accent.g(), theme.text_accent.b(), 160,
+                ),
+            );
+        }
+        // Unfilled portion (dark grey, right of thumb)
+        let unfill_x = slider_x + fill_w;
+        let unfill_w = slider_w - fill_w;
+        if unfill_w > 0.5 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(unfill_x, track_y), egui::vec2(unfill_w, 3.0)),
+                1.5,
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 26),
+            );
+        }
+
+        // Thumb — clean white circle with subtle shadow
+        let thumb_x = slider_x + fill_w;
+        let thumb_r = 6.0;
+        painter.circle_filled(egui::pos2(thumb_x, cy), thumb_r + 0.5,
+            egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
+        painter.circle_filled(egui::pos2(thumb_x, cy), thumb_r,
+            egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
+
+        // Value
+        let value_x = slider_x + slider_w + 8.0;
+        painter.text(
+            egui::pos2(value_x, cy),
+            egui::Align2::LEFT_CENTER,
+            &format!("{:.2}", *value),
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166),
+        );
+
+        // Suffix
+        if !suffix.is_empty() {
+            painter.text(
+                egui::pos2(value_x + value_w, cy),
+                egui::Align2::LEFT_CENTER,
+                suffix,
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+            );
+        }
+    }
+
+    // Slider interaction
+    let slider_x = row_rect.min.x + PAD + label_w;
+    let interact_rect = egui::Rect::from_min_size(
+        egui::pos2(slider_x - 6.0, cy - 12.0),
+        egui::vec2(slider_w + 12.0, 24.0),
+    );
+    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
+    let mut changed = false;
+
+    if slider_resp.dragged() || slider_resp.clicked() {
+        if let Some(pos) = slider_resp.interact_pointer_pos() {
+            let new_pct = ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0);
+            *value = range.start() + new_pct * range_span;
+            changed = true;
+        }
+    }
+
+    // Value drag (precision adjustment by dragging the number)
+    let value_x = slider_x + slider_w + 8.0;
+    let val_rect = egui::Rect::from_min_size(
+        egui::pos2(value_x - 4.0, cy - 10.0),
+        egui::vec2(value_w + suffix_w + 8.0, 20.0),
+    );
+    let val_resp = ui.allocate_rect(val_rect, egui::Sense::click_and_drag());
+    if val_resp.dragged() {
+        let delta = val_resp.drag_delta().x * speed;
+        *value = (*value + delta).clamp(*range.start(), *range.end());
+        changed = true;
+    }
+
+    changed
+}
+
+/// Gradient slider row: track has a left→right color gradient instead of amber fill.
+/// Used for Temperature (blue→orange), Tint (green→pink), Global Mix.
+fn gradient_slider_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    color_left: egui::Color32,
+    color_right: egui::Color32,
+    _theme: &KlippTheme,
+) -> bool {
+    let avail_w = ui.available_width();
+    let range_span = (range.end() - range.start()).abs();
+    let label_w = (avail_w * 0.28).max(50.0);
+    let value_w = (avail_w * 0.14).max(32.0);
+    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - 8.0).max(40.0);
+    let pct = ((*value - range.start()) / range_span).clamp(0.0, 1.0);
+
+    let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
+    if resp.hovered() {
+        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+    }
+    let cy = row_rect.center().y;
+    let slider_x = row_rect.min.x + PAD + label_w;
+
+    {
+        let painter = ui.painter().clone();
+
+        painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
+            label, egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+
+        // Gradient track — draw pixel by pixel horizontally
+        let track_h = 6.0;
+        let track_y = cy - track_h / 2.0;
+        let steps = slider_w as usize;
+        for i in 0..steps {
+            let t = i as f32 / steps as f32;
+            let r = (color_left.r() as f32 * (1.0 - t) + color_right.r() as f32 * t) as u8;
+            let g = (color_left.g() as f32 * (1.0 - t) + color_right.g() as f32 * t) as u8;
+            let b = (color_left.b() as f32 * (1.0 - t) + color_right.b() as f32 * t) as u8;
+            let px = slider_x + i as f32;
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(px, track_y), egui::vec2(1.0, track_h)),
+                0.0, egui::Color32::from_rgb(r, g, b),
+            );
+        }
+        // Round ends
+        painter.circle_filled(egui::pos2(slider_x, cy), track_h / 2.0, color_left);
+        painter.circle_filled(egui::pos2(slider_x + slider_w, cy), track_h / 2.0, color_right);
+
+        // Thumb
+        let thumb_x = slider_x + slider_w * pct;
+        painter.circle_filled(egui::pos2(thumb_x, cy), 6.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
+        painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
+
+        // Value
+        painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
+            &format!("{:.2}", *value), egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+    }
+
+    let interact_rect = egui::Rect::from_min_size(
+        egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
+    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
+    let mut changed = false;
+    if slider_resp.dragged() || slider_resp.clicked() {
+        if let Some(pos) = slider_resp.interact_pointer_pos() {
+            *value = range.start() + ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * range_span;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Hue slider row: rainbow spectrum track.
+fn hue_slider_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    _theme: &KlippTheme,
+) -> bool {
+    let avail_w = ui.available_width();
+    let label_w = (avail_w * 0.28).max(50.0);
+    let value_w = (avail_w * 0.14).max(32.0);
+    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - 8.0).max(40.0);
+    let pct = (*value / 360.0).clamp(0.0, 1.0);
+
+    let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
+    if resp.hovered() {
+        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+    }
+    let cy = row_rect.center().y;
+    let slider_x = row_rect.min.x + PAD + label_w;
+
+    {
+        let painter = ui.painter().clone();
+
+        painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
+            label, egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+
+        // Rainbow spectrum track
+        let track_h = 6.0;
+        let track_y = cy - track_h / 2.0;
+        let steps = slider_w as usize;
+        for i in 0..steps {
+            let hue = i as f32 / steps as f32;
+            let (r, g, b) = crate::widgets::scopes::hue_to_rgb(hue);
+            let px = slider_x + i as f32;
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(px, track_y), egui::vec2(1.0, track_h)),
+                0.0, egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
+            );
+        }
+
+        // Thumb
+        let thumb_x = slider_x + slider_w * pct;
+        painter.circle_filled(egui::pos2(thumb_x, cy), 6.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
+        painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
+
+        // Value
+        painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
+            &format!("{:.2}", *value), egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+    }
+
+    let interact_rect = egui::Rect::from_min_size(
+        egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
+    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
+    let mut changed = false;
+    if slider_resp.dragged() || slider_resp.clicked() {
+        if let Some(pos) = slider_resp.interact_pointer_pos() {
+            *value = ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * 360.0;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Legacy grade_slider for non-Adjustments tabs (backward compatible)
+fn grade_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> bool {
+    // Use a dummy theme — the inspector_row reads accent from theme
+    // For legacy calls, use the simpler layout
+    let pad = 14.0;
+    let w = (ui.available_width() - pad * 2.0).max(60.0);
+    let range_span = (range.end() - range.start()).abs();
+    let speed = range_span / 800.0;
     let mut changed = false;
 
     ui.horizontal(|ui| {
         ui.add_space(pad);
-        ui.set_max_width(w);
-        ui.label(egui::RichText::new(label).size(10.0));
+        ui.label(egui::RichText::new(label).size(11.0).color(
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Draggable value readout — click and drag to adjust precisely
+            ui.add_space(pad);
             let resp = ui.add(
                 egui::DragValue::new(value)
                     .range(range.clone())
@@ -459,19 +1174,14 @@ fn grade_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops
             if resp.changed() { changed = true; }
         });
     });
-
-    // Visual slider bar
     ui.horizontal(|ui| {
         ui.add_space(pad);
         let resp = ui.add_sized(
-            [w, 12.0],
-            egui::Slider::new(value, range)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
+            [w, 10.0],
+            egui::Slider::new(value, range).show_value(false).clamping(egui::SliderClamping::Always),
         );
         if resp.changed() { changed = true; }
     });
-
     changed
 }
 

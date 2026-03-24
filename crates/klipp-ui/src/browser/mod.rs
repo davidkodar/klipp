@@ -6,6 +6,7 @@ pub mod audio_fx_tab;
 pub mod titles_tab;
 pub mod transitions_tab;
 
+use crate::icons::Icon;
 use crate::layout_state::BrowserTab;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -147,11 +148,9 @@ impl BrowserPanel {
                 // List button
                 let list_color = if list_active { theme.text_accent } else { theme.text_dim };
                 let list_resp = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("\u{2261}").size(14.0).color(list_color), // ≡
-                    )
-                    .min_size(egui::vec2(24.0, 24.0))
-                    .frame(false),
+                    egui::Button::image(Icon::List.image(14.0).tint(list_color))
+                        .min_size(egui::vec2(24.0, 24.0))
+                        .frame(false),
                 );
                 if list_resp.clicked() {
                     self.browser_view_mode = media_tab::BrowserViewMode::List;
@@ -160,11 +159,9 @@ impl BrowserPanel {
                 // Grid button
                 let grid_color = if grid_active { theme.text_accent } else { theme.text_dim };
                 let grid_resp = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("\u{229e}").size(14.0).color(grid_color), // ⊞
-                    )
-                    .min_size(egui::vec2(24.0, 24.0))
-                    .frame(false),
+                    egui::Button::image(Icon::GridFour.image(14.0).tint(grid_color))
+                        .min_size(egui::vec2(24.0, 24.0))
+                        .frame(false),
                 );
                 if grid_resp.clicked() {
                     self.browser_view_mode = media_tab::BrowserViewMode::Grid;
@@ -194,13 +191,11 @@ impl BrowserPanel {
                     });
 
                 // Sort direction toggle
-                let arrow = if self.media_sort_ascending { "\u{25B2}" } else { "\u{25BC}" };
+                let sort_icon = if self.media_sort_ascending { Icon::SortAscending } else { Icon::SortDescending };
                 if ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(arrow).size(10.0).color(theme.text_dim),
-                    )
-                    .min_size(egui::vec2(16.0, 24.0))
-                    .frame(false),
+                    egui::Button::image(sort_icon.image(12.0).tint(theme.text_dim))
+                        .min_size(egui::vec2(16.0, 24.0))
+                        .frame(false),
                 ).clicked() {
                     self.media_sort_ascending = !self.media_sort_ascending;
                 }
