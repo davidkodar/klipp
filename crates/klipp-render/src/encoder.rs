@@ -34,6 +34,8 @@ pub struct Encoder {
     audio_frame_size: Option<usize>,
     /// Pending audio samples (accumulate until we have a full encoder frame).
     audio_buffer: Vec<f32>,
+    /// Pre-allocated audio frame (reused per encode to avoid allocation issues).
+    audio_frame: Option<ffmpeg_next::frame::Audio>,
     /// Name of the video encoder in use (for reporting).
     video_codec_name: &'static str,
     /// Audio resampler (f32 packed stereo → encoder's required format).
@@ -443,6 +445,15 @@ impl Encoder {
             audio_buffer: Vec::new(),
             audio_resampler,
             audio_sample_format: audio_sample_fmt,
+            audio_frame: if audio_frame_size.is_some() && audio_sample_fmt.is_some() {
+                Some(ffmpeg_next::frame::Audio::new(
+                    audio_sample_fmt.unwrap(),
+                    audio_frame_size.unwrap(),
+                    ffmpeg_next::ChannelLayout::STEREO,
+                ))
+            } else {
+                None
+            },
             video_codec_name,
         })
     }
@@ -523,74 +534,76 @@ impl Encoder {
 
         self.audio_buffer.extend_from_slice(samples);
 
-        // Encode complete frames
+        // Encode complete frames using pre-allocated frame
+        let is_planar = matches!(
+            self.audio_sample_format,
+            Some(ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar))
+        );
+
         while self.audio_buffer.len() >= floats_per_frame {
-            let frame_samples: Vec<f32> =
-                self.audio_buffer.drain(..floats_per_frame).collect();
-
-            // Build frame in the encoder's native format
-            let enc_fmt = self.audio_sample_format.unwrap_or(
-                ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed),
-            );
-            let mut send_frame = ffmpeg_next::frame::Audio::new(
-                enc_fmt,
-                frame_size,
-                ffmpeg_next::ChannelLayout::STEREO,
-            );
-
-            // Fill frame data based on format
-            match enc_fmt {
-                ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar) => {
-                    // Deinterleave: LRLRLR → L plane + R plane
-                    let plane0 = send_frame.data_mut(0);
+            // Fill the pre-allocated frame
+            if let Some(ref mut frame) = self.audio_frame {
+                if is_planar {
+                    let plane0 = frame.data_mut(0);
                     for i in 0..frame_size {
-                        let src_bytes = frame_samples[i * 2].to_le_bytes();
+                        let val = self.audio_buffer[i * 2];
                         let off = i * 4;
                         if off + 4 <= plane0.len() {
-                            plane0[off..off + 4].copy_from_slice(&src_bytes);
+                            plane0[off..off + 4].copy_from_slice(&val.to_le_bytes());
                         }
                     }
-                    let plane1 = send_frame.data_mut(1);
+                    let plane1 = frame.data_mut(1);
                     for i in 0..frame_size {
-                        let src_bytes = frame_samples[i * 2 + 1].to_le_bytes();
+                        let val = self.audio_buffer[i * 2 + 1];
                         let off = i * 4;
                         if off + 4 <= plane1.len() {
-                            plane1[off..off + 4].copy_from_slice(&src_bytes);
+                            plane1[off..off + 4].copy_from_slice(&val.to_le_bytes());
                         }
                     }
-                }
-                _ => {
-                    // Packed formats (f32 packed, s16, etc.) — copy raw bytes
-                    let dst = send_frame.data_mut(0);
-                    let src_bytes: &[u8] = bytemuck::cast_slice(&frame_samples);
+                } else {
+                    let dst = frame.data_mut(0);
+                    let src_bytes: &[u8] =
+                        bytemuck::cast_slice(&self.audio_buffer[..floats_per_frame]);
                     let copy_len = src_bytes.len().min(dst.len());
                     dst[..copy_len].copy_from_slice(&src_bytes[..copy_len]);
                 }
+                frame.set_pts(Some(self.audio_pts));
+                unsafe {
+                    let rate = self.audio_encoder.as_ref().unwrap().rate() as i32;
+                    (*frame.as_mut_ptr()).time_base = self.audio_time_base.unwrap().into();
+                    (*frame.as_mut_ptr()).sample_rate = rate;
+                }
             }
 
-            send_frame.set_pts(Some(self.audio_pts));
-            // Set time_base and sample_rate on the frame (required by FFmpeg 7+)
-            unsafe {
-                (*send_frame.as_mut_ptr()).time_base = self.audio_time_base.unwrap().into();
-                (*send_frame.as_mut_ptr()).sample_rate = self.audio_encoder.as_ref().unwrap().rate() as i32;
-            }
+            self.audio_buffer.drain(..floats_per_frame);
             self.audio_pts += frame_size as i64;
 
-            // Send frame to encoder — ignore EAGAIN (encoder will buffer internally)
-            match self.audio_encoder.as_mut().unwrap().send_frame(&send_frame) {
-                Ok(()) => {}
-                Err(ffmpeg_next::Error::Other { errno }) if errno == ffmpeg_next::error::EAGAIN => {
-                    // Drain and retry
+            // Get raw pointers before borrowing self for send/drain
+            let (frame_ptr, enc_ptr) = unsafe {
+                let fp = match &self.audio_frame {
+                    Some(f) => f.as_ptr(),
+                    None => continue,
+                };
+                let ep = self.audio_encoder.as_mut().unwrap().as_mut_ptr();
+                (fp, ep)
+            };
+
+            // Send frame via raw FFI (avoids borrow conflicts with drain)
+            let send_result =
+                unsafe { ffmpeg_next::ffi::avcodec_send_frame(enc_ptr, frame_ptr) };
+            match send_result {
+                0 => {}
+                e if e == ffmpeg_next::error::EAGAIN => {
                     self.drain_audio_packets()?;
-                    let _ = self.audio_encoder.as_mut().unwrap().send_frame(&send_frame);
+                    let ep2 = unsafe { self.audio_encoder.as_mut().unwrap().as_mut_ptr() };
+                    unsafe {
+                        ffmpeg_next::ffi::avcodec_send_frame(ep2, frame_ptr);
+                    }
                 }
-                Err(ffmpeg_next::Error::Other { errno: 22 }) => {
-                    // EINVAL — likely a frame format mismatch that slipped through.
-                    // Skip this frame rather than fail the entire export.
-                    tracing::warn!("audio send_frame EINVAL at pts={:?}, skipping", send_frame.pts());
-                }
-                Err(e) => {
-                    return Err(RenderError::Encode(format!("send audio frame: {e}")));
+                e => {
+                    if self.audio_pts < (frame_size * 5) as i64 {
+                        tracing::warn!("audio send_frame error={e} at pts={}", self.audio_pts);
+                    }
                 }
             }
 
