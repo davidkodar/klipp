@@ -230,6 +230,8 @@ mod tests {
     fn make_test_snapshot() -> SequenceSnapshot {
         SequenceSnapshot {
             fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
             width: 64,
             height: 64,
             sample_rate: 48000,
@@ -287,6 +289,8 @@ mod tests {
     fn find_topmost_active_clip_works() {
         let snapshot = SequenceSnapshot {
             fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
             width: 64,
             height: 64,
             sample_rate: 48000,

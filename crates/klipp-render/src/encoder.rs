@@ -69,10 +69,13 @@ impl Encoder {
         video_ctx.set_width(snapshot.width);
         video_ctx.set_height(snapshot.height);
         video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(
-            snapshot.fps as i32,
-            1,
+            snapshot.fps_num as i32,
+            snapshot.fps_den as i32,
         )));
-        video_ctx.set_time_base(ffmpeg_next::Rational::new(1, snapshot.fps as i32));
+        video_ctx.set_time_base(ffmpeg_next::Rational::new(
+            snapshot.fps_den as i32,
+            snapshot.fps_num as i32,
+        ));
 
         // Set pixel format based on codec
         let pix_fmt = match settings.video_codec {
@@ -300,7 +303,10 @@ impl Encoder {
 
         output_ctx
             .write_header()
-            .map_err(|e| RenderError::Encode(format!("write header: {e}")))?;
+            .map_err(|e| RenderError::Encode(format!(
+                "write header: {e} (codec={video_codec_name}, {}x{} @{}/{}fps, path={:?})",
+                snapshot.width, snapshot.height, snapshot.fps_num, snapshot.fps_den, output_path
+            )))?;
 
         debug!(
             "Encoder: {} {}x{} @{:.1}fps → {:?}",
@@ -609,6 +615,8 @@ mod tests {
     fn make_snapshot() -> SequenceSnapshot {
         SequenceSnapshot {
             fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
             width: 320,
             height: 240,
             sample_rate: 48000,

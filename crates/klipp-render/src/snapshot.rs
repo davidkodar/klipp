@@ -20,6 +20,10 @@ use std::path::PathBuf;
 #[derive(Clone)]
 pub struct SequenceSnapshot {
     pub fps: f64,
+    /// Exact frame rate numerator (e.g. 24000 for 23.976).
+    pub fps_num: u32,
+    /// Exact frame rate denominator (e.g. 1001 for 23.976).
+    pub fps_den: u32,
     pub width: u32,
     pub height: u32,
     pub sample_rate: u32,
@@ -244,6 +248,8 @@ impl SequenceSnapshot {
 
         Ok(Self {
             fps,
+            fps_num: seq.fps.num,
+            fps_den: seq.fps.den,
             width: seq.resolution.width,
             height: seq.resolution.height,
             sample_rate: 48000, // Standard NLE audio rate

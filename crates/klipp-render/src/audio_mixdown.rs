@@ -328,6 +328,8 @@ mod tests {
 
         SequenceSnapshot {
             fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
             width: 1920,
             height: 1080,
             sample_rate: 48000,
@@ -382,6 +384,8 @@ mod tests {
     fn samples_per_frame_30fps() {
         let mut snapshot = make_empty_snapshot(0);
         snapshot.fps = 30.0;
+        snapshot.fps_num = 30;
+        snapshot.fps_den = 1;
         let mixdown = AudioMixdown::new(&snapshot).unwrap();
         assert_eq!(mixdown.samples_per_frame(), 1600);
     }
@@ -395,6 +399,8 @@ mod tests {
 
         let mut snapshot = make_empty_snapshot(1);
         snapshot.fps = 30.0;
+        snapshot.fps_num = 30;
+        snapshot.fps_den = 1;
         snapshot.audio_tracks[0].clips.push(AudioClipSnapshot {
             timeline_start_frame: 0,
             timeline_end_frame: 60,

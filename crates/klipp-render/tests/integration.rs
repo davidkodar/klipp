@@ -37,6 +37,8 @@ fn snapshot_to_pipeline_roundtrip() {
     // Verify that a snapshot can be created and a pipeline initialized from it
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 320,
         height: 240,
         sample_rate: 48000,
@@ -71,6 +73,8 @@ fn snapshot_to_pipeline_roundtrip() {
 fn compositor_with_gap_produces_none() {
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 64,
         height: 64,
         sample_rate: 48000,
@@ -103,6 +107,8 @@ fn export_job_empty_sequence() {
 
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 64,
         height: 64,
         sample_rate: 48000,
@@ -148,6 +154,8 @@ fn export_job_cancellation_immediate() {
 
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 64,
         height: 64,
         sample_rate: 48000,
@@ -184,6 +192,8 @@ fn export_job_cancellation_midway() {
 
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 64,
         height: 64,
         sample_rate: 48000,
@@ -248,6 +258,8 @@ fn export_job_progress_advances() {
     let total = 10u64;
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 64,
         height: 64,
         sample_rate: 48000,
@@ -298,6 +310,8 @@ fn export_real_media_h264() {
 
     let snapshot = SequenceSnapshot {
         fps: 30.0,
+        fps_num: 30,
+        fps_den: 1,
         width: 640,
         height: 480,
         sample_rate: 48000,
@@ -400,6 +414,8 @@ fn export_real_media_with_color_grade() {
 
     let snapshot = SequenceSnapshot {
         fps: 30.0,
+        fps_num: 30,
+        fps_den: 1,
         width: 640,
         height: 480,
         sample_rate: 48000,
@@ -462,6 +478,8 @@ fn export_with_title_and_gap() {
 
     let snapshot = SequenceSnapshot {
         fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
         width: 320,
         height: 240,
         sample_rate: 48000,
