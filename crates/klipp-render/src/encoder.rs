@@ -162,10 +162,12 @@ impl Encoder {
         let mut video_opts = ffmpeg_next::Dictionary::new();
         match settings.video_codec {
             ExportVideoCodec::H264 if is_hw_encoder => {
-                // NVENC/AMF quality settings
-                // Map CRF 0-51 to constqp/cq range (lower = better, NVENC uses 0-51 too)
-                video_opts.set("rc", "constqp");
-                video_opts.set("qp", &settings.crf.to_string());
+                // NVENC: use VBR with constant quality (cq) — equivalent to CRF
+                video_opts.set("rc", "vbr");
+                video_opts.set("cq", &settings.crf.to_string());
+                // Set a high bitrate cap so VBR has room (0 = uncapped)
+                video_ctx.set_bit_rate(0);
+                video_opts.set("b:v", "0");
                 // NVENC preset: p1(fastest)..p7(best quality)
                 let nvenc_preset = match settings.preset {
                     klipp_core::EncoderPreset::Fast => "p4",
@@ -198,8 +200,10 @@ impl Encoder {
                 }
             }
             ExportVideoCodec::H265 if is_hw_encoder => {
-                video_opts.set("rc", "constqp");
-                video_opts.set("qp", &settings.crf.to_string());
+                video_opts.set("rc", "vbr");
+                video_opts.set("cq", &settings.crf.to_string());
+                video_ctx.set_bit_rate(0);
+                video_opts.set("b:v", "0");
                 let nvenc_preset = match settings.preset {
                     klipp_core::EncoderPreset::Fast => "p4",
                     klipp_core::EncoderPreset::Medium => "p5",
@@ -565,9 +569,10 @@ impl Encoder {
             }
 
             send_frame.set_pts(Some(self.audio_pts));
-            // Set time_base on the frame (required by FFmpeg 7+)
+            // Set time_base and sample_rate on the frame (required by FFmpeg 7+)
             unsafe {
                 (*send_frame.as_mut_ptr()).time_base = self.audio_time_base.unwrap().into();
+                (*send_frame.as_mut_ptr()).sample_rate = self.audio_encoder.as_ref().unwrap().rate() as i32;
             }
             self.audio_pts += frame_size as i64;
 

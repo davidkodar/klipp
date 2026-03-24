@@ -1499,7 +1499,7 @@ impl KlippApp {
                     self.state.show_export_dialog = true;
                     if self.export_dialog.output_path.is_empty() {
                         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                        self.export_dialog.output_path = format!("{home}/output.mp4");
+                        self.export_dialog.output_path = format!("{home}/output.{}", self.export_dialog.format.extension());
                     }
                     // Restore last-used preset
                     if self.export_dialog.selected_preset_id.is_none() {
@@ -3981,7 +3981,7 @@ impl KlippApp {
                 self.state.show_export_dialog = true;
                 if self.export_dialog.output_path.is_empty() {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    self.export_dialog.output_path = format!("{home}/output.mp4");
+                    self.export_dialog.output_path = format!("{home}/output.{}", self.export_dialog.format.extension());
                 }
             }
             // Ctrl+, — Preferences
@@ -5968,6 +5968,9 @@ impl KlippApp {
                         });
                         ui.end_row();
 
+                        // Auto-update file extension when format changes
+                        let old_ext = self.export_dialog.format.extension();
+
                         ui.label("Format:");
                         let prev_format = self.export_dialog.format;
                         egui::ComboBox::from_id_salt("export_format")
@@ -5989,6 +5992,14 @@ impl KlippApp {
                             && self.export_dialog.video_codec.requires_mov()
                         {
                             self.export_dialog.video_codec = ExportVideoCodec::H264;
+                        }
+                        // Update file extension when format changes
+                        if self.export_dialog.format != prev_format {
+                            let new_ext = self.export_dialog.format.extension();
+                            if self.export_dialog.output_path.ends_with(&format!(".{old_ext}")) {
+                                let base = &self.export_dialog.output_path[..self.export_dialog.output_path.len() - old_ext.len()];
+                                self.export_dialog.output_path = format!("{base}{new_ext}");
+                            }
                         }
                         ui.end_row();
 
@@ -6023,7 +6034,13 @@ impl KlippApp {
                         if self.export_dialog.video_codec != prev_codec
                             && self.export_dialog.video_codec.requires_mov()
                         {
+                            let old_fmt_ext = self.export_dialog.format.extension();
                             self.export_dialog.format = ExportFormat::Mov;
+                            let new_fmt_ext = "mov";
+                            if self.export_dialog.output_path.ends_with(&format!(".{old_fmt_ext}")) {
+                                let base = &self.export_dialog.output_path[..self.export_dialog.output_path.len() - old_fmt_ext.len()];
+                                self.export_dialog.output_path = format!("{base}{new_fmt_ext}");
+                            }
                         }
                         ui.end_row();
 
