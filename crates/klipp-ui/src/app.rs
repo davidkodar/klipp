@@ -15,7 +15,7 @@ use crate::widgets::resizer;
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
     AppCommand, AppEvent, ClipId, GroupId, ExportAudioCodec, ExportFormat, ExportPreset,
-    ExportPresetSettings, ExportSettings, ExportVideoCodec, MarkerId, MediaId,
+    EncoderPreset, ExportPresetSettings, ExportSettings, ExportVideoCodec, MarkerId, MediaId,
     Timecode, Tool, ViewerMode, builtin_presets,
 };
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
@@ -59,6 +59,7 @@ struct ExportDialogState {
     format: ExportFormat,
     video_codec: ExportVideoCodec,
     crf: u32,
+    preset: EncoderPreset,
     audio_codec: ExportAudioCodec,
     audio_bitrate: u32,
     confirm_overwrite: bool,
@@ -75,6 +76,7 @@ impl Default for ExportDialogState {
             format: ExportFormat::Mp4,
             video_codec: ExportVideoCodec::H264,
             crf: 23,
+            preset: EncoderPreset::default(),
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate: 128,
             confirm_overwrite: false,
@@ -1513,21 +1515,24 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::ExportSequence { settings } => {
-                    // Route through RenderQueue
-                    let export_range = if self.export_dialog.marked_range {
-                        if let (Some(inp), Some(outp)) = (self.state.sequences[self.state.active_sequence_idx].in_point, self.state.sequences[self.state.active_sequence_idx].out_point) {
-                            Some((inp, outp))
-                        } else { None }
-                    } else { None };
+                    // Route through RenderQueue — snapshot reads in/out from sequence directly
                     let snapshot = klipp_export::RenderSnapshot::from_sequence(
                         &self.state.sequences[self.state.active_sequence_idx],
                         &self.state.media_pool,
-                        export_range,
+                        &settings,
+                        None, // TODO: pass global_lut_path from engine
                     );
                     let label = settings.output_path.file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "Render".into());
-                    self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snapshot);
+                    match snapshot {
+                        Ok(snap) => {
+                            self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to create render snapshot: {e}");
+                        }
+                    }
                     self.state.show_render_queue = true;
                     continue;
                 }
@@ -4542,7 +4547,8 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
     dialog.video_codec = settings.video_codec;
     dialog.crf = settings.crf;
     dialog.audio_codec = settings.audio_codec;
-    dialog.audio_bitrate = settings.audio_bitrate_kbps;
+    dialog.preset = settings.preset;
+    dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
 }
 
 impl eframe::App for KlippApp {
@@ -5873,7 +5879,13 @@ impl KlippApp {
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "H.264");
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "H.265");
                                 if self.export_dialog.format == ExportFormat::Mov {
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes, "ProRes");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145");
                                 }
                             });
                         ui.end_row();
@@ -5928,23 +5940,27 @@ impl KlippApp {
                             resolution: None,
                             fps: None,
                             crf: self.export_dialog.crf,
+                            preset: self.export_dialog.preset,
                             audio_codec: self.export_dialog.audio_codec,
-                            audio_bitrate_kbps: self.export_dialog.audio_bitrate,
+                            audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                         };
-                        let export_range = if self.export_dialog.marked_range {
-                            if let (Some(inp), Some(outp)) = (self.state.sequences[self.state.active_sequence_idx].in_point, self.state.sequences[self.state.active_sequence_idx].out_point) {
-                                Some((inp, outp))
-                            } else { None }
-                        } else { None };
                         let snapshot = klipp_export::RenderSnapshot::from_sequence(
                             &self.state.sequences[self.state.active_sequence_idx],
                             &self.state.media_pool,
-                            export_range,
+                            &settings,
+                            None, // TODO: pass global_lut_path from engine
                         );
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "Render".into());
-                        self.state.render_queue.add_job(path, settings, label, snapshot);
+                        match snapshot {
+                            Ok(snap) => {
+                                self.state.render_queue.add_job(path, settings, label, snap);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to create render snapshot: {e}");
+                            }
+                        }
                         self.state.show_export_dialog = false;
                         self.state.show_render_queue = true;
                         self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
@@ -5966,8 +5982,9 @@ impl KlippApp {
                                     resolution: None,
                                     fps: None,
                                     crf: self.export_dialog.crf,
+                                    preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
-                                    audio_bitrate_kbps: self.export_dialog.audio_bitrate,
+                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                 },
                             });
                         }
@@ -6009,8 +6026,9 @@ impl KlippApp {
                                     resolution: None,
                                     fps: None,
                                     crf: self.export_dialog.crf,
+                                    preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
-                                    audio_bitrate_kbps: self.export_dialog.audio_bitrate,
+                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                 },
                             });
                         }
@@ -6047,8 +6065,9 @@ impl KlippApp {
                                     resolution: None,
                                     fps: None,
                                     crf: self.export_dialog.crf,
+                                    preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
-                                    audio_bitrate_kbps: self.export_dialog.audio_bitrate,
+                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                 },
                             };
                             self.prefs.export.custom_presets.push(preset);

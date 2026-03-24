@@ -1,6 +1,6 @@
 use crate::prefs::Preferences;
 use klipp_core::{AppCommand, ExportPreset, ExportPresetSettings, ProxyResolution, builtin_presets};
-use klipp_core::{ExportAudioCodec, ExportFormat, ExportVideoCodec};
+use klipp_core::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefsTab {
@@ -20,6 +20,7 @@ pub struct PreferencesPanel {
     edit_format: ExportFormat,
     edit_video_codec: ExportVideoCodec,
     edit_crf: u32,
+    edit_preset: EncoderPreset,
     edit_audio_codec: ExportAudioCodec,
     edit_audio_bitrate: u32,
     edit_res_w: u32,
@@ -37,6 +38,7 @@ impl Default for PreferencesPanel {
             edit_format: ExportFormat::Mp4,
             edit_video_codec: ExportVideoCodec::H264,
             edit_crf: 23,
+            edit_preset: EncoderPreset::default(),
             edit_audio_codec: ExportAudioCodec::Aac,
             edit_audio_bitrate: 192,
             edit_res_w: 1920,
@@ -293,6 +295,7 @@ impl PreferencesPanel {
                     self.edit_format = ExportFormat::Mp4;
                     self.edit_video_codec = ExportVideoCodec::H264;
                     self.edit_crf = 23;
+                    self.edit_preset = EncoderPreset::default();
                     self.edit_audio_codec = ExportAudioCodec::Aac;
                     self.edit_audio_bitrate = 192;
                     self.edit_res_w = 1920;
@@ -345,7 +348,8 @@ impl PreferencesPanel {
                 self.edit_video_codec = preset.settings.video_codec;
                 self.edit_crf = preset.settings.crf;
                 self.edit_audio_codec = preset.settings.audio_codec;
-                self.edit_audio_bitrate = preset.settings.audio_bitrate_kbps;
+                self.edit_preset = preset.settings.preset;
+                self.edit_audio_bitrate = preset.settings.audio_bitrate_kbps.unwrap_or(192);
                 if let Some(res) = &preset.settings.resolution {
                     self.edit_res_w = res.width;
                     self.edit_res_h = res.height;
@@ -400,10 +404,32 @@ impl PreferencesPanel {
                                 ExportVideoCodec::H265,
                                 "H.265",
                             );
+                            ui.separator();
                             ui.selectable_value(
                                 &mut self.edit_video_codec,
-                                ExportVideoCodec::ProRes,
-                                "ProRes",
+                                ExportVideoCodec::ProRes422,
+                                "ProRes 422",
+                            );
+                            ui.selectable_value(
+                                &mut self.edit_video_codec,
+                                ExportVideoCodec::ProRes422HQ,
+                                "ProRes 422 HQ",
+                            );
+                            ui.selectable_value(
+                                &mut self.edit_video_codec,
+                                ExportVideoCodec::ProRes4444,
+                                "ProRes 4444",
+                            );
+                            ui.separator();
+                            ui.selectable_value(
+                                &mut self.edit_video_codec,
+                                ExportVideoCodec::DNxHD115,
+                                "DNxHD 115",
+                            );
+                            ui.selectable_value(
+                                &mut self.edit_video_codec,
+                                ExportVideoCodec::DNxHD145,
+                                "DNxHD 145",
                             );
                         });
                     ui.end_row();
@@ -491,8 +517,9 @@ impl PreferencesPanel {
                         },
                         fps: None,
                         crf: self.edit_crf,
+                        preset: self.edit_preset,
                         audio_codec: self.edit_audio_codec,
-                        audio_bitrate_kbps: self.edit_audio_bitrate,
+                        audio_bitrate_kbps: Some(self.edit_audio_bitrate),
                     };
 
                     if let Some(ref edit_id) = self.editing_preset_id {

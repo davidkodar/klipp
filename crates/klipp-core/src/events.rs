@@ -11,8 +11,42 @@ pub struct ExportSettings {
     pub resolution: Option<Resolution>,
     pub fps: Option<Fps>,
     pub crf: u32,
+    pub preset: EncoderPreset,
     pub audio_codec: ExportAudioCodec,
-    pub audio_bitrate_kbps: u32,
+    pub audio_bitrate_kbps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum EncoderPreset {
+    Fast,
+    #[default]
+    Medium,
+    Slow,
+    VerySlow,
+}
+
+impl EncoderPreset {
+    pub fn ffmpeg_value(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Medium => "medium",
+            Self::Slow => "slow",
+            Self::VerySlow => "veryslow",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fast => "Fast",
+            Self::Medium => "Medium",
+            Self::Slow => "Slow",
+            Self::VerySlow => "Very Slow",
+        }
+    }
+
+    pub fn all() -> &'static [EncoderPreset] {
+        &[Self::Fast, Self::Medium, Self::Slow, Self::VerySlow]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -44,7 +78,11 @@ impl ExportFormat {
 pub enum ExportVideoCodec {
     H264,
     H265,
-    ProRes,
+    ProRes422,
+    ProRes422HQ,
+    ProRes4444,
+    DNxHD115,
+    DNxHD145,
 }
 
 impl ExportVideoCodec {
@@ -52,7 +90,8 @@ impl ExportVideoCodec {
         match self {
             Self::H264 => "libx264",
             Self::H265 => "libx265",
-            Self::ProRes => "prores_ks",
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => "prores_ks",
+            Self::DNxHD115 | Self::DNxHD145 => "dnxhd",
         }
     }
 
@@ -60,8 +99,22 @@ impl ExportVideoCodec {
         match self {
             Self::H264 => "H.264",
             Self::H265 => "H.265",
-            Self::ProRes => "ProRes",
+            Self::ProRes422 => "ProRes 422",
+            Self::ProRes422HQ => "ProRes 422 HQ",
+            Self::ProRes4444 => "ProRes 4444",
+            Self::DNxHD115 => "DNxHD 115 Mbps",
+            Self::DNxHD145 => "DNxHD 145 Mbps",
         }
+    }
+
+    /// Whether this codec uses CRF-based quality (H.264/H.265) or fixed profile/bitrate.
+    pub fn uses_crf(&self) -> bool {
+        matches!(self, Self::H264 | Self::H265)
+    }
+
+    /// Whether this codec supports encoder preset (fast/medium/slow/veryslow).
+    pub fn supports_preset(&self) -> bool {
+        matches!(self, Self::H264 | Self::H265)
     }
 }
 
@@ -74,12 +127,36 @@ pub enum ExportAudioCodec {
 }
 
 impl ExportAudioCodec {
-    pub fn ffmpeg_args(&self, bitrate_kbps: u32) -> Vec<String> {
+    pub fn ffmpeg_args(&self, bitrate_kbps: Option<u32>) -> Vec<String> {
         match self {
-            Self::Aac => vec!["-c:a".into(), "aac".into(), "-b:a".into(), format!("{bitrate_kbps}k")],
-            Self::Mp3 => vec!["-c:a".into(), "libmp3lame".into(), "-b:a".into(), format!("{bitrate_kbps}k")],
+            Self::Aac => {
+                let mut args = vec!["-c:a".into(), "aac".into()];
+                if let Some(br) = bitrate_kbps {
+                    args.push("-b:a".into());
+                    args.push(format!("{br}k"));
+                }
+                args
+            }
+            Self::Mp3 => {
+                let mut args = vec!["-c:a".into(), "libmp3lame".into()];
+                if let Some(br) = bitrate_kbps {
+                    args.push("-b:a".into());
+                    args.push(format!("{br}k"));
+                }
+                args
+            }
             Self::Flac => vec!["-c:a".into(), "flac".into()],
             Self::Copy => vec!["-c:a".into(), "copy".into()],
+        }
+    }
+
+    /// ffmpeg-next codec name for in-process encoding.
+    pub fn ffmpeg_codec(&self) -> &'static str {
+        match self {
+            Self::Aac => "aac",
+            Self::Mp3 => "libmp3lame",
+            Self::Flac => "flac",
+            Self::Copy => "pcm_s16le", // Copy doesn't apply to in-process; use PCM fallback
         }
     }
 

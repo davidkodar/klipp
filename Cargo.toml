@@ -10,6 +10,7 @@ members = [
     "crates/klipp-plugin",
     "crates/klipp-effects",
     "crates/klipp-title",
+    "crates/klipp-render",
     "crates/klipp-export",
     "crates/klipp-ui",
     "crates/klipp-app",
@@ -101,6 +102,7 @@ klipp-engine  = { path = "crates/klipp-engine" }
 klipp-plugin  = { path = "crates/klipp-plugin" }
 klipp-effects = { path = "crates/klipp-effects" }
 klipp-title  = { path = "crates/klipp-title" }
+klipp-render  = { path = "crates/klipp-render" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ui      = { path = "crates/klipp-ui" }
 

@@ -1,0 +1,24 @@
+[package]
+name = "klipp-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+klipp-core     = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-media    = { workspace = true }
+klipp-color    = { workspace = true }
+klipp-effects  = { workspace = true }
+klipp-plugin   = { workspace = true }
+klipp-title    = { workspace = true }
+ffmpeg-next    = { workspace = true }
+bytemuck       = { workspace = true }
+wgpu           = { workspace = true }
+uuid           = { workspace = true }
+tracing        = { workspace = true }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+klipp-core     = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-media    = { workspace = true }

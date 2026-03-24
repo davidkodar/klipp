@@ -2024,6 +2024,7 @@ dependencies = [
  "crossbeam-channel",
  "klipp-core",
  "klipp-media",
+ "klipp-render",
  "klipp-timeline",
  "tracing",
  "uuid",
@@ -2066,6 +2067,25 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "klipp-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "ffmpeg-next",
+ "klipp-color",
+ "klipp-core",
+ "klipp-effects",
+ "klipp-media",
+ "klipp-plugin",
+ "klipp-timeline",
+ "klipp-title",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+ "wgpu",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use crate::events::{ExportAudioCodec, ExportFormat, ExportVideoCodec};
+use crate::events::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec};
 use crate::types::Resolution;
 use crate::time::Fps;
 use serde::{Deserialize, Serialize};
@@ -21,8 +21,10 @@ pub struct ExportPresetSettings {
     pub resolution: Option<Resolution>,
     pub fps: Option<Fps>,
     pub crf: u32,
+    #[serde(default)]
+    pub preset: EncoderPreset,
     pub audio_codec: ExportAudioCodec,
-    pub audio_bitrate_kbps: u32,
+    pub audio_bitrate_kbps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,8 +69,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 1920, height: 1080 }),
                 fps: None,
                 crf: 18,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 192,
+                audio_bitrate_kbps: Some(192),
             },
         },
         ExportPreset {
@@ -81,8 +84,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 3840, height: 2160 }),
                 fps: None,
                 crf: 20,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 256,
+                audio_bitrate_kbps: Some(256),
             },
         },
         ExportPreset {
@@ -95,8 +99,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 1920, height: 1080 }),
                 fps: None,
                 crf: 16,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 256,
+                audio_bitrate_kbps: Some(256),
             },
         },
         ExportPreset {
@@ -109,8 +114,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 1280, height: 720 }),
                 fps: None,
                 crf: 23,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 128,
+                audio_bitrate_kbps: Some(128),
             },
         },
         ExportPreset {
@@ -123,8 +129,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 1080, height: 1080 }),
                 fps: None,
                 crf: 20,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 192,
+                audio_bitrate_kbps: Some(192),
             },
         },
         ExportPreset {
@@ -137,8 +144,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 1080, height: 1920 }),
                 fps: None,
                 crf: 20,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 192,
+                audio_bitrate_kbps: Some(192),
             },
         },
         ExportPreset {
@@ -147,12 +155,13 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             built_in: true,
             settings: ExportPresetSettings {
                 format: ExportFormat::Mov,
-                video_codec: ExportVideoCodec::ProRes,
+                video_codec: ExportVideoCodec::ProRes422,
                 resolution: None,
                 fps: None,
                 crf: 0,
+                preset: EncoderPreset::default(),
                 audio_codec: ExportAudioCodec::Copy,
-                audio_bitrate_kbps: 0,
+                audio_bitrate_kbps: None,
             },
         },
         ExportPreset {
@@ -161,12 +170,13 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             built_in: true,
             settings: ExportPresetSettings {
                 format: ExportFormat::Mov,
-                video_codec: ExportVideoCodec::ProRes,
+                video_codec: ExportVideoCodec::DNxHD115,
                 resolution: Some(Resolution { width: 1920, height: 1080 }),
                 fps: None,
                 crf: 0,
+                preset: EncoderPreset::default(),
                 audio_codec: ExportAudioCodec::Copy,
-                audio_bitrate_kbps: 0,
+                audio_bitrate_kbps: None,
             },
         },
         ExportPreset {
@@ -179,8 +189,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: Some(Resolution { width: 3840, height: 2160 }),
                 fps: None,
                 crf: 22,
+                preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
-                audio_bitrate_kbps: 256,
+                audio_bitrate_kbps: Some(256),
             },
         },
         ExportPreset {
@@ -193,8 +204,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 resolution: None,
                 fps: None,
                 crf: 28,
+                preset: EncoderPreset::Fast,
                 audio_codec: ExportAudioCodec::Mp3,
-                audio_bitrate_kbps: 320,
+                audio_bitrate_kbps: Some(320),
             },
         },
     ]
