@@ -28,11 +28,19 @@ pub struct ExportJob {
     pub total_frames: u64,
     /// Shared string for hardware info reporting (set early in run()).
     pub hw_info: Arc<std::sync::Mutex<String>>,
+    /// Current render stage (e.g. "Encoding video", "Finalizing").
+    pub render_stage: Arc<std::sync::Mutex<String>>,
 }
 
 impl ExportJob {
     /// Run the export. Blocks until complete, cancelled, or error.
     /// Called from a background thread.
+    fn set_stage(stage: &Arc<std::sync::Mutex<String>>, text: &str) {
+        if let Ok(mut s) = stage.lock() {
+            *s = text.to_string();
+        }
+    }
+
     pub fn run(self) -> Result<(), RenderError> {
         // Early cancellation check before any initialization
         if self.cancel.load(Ordering::Relaxed) {
@@ -78,6 +86,8 @@ impl ExportJob {
                 );
             }
         }
+
+        Self::set_stage(&self.render_stage, "Initializing\u{2026}");
 
         // ─── Initialise all systems ───────────────────────────────
         // Gap 11: one pipeline per video track
@@ -139,6 +149,9 @@ impl ExportJob {
             vec![None; self.snapshot.video_tracks.len()];
 
         let mut export_frame_num: u64 = 0;
+
+        let codec_label = self.settings.video_codec.label();
+        Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
 
         // ─── THE MAIN RENDER LOOP ─────────────────────────────────
         for frame_num in start_frame..end_frame {
@@ -238,6 +251,8 @@ impl ExportJob {
             self.progress.store(export_frame_num, Ordering::Relaxed);
         }
 
+        Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
+
         // ─── Finalise ─────────────────────────────────────────────
         for (track_idx, clip_id) in current_clips.iter().enumerate() {
             if clip_id.is_some() {
@@ -327,6 +342,7 @@ mod tests {
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),
             hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+            render_stage: Arc::new(std::sync::Mutex::new(String::new())),
             total_frames: 100,
         };
 

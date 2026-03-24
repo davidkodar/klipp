@@ -5845,21 +5845,28 @@ impl KlippApp {
                     painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, &bar_text, font.clone(), egui::Color32::from_rgb(0, 0, 0));
                     painter.text(text_pos, egui::Align2::CENTER_CENTER, &bar_text, font, egui::Color32::WHITE);
 
-                    // ── Secondary info line: speed + hardware ──
-                    if job.status == klipp_export::RenderJobStatus::Rendering {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            if elapsed_secs > 0 && job.frames_done > 0 {
-                                let render_fps = job.frames_done as f64 / elapsed_secs as f64;
-                                let speed = if job.timeline_fps > 0.0 { render_fps / job.timeline_fps } else { 0.0 };
-                                ui.colored_label(subtle, format!("{:.1}\u{00D7} real-time ({:.0} fps)", speed, render_fps));
-                            }
-                            if !job.hw_info.is_empty() {
-                                ui.colored_label(dim, format!("  \u{2022}  {}", job.hw_info));
-                            }
-                        });
-                    } else if !job.hw_info.is_empty() && job.status == klipp_export::RenderJobStatus::Complete {
-                        ui.colored_label(dim, &job.hw_info);
+                    ui.add_space(2.0);
+
+                    // ── Render stage (what's happening now) ──
+                    if job.status == klipp_export::RenderJobStatus::Rendering && !job.render_stage.is_empty() {
+                        ui.colored_label(subtle, &job.render_stage);
+                    }
+
+                    // ── Speed line (secondary — smaller, dimmer) ──
+                    if job.status == klipp_export::RenderJobStatus::Rendering && elapsed_secs > 0 && job.frames_done > 0 {
+                        let render_fps = job.frames_done as f64 / elapsed_secs as f64;
+                        let speed = if job.timeline_fps > 0.0 { render_fps / job.timeline_fps } else { 0.0 };
+                        ui.colored_label(dim, format!("{:.1}\u{00D7} real-time \u{2022} {:.0} fps", speed, render_fps));
+                    }
+
+                    // ── Hardware info (tertiary — smallest, dimmest) ──
+                    let bg_dim = egui::Color32::from_rgb(90, 95, 105);
+                    if !job.hw_info.is_empty() {
+                        let hw_clean = job.hw_info
+                            .replace("Decode: ", "")
+                            .replace("Encode: ", "")
+                            .replace(" | ", " \u{2022} ");
+                        ui.colored_label(bg_dim, format!("GPU: {hw_clean}"));
                     }
 
                     // ── Error message ──
@@ -5867,7 +5874,9 @@ impl KlippApp {
                         ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
                     }
 
-                    // ── Action buttons ──
+                    ui.add_space(4.0);
+
+                    // ── Action buttons + collapsible details ──
                     ui.horizontal(|ui| {
                         match job.status {
                             klipp_export::RenderJobStatus::Queued
@@ -5877,43 +5886,54 @@ impl KlippApp {
                                 if ui.add(btn).clicked() {
                                     cancel_id = Some(job.id);
                                 }
+                                ui.add_space(8.0);
                             }
                             _ => {}
                         }
 
-                        // Collapsible details
+                        // Collapsible details (default: hidden)
                         let details_id = ui.id().with("details").with(job.id);
                         let mut show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
-                        if ui.small_button(if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" }).clicked() {
+                        let details_btn = ui.colored_label(
+                            bg_dim,
+                            if show_details { "\u{25BC} Details" } else { "\u{25B6} Details" },
+                        );
+                        if details_btn.clicked() {
                             show_details = !show_details;
                         }
                         ui.data_mut(|d| d.insert_temp(details_id, show_details));
+                    });
 
-                        if show_details {
-                            ui.end_row();
+                    // ── Details panel (collapsed by default) ──
+                    let details_id = ui.id().with("details").with(job.id);
+                    let show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
+                    if show_details {
+                        ui.add_space(2.0);
+                        ui.indent("render_details", |ui| {
                             let res = job.settings.resolution.as_ref()
                                 .map(|r| format!("{}×{}", r.width, r.height))
-                                .unwrap_or_else(|| "Sequence".into());
-                            let audio_str = format!("{}", job.settings.audio_codec.label());
+                                .unwrap_or_else(|| "Sequence resolution".into());
+                            let crf_str = if job.settings.video_codec.uses_crf() {
+                                format!("CRF {}", job.settings.crf)
+                            } else {
+                                "N/A".into()
+                            };
+                            let audio_str = job.settings.audio_codec.label();
                             let bitrate_str = job.settings.audio_bitrate_kbps
-                                .map(|b| format!(" {b} kbps"))
-                                .unwrap_or_default();
+                                .map(|b| format!("{b} kbps"))
+                                .unwrap_or_else(|| "default".into());
 
-                            ui.colored_label(dim, format!(
-                                "Codec: {} \u{2022} {} \u{2022} CRF {} \u{2022} Audio: {}{} \u{2022} {} frames",
-                                job.settings.video_codec.label(),
-                                res,
-                                job.settings.crf,
-                                audio_str,
-                                bitrate_str,
-                                job.total_frames,
-                            ));
-                        }
-                    });
+                            ui.colored_label(bg_dim, format!("Codec: {}", job.settings.video_codec.label()));
+                            ui.colored_label(bg_dim, format!("Resolution: {}", res));
+                            ui.colored_label(bg_dim, format!("Quality: {}", crf_str));
+                            ui.colored_label(bg_dim, format!("Audio: {} {}", audio_str, bitrate_str));
+                            ui.colored_label(bg_dim, format!("Frames: {}", job.total_frames));
+                        });
+                    }
 
                     ui.add_space(4.0);
                     ui.separator();
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                 }
 
                 if let Some(id) = cancel_id {

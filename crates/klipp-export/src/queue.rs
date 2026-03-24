@@ -36,6 +36,8 @@ pub struct RenderJob {
     pub hw_info: String,
     /// Timeline fps (for speed-vs-realtime display).
     pub timeline_fps: f64,
+    /// Current render stage (e.g. "Encoding video (H.265)…").
+    pub render_stage: String,
 }
 
 pub enum RenderQueueEvent {
@@ -84,6 +86,8 @@ pub struct RenderQueue {
     event_rx: Option<crossbeam_channel::Receiver<RenderThreadEvent>>,
     /// Shared hw_info from the active export job.
     active_hw_info: Option<Arc<std::sync::Mutex<String>>>,
+    /// Shared render_stage from the active export job.
+    active_render_stage: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 enum RenderThreadEvent {
@@ -109,6 +113,7 @@ impl RenderQueue {
             active_progress: None,
             event_rx: None,
             active_hw_info: None,
+            active_render_stage: None,
         }
     }
 
@@ -137,6 +142,7 @@ impl RenderQueue {
             frames_done: 0,
             hw_info: String::new(),
             timeline_fps,
+            render_stage: String::new(),
         });
         self.snapshots.push((id, snapshot));
         self.start_next_if_idle();
@@ -154,6 +160,7 @@ impl RenderQueue {
         self.active_progress = None;
         self.event_rx = None;
         self.active_hw_info = None;
+        self.active_render_stage = None;
     }
 
     pub fn cancel_job(&mut self, id: Uuid) {
@@ -173,6 +180,7 @@ impl RenderQueue {
                     self.active_progress = None;
                     self.event_rx = None;
                     self.active_hw_info = None;
+                    self.active_render_stage = None;
                     self.start_next_if_idle();
                 }
                 _ => {}
@@ -209,16 +217,23 @@ impl RenderQueue {
             }
         }
 
-        // Read hw_info from shared mutex
-        if let Some(ref hw) = self.active_hw_info {
-            if let Ok(info) = hw.lock() {
-                if !info.is_empty() {
-                    if let Some((id, _, _)) = self.active_progress {
+        // Read hw_info + render_stage from shared mutexes
+        if let Some((id, _, _)) = self.active_progress {
+            if let Some(ref hw) = self.active_hw_info {
+                if let Ok(info) = hw.lock() {
+                    if !info.is_empty() {
                         if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                             if job.hw_info.is_empty() {
                                 job.hw_info = info.clone();
                             }
                         }
+                    }
+                }
+            }
+            if let Some(ref stage) = self.active_render_stage {
+                if let Ok(s) = stage.lock() {
+                    if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                        job.render_stage = s.clone();
                     }
                 }
             }
@@ -258,6 +273,7 @@ impl RenderQueue {
                     self.active_progress = None;
                     self.event_rx = None;
                     self.active_hw_info = None;
+                    self.active_render_stage = None;
                     self.start_next_if_idle();
                 }
                 RenderThreadEvent::Cancelled { id } => {
@@ -269,6 +285,7 @@ impl RenderQueue {
                     self.active_progress = None;
                     self.event_rx = None;
                     self.active_hw_info = None;
+                    self.active_render_stage = None;
                     self.start_next_if_idle();
                 }
                 RenderThreadEvent::Failed { id, error } => {
@@ -282,6 +299,7 @@ impl RenderQueue {
                     self.active_progress = None;
                     self.event_rx = None;
                     self.active_hw_info = None;
+                    self.active_render_stage = None;
                     self.start_next_if_idle();
                 }
             }
@@ -346,7 +364,9 @@ impl RenderQueue {
 
         let cancel_clone = cancel.clone();
         let progress_clone = progress.clone();
+        let render_stage = Arc::new(std::sync::Mutex::new(String::new()));
         let hw_info_clone = hw_info.clone();
+        let render_stage_clone = render_stage.clone();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let handle = std::thread::Builder::new()
@@ -361,6 +381,7 @@ impl RenderQueue {
                     progress: progress_clone,
                     total_frames,
                     hw_info: hw_info_clone.clone(),
+                    render_stage: render_stage_clone,
                 };
 
                 // Send hw_info as soon as it's available (after decoder/encoder init)
@@ -402,5 +423,6 @@ impl RenderQueue {
         self.active_progress = Some((id, progress, total_frames));
         self.event_rx = Some(event_rx);
         self.active_hw_info = Some(hw_info);
+        self.active_render_stage = Some(render_stage);
     }
 }

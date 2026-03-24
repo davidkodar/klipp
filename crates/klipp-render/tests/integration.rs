@@ -130,6 +130,7 @@ fn export_job_empty_sequence() {
         cancel,
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 5,
     };
 
@@ -178,6 +179,7 @@ fn export_job_cancellation_immediate() {
         cancel,
         progress,
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 100,
     };
 
@@ -220,6 +222,7 @@ fn export_job_cancellation_midway() {
         cancel: cancel_clone,
         progress: progress_clone,
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 1000,
     };
 
@@ -284,6 +287,7 @@ fn export_job_progress_advances() {
         cancel,
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: total,
     };
 
@@ -366,6 +370,7 @@ fn export_real_media_h264() {
         cancel,
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 30,
     };
 
@@ -460,6 +465,7 @@ fn export_real_media_with_color_grade() {
         cancel,
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 15,
     };
 
@@ -537,6 +543,7 @@ fn export_with_title_and_gap() {
         cancel,
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         total_frames: 48,
     };
 
