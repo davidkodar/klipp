@@ -3150,9 +3150,10 @@ fn open_sw_decoder(
         .map_err(|e| format!("codec context: {e}"))?;
 
     unsafe {
-        let cores = std::thread::available_parallelism()
+        let cores = (std::thread::available_parallelism()
             .map(|n| n.get())
-            .unwrap_or(4) as i32;
+            .unwrap_or(4) as i32)
+            .min(16);
         (*codec_ctx.as_mut_ptr()).thread_count = cores;
     }
 
