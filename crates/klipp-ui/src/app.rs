@@ -439,7 +439,11 @@ impl KlippApp {
 
                     // Start thumbnail (always) + optional filmstrip/audio/skim generation
                     self.spawn_thumbnail(media_id, path.clone(), duration);
-                    if self.prefs.editing.auto_generate_filmstrips {
+                    let filmstrips_enabled = self.state.project_auto_filmstrips
+                        .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
+                    let skim_enabled = self.state.project_auto_skim
+                        .unwrap_or(self.prefs.editing.auto_generate_skim);
+                    if filmstrips_enabled {
                         self.spawn_filmstrip(media_id, path.clone(), duration);
                         self.state.filmstrip_generating = true;
                         self.state.filmstrip_generate_start = std::time::Instant::now();
@@ -448,7 +452,7 @@ impl KlippApp {
                     if has_audio {
                         self.spawn_audio_conform(media_id, path.clone());
                     }
-                    if self.prefs.editing.auto_generate_skim {
+                    if skim_enabled {
                         self.state.pending_skim_transcodes.push(media_id);
                     }
 
@@ -583,7 +587,8 @@ impl KlippApp {
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
-        let generate_if_missing = self.prefs.editing.auto_generate_filmstrips;
+        let generate_if_missing = self.state.project_auto_filmstrips
+            .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
         // Dense filmstrip: max 1.5-second gaps so zoomed-in timeline always
         // has representative thumbnails. Target ~400 frames.
         // A 15-min clip: every 2.25s. A 1-min clip: every 0.25s.
@@ -4003,6 +4008,8 @@ impl KlippApp {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
             track_header_width: self.state.track_header_width,
+            auto_generate_filmstrips: self.state.project_auto_filmstrips,
+            auto_generate_skim: self.state.project_auto_skim,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_with_color(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref()) {
@@ -4093,6 +4100,10 @@ impl KlippApp {
                 }
                 // Restore track header width
                 self.state.track_header_width = color_settings.track_header_width;
+
+                // Restore per-project media generation overrides
+                self.state.project_auto_filmstrips = color_settings.auto_generate_filmstrips;
+                self.state.project_auto_skim = color_settings.auto_generate_skim;
 
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -4979,6 +4990,8 @@ impl eframe::App for KlippApp {
                     global_lut_path: self.state.global_lut_path.clone(),
                     global_lut_opacity: self.state.global_lut_opacity,
                     track_header_width: self.state.track_header_width,
+                    auto_generate_filmstrips: self.state.project_auto_filmstrips,
+                    auto_generate_skim: self.state.project_auto_skim,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
                 match klipp_project::save_project_with_color(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref()) {
@@ -5234,7 +5247,7 @@ impl eframe::App for KlippApp {
             let mut still_open = true;
             crate::panels::project_info::show_project_info(
                 ctx,
-                &self.state,
+                &mut self.state,
                 &self.theme,
                 &mut still_open,
             );
@@ -6022,7 +6035,9 @@ impl KlippApp {
             }
 
             // No cache — skip fresh generation if preference is off
-            if !self.prefs.editing.auto_generate_skim {
+            let skim_enabled = self.state.project_auto_skim
+                .unwrap_or(self.prefs.editing.auto_generate_skim);
+            if !skim_enabled {
                 tracing::info!("Skim generation disabled by preference, skipping {:?}", source_path);
                 return;
             }

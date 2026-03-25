@@ -96,6 +96,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         global_lut_path: first.global_lut_path.as_ref().map(PathBuf::from),
         global_lut_opacity: first.global_lut_opacity,
         track_header_width: first.track_header_width,
+        auto_generate_filmstrips: first.auto_generate_filmstrips,
+        auto_generate_skim: first.auto_generate_skim,
     };
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());

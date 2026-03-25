@@ -45,6 +45,12 @@ pub struct SequenceJson {
     pub track_header_width: f32,
     #[serde(default)]
     pub last_playhead: Option<TimecodeJson>,
+    /// Per-project filmstrip generation override. None = use global pref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_generate_filmstrips: Option<bool>,
+    /// Per-project skim transcode override. None = use global pref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_generate_skim: Option<bool>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

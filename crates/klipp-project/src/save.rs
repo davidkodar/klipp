@@ -4,16 +4,26 @@ use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
 use tracing::info;
 
-/// Global color settings to persist alongside the project.
+/// Project-level settings persisted alongside sequence data.
 pub struct ColorSettings {
     pub global_lut_path: Option<std::path::PathBuf>,
     pub global_lut_opacity: f32,
     pub track_header_width: f32,
+    /// Per-project: generate filmstrip thumbnails on import. None = use global pref.
+    pub auto_generate_filmstrips: Option<bool>,
+    /// Per-project: generate skim transcodes on import. None = use global pref.
+    pub auto_generate_skim: Option<bool>,
 }
 
 impl Default for ColorSettings {
     fn default() -> Self {
-        Self { global_lut_path: None, global_lut_opacity: 1.0, track_header_width: 160.0 }
+        Self {
+            global_lut_path: None,
+            global_lut_opacity: 1.0,
+            track_header_width: 160.0,
+            auto_generate_filmstrips: None,
+            auto_generate_skim: None,
+        }
     }
 }
 
@@ -86,6 +96,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
         global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
         global_lut_opacity: color.global_lut_opacity,
         track_header_width: color.track_header_width,
+        auto_generate_filmstrips: color.auto_generate_filmstrips,
+        auto_generate_skim: color.auto_generate_skim,
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {

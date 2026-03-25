@@ -4,7 +4,7 @@ use crate::theme::KlippTheme;
 /// Show the Project Info window. Returns true if still open.
 pub fn show_project_info(
     ctx: &egui::Context,
-    state: &AppState,
+    state: &mut AppState,
     theme: &KlippTheme,
     open: &mut bool,
 ) {
@@ -83,6 +83,61 @@ pub fn show_project_info(
             // Clip count
             let clip_count: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
             info_row(ui, theme, "Clips", &clip_count.to_string());
+
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Project Settings")
+                    .strong()
+                    .size(12.0)
+                    .color(theme.text_primary),
+            );
+            ui.add_space(2.0);
+
+            // Filmstrip generation override
+            let mut filmstrip_mode = tri_state_index(state.project_auto_filmstrips);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Filmstrip generation:")
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+                egui::ComboBox::from_id_salt("proj_filmstrip")
+                    .width(120.0)
+                    .selected_text(tri_state_label(filmstrip_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut filmstrip_mode, 0, "Use global setting");
+                        ui.selectable_value(&mut filmstrip_mode, 1, "Always on");
+                        ui.selectable_value(&mut filmstrip_mode, 2, "Always off");
+                    });
+            });
+            let new_filmstrip = tri_state_from_index(filmstrip_mode);
+            if new_filmstrip != state.project_auto_filmstrips {
+                state.project_auto_filmstrips = new_filmstrip;
+                state.dirty = true;
+            }
+
+            // Skim transcode override
+            let mut skim_mode = tri_state_index(state.project_auto_skim);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Skim transcodes:")
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+                egui::ComboBox::from_id_salt("proj_skim")
+                    .width(120.0)
+                    .selected_text(tri_state_label(skim_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut skim_mode, 0, "Use global setting");
+                        ui.selectable_value(&mut skim_mode, 1, "Always on");
+                        ui.selectable_value(&mut skim_mode, 2, "Always off");
+                    });
+            });
+            let new_skim = tri_state_from_index(skim_mode);
+            if new_skim != state.project_auto_skim {
+                state.project_auto_skim = new_skim;
+                state.dirty = true;
+            }
         });
 }
 
@@ -99,6 +154,31 @@ fn info_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
                 .color(theme.text_primary),
         );
     });
+}
+
+/// Convert Option<bool> to combo index: 0=None, 1=Some(true), 2=Some(false)
+fn tri_state_index(v: Option<bool>) -> usize {
+    match v {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
+fn tri_state_from_index(i: usize) -> Option<bool> {
+    match i {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+fn tri_state_label(i: usize) -> &'static str {
+    match i {
+        1 => "Always on",
+        2 => "Always off",
+        _ => "Use global setting",
+    }
 }
 
 fn format_date(iso: &str) -> &str {

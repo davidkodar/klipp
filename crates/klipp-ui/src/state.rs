@@ -285,6 +285,10 @@ pub struct AppState {
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
     pub auto_create_tracks: bool,
 
+    // Per-project media generation overrides (None = use global pref)
+    pub project_auto_filmstrips: Option<bool>,
+    pub project_auto_skim: Option<bool>,
+
     // Media panel
     pub show_media_panel: bool,
 
@@ -526,6 +530,8 @@ impl Default for AppState {
             show_markers_panel: false,
             show_preferences: false,
             auto_create_tracks: true,
+            project_auto_filmstrips: None,
+            project_auto_skim: None,
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_new_project_dialog: false,
