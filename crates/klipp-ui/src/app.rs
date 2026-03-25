@@ -220,6 +220,7 @@ impl KlippApp {
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
+        app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -3252,6 +3253,10 @@ impl KlippApp {
                     continue;
                 }
                 // Dynamic tracks
+                AppCommand::SyncAutoCreateTracks(enabled) => {
+                    self.state.auto_create_tracks = *enabled;
+                    continue;
+                }
                 AppCommand::AddVideoTrack => {
                     let name = self.state.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Video);
                     self.state.sequences[self.state.active_sequence_idx].add_video_track(name);
@@ -3262,6 +3267,30 @@ impl KlippApp {
                 AppCommand::AddAudioTrack => {
                     let name = self.state.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Audio);
                     self.state.sequences[self.state.active_sequence_idx].add_audio_track(name);
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::AddTrackAbove { track_index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let ti = *track_index;
+                    if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
+                        let name = seq.next_track_name(kind);
+                        let track = klipp_timeline::Track::new(&name, kind);
+                        seq.tracks.insert(ti, track);
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::AddTrackBelow { track_index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let ti = *track_index;
+                    if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
+                        let name = seq.next_track_name(kind);
+                        let track = klipp_timeline::Track::new(&name, kind);
+                        seq.tracks.insert((ti + 1).min(seq.tracks.len()), track);
+                    }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     continue;

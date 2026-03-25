@@ -114,6 +114,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
         tracks: seq_json.tracks.iter().map(|t| {
             let kind = match t.kind.as_str() {
                 "Audio" => TrackKind::Audio,
+                "Text" => TrackKind::Text,
+                "Subtitle" => TrackKind::Subtitle,
                 _ => TrackKind::Video,
             };
             let mut track = Track::new(&t.name, kind);

@@ -49,8 +49,8 @@ pub fn show(
 
     for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
         let track_h = match track.kind {
-            TrackKind::Video => crate::theme::TRACK_VIDEO_H,
             TrackKind::Audio => crate::theme::TRACK_AUDIO_H,
+            _ => crate::theme::TRACK_VIDEO_H,
         };
 
         let track_rect = egui::Rect::from_min_size(
@@ -96,6 +96,8 @@ pub fn show(
                     theme.role_dialogue
                 }
             }
+            TrackKind::Text => theme.role_title,
+            TrackKind::Subtitle => theme.role_title,
         };
         let bar_rect = egui::Rect::from_min_size(
             track_rect.min,

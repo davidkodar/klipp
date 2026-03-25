@@ -6,6 +6,7 @@ use klipp_core::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec
 enum PrefsTab {
     General,
     Playback,
+    Editing,
     Export,
     Proxy,
 }
@@ -70,6 +71,7 @@ impl PreferencesPanel {
                     for (tab, label) in [
                         (PrefsTab::General, "General"),
                         (PrefsTab::Playback, "Playback"),
+                        (PrefsTab::Editing, "Editing"),
                         (PrefsTab::Export, "Export"),
                         (PrefsTab::Proxy, "Proxy"),
                     ] {
@@ -92,6 +94,7 @@ impl PreferencesPanel {
                     match self.active_tab {
                         PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
                         PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
+                        PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
                     }
@@ -249,6 +252,36 @@ impl PreferencesPanel {
                     }
                 }
             });
+    }
+
+    fn show_editing(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs: &mut Preferences,
+        dirty: &mut bool,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        ui.label(egui::RichText::new("Timeline").strong().size(12.0));
+        ui.add_space(4.0);
+
+        if ui
+            .checkbox(
+                &mut prefs.editing.auto_create_tracks,
+                "Automatically create tracks when dropping clips",
+            )
+            .changed()
+        {
+            *dirty = true;
+            cmds.push(AppCommand::SyncAutoCreateTracks(prefs.editing.auto_create_tracks));
+        }
+        ui.label(
+            egui::RichText::new(
+                "When enabled, dragging a clip above the topmost video track or below the \
+                 bottommost audio track automatically creates a new track.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
     }
 
     fn show_export(

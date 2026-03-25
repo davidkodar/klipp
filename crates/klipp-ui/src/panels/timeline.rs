@@ -326,8 +326,8 @@ impl TimelinePanel {
             for ti in 0..track_count {
                 let tk = state.sequence().tracks[ti].kind;
                 let th = match tk {
-                    TrackKind::Video => VIDEO_TRACK_HEIGHT,
                     TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                    _ => VIDEO_TRACK_HEIGHT,
                 };
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(content_rect.left(), pre_y),
@@ -342,15 +342,16 @@ impl TimelinePanel {
             let track_kind = state.sequence().tracks[track_idx].kind;
             let track_name = state.sequence().tracks[track_idx].name.clone();
             let track_height = match track_kind {
-                TrackKind::Video => VIDEO_TRACK_HEIGHT,
                 TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                _ => VIDEO_TRACK_HEIGHT,
             };
 
             // Draw track header label and controls — skip when embedded
             if !self.embedded {
             let label_color = match track_kind {
-                TrackKind::Video => egui::Color32::from_rgb(140, 140, 150),
                 TrackKind::Audio => egui::Color32::from_rgb(100, 150, 110),
+                TrackKind::Text | TrackKind::Subtitle => egui::Color32::from_rgb(180, 150, 100),
+                _ => egui::Color32::from_rgb(140, 140, 150),
             };
             let track_locked = state.sequence().tracks[track_idx].locked;
 
@@ -377,7 +378,7 @@ impl TimelinePanel {
             {
                 let track = &state.sequence().tracks[track_idx];
                 match track_kind {
-                    TrackKind::Video => {
+                    TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {
                         // [L] lock toggle
                         let l_rect = egui::Rect::from_min_size(
                             egui::pos2(header_rect.right() - 42.0, track_y + 4.0),
@@ -678,14 +679,12 @@ impl TimelinePanel {
                 let track_id = state.sequence().tracks[track_idx].id;
                 hdr_resp.context_menu(|ui| {
                     ui.set_min_width(160.0);
-                    if track_kind == TrackKind::Video
-                        && ui.button("Add Video Track Above").clicked()
-                    {
-                        cmds.push(AppCommand::AddVideoTrack);
+                    if ui.button("Add Track Above").clicked() {
+                        cmds.push(AppCommand::AddTrackAbove { track_index: track_idx });
                         ui.close_menu();
                     }
-                    if ui.button("Add Audio Track").clicked() {
-                        cmds.push(AppCommand::AddAudioTrack);
+                    if ui.button("Add Track Below").clicked() {
+                        cmds.push(AppCommand::AddTrackBelow { track_index: track_idx });
                         ui.close_menu();
                     }
                     ui.separator();
@@ -746,7 +745,7 @@ impl TimelinePanel {
                             .unwrap_or(false);
                         let compatible = match track_kind {
                             TrackKind::Audio => is_audio_only,
-                            TrackKind::Video => !is_audio_only,
+                            _ => !is_audio_only,
                         };
                         if compatible {
                             // Highlight drop target (cyan = valid)
@@ -779,9 +778,81 @@ impl TimelinePanel {
             track_y += track_height;
         }
 
-        // Clear media drag if pointer released outside any track
-        if state.dragging_media.is_some() && !ui.input(|i| i.pointer.any_down()) {
-            state.dragging_media = None;
+        // Media drag released outside any track — auto-create track if enabled
+        if let Some(drag_media_id) = state.dragging_media {
+            if !ui.input(|i| i.pointer.any_down()) {
+                let mut handled = false;
+                if state.auto_create_tracks {
+                    if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                        let is_audio_only = state.media_pool.get(&drag_media_id)
+                            .map(|item| item.video_codec.is_empty())
+                            .unwrap_or(false);
+                        // Check if cursor is above topmost track or below bottommost track
+                        let first_rect_top = self.track_rects.first().map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
+                        let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
+
+                        if above_all && !is_audio_only {
+                            // Create new video track at top
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            let track_idx = {
+                                state.sequence_mut().add_video_track(name);
+                                // New video track inserted before first audio track — find it
+                                // It's the topmost video track (index 0 after insertion)
+                                0
+                            };
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created video track for media drop above timeline");
+                        } else if below_all && is_audio_only {
+                            // Create new audio track at bottom
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            state.sequence_mut().add_audio_track(name);
+                            let track_idx = state.sequence().tracks.len() - 1;
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created audio track for media drop below timeline");
+                        } else if below_all && !is_audio_only {
+                            // Video media below all tracks — create video track above audio
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            state.sequence_mut().add_video_track(name);
+                            // add_video_track inserts before first audio track
+                            let track_idx = state.sequence().tracks.iter()
+                                .rposition(|t| t.kind == TrackKind::Video)
+                                .unwrap_or(0);
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created video track for media drop below timeline");
+                        } else if above_all && is_audio_only {
+                            // Audio media above all tracks — create audio track at bottom
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            state.sequence_mut().add_audio_track(name);
+                            let track_idx = state.sequence().tracks.len() - 1;
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created audio track for media drop above timeline");
+                        }
+                    }
+                }
+                if handled {
+                    state.dirty = true;
+                    cmds.push(AppCommand::SequenceUpdated);
+                }
+                state.dragging_media = None;
+            }
         }
 
         // Draw media drag ghost — a translucent clip preview following the cursor
@@ -1154,8 +1225,8 @@ impl TimelinePanel {
                 egui::Color32::from_rgb(58, 32, 32)
             } else {
                 match track_kind {
-                    TrackKind::Video => clip_color(clip_index),
                     TrackKind::Audio => egui::Color32::from_rgb(42, 90, 58),
+                    _ => clip_color(clip_index),
                 }
             };
             let bright_color = if is_title {
@@ -1164,8 +1235,8 @@ impl TimelinePanel {
                 egui::Color32::from_rgb(80, 45, 45)
             } else {
                 match track_kind {
-                    TrackKind::Video => clip_color_bright(clip_index),
                     TrackKind::Audio => egui::Color32::from_rgb(72, 120, 88),
+                    _ => clip_color_bright(clip_index),
                 }
             };
 
@@ -1190,8 +1261,8 @@ impl TimelinePanel {
                 egui::Color32::WHITE
             };
 
-            // Draw thumbnail/filmstrip background for video clips
-            if track_kind == TrackKind::Video {
+            // Draw thumbnail/filmstrip background for video/text/subtitle clips
+            if track_kind != TrackKind::Audio {
                 let mut drew_filmstrip = false;
                 if let Some(filmstrip) = clip.media_id().and_then(|mid| state.filmstrip_textures.get(&mid)) {
                     if !filmstrip.is_empty() {
@@ -1503,7 +1574,7 @@ impl TimelinePanel {
                         );
                     }
                 } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
-                    let font_size = if track_kind == TrackKind::Audio { 10.0 } else { 11.0 };
+                    let font_size = if matches!(track_kind, TrackKind::Audio) { 10.0 } else { 11.0 };
                     let max_text_width = clip_rect.width() - 8.0;
                     let label = if is_offline {
                         format!("\u{26A0} offline: {}", media.filename)
@@ -2941,8 +3012,8 @@ impl TimelinePanel {
                                         None => continue,
                                     };
                                     let other_h = match other_track.kind {
-                                        TrackKind::Video => VIDEO_TRACK_HEIGHT,
                                         TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                                        _ => VIDEO_TRACK_HEIGHT,
                                     };
 
                                     for clip in &other_track.clips {
@@ -3371,6 +3442,62 @@ impl TimelinePanel {
                                     state.dirty = true;
                                     cmds.push(AppCommand::SequenceUpdated);
                                 }
+                            }
+                        }
+                    }
+                } else if state.auto_create_tracks {
+                    // Dropped outside all tracks — auto-create a matching track
+                    if let Some(pos) = pointer_pos {
+                        let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
+                        let first_rect_top = self.track_rects.first().map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let above_all = first_rect_top.is_some_and(|top| pos.y < top);
+                        let below_all = last_rect_bottom.is_some_and(|bot| pos.y > bot);
+
+                        if let Some(kind) = source_kind {
+                            let should_create = match kind {
+                                TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => above_all || below_all,
+                                TrackKind::Audio => below_all || above_all,
+                            };
+                            if should_create {
+                                let name = state.sequence().next_track_name(kind);
+                                let new_track_idx = match kind {
+                                    TrackKind::Video => {
+                                        state.sequence_mut().add_video_track(name);
+                                        // Find the newly added video track
+                                        state.sequence().tracks.iter()
+                                            .rposition(|t| t.kind == TrackKind::Video)
+                                            .unwrap_or(0)
+                                    }
+                                    TrackKind::Audio => {
+                                        state.sequence_mut().add_audio_track(name);
+                                        state.sequence().tracks.len() - 1
+                                    }
+                                    TrackKind::Text => {
+                                        state.sequence_mut().add_text_track(name);
+                                        state.sequence().tracks.iter()
+                                            .rposition(|t| t.kind == TrackKind::Text)
+                                            .unwrap_or(0)
+                                    }
+                                    TrackKind::Subtitle => {
+                                        state.sequence_mut().add_subtitle_track(name);
+                                        state.sequence().tracks.len() - 1
+                                    }
+                                };
+                                // Move clip to the new track
+                                if let Some(track) = state.sequence().tracks.get(from_track) {
+                                    if let Some(clip) = track.find_clip(clip_id) {
+                                        cmds.push(AppCommand::MoveClipToTrack {
+                                            clip_id,
+                                            new_timeline_in: clip.timeline_in,
+                                            from_track,
+                                            to_track: new_track_idx,
+                                        });
+                                    }
+                                }
+                                state.dirty = true;
+                                cmds.push(AppCommand::SequenceUpdated);
+                                tracing::info!("Auto-created {:?} track for clip drag outside timeline", kind);
                             }
                         }
                     }

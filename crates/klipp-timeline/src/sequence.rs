@@ -136,6 +136,25 @@ impl Sequence {
         id
     }
 
+    /// Add a new text track. Inserts before the first Audio track (same region as video).
+    pub fn add_text_track(&mut self, name: String) -> TrackId {
+        let track = Track::new(&name, TrackKind::Text);
+        let id = track.id;
+        let insert_pos = self.tracks.iter()
+            .position(|t| t.kind == TrackKind::Audio)
+            .unwrap_or(self.tracks.len());
+        self.tracks.insert(insert_pos, track);
+        id
+    }
+
+    /// Add a new subtitle track at the end (after audio tracks).
+    pub fn add_subtitle_track(&mut self, name: String) -> TrackId {
+        let track = Track::new(&name, TrackKind::Subtitle);
+        let id = track.id;
+        self.tracks.push(track);
+        id
+    }
+
     /// Remove a track. Returns Err if track has clips.
     pub fn remove_track(&mut self, track_id: TrackId) -> Result<(), &'static str> {
         let pos = self.tracks.iter().position(|t| t.id == track_id)
@@ -227,6 +246,8 @@ impl Sequence {
         let prefix = match kind {
             TrackKind::Video => "Video",
             TrackKind::Audio => "Audio",
+            TrackKind::Text => "Text",
+            TrackKind::Subtitle => "Subtitle",
         };
         let count = self.tracks.iter().filter(|t| t.kind == kind).count();
         format!("{} {}", prefix, count + 1)
@@ -467,6 +488,8 @@ pub enum TransitionKind {
 pub enum TrackKind {
     Video,
     Audio,
+    Text,
+    Subtitle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

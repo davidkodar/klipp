@@ -8,6 +8,8 @@ fn default_true() -> bool { true }
 pub struct Preferences {
     pub general: GeneralPrefs,
     pub playback: PlaybackPrefs,
+    #[serde(default)]
+    pub editing: EditingPrefs,
     pub export: ExportPrefs,
     pub proxy: ProxyPrefs,
 }
@@ -92,6 +94,23 @@ pub struct PlaybackPrefs {
     /// Whether loop playback is enabled (cycle between in/out points or whole sequence).
     #[serde(default)]
     pub loop_playback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditingPrefs {
+    /// Automatically create a new track when a clip is dropped
+    /// above the top video track or below the bottom audio track.
+    /// Matches Resolve/Premiere behaviour.
+    #[serde(default = "default_true")]
+    pub auto_create_tracks: bool,
+}
+
+impl Default for EditingPrefs {
+    fn default() -> Self {
+        Self {
+            auto_create_tracks: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

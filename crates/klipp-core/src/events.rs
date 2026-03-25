@@ -394,6 +394,12 @@ pub enum AppCommand {
     // Dynamic tracks
     AddVideoTrack,
     AddAudioTrack,
+    /// Sync auto_create_tracks preference to AppState.
+    SyncAutoCreateTracks(bool),
+    /// Insert a new track of the same kind above the given track index.
+    AddTrackAbove { track_index: usize },
+    /// Insert a new track of the same kind below the given track index.
+    AddTrackBelow { track_index: usize },
     RemoveTrack { track_id: TrackId },
     RenameTrack { track_id: TrackId, name: String },
 

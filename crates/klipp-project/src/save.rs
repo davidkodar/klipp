@@ -102,6 +102,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
                 kind: match t.kind {
                     TrackKind::Video => "Video".to_string(),
                     TrackKind::Audio => "Audio".to_string(),
+                    TrackKind::Text => "Text".to_string(),
+                    TrackKind::Subtitle => "Subtitle".to_string(),
                 },
                 opacity: t.opacity,
                 volume: t.volume,

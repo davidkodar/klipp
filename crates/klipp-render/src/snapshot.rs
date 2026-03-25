@@ -140,7 +140,7 @@ impl SequenceSnapshot {
         // (V1 = index 0, composited first).
         for track in seq.tracks.iter().rev() {
             match track.kind {
-                TrackKind::Video => {
+                TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {
                     video_tracks.push(snapshot_video_track(track, media_pool, fps)?);
                 }
                 TrackKind::Audio => {
