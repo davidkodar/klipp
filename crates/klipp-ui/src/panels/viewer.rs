@@ -1,6 +1,7 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, ViewerMode};
+use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
 #[derive(Default)]
@@ -26,11 +27,13 @@ impl ViewerPanel {
         ui.painter().rect_filled(panel_rect, 0.0, egui::Color32::BLACK);
         ui.advance_cursor_after_rect(panel_rect);
 
-        // Scrub bar height
-        let scrub_h = 3.0;
+        // Reserve space: scrub bar (4px) + playbar (40px)
+        let scrub_h = 4.0;
+        let playbar_h = 40.0;
+        let bottom_h = scrub_h + playbar_h;
         let viewer_rect = egui::Rect::from_min_max(
             panel_rect.min,
-            egui::pos2(panel_rect.max.x, panel_rect.max.y - scrub_h),
+            egui::pos2(panel_rect.max.x, panel_rect.max.y - bottom_h),
         );
 
         // Source/Program toggle (top-left of viewer)
@@ -88,12 +91,19 @@ impl ViewerPanel {
             }
         }
 
-        // ── Scrub bar (bottom 3px) ──
+        // ── Scrub bar ──
         let scrub_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_rect.min.x, panel_rect.max.y - scrub_h),
+            egui::pos2(panel_rect.min.x, viewer_rect.max.y),
             egui::vec2(panel_rect.width(), scrub_h),
         );
         self.draw_scrub_bar(ui, state, theme, scrub_rect, &mut cmds);
+
+        // ── Playbar ──
+        let playbar_rect = egui::Rect::from_min_size(
+            egui::pos2(panel_rect.min.x, scrub_rect.max.y),
+            egui::vec2(panel_rect.width(), playbar_h),
+        );
+        self.draw_playbar(ui, state, theme, playbar_rect, &mut cmds);
 
         cmds
     }
@@ -410,43 +420,7 @@ impl ViewerPanel {
 
         // Safe area overlay removed — it looked like a viewer border
 
-        // ── Viewer overlay (bottom, above letterbox) ──
-        let overlay_y = viewer_rect.max.y - lb_h;
-        // Subtle gradient background
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(viewer_rect.min.x, overlay_y - 24.0),
-                egui::vec2(viewer_rect.width(), 24.0),
-            ),
-            0.0,
-            egui::Color32::from_rgba_premultiplied(0, 0, 0, 80),
-        );
-
-        // Timecode (left)
-        let tc_str = {
-            let s = state.playhead_smooth_secs;
-            let hh = (s / 3600.0) as u32;
-            let mm = ((s % 3600.0) / 60.0) as u32;
-            let ss = (s % 60.0) as u32;
-            let ff = ((s % 1.0) * state.fps.rate() as f64) as u32;
-            format!("{hh:02}:{mm:02}:{ss:02}:{ff:02}")
-        };
-        ui.painter().text(
-            egui::pos2(viewer_rect.min.x + 12.0, overlay_y - 12.0),
-            egui::Align2::LEFT_CENTER,
-            &tc_str,
-            egui::FontId::monospace(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 140),
-        );
-
-        // Zoom level (right)
-        ui.painter().text(
-            egui::pos2(viewer_rect.max.x - 12.0, overlay_y - 12.0),
-            egui::Align2::RIGHT_CENTER,
-            "100%",
-            egui::FontId::monospace(10.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 89),
-        );
+        // Timecode + zoom now shown in playbar below scrub bar
 
         // Proxy badge
         if state.use_proxies && current_media.is_some_and(|m| m.proxy_ready) {
@@ -511,6 +485,214 @@ impl ViewerPanel {
                 cmds.push(AppCommand::SeekTo(target_tc));
             }
         }
+    }
+
+    fn draw_playbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let enabled = state.playback != PlaybackState::Idle;
+        let fps_val = state.fps.as_f64();
+        let cy = rect.center().y;
+
+        // Background
+        ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 24, 30));
+
+        // ── Left: Timecode ──
+        let tc_str = format_timecode_hmsf(state.playhead_smooth_secs, state.fps.rate());
+        if state.editing_timecode {
+            let tc_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x + 8.0, cy - 12.0),
+                egui::vec2(110.0, 24.0),
+            );
+            let mut tc_ui = ui.new_child(egui::UiBuilder::new().max_rect(tc_rect));
+            let response = tc_ui.add(
+                egui::TextEdit::singleline(&mut state.timecode_input)
+                    .desired_width(100.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if !response.has_focus() { response.request_focus(); }
+            let lost = response.lost_focus();
+            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if lost || esc {
+                if enter {
+                    if let Some(tc) = parse_timecode_input(&state.timecode_input, state.fps) {
+                        cmds.push(AppCommand::SeekTo(tc));
+                    }
+                }
+                state.editing_timecode = false;
+            }
+        } else {
+            let tc_resp = ui.allocate_rect(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + 8.0, rect.min.y),
+                    egui::vec2(110.0, rect.height()),
+                ),
+                egui::Sense::click(),
+            );
+            ui.painter().text(
+                egui::pos2(rect.min.x + 12.0, cy),
+                egui::Align2::LEFT_CENTER,
+                &tc_str,
+                egui::FontId::monospace(14.0),
+                egui::Color32::from_rgb(200, 200, 210),
+            );
+            if tc_resp.clicked() {
+                state.editing_timecode = true;
+                state.timecode_input = tc_str;
+            }
+        }
+
+        // ── Center: Transport buttons ──
+        let btn_size = 30.0;
+        let play_size = 38.0;
+        let btn_spacing = 4.0;
+        let total_w = 7.0 * btn_size + play_size - btn_size + 6.0 * btn_spacing;
+        let mut x = rect.center().x - total_w / 2.0;
+
+        let nav_fg = egui::Color32::from_rgb(220, 220, 230);
+        let nav_bg = egui::Color32::from_rgb(40, 40, 48);
+        let nav_hover = egui::Color32::from_rgb(55, 55, 65);
+        let disabled_fg = egui::Color32::from_rgb(80, 80, 90);
+
+        // Skip back
+        x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(AppCommand::SeekTo(klipp_core::Timecode::zero())));
+        // Rewind
+        x += self.playbar_nav_btn(ui, Icon::Rewind, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Rewind (J)", cmds, Some(AppCommand::SeekRelative(-(fps_val * 10.0) as i64)));
+        // Step back
+        x += self.playbar_nav_btn(ui, Icon::CaretLeft, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step back 1 frame", cmds, Some(AppCommand::SeekRelative(-1)));
+
+        // Play / Pause (larger, amber)
+        {
+            let play_rect = egui::Rect::from_center_size(
+                egui::pos2(x + play_size / 2.0, cy),
+                egui::vec2(play_size, play_size),
+            );
+            let resp = ui.allocate_rect(play_rect, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+            let is_playing = state.playback == PlaybackState::Playing;
+            let bg = if enabled { theme.accent } else { egui::Color32::from_rgb(80, 60, 20) };
+            ui.painter().rect_filled(play_rect, play_size / 2.0, bg);
+            let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
+            let icon_rect = egui::Rect::from_center_size(play_rect.center(), egui::vec2(18.0, 18.0));
+            play_icon.bold(18.0).tint(egui::Color32::BLACK).paint_at(ui, icon_rect);
+            let clicked = resp.clicked();
+            resp.on_hover_text("Play / Pause (Space)");
+            if clicked && enabled {
+                if is_playing { cmds.push(AppCommand::Pause); } else { cmds.push(AppCommand::Play); }
+            }
+        }
+        x += play_size + btn_spacing;
+
+        // Step forward
+        x += self.playbar_nav_btn(ui, Icon::CaretRight, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step forward 1 frame", cmds, Some(AppCommand::SeekRelative(1)));
+        // Fast forward
+        x += self.playbar_nav_btn(ui, Icon::FastForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Fast forward (L)", cmds, Some(AppCommand::SeekRelative((fps_val * 10.0) as i64)));
+        // Skip forward
+        {
+            let dur = state.sequence_duration();
+            self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(AppCommand::SeekTo(dur)));
+        }
+
+        // ── Right: Mute | Slider | Vol% | Zoom% ──
+        // Layout from right: zoom(44) gap(8) vol%(40) gap(6) slider(60) gap(6) mute(20) gap(8)
+        let rx = rect.max.x - 12.0;
+
+        // Zoom percentage
+        ui.painter().text(
+            egui::pos2(rx, cy),
+            egui::Align2::RIGHT_CENTER,
+            "100%",
+            egui::FontId::monospace(11.0),
+            egui::Color32::from_rgb(120, 120, 130),
+        );
+
+        // Volume percentage
+        let vol_pct = (state.master_volume * 100.0) as u32;
+        let vol_text_x = rx - 52.0;
+        ui.painter().text(
+            egui::pos2(vol_text_x, cy),
+            egui::Align2::RIGHT_CENTER,
+            &format!("{}%", vol_pct),
+            egui::FontId::monospace(10.0),
+            egui::Color32::from_rgb(140, 140, 150),
+        );
+
+        // Volume slider
+        let slider_w = 60.0;
+        let slider_right = vol_text_x - 8.0;
+        let slider_rect = egui::Rect::from_min_size(
+            egui::pos2(slider_right - slider_w, cy - 8.0),
+            egui::vec2(slider_w, 16.0),
+        );
+        let mut vol = state.master_volume;
+        let mut slider_ui = ui.new_child(egui::UiBuilder::new().max_rect(slider_rect));
+        let slider = egui::Slider::new(&mut vol, 0.0..=1.3).show_value(false);
+        if slider_ui.add(slider).changed() {
+            state.master_volume = vol;
+            let effective = if state.master_muted { 0.0 } else { vol };
+            cmds.push(AppCommand::SetMasterVolume(effective));
+        }
+
+        // Mute button
+        let mute_x = slider_rect.min.x - 22.0;
+        let mute_rect = egui::Rect::from_center_size(
+            egui::pos2(mute_x, cy),
+            egui::vec2(20.0, 20.0),
+        );
+        let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
+        let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+        let mute_color = if state.master_muted {
+            egui::Color32::from_rgb(255, 80, 80)
+        } else {
+            egui::Color32::from_rgb(160, 160, 170)
+        };
+        let mute_icon_rect = egui::Rect::from_center_size(mute_rect.center(), egui::vec2(14.0, 14.0));
+        mute_icon.image(14.0).tint(mute_color).paint_at(ui, mute_icon_rect);
+        if mute_resp.clicked() {
+            state.master_muted = !state.master_muted;
+            let effective = if state.master_muted { 0.0 } else { state.master_volume };
+            cmds.push(AppCommand::SetMasterVolume(effective));
+        }
+    }
+
+    /// Helper for playbar navigation buttons. Returns advance width (btn_size + spacing).
+    #[allow(clippy::too_many_arguments)]
+    fn playbar_nav_btn(
+        &self,
+        ui: &mut egui::Ui,
+        icon: Icon,
+        x: f32,
+        cy: f32,
+        size: f32,
+        enabled: bool,
+        fg: egui::Color32,
+        bg: egui::Color32,
+        hover_bg: egui::Color32,
+        disabled_fg: egui::Color32,
+        tooltip: &str,
+        cmds: &mut Vec<AppCommand>,
+        cmd: Option<AppCommand>,
+    ) -> f32 {
+        let btn_rect = egui::Rect::from_center_size(
+            egui::pos2(x + size / 2.0, cy),
+            egui::vec2(size, size),
+        );
+        let resp = ui.allocate_rect(btn_rect, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+        let fill = if resp.hovered() && enabled { hover_bg } else { bg };
+        ui.painter().rect_filled(btn_rect, size / 2.0, fill);
+        let icon_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(14.0, 14.0));
+        icon.bold(14.0).tint(if enabled { fg } else { disabled_fg }).paint_at(ui, icon_rect);
+        let clicked = resp.clicked();
+        resp.on_hover_text(tooltip);
+        if clicked && enabled {
+            if let Some(c) = cmd { cmds.push(c); }
+        }
+        size + 4.0 // btn_size + spacing
     }
 
     fn draw_perf_overlay(
@@ -842,4 +1024,32 @@ impl ViewerPanel {
             );
         }
     }
+}
+
+fn format_timecode_hmsf(smooth_secs: f64, rate: u32) -> String {
+    let s = smooth_secs.abs();
+    let sign = if smooth_secs < 0.0 { "-" } else { "" };
+    let hh = (s / 3600.0) as u32;
+    let mm = ((s % 3600.0) / 60.0) as u32;
+    let ss = (s % 60.0) as u32;
+    let ff = ((s % 1.0) * rate as f64) as u32;
+    format!("{sign}{hh:02}:{mm:02}:{ss:02}:{ff:02}")
+}
+
+fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {
+    let input = input.trim();
+    if let Some(tc) = parse_hmsf(input, fps.rate()) { return Some(tc); }
+    if let Ok(f) = input.parse::<i64>() { return Some(RationalTime::from_frames(f, fps.rate())); }
+    if let Ok(s) = input.parse::<f64>() { return Some(RationalTime::from_secs_f64(s, fps.rate())); }
+    None
+}
+
+fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
+    let p: Vec<&str> = input.split(':').collect();
+    if p.len() != 4 { return None; }
+    let hh: i64 = p[0].parse().ok()?;
+    let mm: i64 = p[1].parse().ok()?;
+    let ss: i64 = p[2].parse().ok()?;
+    let ff: i64 = p[3].parse().ok()?;
+    Some(RationalTime::from_frames(((hh * 3600 + mm * 60 + ss) * rate as i64) + ff, rate))
 }
