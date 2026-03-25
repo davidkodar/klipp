@@ -2095,6 +2095,7 @@ name = "klipp-media"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "dirs",
  "ffmpeg-next",
  "klipp-core",
  "serde",

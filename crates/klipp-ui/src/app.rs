@@ -437,18 +437,20 @@ impl KlippApp {
                         self.state.pending_media_path = None;
                     }
 
-                    // Start thumbnail + filmstrip generation + audio conforming + skim transcode
+                    // Start thumbnail (always) + optional filmstrip/audio/skim generation
                     self.spawn_thumbnail(media_id, path.clone(), duration);
-                    self.spawn_filmstrip(media_id, path.clone(), duration);
+                    if self.prefs.editing.auto_generate_filmstrips {
+                        self.spawn_filmstrip(media_id, path.clone(), duration);
+                        self.state.filmstrip_generating = true;
+                        self.state.filmstrip_generate_start = std::time::Instant::now();
+                        self.state.filmstrip_toast_dismissed = false;
+                    }
                     if has_audio {
                         self.spawn_audio_conform(media_id, path.clone());
                     }
-                    self.state.filmstrip_generating = true;
-
-                    // Auto-start skim transcode for instant hover skimming
-                    self.state.pending_skim_transcodes.push(media_id);
-                    self.state.filmstrip_generate_start = std::time::Instant::now();
-                    self.state.filmstrip_toast_dismissed = false;
+                    if self.prefs.editing.auto_generate_skim {
+                        self.state.pending_skim_transcodes.push(media_id);
+                    }
 
                     // Don't auto-generate proxies — CUDA NVDEC + 1080p downscale
                     // handles playback fine. Proxies can be requested manually via
@@ -526,9 +528,38 @@ impl KlippApp {
         let tx = self.thumb_tx.clone();
         let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
+        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         std::thread::spawn(move || {
+            // Try loading from disk cache first
+            if let Some(ref key) = cache_key {
+                if klipp_media::disk_cache::thumbnail_cache_exists(key) {
+                    match klipp_media::disk_cache::load_thumbnail_cache(key) {
+                        Ok((rgba, w, h)) => {
+                            tracing::info!("Thumbnail loaded from cache for {:?}", path);
+                            let _ = tx.send(ThumbnailResult {
+                                media_id,
+                                rgba,
+                                width: w,
+                                height: h,
+                            });
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Thumbnail cache load failed, regenerating: {e}");
+                        }
+                    }
+                }
+            }
+
+            // Generate from source
             match klipp_engine::generate_thumbnail_non_black(&path, seek_secs, duration_secs) {
                 Ok((rgba, w, h)) => {
+                    // Write to cache
+                    if let Some(ref key) = cache_key {
+                        if let Err(e) = klipp_media::disk_cache::write_thumbnail_cache(key, &rgba, w, h) {
+                            tracing::warn!("Failed to write thumbnail cache: {e}");
+                        }
+                    }
                     let _ = tx.send(ThumbnailResult {
                         media_id,
                         rgba,
@@ -551,6 +582,8 @@ impl KlippApp {
     ) {
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
+        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        let generate_if_missing = self.prefs.editing.auto_generate_filmstrips;
         // Dense filmstrip: max 1.5-second gaps so zoomed-in timeline always
         // has representative thumbnails. Target ~400 frames.
         // A 15-min clip: every 2.25s. A 1-min clip: every 0.25s.
@@ -558,19 +591,62 @@ impl KlippApp {
         std::thread::Builder::new()
             .name("klipp-filmstrip".into())
             .spawn(move || {
+                // Try loading from disk cache first
+                if let Some(ref key) = cache_key {
+                    if klipp_media::disk_cache::filmstrip_cache_exists(key) {
+                        match klipp_media::disk_cache::load_filmstrip_cache(key) {
+                            Ok(frames) => {
+                                tracing::info!("Filmstrip loaded from cache: {} frames for {:?}", frames.len(), path);
+                                for frame in frames {
+                                    let _ = tx.send(FilmstripResult::Frame {
+                                        media_id,
+                                        frame,
+                                    });
+                                }
+                                let _ = tx.send(FilmstripResult::Done { media_id });
+                                return;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Filmstrip cache load failed, regenerating: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // Skip fresh generation if preference is off (cache was already checked above)
+                if !generate_if_missing {
+                    tracing::info!("Filmstrip generation disabled by preference, skipping {:?}", path);
+                    let _ = tx.send(FilmstripResult::Done { media_id });
+                    return;
+                }
+
+                // Generate from source and collect frames for cache write
+                let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let frames_clone = frames.clone();
                 match klipp_engine::generate_filmstrip_incremental(&path, duration_secs, interval, 48, |time, rgba, w, h| {
+                    let frame = klipp_media::FilmstripFrame {
+                        time_secs: time,
+                        rgba,
+                        width: w,
+                        height: h,
+                    };
+                    frames_clone.lock().unwrap().push(frame.clone());
                     let _ = tx.send(FilmstripResult::Frame {
                         media_id,
-                        frame: klipp_media::FilmstripFrame {
-                            time_secs: time,
-                            rgba,
-                            width: w,
-                            height: h,
-                        },
+                        frame,
                     });
                 }) {
                     Ok(count) => {
                         tracing::info!("Filmstrip: generated {count} frames for {:?}", path);
+                        // Write to cache
+                        if let Some(ref key) = cache_key {
+                            let cached_frames = frames.lock().unwrap();
+                            if let Err(e) = klipp_media::disk_cache::write_filmstrip_cache(key, &cached_frames) {
+                                tracing::warn!("Failed to write filmstrip cache: {e}");
+                            } else {
+                                tracing::info!("Filmstrip cache written: {} frames", cached_frames.len());
+                            }
+                        }
                         let _ = tx.send(FilmstripResult::Done { media_id });
                     }
                     Err(e) => {
@@ -589,6 +665,7 @@ impl KlippApp {
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("klipp")
             .join("audio-cache");
+        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         std::thread::Builder::new()
             .name("klipp-audio-conform".into())
             .spawn(move || {
@@ -602,19 +679,26 @@ impl KlippApp {
                     return;
                 }
 
-                // Skip if already conformed
-                if klipp_media::audio_cache::cache_exists(&cache_dir, media_id) {
-                    tracing::info!("Audio cache already exists for {:?}, loading peaks", media_id);
-                    let peaks_path = cache_dir.join(format!("{}.peaks", media_id));
-                    let pcm_path = cache_dir.join(format!("{}.pcm", media_id));
+                // Check content-based cache first, then fall back to MediaId-based
+                let (exists, pcm_path, peaks_path) = if let Some(ref key) = cache_key {
+                    klipp_media::disk_cache::audio_conform_cache_exists(key, media_id)
+                } else {
+                    // No cache key (offline file?) — use old MediaId-based paths
+                    let pcm = cache_dir.join(format!("{media_id}.pcm"));
+                    let peaks = cache_dir.join(format!("{media_id}.peaks"));
+                    let exists = pcm.exists() && peaks.exists();
+                    (exists, pcm, peaks)
+                };
+
+                if exists {
+                    tracing::info!("Audio cache hit for {:?}", path);
                     match klipp_media::audio_cache::load_peaks(&peaks_path) {
                         Ok(peaks) => {
-                            // Compute duration from PCM file size
                             let pcm_size = std::fs::metadata(&pcm_path)
                                 .map(|m| m.len())
                                 .unwrap_or(0);
                             let duration_secs = pcm_size as f64
-                                / (48000.0 * 2.0 * 4.0); // sample_rate * channels * sizeof(f32)
+                                / (48000.0 * 2.0 * 4.0);
                             let _ = tx.send(AudioConformResult::Complete {
                                 media_id,
                                 entry: klipp_media::AudioCacheEntry {
@@ -630,14 +714,13 @@ impl KlippApp {
                         }
                         Err(e) => {
                             tracing::warn!("Failed to load cached peaks, re-conforming: {e}");
-                            // Fall through to re-conform
-                            do_conform(media_id, &path, &cache_dir, &tx);
+                            do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
                         }
                     }
                     return;
                 }
 
-                do_conform(media_id, &path, &cache_dir, &tx);
+                do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
             })
             .ok();
 
@@ -645,9 +728,17 @@ impl KlippApp {
             media_id: MediaId,
             path: &Path,
             cache_dir: &Path,
+            cache_key: &Option<String>,
             tx: &Sender<AudioConformResult>,
         ) {
-            match klipp_media::audio_cache::conform_audio(media_id, path, cache_dir) {
+            // Use content-based key for filenames if available, else MediaId
+            let file_key = cache_key.as_deref()
+                .map(|k| k.to_string())
+                .unwrap_or_else(|| media_id.to_string());
+            let pcm_path = cache_dir.join(format!("{file_key}.pcm"));
+            let peaks_path = cache_dir.join(format!("{file_key}.peaks"));
+
+            match klipp_media::audio_cache::conform_audio_to_paths(media_id, path, &pcm_path, &peaks_path) {
                 Ok(entry) => {
                     let _ = tx.send(AudioConformResult::Complete { media_id, entry });
                 }
@@ -4051,22 +4142,26 @@ impl KlippApp {
                     self.state.show_relink_dialog = true;
                 }
 
-                // Reload media files into the engine and trigger thumbnails
+                // Reload media files into the engine and trigger thumbnails/filmstrips/audio/skim
                 let media_items: Vec<_> = self
                     .state
                     .media_pool
                     .all()
                     .filter(|item| !item.offline)
-                    .map(|item| (item.id, item.path.clone(), item.duration))
+                    .map(|item| (item.id, item.path.clone(), item.duration, item.has_audio))
                     .collect();
-                for (id, path, duration) in media_items {
+                for (id, path, duration, has_audio) in media_items {
                     // Re-open decoders in the engine
                     self.cmd_tx.send(AppCommand::LoadMediaFile {
                         path: path.clone(),
                         media_id: id,
                     }).ok();
                     self.spawn_thumbnail(id, path.clone(), duration);
-                    self.spawn_filmstrip(id, path, duration);
+                    self.spawn_filmstrip(id, path.clone(), duration);
+                    if has_audio {
+                        self.spawn_audio_conform(id, path.clone());
+                    }
+                    self.state.pending_skim_transcodes.push(id);
                 }
                 self.state.filmstrip_generating = true;
 
@@ -5904,15 +5999,36 @@ impl KlippApp {
             let source_path = item.path.clone();
             let duration_secs = item.duration.to_secs_f64();
             let filename = item.filename.clone();
-            self.state.skim_transcoding.insert(media_id);
-            self.state.skim_transcode_status = Some((filename, 0.0));
 
+            // Use content-based cache key for skim path
             let skim_dir = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                 .join("klipp")
                 .join("skim");
             let _ = std::fs::create_dir_all(&skim_dir);
-            let skim_path = skim_dir.join(format!("{}.mkv", media_id));
+            let skim_path = klipp_media::disk_cache::skim_transcode_path(
+                &klipp_media::disk_cache::compute_cache_key(&source_path)
+                    .unwrap_or_else(|| media_id.to_string()),
+                media_id,
+            );
+
+            // Cache hit: skim already exists for this source file
+            if skim_path.exists() {
+                tracing::info!("Skim cache hit for {:?}", source_path);
+                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    item.skim_file = Some(skim_path);
+                }
+                return;
+            }
+
+            // No cache — skip fresh generation if preference is off
+            if !self.prefs.editing.auto_generate_skim {
+                tracing::info!("Skim generation disabled by preference, skipping {:?}", source_path);
+                return;
+            }
+
+            self.state.skim_transcoding.insert(media_id);
+            self.state.skim_transcode_status = Some((filename, 0.0));
 
             let event_tx = self.proxy_event_tx.clone();
             std::thread::spawn(move || {

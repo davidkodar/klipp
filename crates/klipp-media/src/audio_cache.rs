@@ -77,10 +77,20 @@ pub fn conform_audio(
     media_path: &Path,
     cache_dir: &Path,
 ) -> Result<AudioCacheEntry, ConformError> {
-    let start = std::time::Instant::now();
-
     let pcm_path = cache_dir.join(format!("{}.pcm", media_id));
     let peaks_path = cache_dir.join(format!("{}.peaks", media_id));
+    conform_audio_to_paths(media_id, media_path, &pcm_path, &peaks_path)
+}
+
+/// Like `conform_audio` but writes to explicit pcm/peaks paths.
+/// Used by content-based caching to place files at content-keyed paths.
+pub fn conform_audio_to_paths(
+    media_id: MediaId,
+    media_path: &Path,
+    pcm_path: &Path,
+    peaks_path: &Path,
+) -> Result<AudioCacheEntry, ConformError> {
+    let start = std::time::Instant::now();
 
     // Open input
     let mut format_ctx = ffmpeg_next::format::input(media_path)
@@ -200,7 +210,7 @@ pub fn conform_audio(
 
     // Write raw PCM to disk
     let pcm_bytes: &[u8] = bytemuck::cast_slice(&all_samples);
-    std::fs::write(&pcm_path, pcm_bytes)?;
+    std::fs::write(pcm_path, pcm_bytes)?;
 
     // Generate waveform peaks (min/max per PEAK_BIN_SIZE mono samples)
     let peaks = generate_peaks(&all_samples, CONFORM_CHANNELS as usize, PEAK_BIN_SIZE);
@@ -208,7 +218,7 @@ pub fn conform_audio(
     // Serialize peaks as raw f32 pairs
     let peaks_flat: Vec<f32> = peaks.iter().flat_map(|&(min, max)| [min, max]).collect();
     let peaks_bytes: &[u8] = bytemuck::cast_slice(&peaks_flat);
-    std::fs::write(&peaks_path, peaks_bytes)?;
+    std::fs::write(peaks_path, peaks_bytes)?;
 
     let elapsed = start.elapsed();
     let pcm_size_mb = pcm_bytes.len() as f64 / (1024.0 * 1024.0);
@@ -223,8 +233,8 @@ pub fn conform_audio(
 
     Ok(AudioCacheEntry {
         media_id,
-        pcm_path,
-        peaks_path,
+        pcm_path: pcm_path.to_path_buf(),
+        peaks_path: peaks_path.to_path_buf(),
         sample_rate: CONFORM_SAMPLE_RATE,
         channels: CONFORM_CHANNELS,
         duration_secs,

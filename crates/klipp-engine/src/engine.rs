@@ -2943,16 +2943,15 @@ fn fps_from_float(fps: f64) -> Fps {
     }
 }
 
-/// Generate a thumbnail for a media file using ffmpeg-next.
-pub fn generate_thumbnail(
-    path: &std::path::Path,
-    seek_secs: f64,
-) -> Result<(Vec<u8>, u32, u32), String> {
-    use ffmpeg_next::software::scaling;
+// ---------------------------------------------------------------------------
+// GPU-accelerated thumbnail/filmstrip helpers
+// ---------------------------------------------------------------------------
 
-    let mut format_ctx = ffmpeg_next::format::input(path)
-        .map_err(|e| format!("ffmpeg open: {e}"))?;
-
+/// Open a video decoder with GPU acceleration (CUDA → VAAPI → Software fallback).
+/// Returns (decoder, stream_index, is_hw).
+fn open_gpu_decoder(
+    format_ctx: &ffmpeg_next::format::context::Input,
+) -> Result<(ffmpeg_next::decoder::Video, usize, bool), String> {
     let video_stream = format_ctx
         .streams()
         .best(ffmpeg_next::media::Type::Video)
@@ -2960,13 +2959,187 @@ pub fn generate_thumbnail(
     let stream_index = video_stream.index();
     let params = video_stream.parameters();
 
-    let codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
+    let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
-    let mut decoder = codec_ctx.decoder().video()
+
+    // Try GPU acceleration: CUDA → VAAPI → Software
+    let is_hw = unsafe {
+        if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) {
+            true
+        } else if crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr()) {
+            true
+        } else {
+            // Software fallback: use half cores
+            let half_cores = (std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4) / 2)
+                .max(1) as i32;
+            (*codec_ctx.as_mut_ptr()).thread_count = half_cores;
+            false
+        }
+    };
+
+    let decoder = codec_ctx.decoder().video()
         .map_err(|e| format!("video decoder: {e}"))?;
 
+    Ok((decoder, stream_index, is_hw))
+}
+
+/// Convert a decoded frame (HW or SW) to RGBA at the given target dimensions.
+/// For HW frames: GPU→CPU transfer + swscale. For SW frames: just swscale.
+/// `sws_cache` is an optional cached sws context pointer for reuse across frames.
+fn frame_to_rgba(
+    frame: &ffmpeg_next::frame::Video,
+    dst_w: u32,
+    dst_h: u32,
+    is_hw: bool,
+    sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
+) -> Option<Vec<u8>> {
+    if is_hw {
+        // HW frame path: transfer to CPU then scale via raw FFI
+        unsafe { hw_frame_to_rgba(frame, dst_w, dst_h, sws_cache) }
+    } else {
+        // SW frame path: use ffmpeg-next scaling API
+        sw_frame_to_rgba(frame, dst_w, dst_h)
+    }
+}
+
+/// Transfer HW frame to CPU and scale to RGBA at target dimensions.
+unsafe fn hw_frame_to_rgba(
+    hw_frame: &ffmpeg_next::frame::Video,
+    dst_w: u32,
+    dst_h: u32,
+    sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
+) -> Option<Vec<u8>> {
+    use ffmpeg_next::ffi::*;
+
+    let sw_frame = av_frame_alloc();
+    if sw_frame.is_null() {
+        return None;
+    }
+
+    let ret = av_hwframe_transfer_data(sw_frame, hw_frame.as_ptr(), 0);
+    if ret < 0 {
+        av_frame_free(&mut (sw_frame as *mut _));
+        return None;
+    }
+
+    let src_w = (*sw_frame).width as u32;
+    let src_h = (*sw_frame).height as u32;
+    let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
+
+    let sws = sws_getCachedContext(
+        sws_cache.unwrap_or(std::ptr::null_mut()),
+        src_w as i32,
+        src_h as i32,
+        sw_fmt,
+        dst_w as i32,
+        dst_h as i32,
+        AVPixelFormat::AV_PIX_FMT_RGBA,
+        1, // SWS_FAST_BILINEAR
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null(),
+    );
+    if sws.is_null() {
+        av_frame_free(&mut (sw_frame as *mut _));
+        return None;
+    }
+    *sws_cache = Some(sws);
+
+    let rgba_frame = av_frame_alloc();
+    if rgba_frame.is_null() {
+        av_frame_free(&mut (sw_frame as *mut _));
+        return None;
+    }
+    (*rgba_frame).width = dst_w as i32;
+    (*rgba_frame).height = dst_h as i32;
+    (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA as i32;
+    if av_frame_get_buffer(rgba_frame, 0) < 0 {
+        av_frame_free(&mut (sw_frame as *mut _));
+        av_frame_free(&mut (rgba_frame as *mut _));
+        return None;
+    }
+
+    sws_scale(
+        sws,
+        (*sw_frame).data.as_ptr() as *const *const u8,
+        (*sw_frame).linesize.as_ptr(),
+        0,
+        src_h as i32,
+        (*rgba_frame).data.as_ptr(),
+        (*rgba_frame).linesize.as_ptr(),
+    );
+
+    av_frame_free(&mut (sw_frame as *mut _));
+
+    let stride = (*rgba_frame).linesize[0] as usize;
+    let expected_stride = (dst_w * 4) as usize;
+    let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * dst_h as usize);
+
+    let rgba = if stride == expected_stride {
+        data_slice.to_vec()
+    } else {
+        let mut buf = Vec::with_capacity(expected_stride * dst_h as usize);
+        for row in 0..dst_h as usize {
+            let start = row * stride;
+            buf.extend_from_slice(&data_slice[start..start + expected_stride]);
+        }
+        buf
+    };
+
+    av_frame_free(&mut (rgba_frame as *mut _));
+    Some(rgba)
+}
+
+/// Convert a software-decoded frame to RGBA at target dimensions.
+fn sw_frame_to_rgba(
+    frame: &ffmpeg_next::frame::Video,
+    dst_w: u32,
+    dst_h: u32,
+) -> Option<Vec<u8>> {
+    use ffmpeg_next::software::scaling;
+
+    let mut scaler = scaling::Context::get(
+        frame.format(),
+        frame.width(),
+        frame.height(),
+        ffmpeg_next::format::Pixel::RGBA,
+        dst_w,
+        dst_h,
+        scaling::Flags::FAST_BILINEAR,
+    )
+    .ok()?;
+
+    let mut rgba_frame = ffmpeg_next::frame::Video::empty();
+    scaler.run(frame, &mut rgba_frame).ok()?;
+
+    let stride = rgba_frame.stride(0);
+    let expected = dst_w as usize * 4;
+    let rgba = if stride == expected {
+        rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
+    } else {
+        let mut buf = Vec::with_capacity(expected * dst_h as usize);
+        for row in 0..dst_h as usize {
+            let start = row * stride;
+            buf.extend_from_slice(&rgba_frame.data(0)[start..start + expected]);
+        }
+        buf
+    };
+    Some(rgba)
+}
+
+/// Generate a thumbnail for a media file. Uses GPU decode when available.
+pub fn generate_thumbnail(
+    path: &std::path::Path,
+    seek_secs: f64,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let mut format_ctx = ffmpeg_next::format::input(path)
+        .map_err(|e| format!("ffmpeg open: {e}"))?;
+
+    let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
+
     if seek_secs > 0.1 {
-        // seek with stream=-1 expects AV_TIME_BASE (microseconds)
         let ts = (seek_secs * 1_000_000.0) as i64;
         format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
     }
@@ -2978,7 +3151,7 @@ pub fn generate_thumbnail(
         if stream.index() != stream_index {
             continue;
         }
-        decoder.send_packet(&packet).map_err(|e| format!("send_packet: {e}"))?;
+        let _ = decoder.send_packet(&packet);
         if decoder.receive_frame(&mut decoded_frame).is_ok() {
             got_frame = true;
             break;
@@ -2995,59 +3168,23 @@ pub fn generate_thumbnail(
     let dst_w = (src_w as f64 * scale) as u32;
     let dst_h = (src_h as f64 * scale) as u32;
 
-    let mut scaler = scaling::Context::get(
-        decoded_frame.format(),
-        src_w,
-        src_h,
-        ffmpeg_next::format::Pixel::RGBA,
-        dst_w,
-        dst_h,
-        scaling::Flags::BILINEAR,
-    )
-    .map_err(|e| format!("scaler: {e}"))?;
-
-    let mut rgba_frame = ffmpeg_next::frame::Video::empty();
-    scaler
-        .run(&decoded_frame, &mut rgba_frame)
-        .map_err(|e| format!("scale: {e}"))?;
-
-    let stride = rgba_frame.stride(0);
-    let expected = dst_w as usize * 4;
-    let rgba = if stride == expected {
-        rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
-    } else {
-        let mut buf = Vec::with_capacity(expected * dst_h as usize);
-        for row in 0..dst_h as usize {
-            let start = row * stride;
-            buf.extend_from_slice(&rgba_frame.data(0)[start..start + expected]);
-        }
-        buf
-    };
+    let mut sws_cache = None;
+    let rgba = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache)
+        .ok_or("Failed to convert frame to RGBA")?;
     Ok((rgba, dst_w, dst_h))
 }
 
 /// Generate a thumbnail at a specific max width (for viewer-quality poster frames).
+/// Uses GPU decode when available.
 pub fn generate_thumbnail_at_size(
     path: &std::path::Path,
     seek_secs: f64,
     max_width: u32,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    use ffmpeg_next::software::scaling;
-
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
-    let video_stream = format_ctx
-        .streams()
-        .best(ffmpeg_next::media::Type::Video)
-        .ok_or("No video stream")?;
-    let stream_index = video_stream.index();
-    let params = video_stream.parameters();
-
-    let codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
-        .map_err(|e| format!("codec context: {e}"))?;
-    let mut decoder = codec_ctx.decoder().video()
-        .map_err(|e| format!("video decoder: {e}"))?;
+    let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -3061,7 +3198,7 @@ pub fn generate_thumbnail_at_size(
         if stream.index() != stream_index {
             continue;
         }
-        decoder.send_packet(&packet).map_err(|e| format!("send_packet: {e}"))?;
+        let _ = decoder.send_packet(&packet);
         if decoder.receive_frame(&mut decoded_frame).is_ok() {
             got_frame = true;
             break;
@@ -3078,34 +3215,9 @@ pub fn generate_thumbnail_at_size(
     let dst_w = ((src_w as f64 * scale) as u32).max(1);
     let dst_h = ((src_h as f64 * scale) as u32).max(1);
 
-    let mut scaler = scaling::Context::get(
-        decoded_frame.format(),
-        src_w,
-        src_h,
-        ffmpeg_next::format::Pixel::RGBA,
-        dst_w,
-        dst_h,
-        scaling::Flags::BILINEAR,
-    )
-    .map_err(|e| format!("scaler: {e}"))?;
-
-    let mut rgba_frame = ffmpeg_next::frame::Video::empty();
-    scaler
-        .run(&decoded_frame, &mut rgba_frame)
-        .map_err(|e| format!("scale: {e}"))?;
-
-    let stride = rgba_frame.stride(0);
-    let expected = dst_w as usize * 4;
-    let rgba = if stride == expected {
-        rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
-    } else {
-        let mut buf = Vec::with_capacity(expected * dst_h as usize);
-        for row in 0..dst_h as usize {
-            let start = row * stride;
-            buf.extend_from_slice(&rgba_frame.data(0)[start..start + expected]);
-        }
-        buf
-    };
+    let mut sws_cache = None;
+    let rgba = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache)
+        .ok_or("Failed to convert frame to RGBA")?;
     Ok((rgba, dst_w, dst_h))
 }
 
@@ -3198,9 +3310,8 @@ pub fn generate_thumbnail_at_size_non_black(
     last_result.ok_or_else(|| "No non-black frame found".to_string())
 }
 
-/// Generate filmstrip thumbnails incrementally with throttling.
-/// Calls `on_frame` for each generated frame, sleeping between frames to avoid
-/// starving the playback decode thread. Returns the total number of frames generated.
+/// Generate filmstrip thumbnails incrementally with GPU acceleration (CUDA → VAAPI → CPU fallback).
+/// Calls `on_frame` for each generated frame. Returns the total number of frames generated.
 pub fn generate_filmstrip_incremental(
     path: &std::path::Path,
     duration_secs: f64,
@@ -3208,32 +3319,10 @@ pub fn generate_filmstrip_incremental(
     target_height: u32,
     mut on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
 ) -> Result<usize, String> {
-    use ffmpeg_next::software::scaling;
-
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
-    let video_stream = format_ctx
-        .streams()
-        .best(ffmpeg_next::media::Type::Video)
-        .ok_or("No video stream")?;
-    let stream_index = video_stream.index();
-    let params = video_stream.parameters();
-
-    let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
-        .map_err(|e| format!("codec context: {e}"))?;
-
-    // Enable multi-threaded decode but limit to half the cores so playback isn't starved
-    unsafe {
-        let half_cores = (std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4) / 2)
-            .max(1) as i32;
-        (*codec_ctx.as_mut_ptr()).thread_count = half_cores;
-    }
-
-    let mut decoder = codec_ctx.decoder().video()
-        .map_err(|e| format!("video decoder: {e}"))?;
+    let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
 
     let src_w = decoder.width();
     let src_h = decoder.height();
@@ -3241,10 +3330,12 @@ pub fn generate_filmstrip_incremental(
     let dst_h = target_height;
     let dst_w = (dst_h as f64 * aspect).round() as u32;
 
-    let mut scaler: Option<scaling::Context> = None;
+    let mut sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
     let mut count = 0;
 
     let num_frames = ((duration_secs / interval_secs).ceil() as usize).min(500);
+    let accel_label = if is_hw { "GPU" } else { "CPU" };
+    tracing::info!("Filmstrip: generating {} frames via {} decode for {:?}", num_frames, accel_label, path);
 
     for i in 0..=num_frames {
         let seek_secs = i as f64 * interval_secs;
@@ -3252,10 +3343,11 @@ pub fn generate_filmstrip_incremental(
             break;
         }
 
-        // Throttle: yield CPU between frames so playback decode isn't starved.
-        // 100ms sleep keeps filmstrip generation gentle in the background.
+        // Throttle: yield between frames so playback decode isn't starved.
+        // GPU decode is fast so use shorter sleep; CPU needs more breathing room.
         if i > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            let sleep_ms = if is_hw { 10 } else { 100 };
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
         }
 
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -3264,9 +3356,6 @@ pub fn generate_filmstrip_incremental(
         }
         decoder.flush();
 
-        // Decode frames until we reach the target timestamp.
-        // seek() lands on the nearest keyframe BEFORE ts, so we must
-        // decode forward to get the actual frame at the requested time.
         let mut decoded_frame = ffmpeg_next::frame::Video::empty();
         let mut got_frame = false;
         let target_pts = ts;
@@ -3277,16 +3366,13 @@ pub fn generate_filmstrip_incremental(
             }
             let _ = decoder.send_packet(&packet);
             while decoder.receive_frame(&mut decoded_frame).is_ok() {
-                // Check if this frame is at or past our target time
                 let frame_ts = decoded_frame.timestamp().unwrap_or(0);
-                // Convert frame timestamp to microseconds using stream time_base
                 let tb = stream.time_base();
                 let frame_us = frame_ts * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64;
-                if frame_us >= target_pts - 100_000 { // within 100ms of target
+                if frame_us >= target_pts - 100_000 {
                     got_frame = true;
                     break;
                 }
-                // Not yet at target — keep decoding
             }
             if got_frame { break; }
         }
@@ -3295,37 +3381,9 @@ pub fn generate_filmstrip_incremental(
             continue;
         }
 
-        if scaler.is_none() {
-            scaler = scaling::Context::get(
-                decoded_frame.format(),
-                decoded_frame.width(),
-                decoded_frame.height(),
-                ffmpeg_next::format::Pixel::RGBA,
-                dst_w,
-                dst_h,
-                scaling::Flags::FAST_BILINEAR,
-            )
-            .ok();
-        }
-
-        if let Some(ref mut s) = scaler {
-            let mut rgba_frame = ffmpeg_next::frame::Video::empty();
-            if s.run(&decoded_frame, &mut rgba_frame).is_ok() {
-                let stride = rgba_frame.stride(0);
-                let expected = dst_w as usize * 4;
-                let rgba = if stride == expected {
-                    rgba_frame.data(0)[..expected * dst_h as usize].to_vec()
-                } else {
-                    let mut buf = Vec::with_capacity(expected * dst_h as usize);
-                    for row in 0..dst_h as usize {
-                        let start = row * stride;
-                        buf.extend_from_slice(&rgba_frame.data(0)[start..start + expected]);
-                    }
-                    buf
-                };
-                on_frame(seek_secs, rgba, dst_w, dst_h);
-                count += 1;
-            }
+        if let Some(rgba) = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache) {
+            on_frame(seek_secs, rgba, dst_w, dst_h);
+            count += 1;
         }
     }
 

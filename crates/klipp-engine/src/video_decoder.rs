@@ -186,7 +186,7 @@ unsafe extern "C" fn vaapi_get_format(
 /// Try to initialize CUDA (NVDEC) on the codec context. Returns true if successful.
 /// CUDA works for all codecs on NVIDIA GPUs including AV1/VP9 (unlike VAAPI which
 /// has broken av_hwframe_transfer for AV1 via nvidia-vaapi-driver).
-unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
+pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
     let device_type = av_hwdevice_find_type_by_name(c"cuda".as_ptr());
@@ -216,7 +216,7 @@ unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) ->
 }
 
 /// Try to initialize VAAPI on the codec context. Returns true if successful.
-unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
+pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
     let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());

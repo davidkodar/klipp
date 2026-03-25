@@ -10,3 +10,4 @@ serde_json = { workspace = true }
 ffmpeg-next = { workspace = true }
 bytemuck = { workspace = true }
 tracing = { workspace = true }
+dirs = { workspace = true }

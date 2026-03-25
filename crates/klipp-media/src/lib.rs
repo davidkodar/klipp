@@ -1,4 +1,5 @@
 pub mod audio_cache;
+pub mod disk_cache;
 mod item;
 mod pool;
 mod thumbnail;

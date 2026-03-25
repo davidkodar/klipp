@@ -100,15 +100,22 @@ pub struct PlaybackPrefs {
 pub struct EditingPrefs {
     /// Automatically create a new track when a clip is dropped
     /// above the top video track or below the bottom audio track.
-    /// Matches Resolve/Premiere behaviour.
     #[serde(default = "default_true")]
     pub auto_create_tracks: bool,
+    /// Automatically generate filmstrip thumbnails when media is imported.
+    #[serde(default = "default_true")]
+    pub auto_generate_filmstrips: bool,
+    /// Automatically generate skim transcodes for hover skimming on import.
+    #[serde(default = "default_true")]
+    pub auto_generate_skim: bool,
 }
 
 impl Default for EditingPrefs {
     fn default() -> Self {
         Self {
             auto_create_tracks: true,
+            auto_generate_filmstrips: true,
+            auto_generate_skim: true,
         }
     }
 }

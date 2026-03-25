@@ -282,6 +282,48 @@ impl PreferencesPanel {
             .size(10.0)
             .color(egui::Color32::from_rgb(120, 120, 130)),
         );
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Media Import").strong().size(12.0));
+        ui.add_space(4.0);
+
+        if ui
+            .checkbox(
+                &mut prefs.editing.auto_generate_filmstrips,
+                "Generate filmstrip thumbnails on import",
+            )
+            .changed()
+        {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new(
+                "Generates timeline filmstrip frames when media is added. \
+                 Uses GPU decode when available. Disable if import feels slow.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+
+        ui.add_space(4.0);
+        if ui
+            .checkbox(
+                &mut prefs.editing.auto_generate_skim,
+                "Generate skim transcodes on import",
+            )
+            .changed()
+        {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new(
+                "Creates lightweight transcodes for instant hover skimming in the media browser. \
+                 Disable to save disk space and import time.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+        let _ = cmds; // suppress unused warning
     }
 
     fn show_export(
