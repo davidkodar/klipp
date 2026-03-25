@@ -2962,11 +2962,9 @@ fn open_gpu_decoder(
     let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
 
-    // Try GPU acceleration: CUDA → VAAPI → Software
+    // Try GPU acceleration: CUDA → Software (skip VAAPI — broken on NVIDIA, spams stderr)
     let is_hw = unsafe {
         if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) {
-            true
-        } else if crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr()) {
             true
         } else {
             // Software fallback: use half cores
@@ -2992,14 +2990,21 @@ fn frame_to_rgba(
     frame: &ffmpeg_next::frame::Video,
     dst_w: u32,
     dst_h: u32,
-    is_hw: bool,
+    _is_hw: bool,
     sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
 ) -> Option<Vec<u8>> {
-    if is_hw {
-        // HW frame path: transfer to CPU then scale via raw FFI
+    // Detect actual frame format — CUDA init may "succeed" but format negotiation
+    // can fall back to software. Check the real pixel format per-frame.
+    let actual_hw = unsafe {
+        let fmt = (*frame.as_ptr()).format;
+        fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32
+            || fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as i32
+    };
+    if actual_hw {
+        // HW frame path: GPU→CPU transfer then swscale
         unsafe { hw_frame_to_rgba(frame, dst_w, dst_h, sws_cache) }
     } else {
-        // SW frame path: use ffmpeg-next scaling API
+        // SW frame path: direct swscale
         sw_frame_to_rgba(frame, dst_w, dst_h)
     }
 }
