@@ -11,6 +11,10 @@ fn main() -> Result<()> {
     unsafe { std::env::set_var("LIBVA_DRIVER_NAME", "nvidia") };
 
     ffmpeg_next::init().expect("Failed to initialize ffmpeg");
+    // Suppress ffmpeg's stderr output (VAAPI init failures, thread count warnings, CUDA errors).
+    // All important decode info is captured through our own tracing system.
+    // AV_LOG_FATAL = only show unrecoverable crashes.
+    unsafe { ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_FATAL as i32) };
 
     // Log to klipp-debug.log, truncated on each launch
     let log_file = std::fs::File::create("klipp-debug.log")
