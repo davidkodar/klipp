@@ -114,8 +114,19 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             // Filmstrip generation progress
             if state.filmstrip_generating {
                 let elapsed = state.filmstrip_generate_start.elapsed().as_secs_f64();
+                let current_frames = state.filmstrip_in_progress.iter().next()
+                    .and_then(|id| state.thumbnail_cache.filmstrip(id))
+                    .map(|f| f.len())
+                    .unwrap_or(0);
+                let done = state.filmstrip_completed;
+                let total = state.filmstrip_total_queued;
+                let progress_text = if total > 1 {
+                    format!("Filmstrip {}/{} — {} frames ({:.0}s)", done + 1, total, current_frames, elapsed)
+                } else {
+                    format!("Filmstrip — {} frames ({:.0}s)", current_frames, elapsed)
+                };
                 ui.label(
-                    egui::RichText::new(format!("Filmstrip {elapsed:.0}s"))
+                    egui::RichText::new(progress_text)
                         .size(10.0)
                         .monospace()
                         .color(theme.text_dim),

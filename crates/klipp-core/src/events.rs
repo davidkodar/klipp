@@ -419,6 +419,10 @@ pub enum AppCommand {
 
     // Browser skimming
     StartSkimTranscode { media_id: MediaId },
+    /// Force-regenerate skim transcode (deletes existing cache first).
+    RegenerateSkimTranscode { media_id: MediaId },
+    /// Force-regenerate filmstrip thumbnails (deletes existing cache first).
+    RegenerateFilmstrip { media_id: MediaId },
     BrowserSkimFrame { media_id: MediaId, time_secs: f64 },
 
     // Browser audio skimming

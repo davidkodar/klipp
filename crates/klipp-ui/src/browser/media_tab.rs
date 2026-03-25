@@ -813,6 +813,14 @@ fn show_context_menu(
         cmds.push(AppCommand::GenerateProxy { media_id });
         ui.close_menu();
     }
+    if ui.button("Regenerate Filmstrip").clicked() {
+        cmds.push(AppCommand::RegenerateFilmstrip { media_id });
+        ui.close_menu();
+    }
+    if ui.button("Regenerate Skim Transcode").clicked() {
+        cmds.push(AppCommand::RegenerateSkimTranscode { media_id });
+        ui.close_menu();
+    }
     ui.separator();
     ui.menu_button("Set Rating", |ui| {
         for r in 0..=5u8 {

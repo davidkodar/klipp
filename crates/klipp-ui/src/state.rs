@@ -202,6 +202,10 @@ pub struct AppState {
     pub filmstrip_in_progress: std::collections::HashSet<MediaId>,
     /// Queue of media IDs waiting for filmstrip generation (serialized, one at a time).
     pub filmstrip_queue: Vec<(MediaId, PathBuf, klipp_core::RationalTime)>,
+    /// Total number of filmstrip jobs queued in this batch (for progress display).
+    pub filmstrip_total_queued: usize,
+    /// Number of filmstrip jobs completed in this batch.
+    pub filmstrip_completed: usize,
 
     // Global LUT
     pub global_lut_path: Option<PathBuf>,
@@ -523,6 +527,8 @@ impl Default for AppState {
             filmstrip_toast_dismissed: false,
             filmstrip_in_progress: std::collections::HashSet::new(),
             filmstrip_queue: Vec::new(),
+            filmstrip_total_queued: 0,
+            filmstrip_completed: 0,
             playhead_anchor: Timecode::zero(),
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,

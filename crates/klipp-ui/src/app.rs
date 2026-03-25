@@ -599,6 +599,7 @@ impl KlippApp {
         }
 
         self.state.filmstrip_queue.push((media_id, path, duration));
+        self.state.filmstrip_total_queued += 1;
 
         // Pump the queue if nothing is currently generating
         self.pump_filmstrip_queue();
@@ -973,8 +974,11 @@ impl KlippApp {
                         .unwrap_or(0);
                     tracing::info!("Filmstrip complete for {:?}: {count} frames", media_id);
                     self.state.filmstrip_in_progress.remove(&media_id);
+                    self.state.filmstrip_completed += 1;
                     if self.state.filmstrip_queue.is_empty() && self.state.filmstrip_in_progress.is_empty() {
                         self.state.filmstrip_generating = false;
+                        self.state.filmstrip_total_queued = 0;
+                        self.state.filmstrip_completed = 0;
                     }
                     // Start next queued filmstrip
                     self.pump_filmstrip_queue();
@@ -2952,6 +2956,44 @@ impl KlippApp {
                     self.handle_skim_transcode(*media_id);
                     continue;
                 }
+                AppCommand::RegenerateSkimTranscode { media_id } => {
+                    let mid = *media_id;
+                    // Delete existing skim file and cache
+                    if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                        if let Some(ref skim_path) = item.skim_file {
+                            let _ = std::fs::remove_file(skim_path);
+                        }
+                        item.skim_file = None;
+                    }
+                    self.state.skim_transcoding.remove(&mid);
+                    self.handle_skim_transcode(mid);
+                    continue;
+                }
+                AppCommand::RegenerateFilmstrip { media_id } => {
+                    let mid = *media_id;
+                    // Delete disk cache
+                    if let Some(item) = self.state.media_pool.get(&mid) {
+                        if let Some(key) = klipp_media::disk_cache::compute_cache_key(&item.path) {
+                            let cache_path = klipp_media::disk_cache::cache_base_dir()
+                                .join("filmstrips")
+                                .join(format!("{key}.strip"));
+                            let _ = std::fs::remove_file(&cache_path);
+                        }
+                    }
+                    // Clear in-memory filmstrip
+                    self.state.thumbnail_cache.set_filmstrip(mid, Vec::new());
+                    self.state.filmstrip_textures.remove(&mid);
+                    self.state.filmstrip_in_progress.remove(&mid);
+                    // Re-queue
+                    if let Some(item) = self.state.media_pool.get(&mid) {
+                        let path = item.path.clone();
+                        let duration = item.duration;
+                        self.state.filmstrip_generating = true;
+                        self.state.filmstrip_generate_start = std::time::Instant::now();
+                        self.spawn_filmstrip(mid, path, duration);
+                    }
+                    continue;
+                }
                 AppCommand::BrowserSkimFrame { media_id, time_secs } => {
                     // Decode a frame from the skim file at the given time
                     if let Some(item) = self.state.media_pool.get(media_id) {
@@ -3212,6 +3254,8 @@ impl KlippApp {
                     self.state.filmstrip_textures.clear();
                     self.state.filmstrip_in_progress.clear();
                     self.state.filmstrip_queue.clear();
+                    self.state.filmstrip_total_queued = 0;
+                    self.state.filmstrip_completed = 0;
                     self.state.history = crate::history::CommandHistory::new();
                     self.sync_sequence_to_engine();
                     // Save immediately so the .klipp directory is created
