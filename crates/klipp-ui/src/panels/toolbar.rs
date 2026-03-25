@@ -1,11 +1,9 @@
-use crate::icons::Icon;
 use crate::layout_state::EditTool;
 use crate::prefs::RecentProject;
 use crate::state::{AppState, PlayheadFollow, Workspace};
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::{AppCommand, Tool};
-use klipp_engine::PlaybackState;
 
 pub struct ToolbarPanel;
 
@@ -96,6 +94,7 @@ impl ToolbarPanel {
             } else {
                 state.active_workspace = Workspace::Color;
                 state.show_color_panel = true;
+                state.show_scopes = true;
             }
         }
 
@@ -109,7 +108,7 @@ impl ToolbarPanel {
         let bg = icon_bg(&resp, scopes_active);
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_scopes_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Scopes", None);
+        styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
         if resp.clicked() {
             state.show_scopes = !state.show_scopes;
         }
@@ -126,13 +125,11 @@ impl ToolbarPanel {
         let right_edge = rx - 10.0;
 
         // ═══════════════════════════════════════════
-        // WORKSPACE TABS — compact pills left of transport
+        // WORKSPACE TABS — centred in toolbar
         // ═══════════════════════════════════════════
         let ws_tab_w = 150.0;
-        let transport_w = 260.0;
-        let tx_start = toolbar_rect.center().x - transport_w / 2.0;
         let ws_rect = egui::Rect::from_min_size(
-            egui::pos2(tx_start - ws_tab_w - 8.0, toolbar_rect.min.y),
+            egui::pos2(toolbar_rect.center().x - ws_tab_w / 2.0, toolbar_rect.min.y),
             egui::vec2(ws_tab_w, toolbar_rect.height()),
         );
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(ws_rect), |ui| {
@@ -154,22 +151,11 @@ impl ToolbarPanel {
                     if resp.clicked() {
                         state.active_workspace = ws;
                         state.show_color_panel = ws == Workspace::Color;
+                        if ws == Workspace::Color {
+                            state.show_scopes = true;
+                        }
                     }
                 }
-            });
-        });
-
-        // ═══════════════════════════════════════════
-        // CENTRE GROUP — transport, absolutely centred
-        // ═══════════════════════════════════════════
-        let transport_rect = egui::Rect::from_min_size(
-            egui::pos2(tx_start, toolbar_rect.min.y),
-            egui::vec2(transport_w, toolbar_rect.height()),
-        );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(transport_rect), |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                Self::transport_controls(ui, &mut cmds, state, theme);
             });
         });
 
@@ -178,7 +164,7 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         let left_rect = egui::Rect::from_min_max(
             toolbar_rect.min,
-            egui::pos2((tx_start - 10.0).min(right_edge), toolbar_rect.max.y),
+            egui::pos2((ws_rect.left() - 10.0).min(right_edge), toolbar_rect.max.y),
         );
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
             ui.horizontal_centered(|ui| {
@@ -296,73 +282,6 @@ impl ToolbarPanel {
         });
 
         cmds
-    }
-
-    fn transport_controls(
-        ui: &mut egui::Ui,
-        cmds: &mut Vec<AppCommand>,
-        state: &mut AppState,
-        theme: &KlippTheme,
-    ) {
-        let enabled = state.playback != PlaybackState::Idle;
-        let fps_val = state.fps.as_f64();
-
-        let resp = transport_btn(ui, Icon::SkipBack, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
-        styled_tooltip(&resp, theme, "Go to Start", Some("Home"));
-        if resp.clicked() { cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero())); }
-
-        let resp = transport_btn(ui, Icon::Rewind, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
-        styled_tooltip(&resp, theme, "Rewind", Some("J"));
-        if resp.clicked() { cmds.push(AppCommand::SeekRelative(-(fps_val * 10.0) as i64)); }
-
-        // Play/Pause — amber circle
-        let is_playing = state.playback == PlaybackState::Playing;
-        let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
-        let resp = transport_btn(ui, play_icon, 38.0, egui::Color32::BLACK, theme.accent, enabled);
-        styled_tooltip(&resp, theme, "Play / Pause", Some("Space"));
-        if resp.clicked() {
-            if is_playing { cmds.push(AppCommand::Pause); } else { cmds.push(AppCommand::Play); }
-        }
-
-        let resp = transport_btn(ui, Icon::FastForward, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
-        styled_tooltip(&resp, theme, "Fast Forward", Some("L"));
-        if resp.clicked() { cmds.push(AppCommand::SeekRelative((fps_val * 10.0) as i64)); }
-
-        let resp = transport_btn(ui, Icon::SkipForward, 32.0, theme.text_secondary, egui::Color32::TRANSPARENT, enabled);
-        styled_tooltip(&resp, theme, "Go to End", Some("End"));
-        if resp.clicked() { let dur = state.sequence_duration(); cmds.push(AppCommand::SeekTo(dur)); }
-
-        // Timecode
-        ui.add_space(6.0);
-        let tc_str = format_timecode_hmsf(state.playhead_smooth_secs, state.fps.rate());
-        egui::Frame::none()
-            .fill(theme.bg_panel)
-            .stroke(egui::Stroke::new(1.0, theme.border))
-            .rounding(5.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 5.0))
-            .show(ui, |ui| {
-                if state.editing_timecode {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut state.timecode_input)
-                            .desired_width(90.0).font(egui::TextStyle::Monospace),
-                    );
-                    if !response.has_focus() { response.request_focus(); }
-                    if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            if let Some(tc) = parse_timecode_input(&state.timecode_input, state.fps) {
-                                cmds.push(AppCommand::SeekTo(tc));
-                            }
-                        }
-                        state.editing_timecode = false;
-                    }
-                } else {
-                    let resp = ui.add(
-                        egui::Label::new(egui::RichText::new(&tc_str).monospace().size(12.0).color(theme.text_accent))
-                            .sense(egui::Sense::click()),
-                    );
-                    if resp.clicked() { state.editing_timecode = true; state.timecode_input = tc_str; }
-                }
-            });
     }
 
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject]) {
@@ -540,10 +459,6 @@ fn icon_rect(btn: egui::Rect) -> egui::Rect {
     egui::Rect::from_center_size(btn.center(), egui::vec2(16.0, 16.0))
 }
 
-fn transport_btn(ui: &mut egui::Ui, icon: Icon, size: f32, fg: egui::Color32, bg: egui::Color32, enabled: bool) -> egui::Response {
-    let icon_size = if size > 34.0 { 18.0 } else { 16.0 };
-    ui.add_enabled(enabled, egui::Button::image(icon.bold(icon_size).tint(fg)).fill(bg).rounding(size / 2.0).min_size(egui::vec2(size, size)))
-}
 
 fn sep(ui: &mut egui::Ui, theme: &KlippTheme) {
     ui.add_space(4.0);
@@ -718,30 +633,3 @@ fn draw_export_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
     ], c, egui::Stroke::NONE));
 }
 
-fn format_timecode_hmsf(smooth_secs: f64, rate: u32) -> String {
-    let s = smooth_secs.abs();
-    let sign = if smooth_secs < 0.0 { "-" } else { "" };
-    let hh = (s / 3600.0) as u32;
-    let mm = ((s % 3600.0) / 60.0) as u32;
-    let ss = (s % 60.0) as u32;
-    let ff = ((s % 1.0) * rate as f64) as u32;
-    format!("{sign}{hh:02}:{mm:02}:{ss:02}:{ff:02}")
-}
-
-fn parse_timecode_input(input: &str, fps: klipp_core::Fps) -> Option<klipp_core::RationalTime> {
-    let input = input.trim();
-    if let Some(tc) = parse_hmsf(input, fps.rate()) { return Some(tc); }
-    if let Ok(f) = input.parse::<i64>() { return Some(klipp_core::RationalTime::from_frames(f, fps.rate())); }
-    if let Ok(s) = input.parse::<f64>() { return Some(klipp_core::RationalTime::from_secs_f64(s, fps.rate())); }
-    None
-}
-
-fn parse_hmsf(input: &str, rate: u32) -> Option<klipp_core::RationalTime> {
-    let p: Vec<&str> = input.split(':').collect();
-    if p.len() != 4 { return None; }
-    let hh: i64 = p[0].parse().ok()?;
-    let mm: i64 = p[1].parse().ok()?;
-    let ss: i64 = p[2].parse().ok()?;
-    let ff: i64 = p[3].parse().ok()?;
-    Some(klipp_core::RationalTime::from_frames(((hh * 3600 + mm * 60 + ss) * rate as i64) + ff, rate))
-}

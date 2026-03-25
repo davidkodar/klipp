@@ -1984,6 +1984,7 @@ impl KlippApp {
                     } else {
                         self.state.active_workspace = Workspace::Color;
                         self.state.show_color_panel = true;
+                        self.state.show_scopes = true;
                     }
                     continue;
                 }
@@ -4432,6 +4433,12 @@ impl KlippApp {
                     _ => ViewerOverlay::FalseColor,
                 };
             }
+            // V key (bare) — toggle scopes
+            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
+                && i.key_pressed(egui::Key::V)
+            {
+                self.state.show_scopes = !self.state.show_scopes;
+            }
             // Ctrl+C — Copy
             if i.modifiers.ctrl && i.key_pressed(egui::Key::C) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -5215,20 +5222,27 @@ impl eframe::App for KlippApp {
                     let show_nodes_bar = in_color_ws && self.state.show_node_strip;
 
                     // In Color workspace: allocate bottom space for toggle + scopes + nodes
-                    // Use ratio to split between viewer and bottom panels
+                    // Use ratio to split between viewer+timeline and bottom panels
                     let toggle_bar_h: f32 = if in_color_ws { 22.0 } else { 0.0 };
-                    let nodes_h: f32 = if show_nodes_bar { 70.0 } else { 0.0 };
                     let center_total = main_bottom - main_top;
+                    let has_bottom_panels = show_scopes_bar || show_nodes_bar;
 
-                    // Scopes get remaining space between toggle bar, nodes, and viewer
-                    // Use persisted ratio: viewer gets ratio of (center - fixed elements)
-                    let fixed_h = toggle_bar_h + nodes_h + theme::RESIZER_THICKNESS;
+                    // Bottom panels (scopes + nodes) share a flexible height controlled by the ratio
+                    let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
                     let flexible_h = (center_total - fixed_h).max(200.0);
-                    let scopes_h: f32 = if show_scopes_bar {
-                        let viewer_ratio = self.layout.color_viewer_height_ratio.clamp(0.4, 0.85);
-                        (flexible_h * (1.0 - viewer_ratio)).clamp(80.0, flexible_h * 0.5)
+                    let bottom_panel_h: f32 = if has_bottom_panels {
+                        let viewer_ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+                        (flexible_h * (1.0 - viewer_ratio)).clamp(80.0, flexible_h * 0.6)
                     } else {
                         0.0
+                    };
+
+                    // Split bottom panel between scopes and nodes
+                    let (scopes_h, nodes_h) = match (show_scopes_bar, show_nodes_bar) {
+                        (true, true) => (bottom_panel_h * 0.6, bottom_panel_h * 0.4),
+                        (true, false) => (bottom_panel_h, 0.0),
+                        (false, true) => (0.0, bottom_panel_h),
+                        (false, false) => (0.0, 0.0),
                     };
 
                     let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
@@ -5426,7 +5440,7 @@ impl eframe::App for KlippApp {
                             if delta != 0.0 {
                                 // Adjust the viewer ratio based on drag
                                 let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
-                                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.85);
+                                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.75);
                                 self.layout_dirty = true;
                             }
                         }
@@ -5452,15 +5466,7 @@ impl eframe::App for KlippApp {
                                         self.state.show_scopes = !self.state.show_scopes;
                                         ui.ctx().request_repaint();
                                     }
-                                    ui.separator();
-                                    let nodes_label = if self.state.show_node_strip {
-                                        egui::RichText::new("Nodes").size(10.0).color(theme.text_accent)
-                                    } else {
-                                        egui::RichText::new("Nodes").size(10.0).color(theme.text_dim)
-                                    };
-                                    if ui.selectable_label(self.state.show_node_strip, nodes_label).clicked() {
-                                        self.state.show_node_strip = !self.state.show_node_strip;
-                                    }
+                                    // Node strip toggle removed — node system disabled
 
                                     // Scope mode selector (when scopes visible)
                                     if self.state.show_scopes {
@@ -5491,9 +5497,10 @@ impl eframe::App for KlippApp {
                             // Compute rect dynamically from current state
                             let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
                                 // Scopes just got enabled this frame — give it reasonable default
-                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.4, 0.85);
-                                let flex = (main_bottom - main_top - toggle_bar_h - nodes_h - theme::RESIZER_THICKNESS).max(200.0);
-                                (flex * (1.0 - ratio)).clamp(80.0, flex * 0.5)
+                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+                                let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
+                                let total_bottom = (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6);
+                                if show_nodes_bar { total_bottom * 0.6 } else { total_bottom }
                             };
                             let live_scopes_rect = egui::Rect::from_min_size(
                                 egui::pos2(center_left, toggle_bar_rect.max.y),
@@ -5529,7 +5536,23 @@ impl eframe::App for KlippApp {
                                             &mut clip.node_graph, cid, &self.theme,
                                         );
                                         all_cmds.extend(cmds);
+                                    } else {
+                                        ui.painter().text(
+                                            nodes_rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "Clip not found in sequence",
+                                            egui::FontId::proportional(12.0),
+                                            egui::Color32::from_rgb(100, 100, 110),
+                                        );
                                     }
+                                } else {
+                                    ui.painter().text(
+                                        nodes_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "Select a clip to view its node graph",
+                                        egui::FontId::proportional(12.0),
+                                        egui::Color32::from_rgb(100, 100, 110),
+                                    );
                                 }
                             });
                         }

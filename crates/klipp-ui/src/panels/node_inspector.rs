@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::ColorTab;
 use crate::theme::KlippTheme;
 use crate::widgets::color_wheel::{self, ColorWheelState};
@@ -519,28 +520,16 @@ impl NodeInspectorPanel {
 
                     // Eyedropper button — pushed to the right
                     let remaining = ui.available_width() - PAD;
-                    if remaining > 30.0 {
-                        ui.add_space(remaining - 28.0);
-                        let resp = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
-                        let r = resp.0;
-                        let p = ui.painter();
-                        // Button bg
-                        let bg = if resp.1.hovered() {
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)
+                    if remaining > 22.0 {
+                        ui.add_space(remaining - 22.0);
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                        let icon_tint = if resp.hovered() {
+                            theme.text_accent
                         } else {
-                            egui::Color32::from_rgb(0x2a, 0x2a, 0x2e)
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
                         };
-                        p.rect_filled(r, 5.0, bg);
-                        p.rect_stroke(r, 5.0, egui::Stroke::new(0.5,
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 38)));
-                        // Pen icon using lines
-                        let c = egui::Color32::from_rgba_premultiplied(255, 255, 255, 140);
-                        let cx = r.center().x;
-                        let cy = r.center().y;
-                        p.line_segment([egui::pos2(cx+3.0, cy-7.0), egui::pos2(cx+7.0, cy-3.0)], egui::Stroke::new(3.0, c));
-                        p.line_segment([egui::pos2(cx+4.0, cy-4.0), egui::pos2(cx-3.0, cy+3.0)], egui::Stroke::new(1.5, c));
-                        p.line_segment([egui::pos2(cx-3.0, cy+3.0), egui::pos2(cx-6.0, cy+7.0)], egui::Stroke::new(1.0, c));
-                        p.circle_filled(egui::pos2(cx-6.0, cy+7.0), 1.5, c);
+                        let icon_rect = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
+                        Icon::Eyedropper.image(12.0).tint(icon_tint).paint_at(ui, icon_rect);
                     }
                 });
                 ui.add_space(6.0);
@@ -620,43 +609,35 @@ impl NodeInspectorPanel {
                         if remaining > 60.0 {
                             ui.add_space(remaining - 56.0);
 
-                            // Eyedropper icon button
-                            let (ed_rect, _ed_resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
-                            let p = ui.painter();
-                            let c = egui::Color32::from_rgba_premultiplied(255, 255, 255, 80);
-                            let cx = ed_rect.center().x;
-                            let cy = ed_rect.center().y;
-                            p.line_segment([egui::pos2(cx+2.0, cy-5.0), egui::pos2(cx+5.0, cy-2.0)], egui::Stroke::new(2.0, c));
-                            p.line_segment([egui::pos2(cx+3.0, cy-3.0), egui::pos2(cx-2.0, cy+2.0)], egui::Stroke::new(1.2, c));
-                            p.line_segment([egui::pos2(cx-2.0, cy+2.0), egui::pos2(cx-4.0, cy+5.0)], egui::Stroke::new(0.8, c));
-                            p.circle_filled(egui::pos2(cx-4.0, cy+5.0), 1.0, c);
+                            // Eyedropper icon button (Phosphor)
+                            let ed_resp = ui.allocate_rect(
+                                ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
+                                egui::Sense::click(),
+                            );
+                            let ed_tint = if ed_resp.hovered() {
+                                theme.text_accent
+                            } else {
+                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                            };
+                            let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
+                            Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
+                            ui.advance_cursor_after_rect(ed_resp.rect);
 
                             ui.add_space(4.0);
 
-                            // Reset icon button
-                            let (rs_rect, rs_resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
-                            let icon_color = if rs_resp.hovered() {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 160)
+                            // Reset icon button (Phosphor ArrowCounterClockwise)
+                            let rs_resp = ui.allocate_rect(
+                                ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
+                                egui::Sense::click(),
+                            );
+                            let rs_tint = if rs_resp.hovered() {
+                                theme.text_accent
                             } else {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 80)
+                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
                             };
-                            let ix = rs_rect.center().x;
-                            let iy = rs_rect.center().y;
-                            let ir = 4.5;
-                            for s in 0..6 {
-                                let a1 = std::f32::consts::PI * 0.2 + (s as f32 / 6.0) * std::f32::consts::PI * 1.5;
-                                let a2 = std::f32::consts::PI * 0.2 + ((s + 1) as f32 / 6.0) * std::f32::consts::PI * 1.5;
-                                ui.painter().line_segment([
-                                    egui::pos2(ix + a1.cos() * ir, iy + a1.sin() * ir),
-                                    egui::pos2(ix + a2.cos() * ir, iy + a2.sin() * ir),
-                                ], egui::Stroke::new(1.0, icon_color));
-                            }
-                            // Arrow tip
-                            let end_a = std::f32::consts::PI * 0.2;
-                            let ax = ix + end_a.cos() * ir;
-                            let ay = iy + end_a.sin() * ir;
-                            ui.painter().line_segment([egui::pos2(ax, ay), egui::pos2(ax-2.5, ay-1.5)], egui::Stroke::new(1.0, icon_color));
-                            ui.painter().line_segment([egui::pos2(ax, ay), egui::pos2(ax+0.5, ay-2.5)], egui::Stroke::new(1.0, icon_color));
+                            let rs_icon_rect = egui::Rect::from_center_size(rs_resp.rect.center(), egui::vec2(12.0, 12.0));
+                            Icon::ArrowCounterClockwise.image(12.0).tint(rs_tint).paint_at(ui, rs_icon_rect);
+                            ui.advance_cursor_after_rect(rs_resp.rect);
 
                             if rs_resp.clicked() {
                                 reset_clicked = true;
@@ -839,31 +820,21 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
         let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
         painter.circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
 
-        // Reset icon (circular arrow)
-        let icon_r = 5.0;
-        let icon_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 100);
-        let segments = 8;
-        for i in 0..segments {
-            let a1 = std::f32::consts::PI * 0.2 + (i as f32 / segments as f32) * std::f32::consts::PI * 1.5;
-            let a2 = std::f32::consts::PI * 0.2 + ((i + 1) as f32 / segments as f32) * std::f32::consts::PI * 1.5;
-            painter.line_segment(
-                [
-                    egui::pos2(icon_x + a1.cos() * icon_r, cy + a1.sin() * icon_r),
-                    egui::pos2(icon_x + a2.cos() * icon_r, cy + a2.sin() * icon_r),
-                ],
-                egui::Stroke::new(1.0, icon_color),
-            );
-        }
-        let end_a = std::f32::consts::PI * 0.2;
-        let ax = icon_x + end_a.cos() * icon_r;
-        let ay = cy + end_a.sin() * icon_r;
-        painter.line_segment([egui::pos2(ax, ay), egui::pos2(ax - 3.0, ay - 2.0)], egui::Stroke::new(1.0, icon_color));
-        painter.line_segment([egui::pos2(ax, ay), egui::pos2(ax + 1.0, ay - 3.0)], egui::Stroke::new(1.0, icon_color));
     }
 
-    // Clickable reset button area
+    // Clickable reset button area (allocated first so we can check hover for tinting)
     let reset_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(16.0, 16.0));
     let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
+
+    // Reset icon (Phosphor ArrowCounterClockwise)
+    let reset_tint = if reset_resp.hovered() {
+        theme.text_accent
+    } else {
+        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+    };
+    let icon_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(12.0, 12.0));
+    Icon::ArrowCounterClockwise.image(12.0).tint(reset_tint).paint_at(ui, icon_rect);
+
     reset_resp.clicked()
 }
 
