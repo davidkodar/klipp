@@ -2131,6 +2131,16 @@ impl TimelinePanel {
                     }
                 }
 
+                // Reveal source in media browser
+                if let Some(clip) = clip_info {
+                    if let Some(mid) = clip.media_id() {
+                        if ui.button("Reveal Source in Browser").clicked() {
+                            cmds.push(AppCommand::RevealMediaInBrowser { media_id: mid });
+                            ui.close_menu();
+                        }
+                    }
+                }
+
                 ui.separator();
 
                 // Three-point edit operations

@@ -115,6 +115,10 @@ pub struct AppState {
     pub source_media_id: Option<MediaId>,
     pub source_playhead: Timecode,
 
+    // Media browser multi-select
+    pub selected_media_ids: std::collections::HashSet<MediaId>,
+    pub last_clicked_media_id: Option<MediaId>,
+
     // Phase 4: Proxy
     pub use_proxies: bool,
 
@@ -302,6 +306,15 @@ pub struct AppState {
 
     // Remove media confirmation
     pub show_remove_media_confirm: Option<MediaId>,
+    /// Delete unused media confirmation: (count, total_bytes)
+    pub show_delete_unused_confirm: Option<(usize, u64)>,
+    /// Export offline warning: list of (filename, timecode_string) for offline clips
+    pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
+
+    // Usage count cache: MediaId → number of clips referencing it.
+    // Rebuilt lazily when media_usage_cache_dirty is set (after any timeline edit).
+    pub media_usage_cache: std::collections::HashMap<MediaId, usize>,
+    pub media_usage_cache_dirty: bool,
 
     // New Project dialog
     pub show_new_project_dialog: bool,
@@ -446,6 +459,8 @@ impl Default for AppState {
             clipboard: None,
             source_media_id: None,
             source_playhead: Timecode::zero(),
+            selected_media_ids: std::collections::HashSet::new(),
+            last_clicked_media_id: None,
             use_proxies: true,
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
@@ -546,6 +561,10 @@ impl Default for AppState {
             project_auto_skim: None,
             show_media_panel: false,
             show_remove_media_confirm: None,
+            show_delete_unused_confirm: None,
+            export_offline_warning: None,
+            media_usage_cache: std::collections::HashMap::new(),
+            media_usage_cache_dirty: true,
             show_new_project_dialog: false,
             show_project_info: false,
             show_consolidate_dialog: false,

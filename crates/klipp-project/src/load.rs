@@ -1,4 +1,5 @@
 use crate::format::*;
+use crate::path_util::resolve_media_path;
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
@@ -6,7 +7,7 @@ use klipp_timeline::{
     TitlePosition, TitleShadow, Track, TrackKind,
 };
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -41,10 +42,11 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let manifest: MediaManifestJson = serde_json::from_str(&manifest_str)
         .map_err(|e| format!("Failed to parse manifest.json: {e}"))?;
 
-    // Reconstruct media pool
+    // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
     for item_json in &manifest.items {
-        let path = PathBuf::from(&item_json.path);
+        let stored_path = Path::new(&item_json.path);
+        let path = resolve_media_path(dir, stored_path);
         let offline = !path.exists();
         if offline {
             warn!("Media file not found, marking offline: {:?}", path);
@@ -63,8 +65,13 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             audio_codec: item_json.audio_codec.clone(),
             has_audio: item_json.has_audio,
             file_size_bytes: item_json.file_size_bytes,
+            sample_rate: item_json.sample_rate,
+            audio_channels: item_json.audio_channels,
             offline,
-            proxy_path: item_json.proxy_path.as_ref().map(PathBuf::from),
+            is_still: item_json.is_still,
+            proxy_path: item_json.proxy_path.as_ref().map(|p| {
+                resolve_media_path(dir, Path::new(p))
+            }),
             proxy_ready: item_json.proxy_ready,
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
@@ -73,6 +80,11 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
             added_at: item_json.added_at.unwrap_or(0),
+            fingerprint: None, // recomputed if needed
+            file_modified_at: item_json.file_modified_at,
+            media_created_at: item_json.media_created_at,
+            color_label: klipp_media::ColorLabel::from_u8(item_json.color_label),
+            needs_reprobe: false,
             log_format: Default::default(),
             skim_file: None,
             waveform_data: None,
@@ -93,7 +105,9 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // Use color settings from the first sequence (global LUT is project-wide)
     let first = &project.sequences[0];
     let color_settings = crate::save::ColorSettings {
-        global_lut_path: first.global_lut_path.as_ref().map(PathBuf::from),
+        global_lut_path: first.global_lut_path.as_ref().map(|p| {
+            resolve_media_path(dir, Path::new(p))
+        }),
         global_lut_opacity: first.global_lut_opacity,
         track_header_width: first.track_header_width,
         auto_generate_filmstrips: first.auto_generate_filmstrips,

@@ -5,6 +5,7 @@ pub mod history;
 pub mod icons;
 pub mod inspector;
 pub mod layout_state;
+pub mod media_watcher;
 pub mod panels;
 pub mod prefs;
 pub mod presets;

@@ -108,6 +108,16 @@ pub struct EditingPrefs {
     /// Automatically generate skim transcodes for hover skimming on import.
     #[serde(default = "default_true")]
     pub auto_generate_skim: bool,
+    /// Default duration in seconds for imported still images (PNG, JPG, etc.).
+    #[serde(default = "default_still_duration")]
+    pub default_still_duration_secs: f64,
+    /// Media browser view mode (persisted across sessions).
+    #[serde(default)]
+    pub media_browser_view_mode: crate::browser::media_tab::BrowserViewMode,
+}
+
+fn default_still_duration() -> f64 {
+    5.0
 }
 
 impl Default for EditingPrefs {
@@ -116,6 +126,8 @@ impl Default for EditingPrefs {
             auto_create_tracks: true,
             auto_generate_filmstrips: true,
             auto_generate_skim: true,
+            default_still_duration_secs: default_still_duration(),
+            media_browser_view_mode: Default::default(),
         }
     }
 }

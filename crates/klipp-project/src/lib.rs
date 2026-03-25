@@ -1,5 +1,6 @@
 mod format;
 mod load;
+pub mod path_util;
 mod save;
 pub mod workspace;
 

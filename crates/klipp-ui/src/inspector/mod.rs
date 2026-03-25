@@ -12,6 +12,7 @@ use klipp_core::AppCommand;
 pub struct NewInspectorPanel {
     show_add_builtin: bool,
     show_add_ofx: bool,
+    pub tag_input: String,
 }
 
 
@@ -163,7 +164,7 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Info => {
                     if let (Some((track_idx, clip)), Some(media)) = (clip_info, media) {
-                        info_tab::show(ui, state, theme, track_idx, clip, media);
+                        info_tab::show(ui, state, theme, track_idx, clip, media, &mut self.tag_input, &mut cmds);
                     } else {
                         no_selection(ui, theme);
                     }

@@ -1,4 +1,5 @@
 use crate::format::*;
+use crate::path_util::to_project_relative;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
@@ -57,7 +58,7 @@ pub fn save_project_with_color(
         saved_at: Some(now),
         created_at: created_at.map(|s| s.to_string()),
         platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
-        sequences: sequences.iter().map(|s| sequence_to_json(s, color)).collect(),
+        sequences: sequences.iter().map(|s| sequence_to_json(s, color, dir)).collect(),
         active_sequence_id: active_sequence_id.map(|s| s.to_string()),
     };
 
@@ -66,10 +67,10 @@ pub fn save_project_with_color(
     std::fs::write(dir.join("project.json"), project_json)
         .map_err(|e| format!("Failed to write project.json: {e}"))?;
 
-    // Build media/manifest.json
+    // Build media/manifest.json — store paths relative to project dir
     let manifest = MediaManifestJson {
         version: "1.0.0".to_string(),
-        items: media_pool.all().map(media_item_to_json).collect(),
+        items: media_pool.all().map(|item| media_item_to_json(item, dir)).collect(),
     };
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -85,7 +86,7 @@ fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
     TimecodeJson { value: tc.value, rate: tc.rate }
 }
 
-fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
+fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -> SequenceJson {
     SequenceJson {
         id: seq.id.to_string(),
         name: seq.name.clone(),
@@ -93,7 +94,11 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings) -> SequenceJson {
         resolution: ResolutionJson { width: seq.resolution.width, height: seq.resolution.height },
         in_point: seq.in_point.as_ref().map(timecode_to_json),
         out_point: seq.out_point.as_ref().map(timecode_to_json),
-        global_lut_path: color.global_lut_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        global_lut_path: color.global_lut_path.as_ref().map(|p| {
+            to_project_relative(project_dir, p)
+                .to_string_lossy()
+                .to_string()
+        }),
         global_lut_opacity: color.global_lut_opacity,
         track_header_width: color.track_header_width,
         auto_generate_filmstrips: color.auto_generate_filmstrips,
@@ -232,10 +237,12 @@ pub fn iso8601_now() -> String {
     format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, d + 1)
 }
 
-fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
+fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
     MediaItemJson {
         id: item.id.to_string(),
-        path: item.path.to_string_lossy().to_string(),
+        path: to_project_relative(project_dir, &item.path)
+            .to_string_lossy()
+            .to_string(),
         filename: item.filename.clone(),
         duration_frames: item.duration.value,
         duration_rate: item.duration.rate,
@@ -245,7 +252,14 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         audio_codec: item.audio_codec.clone(),
         has_audio: item.has_audio,
         file_size_bytes: item.file_size_bytes,
-        proxy_path: item.proxy_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        sample_rate: item.sample_rate,
+        audio_channels: item.audio_channels,
+        is_still: item.is_still,
+        proxy_path: item.proxy_path.as_ref().map(|p| {
+            to_project_relative(project_dir, p)
+                .to_string_lossy()
+                .to_string()
+        }),
         proxy_ready: item.proxy_ready,
         default_source_in: item.default_source_in.as_ref().map(timecode_to_json),
         default_source_out: item.default_source_out.as_ref().map(timecode_to_json),
@@ -254,5 +268,8 @@ fn media_item_to_json(item: &MediaItem) -> MediaItemJson {
         user_notes: item.user_notes.clone(),
         bin: item.bin.clone(),
         added_at: if item.added_at > 0 { Some(item.added_at) } else { None },
+        file_modified_at: item.file_modified_at,
+        media_created_at: item.media_created_at,
+        color_label: item.color_label.to_u8(),
     }
 }

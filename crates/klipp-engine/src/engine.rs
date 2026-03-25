@@ -2803,6 +2803,8 @@ impl PlaybackEngine {
                 let mut video_codec = String::new();
                 let mut audio_codec = String::new();
                 let mut has_audio = false;
+                let mut sample_rate: Option<u32> = None;
+                let mut audio_channels: Option<u16> = None;
 
                 for stream in format_ctx.streams() {
                     let params = stream.parameters();
@@ -2827,11 +2829,20 @@ impl PlaybackEngine {
                                 .and_then(|ctx| ctx.decoder().audio());
                             if let Ok(dec) = decoder {
                                 audio_codec = format!("{:?}", dec.id());
+                                sample_rate = Some(dec.rate() as u32);
+                                audio_channels = Some(dec.channels() as u16);
                             }
                         }
                         _ => {}
                     }
                 }
+
+                // Detect still images: has video, no audio, near-zero duration,
+                // and file extension matches common image formats.
+                let is_still = !video_codec.is_empty()
+                    && !has_audio
+                    && (duration_secs < 0.1 || duration_secs.is_nan())
+                    && is_image_extension(&path);
 
                 self.fps = fps_from_float(container_fps);
                 self.duration = RationalTime::from_secs_f64(duration_secs, self.fps.rate());
@@ -2840,7 +2851,16 @@ impl PlaybackEngine {
                 self.current_clip_index = 0;
                 self.state = PlaybackState::Stopped;
 
-                let file_size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let fs_meta = std::fs::metadata(&path).ok();
+                let file_size_bytes = fs_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let file_modified_at = fs_meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+
+                // Try to extract creation_time from container metadata (camera shoot date)
+                let media_created_at = format_ctx.metadata().get("creation_time")
+                    .and_then(|s| parse_iso8601_timestamp(s));
 
                 let _ = self.event_tx.send(AppEvent::MediaLoaded {
                     media_id,
@@ -2855,6 +2875,11 @@ impl PlaybackEngine {
                     audio_codec,
                     has_audio,
                     file_size_bytes,
+                    sample_rate,
+                    audio_channels,
+                    is_still,
+                    file_modified_at,
+                    media_created_at,
                 });
 
                 self.grab_first_frame();
@@ -2919,6 +2944,44 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
     }
 
     result
+}
+
+/// Parse ISO 8601 timestamp like "2024-03-15T10:30:00.000000Z" to Unix epoch seconds.
+fn parse_iso8601_timestamp(s: &str) -> Option<u64> {
+    // Minimal parser for ffmpeg's creation_time format: YYYY-MM-DDTHH:MM:SS[.frac]Z
+    let s = s.trim().trim_end_matches('Z');
+    let (date, time) = s.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: u64 = date_parts.next()?.parse().ok()?;
+    let month: u64 = date_parts.next()?.parse().ok()?;
+    let day: u64 = date_parts.next()?.parse().ok()?;
+    let time_main = time.split('.').next()?; // strip fractional seconds
+    let mut time_parts = time_main.split(':');
+    let hour: u64 = time_parts.next()?.parse().ok()?;
+    let min: u64 = time_parts.next()?.parse().ok()?;
+    let sec: u64 = time_parts.next()?.parse().ok()?;
+    // Approximate days since epoch (not accounting for leap seconds, good enough for sorting)
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 0..(month.saturating_sub(1) as usize).min(11) {
+        days += mdays[m];
+    }
+    days += day.saturating_sub(1);
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+fn is_image_extension(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp")
+    )
 }
 
 fn fps_from_float(fps: f64) -> Fps {

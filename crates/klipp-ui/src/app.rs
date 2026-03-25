@@ -146,6 +146,10 @@ pub struct KlippApp {
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
     ui_executor: klipp_nodes::GraphExecutor,
+    /// File watcher for external media modification detection.
+    /// Must be kept alive — dropping stops watching.
+    #[allow(dead_code)]
+    media_watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl KlippApp {
@@ -216,11 +220,13 @@ impl KlippApp {
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             ui_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
+            media_watcher: None,
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
+        app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -389,12 +395,30 @@ impl KlippApp {
                     audio_codec,
                     has_audio,
                     file_size_bytes,
+                    sample_rate,
+                    audio_channels,
+                    is_still,
+                    file_modified_at,
+                    media_created_at,
                 } => {
                     let filename = path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| path.to_string_lossy().to_string());
                     let _is_audio_only = video_codec.is_empty();
+
+                    // For still images: override duration and fps with defaults
+                    let (duration, fps, is_still) = if is_still {
+                        let still_dur_secs = self.prefs.editing.default_still_duration_secs;
+                        let still_fps = klipp_core::Fps::pal_25(); // sensible default
+                        let still_duration = klipp_core::RationalTime::from_secs_f64(
+                            still_dur_secs,
+                            still_fps.rate(),
+                        );
+                        (still_duration, still_fps, true)
+                    } else {
+                        (duration, fps, false)
+                    };
 
                     let media_item = MediaItem {
                         id: media_id,
@@ -407,7 +431,10 @@ impl KlippApp {
                         audio_codec,
                         has_audio,
                         file_size_bytes,
+                        sample_rate,
+                        audio_channels,
                         offline: false,
+                        is_still,
                         proxy_path: None,
                         proxy_ready: false,
                         default_source_in: None,
@@ -420,13 +447,23 @@ impl KlippApp {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
                             .unwrap_or(0),
+                        fingerprint: compute_media_fingerprint(&path),
+                        file_modified_at,
+                        media_created_at,
+                        color_label: Default::default(),
+                        needs_reprobe: false,
                         log_format: Default::default(),
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
                     };
 
-                    self.state.media_pool.add(media_item);
+                    self.state.media_pool.add(media_item.clone());
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::AddMediaToPool { item: media_item },
+                    });
+                    self.state.dirty = true;
                     self.sync_media_pool_to_engine();
                     self.state.fps = fps;
                     self.state.playback = PlaybackState::Stopped;
@@ -517,7 +554,8 @@ impl KlippApp {
                 AppEvent::SkimTranscodeProgress { .. }
                 | AppEvent::SkimTranscodeComplete { .. }
                 | AppEvent::SkimTranscodeFailed { .. }
-                | AppEvent::BrowserSkimFrameReady { .. } => {}
+                | AppEvent::BrowserSkimFrameReady { .. }
+                | AppEvent::MediaFileChanged { .. } => {}
             }
         }
     }
@@ -1274,9 +1312,25 @@ impl KlippApp {
     }
 
     fn send_commands(&mut self, cmds: Vec<AppCommand>) {
+        if !cmds.is_empty() {
+            self.state.media_usage_cache_dirty = true;
+        }
         for cmd in cmds {
             match &cmd {
                 AppCommand::LoadMediaFile { ref path, .. } => {
+                    // Duplicate check: if this exact path is already in the pool,
+                    // skip the engine probe and select the existing item.
+                    if let Some(existing) = self.state.media_pool.find_by_path(path) {
+                        let existing_id = existing.id;
+                        self.state.toast.show(format!(
+                            "'{}' is already in the media pool",
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ));
+                        self.state.source_media_id = Some(existing_id);
+                        continue; // skip engine probe
+                    }
                     self.state.pending_media_path = Some(path.clone());
                 }
                 AppCommand::ImportMedia { ref path } => {
@@ -1698,6 +1752,25 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::ExportSequence { settings } => {
+                    // Pre-export check: scan for offline media in the sequence
+                    let offline_clips: Vec<(String, String)> = self.state.sequences[self.state.active_sequence_idx]
+                        .tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter_map(|clip| {
+                            if let klipp_timeline::ClipKind::Media { media_id } = &clip.kind {
+                                let item = self.state.media_pool.get(media_id)?;
+                                if item.offline {
+                                    let tc = clip.timeline_in.to_timecode_string();
+                                    return Some((item.filename.clone(), tc));
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+                    if !offline_clips.is_empty() {
+                        self.state.export_offline_warning = Some((offline_clips, Box::new(settings.clone())));
+                        continue;
+                    }
                     // Route through RenderQueue — snapshot reads in/out from sequence directly
                     let snapshot = klipp_export::RenderSnapshot::from_sequence(
                         &self.state.sequences[self.state.active_sequence_idx],
@@ -1712,6 +1785,30 @@ impl KlippApp {
                     match snapshot {
                         Ok(snap) => {
                             self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to create render snapshot: {e}");
+                        }
+                    }
+                    self.state.show_render_queue = true;
+                    continue;
+                }
+                AppCommand::ForceExportSequence { settings } => {
+                    // Same as ExportSequence but skips offline check (user confirmed)
+                    self.state.export_offline_warning = None;
+                    let snapshot = klipp_export::RenderSnapshot::from_sequence(
+                        &self.state.sequences[self.state.active_sequence_idx],
+                        &self.state.media_pool,
+                        &settings,
+                        None,
+                        self.export_dialog.marked_range,
+                    );
+                    let label = settings.output_path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Render".into());
+                    match snapshot {
+                        Ok(snap) => {
+                            self.state.render_queue.add_job(settings.output_path.clone(), settings.as_ref().clone(), label, snap);
                         }
                         Err(e) => {
                             tracing::error!("Failed to create render snapshot: {e}");
@@ -2864,8 +2961,16 @@ impl KlippApp {
                     let usage = media_usage_count(*media_id, &self.state.sequences);
                     if usage > 0 {
                         self.state.show_remove_media_confirm = Some(*media_id);
-                    } else {
+                    } else if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::RemoveMediaFromPool {
+                                item,
+                                clip_count: 0,
+                            },
+                        });
                         self.state.media_pool.remove(media_id);
+                        self.state.dirty = true;
                         self.sync_media_pool_to_engine();
                     }
                     continue;
@@ -2880,21 +2985,113 @@ impl KlippApp {
                         klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
                         self.state.skim_audio_session = None;
                     }
+                    let clip_count = media_usage_count(*media_id, &self.state.sequences);
+                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::RemoveMediaFromPool {
+                                item,
+                                clip_count,
+                            },
+                        });
+                    }
                     self.state.media_pool.remove(media_id);
                     self.state.show_remove_media_confirm = None;
+                    self.state.dirty = true;
                     self.sync_media_pool_to_engine();
                     continue;
                 }
                 AppCommand::SetMediaRating { media_id, rating } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        item.rating = (*rating).min(5);
+                        let old_rating = item.rating;
+                        let new_rating = (*rating).min(5);
+                        if old_rating != new_rating {
+                            item.rating = new_rating;
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetMediaRating {
+                                    media_id: *media_id,
+                                    old_rating,
+                                    new_rating,
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
                     }
                     continue;
                 }
                 AppCommand::SetMediaTags { media_id, tags } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        item.tags = tags.clone();
+                        let old_tags = item.tags.clone();
+                        if old_tags != *tags {
+                            item.tags = tags.clone();
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetMediaTags {
+                                    media_id: *media_id,
+                                    old_tags,
+                                    new_tags: tags.clone(),
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
                     }
+                    continue;
+                }
+                AppCommand::SetMediaColorLabel { media_id, label } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        let old_label = item.color_label.to_u8();
+                        if old_label != *label {
+                            item.color_label = klipp_media::ColorLabel::from_u8(*label);
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetMediaColorLabel {
+                                    media_id: *media_id,
+                                    old_label,
+                                    new_label: *label,
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::DeleteUnusedMedia => {
+                    let unused_count = self.state.media_pool.all()
+                        .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                        .count();
+                    if unused_count == 0 {
+                        self.state.toast.show("All media is used in the timeline");
+                    } else {
+                        let total_bytes: u64 = self.state.media_pool.all()
+                            .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                            .map(|m| m.file_size_bytes)
+                            .sum();
+                        self.state.show_delete_unused_confirm = Some((unused_count, total_bytes));
+                    }
+                    continue;
+                }
+                AppCommand::ConfirmDeleteUnusedMedia => {
+                    let unused_ids: Vec<klipp_core::MediaId> = self.state.media_pool.all()
+                        .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                        .map(|m| m.id)
+                        .collect();
+                    for id in &unused_ids {
+                        if let Some(item) = self.state.media_pool.get(id).cloned() {
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::RemoveMediaFromPool {
+                                    item,
+                                    clip_count: 0,
+                                },
+                            });
+                        }
+                        self.state.media_pool.remove(id);
+                    }
+                    self.state.show_delete_unused_confirm = None;
+                    self.state.dirty = true;
+                    self.sync_media_pool_to_engine();
+                    self.state.toast.show(format!("Removed {} unused media items", unused_ids.len()));
                     continue;
                 }
                 AppCommand::RevealInFileManager { path } => {
@@ -2906,6 +3103,23 @@ impl KlippApp {
                                 .spawn();
                         }
                     }
+                    continue;
+                }
+                AppCommand::RevealMediaInBrowser { media_id } => {
+                    // Switch to Media tab
+                    self.layout.active_browser_tab = crate::layout_state::BrowserTab::Media;
+                    // Clear search so item is visible
+                    self.browser.search_query.clear();
+                    // Select the item
+                    self.state.selected_media_ids.clear();
+                    self.state.selected_media_ids.insert(*media_id);
+                    self.state.last_clicked_media_id = Some(*media_id);
+                    // Switch to correct bin
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        self.browser.media_selected_bin = item.bin.clone();
+                    }
+                    // Request scroll on next frame
+                    self.browser.scroll_to_media_id = Some(*media_id);
                     continue;
                 }
                 AppCommand::CreateBin { name } => {
@@ -2929,7 +3143,19 @@ impl KlippApp {
                 }
                 AppCommand::MoveItemToBin { media_id, bin } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        item.bin = bin.clone();
+                        let from_bin = item.bin.clone();
+                        if from_bin != *bin {
+                            item.bin = bin.clone();
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::MoveMediaToBin {
+                                    media_id: *media_id,
+                                    from_bin,
+                                    to_bin: bin.clone(),
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
                     }
                     continue;
                 }
@@ -3649,6 +3875,7 @@ impl KlippApp {
             self.apply_edit_inverse(&entry.command);
             self.sync_sequence_to_engine();
             self.state.dirty = true;
+            self.state.media_usage_cache_dirty = true;
         }
     }
 
@@ -3663,6 +3890,7 @@ impl KlippApp {
             self.apply_edit_forward(&entry.command);
             self.sync_sequence_to_engine();
             self.state.dirty = true;
+            self.state.media_usage_cache_dirty = true;
         }
     }
 
@@ -3766,6 +3994,37 @@ impl KlippApp {
             EditCommand::Magnetic(cmd) => {
                 klipp_timeline::magnetic::MagneticEditor::apply_inverse(
                     &mut self.state.sequences[self.state.active_sequence_idx], cmd);
+            }
+            EditCommand::AddMediaToPool { item } => {
+                // Undo import: remove the item from pool
+                self.state.media_pool.remove(&item.id);
+                self.sync_media_pool_to_engine();
+            }
+            EditCommand::RemoveMediaFromPool { item, .. } => {
+                // Undo delete: re-insert the full MediaItem snapshot
+                self.state.media_pool.add(item.clone());
+                self.sync_media_pool_to_engine();
+            }
+            EditCommand::MoveMediaToBin { media_id, from_bin, .. } => {
+                // Undo: restore to original bin
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.bin = from_bin.clone();
+                }
+            }
+            EditCommand::SetMediaTags { media_id, old_tags, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.tags = old_tags.clone();
+                }
+            }
+            EditCommand::SetMediaRating { media_id, old_rating, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.rating = *old_rating;
+                }
+            }
+            EditCommand::SetMediaColorLabel { media_id, old_label, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.color_label = klipp_media::ColorLabel::from_u8(*old_label);
+                }
             }
             EditCommand::RenameBin { old_name, new_name } => {
                 // Undo: rename back from new_name to old_name
@@ -3885,6 +4144,36 @@ impl KlippApp {
             EditCommand::Magnetic(cmd) => {
                 klipp_timeline::magnetic::MagneticEditor::apply_forward(
                     &mut self.state.sequences[self.state.active_sequence_idx], cmd);
+            }
+            EditCommand::AddMediaToPool { item } => {
+                // Redo import: re-add the item
+                self.state.media_pool.add(item.clone());
+                self.sync_media_pool_to_engine();
+            }
+            EditCommand::RemoveMediaFromPool { item, .. } => {
+                // Redo delete: remove again
+                self.state.media_pool.remove(&item.id);
+                self.sync_media_pool_to_engine();
+            }
+            EditCommand::MoveMediaToBin { media_id, to_bin, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.bin = to_bin.clone();
+                }
+            }
+            EditCommand::SetMediaTags { media_id, new_tags, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.tags = new_tags.clone();
+                }
+            }
+            EditCommand::SetMediaRating { media_id, new_rating, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.rating = *new_rating;
+                }
+            }
+            EditCommand::SetMediaColorLabel { media_id, new_label, .. } => {
+                if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    item.color_label = klipp_media::ColorLabel::from_u8(*new_label);
+                }
             }
             EditCommand::RenameBin { old_name, new_name } => {
                 // Redo: rename from old_name to new_name
@@ -4260,6 +4549,16 @@ impl KlippApp {
                 self.state.filmstrip_generating = true;
 
                 tracing::info!("Project loaded from {:?}", path);
+
+                // Start file watcher for all media paths
+                let media_paths: Vec<std::path::PathBuf> = self.state.media_pool.all()
+                    .filter(|m| !m.offline)
+                    .map(|m| m.path.clone())
+                    .collect();
+                self.media_watcher = crate::media_watcher::start_media_watcher(
+                    &media_paths,
+                    self.proxy_event_tx.clone(), // reuse proxy event channel for file watcher events
+                );
             }
             Err(e) => {
                 tracing::error!("Failed to load project: {e}");
@@ -5033,6 +5332,21 @@ impl eframe::App for KlippApp {
         self.upload_frame_to_egui(ctx);
         self.poll_effect_thumbnails(ctx);
 
+        // Rebuild media usage cache if dirty (O(clips) once per edit, then O(1) per render)
+        if self.state.media_usage_cache_dirty {
+            self.state.media_usage_cache.clear();
+            for seq in &self.state.sequences {
+                for track in &seq.tracks {
+                    for clip in &track.clips {
+                        if let Some(mid) = clip.media_id() {
+                            *self.state.media_usage_cache.entry(mid).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            self.state.media_usage_cache_dirty = false;
+        }
+
         // Window title with project name and dirty indicator
         {
             let title = match &self.state.project_path {
@@ -5184,7 +5498,7 @@ impl eframe::App for KlippApp {
 
         // 4a1b. Confirm remove media from pool
         if let Some(media_id) = self.state.show_remove_media_confirm {
-            let usage = media_usage_count(media_id, &self.state.sequences);
+            let usage = self.state.media_usage_cache.get(&media_id).copied().unwrap_or(0);
             let name = self.state.media_pool.get(&media_id)
                 .map(|m| m.filename.clone())
                 .unwrap_or_else(|| "Unknown".into());
@@ -5205,6 +5519,68 @@ impl eframe::App for KlippApp {
                         }
                     });
                 });
+        }
+
+        // Delete unused media confirmation dialog
+        if let Some((count, total_bytes)) = self.state.show_delete_unused_confirm {
+            egui::Window::new("Delete Unused Media?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("{count} items are not referenced by any timeline clip."));
+                    let size_mb = total_bytes as f64 / (1024.0 * 1024.0);
+                    if size_mb >= 1024.0 {
+                        ui.label(format!("({count} items referencing {:.1} GB of source media)", size_mb / 1024.0));
+                    } else {
+                        ui.label(format!("({count} items referencing {:.0} MB of source media)", size_mb));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_delete_unused_confirm = None;
+                        }
+                        if ui.button(format!("Remove {count} items")).clicked() {
+                            all_cmds.push(AppCommand::ConfirmDeleteUnusedMedia);
+                        }
+                    });
+                });
+        }
+
+        // Export offline media warning dialog
+        if self.state.export_offline_warning.is_some() {
+            let mut dismiss = false;
+            let mut force_export = false;
+            if let Some((ref clips, _)) = self.state.export_offline_warning {
+                egui::Window::new("Export Contains Offline Media")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("These clips will export as black/silent frames:");
+                        ui.add_space(4.0);
+                        for (name, tc) in clips {
+                            ui.label(format!("  \u{2022} {}  at {}", name, tc));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                dismiss = true;
+                            }
+                            if ui.button("Export Anyway").clicked() {
+                                force_export = true;
+                            }
+                        });
+                    });
+            }
+            if dismiss {
+                self.state.export_offline_warning = None;
+            }
+            if force_export {
+                if let Some((_, settings)) = self.state.export_offline_warning.take() {
+                    all_cmds.push(AppCommand::ForceExportSequence { settings });
+                }
+            }
         }
 
         // 4a2. Confirm remove track dialog
@@ -5571,6 +5947,11 @@ impl eframe::App for KlippApp {
                             &mut self.layout.active_browser_tab,
                         );
                         all_cmds.extend(cmds);
+                        // Sync view mode to prefs if changed
+                        if self.browser.browser_view_mode != self.prefs.editing.media_browser_view_mode {
+                            self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
+                            let _ = self.prefs.save();
+                        }
                     });
 
                     // Inspector (right panel) — contextual based on workspace
@@ -6296,6 +6677,23 @@ impl KlippApp {
                 AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height } => {
                     self.state.browser_skim_pending = Some((media_id, rgba, width, height));
                 }
+                AppEvent::MediaFileChanged { path, deleted } => {
+                    // Find media item(s) matching this path
+                    if let Some(item) = self.state.media_pool.find_by_path(&path) {
+                        let id = item.id;
+                        if deleted || !path.exists() {
+                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                                item.offline = true;
+                            }
+                            tracing::warn!("Media file deleted externally: {:?}", path);
+                        } else {
+                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                                item.needs_reprobe = true;
+                            }
+                            tracing::info!("Media file modified externally: {:?}", path);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -6981,6 +7379,23 @@ fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
         .flat_map(|t| &t.clips)
         .filter(|c| c.media_id() == Some(media_id))
         .count()
+}
+
+/// Compute a content fingerprint: FNV-1a hash of first 64KB + file_size.
+/// Returns None if the file can't be read.
+fn compute_media_fingerprint(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 65536];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let file_size = std::fs::metadata(path).ok()?.len();
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    for &byte in buf.iter().chain(file_size.to_le_bytes().iter()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
+    }
+    Some(hash)
 }
 
 /// Returns the autosave path for a given project path: `<stem>_autosave.klipp`

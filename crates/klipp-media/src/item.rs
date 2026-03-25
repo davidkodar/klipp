@@ -2,6 +2,65 @@ use klipp_core::{Fps, MediaId, Resolution, Timecode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColorLabel {
+    #[default]
+    None,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl ColorLabel {
+    /// Returns (r, g, b) — no egui dependency. Conversion to Color32 in klipp-ui.
+    pub fn rgb(&self) -> Option<(u8, u8, u8)> {
+        match self {
+            Self::None   => Option::None,
+            Self::Red    => Some((200, 60,  60)),
+            Self::Orange => Some((210, 120, 40)),
+            Self::Yellow => Some((200, 180, 40)),
+            Self::Green  => Some((60,  160, 70)),
+            Self::Blue   => Some((60,  100, 200)),
+            Self::Purple => Some((130, 60,  190)),
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::None   => "None",
+            Self::Red    => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Green  => "Green",
+            Self::Blue   => "Blue",
+            Self::Purple => "Purple",
+        }
+    }
+
+    pub const ALL: [ColorLabel; 7] = [
+        Self::None, Self::Red, Self::Orange, Self::Yellow,
+        Self::Green, Self::Blue, Self::Purple,
+    ];
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::None => 0, Self::Red => 1, Self::Orange => 2,
+            Self::Yellow => 3, Self::Green => 4, Self::Blue => 5, Self::Purple => 6,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Red, 2 => Self::Orange, 3 => Self::Yellow,
+            4 => Self::Green, 5 => Self::Blue, 6 => Self::Purple,
+            _ => Self::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaItem {
     pub id: MediaId,
@@ -14,8 +73,17 @@ pub struct MediaItem {
     pub audio_codec: String,
     pub has_audio: bool,
     pub file_size_bytes: u64,
+    /// Audio sample rate in Hz (e.g. 48000, 44100, 96000). None if no audio stream.
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+    /// Audio channel count (1=mono, 2=stereo, 6=5.1). None if no audio stream.
+    #[serde(default)]
+    pub audio_channels: Option<u16>,
     #[serde(default)]
     pub offline: bool,
+    /// True if this is a still image (PNG/JPG/etc.) — single frame, default duration applied.
+    #[serde(default)]
+    pub is_still: bool,
     #[serde(default)]
     pub proxy_path: Option<PathBuf>,
     #[serde(default)]
@@ -39,12 +107,28 @@ pub struct MediaItem {
     /// Unix epoch seconds when item was added to the project (0 for pre-existing items)
     #[serde(default)]
     pub added_at: u64,
+    /// Content fingerprint: FNV-1a hash of first 64KB + file_size.
+    /// Used for content-based deduplication (Prompt 18).
+    #[serde(default)]
+    pub fingerprint: Option<u64>,
+    /// Filesystem modification time (Unix epoch seconds).
+    #[serde(default)]
+    pub file_modified_at: Option<u64>,
+    /// Container creation_time from ffmpeg metadata (Unix epoch seconds). More accurate shoot date.
+    #[serde(default)]
+    pub media_created_at: Option<u64>,
+    /// Visual colour label for organisation.
+    #[serde(default)]
+    pub color_label: ColorLabel,
     /// Camera log encoding format (for IDT conversion)
     #[serde(default)]
     pub log_format: klipp_core::LogFormat,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
+    /// File watcher detected external modification — needs background re-probe.
+    #[serde(skip)]
+    pub needs_reprobe: bool,
     /// Waveform min/max pairs for timeline display. Generated in background.
     #[serde(skip)]
     pub waveform_data: Option<Vec<(f32, f32)>>,

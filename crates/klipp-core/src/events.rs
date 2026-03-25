@@ -410,6 +410,12 @@ pub enum AppCommand {
 
     SetMediaTags { media_id: MediaId, tags: Vec<String> },
     RevealInFileManager { path: PathBuf },
+    RevealMediaInBrowser { media_id: MediaId },
+    SetMediaColorLabel { media_id: MediaId, label: u8 },
+    DeleteUnusedMedia,
+    ConfirmDeleteUnusedMedia,
+    /// Export despite offline media (user confirmed from warning dialog).
+    ForceExportSequence { settings: Box<ExportSettings> },
 
     // Bins
     CreateBin { name: String },
@@ -536,10 +542,20 @@ pub enum AppEvent {
         audio_codec: String,
         has_audio: bool,
         file_size_bytes: u64,
+        sample_rate: Option<u32>,
+        audio_channels: Option<u16>,
+        is_still: bool,
+        file_modified_at: Option<u64>,
+        media_created_at: Option<u64>,
     },
     MediaLoadFailed {
         media_id: MediaId,
         error: String,
+    },
+    /// File watcher detected a source file was modified or deleted.
+    MediaFileChanged {
+        path: PathBuf,
+        deleted: bool,
     },
 
     // Frame

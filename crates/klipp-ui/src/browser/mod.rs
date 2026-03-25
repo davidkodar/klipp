@@ -24,6 +24,8 @@ pub struct BrowserPanel {
     pub creating_bin: Option<String>,             // new bin name being typed
     // Effects tab state
     pub effects_category: effects_tab::EffectCategory,
+    // Scroll-to request from RevealMediaInBrowser
+    pub scroll_to_media_id: Option<klipp_core::MediaId>,
 }
 
 impl Default for BrowserPanel {
@@ -37,6 +39,7 @@ impl Default for BrowserPanel {
             renaming_bin: None,
             creating_bin: None,
             effects_category: effects_tab::EffectCategory::All,
+            scroll_to_media_id: None,
         }
     }
 }
@@ -175,6 +178,7 @@ impl BrowserPanel {
                     media_tab::SortBy::Codec => "Codec",
                     media_tab::SortBy::FileSize => "Size",
                     media_tab::SortBy::DateAdded => "Date",
+                    media_tab::SortBy::ShootDate => "Shot",
                 };
                 egui::ComboBox::from_id_salt("browser_sort")
                     .selected_text(
@@ -187,6 +191,7 @@ impl BrowserPanel {
                         ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::DateAdded, "Date Added");
                         ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::FileSize, "File Size");
                         ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Rating, "Rating");
+                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::ShootDate, "Shoot Date");
                         ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Codec, "Codec");
                     });
 
@@ -242,6 +247,7 @@ impl BrowserPanel {
                     &self.browser_view_mode,
                     &mut self.renaming_bin,
                     &mut self.creating_bin,
+                    &mut self.scroll_to_media_id,
                 );
                 cmds.extend(tab_cmds);
             }

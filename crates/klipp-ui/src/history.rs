@@ -1,4 +1,4 @@
-use klipp_core::{ClipId, RationalTime};
+use klipp_core::{ClipId, MediaId, RationalTime};
 use klipp_timeline::Clip;
 
 #[derive(Debug, Clone)]
@@ -68,6 +68,33 @@ pub enum EditCommand {
     Magnetic(klipp_timeline::magnetic_commands::MagneticEditCommand),
 
     // === MEDIA POOL ===
+    AddMediaToPool {
+        item: klipp_media::MediaItem,
+    },
+    RemoveMediaFromPool {
+        item: klipp_media::MediaItem,
+        clip_count: usize,
+    },
+    MoveMediaToBin {
+        media_id: MediaId,
+        from_bin: Option<String>,
+        to_bin: Option<String>,
+    },
+    SetMediaTags {
+        media_id: MediaId,
+        old_tags: Vec<String>,
+        new_tags: Vec<String>,
+    },
+    SetMediaRating {
+        media_id: MediaId,
+        old_rating: u8,
+        new_rating: u8,
+    },
+    SetMediaColorLabel {
+        media_id: MediaId,
+        old_label: u8,
+        new_label: u8,
+    },
     RenameBin {
         old_name: String,
         new_name: String,
@@ -100,6 +127,12 @@ impl EditCommand {
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::Magnetic(cmd) => cmd.label(),
+            EditCommand::AddMediaToPool { .. } => "Import Media",
+            EditCommand::RemoveMediaFromPool { .. } => "Remove Media",
+            EditCommand::MoveMediaToBin { .. } => "Move to Bin",
+            EditCommand::SetMediaTags { .. } => "Set Tags",
+            EditCommand::SetMediaRating { .. } => "Set Rating",
+            EditCommand::SetMediaColorLabel { .. } => "Set Color Label",
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::SetNodeGraph { .. } => "Color Grade",

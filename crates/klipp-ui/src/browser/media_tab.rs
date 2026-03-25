@@ -11,10 +11,12 @@ pub enum SortBy {
     Codec,
     FileSize,
     DateAdded,
+    ShootDate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BrowserViewMode {
+    #[default]
     List,
     Grid,
 }
@@ -31,6 +33,7 @@ pub fn show(
     view_mode: &BrowserViewMode,
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
+    scroll_to_media_id: &mut Option<MediaId>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
@@ -68,6 +71,10 @@ pub fn show(
             fps: m.fps,
             file_size_bytes: m.file_size_bytes,
             added_at: m.added_at,
+            shoot_date: m.media_created_at
+                .or(m.file_modified_at)
+                .unwrap_or(m.added_at),
+            color_label: m.color_label,
         })
         .collect();
 
@@ -79,6 +86,7 @@ pub fn show(
         SortBy::Codec => items.sort_by(|a, b| a.codec.cmp(&b.codec)),
         SortBy::FileSize => items.sort_by(|a, b| a.file_size_bytes.cmp(&b.file_size_bytes)),
         SortBy::DateAdded => items.sort_by(|a, b| a.added_at.cmp(&b.added_at)),
+        SortBy::ShootDate => items.sort_by(|a, b| a.shoot_date.cmp(&b.shoot_date)),
     }
     if !*sort_ascending {
         items.reverse();
@@ -90,6 +98,14 @@ pub fn show(
         if !bins_seen.contains(&item.bin) {
             bins_seen.push(item.bin.clone());
         }
+    }
+
+    // Ordered list of all visible IDs (used for Shift+click range selection)
+    let all_ordered_ids: Vec<MediaId> = items.iter().map(|i| i.id).collect();
+
+    // Ctrl+A: select all visible items when browser is focused
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+        state.selected_media_ids = all_ordered_ids.iter().copied().collect();
     }
 
     // Render
@@ -106,10 +122,10 @@ pub fn show(
         } else {
             match view_mode {
                 BrowserViewMode::List => {
-                    render_list_view(ui, state, theme, &bins_seen, &items, &mut cmds, renaming_bin, creating_bin);
+                    render_list_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id);
                 }
                 BrowserViewMode::Grid => {
-                    render_grid_view(ui, state, theme, &bins_seen, &items, &mut cmds, renaming_bin, creating_bin);
+                    render_grid_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id);
                 }
             }
         }
@@ -143,12 +159,7 @@ fn format_fps(fps: &klipp_core::Fps) -> String {
 
 /// Check if a media item is used in the timeline.
 fn is_media_used(state: &AppState, media_id: MediaId) -> bool {
-    state
-        .sequence()
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .any(|c| c.media_id() == Some(media_id))
+    state.media_usage_cache.get(&media_id).copied().unwrap_or(0) > 0
 }
 
 // ── List View ──
@@ -160,9 +171,11 @@ fn render_list_view(
     theme: &KlippTheme,
     bins_seen: &[Option<String>],
     items: &[MediaRow],
+    all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
     _creating_bin: &mut Option<String>,
+    scroll_to_media_id: &mut Option<MediaId>,
 ) {
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
@@ -204,7 +217,8 @@ fn render_list_view(
         }
 
         for item in &bin_items {
-            let is_selected = state.source_media_id == Some(item.id);
+            let is_selected = state.selected_media_ids.contains(&item.id)
+                || (state.selected_media_ids.is_empty() && state.source_media_id == Some(item.id));
 
             // Fixed-height row: allocate exact rect, then paint content inside it
             let row_h = 52.0;
@@ -214,6 +228,12 @@ fn render_list_view(
                 egui::vec2(avail.width(), row_h),
             );
             let resp = ui.allocate_rect(row_rect, egui::Sense::click_and_drag());
+
+            // Scroll-to if requested
+            if *scroll_to_media_id == Some(item.id) {
+                resp.scroll_to_me(Some(egui::Align::Center));
+                *scroll_to_media_id = None;
+            }
 
             // Background
             let hovered = resp.hovered();
@@ -232,6 +252,19 @@ fn render_list_view(
                     egui::Rect::from_min_size(row_rect.min, egui::vec2(2.0, row_h)),
                     0.0,
                     egui::Color32::from_rgb(232, 160, 32),
+                );
+            }
+
+            // Colour label stripe (3px left edge, after selection border)
+            if let Some((r, g, b)) = item.color_label.rgb() {
+                let stripe_x = if is_selected { row_rect.min.x + 2.0 } else { row_rect.min.x };
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(stripe_x, row_rect.min.y),
+                        egui::vec2(3.0, row_h),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgb(r, g, b),
                 );
             }
 
@@ -306,16 +339,33 @@ fn render_list_view(
             }
 
             if resp.clicked() {
+                let modifiers = ui.input(|i| i.modifiers);
+                handle_media_click(
+                    item.id,
+                    &modifiers,
+                    &all_ordered_ids,
+                    &mut state.selected_media_ids,
+                    &mut state.last_clicked_media_id,
+                );
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
                 cmds.push(AppCommand::ImportMediaLinked { media_id: item.id });
             }
             if resp.dragged() {
-                state.dragging_media = Some(item.id);
+                // Drag all selected items if the dragged item is in the selection
+                if state.selected_media_ids.contains(&item.id) && state.selected_media_ids.len() > 1 {
+                    state.dragging_media = Some(item.id);
+                } else {
+                    state.dragging_media = Some(item.id);
+                }
             }
             resp.context_menu(|ui| {
-                show_context_menu(ui, item.id, &item.path, cmds);
+                if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
+                    show_multi_context_menu(ui, &state.selected_media_ids, cmds);
+                } else {
+                    show_context_menu(ui, item.id, &item.path, cmds);
+                }
             });
         }
     }
@@ -336,9 +386,11 @@ fn render_grid_view(
     theme: &KlippTheme,
     bins_seen: &[Option<String>],
     items: &[MediaRow],
+    all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
     _creating_bin: &mut Option<String>,
+    scroll_to_media_id: &mut Option<MediaId>,
 ) {
     let avail_w = ui.available_width() - GRID_PADDING * 2.0;
     let cols = ((avail_w + GRID_GAP) / (GRID_CARD_MIN_W + GRID_GAP)).floor().max(1.0) as usize;
@@ -371,7 +423,8 @@ fn render_grid_view(
         let mut row_start_y = ui.cursor().min.y;
 
         for item in &bin_items {
-            let is_selected = state.source_media_id == Some(item.id);
+            let is_selected = state.selected_media_ids.contains(&item.id)
+                || (state.selected_media_ids.is_empty() && state.source_media_id == Some(item.id));
 
             let card_pos = egui::pos2(
                 row_start_x + col_idx as f32 * (card_w + GRID_GAP),
@@ -380,6 +433,12 @@ fn render_grid_view(
             let card_rect = egui::Rect::from_min_size(card_pos, egui::vec2(card_w, card_h));
             let card_resp = ui.allocate_rect(card_rect, egui::Sense::click_and_drag());
             let hovered = card_resp.hovered();
+
+            // Scroll-to if requested
+            if *scroll_to_media_id == Some(item.id) {
+                card_resp.scroll_to_me(Some(egui::Align::Center));
+                *scroll_to_media_id = None;
+            }
 
             // Card background
             ui.painter().rect_filled(card_rect, 4.0, theme.bg_deep);
@@ -487,6 +546,14 @@ fn render_grid_view(
 
             // ── Interactions ──
             if card_resp.clicked() {
+                let modifiers = ui.input(|i| i.modifiers);
+                handle_media_click(
+                    item.id,
+                    &modifiers,
+                    &all_ordered_ids,
+                    &mut state.selected_media_ids,
+                    &mut state.last_clicked_media_id,
+                );
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if card_resp.double_clicked() {
@@ -557,7 +624,11 @@ fn render_grid_view(
             }
 
             card_resp.context_menu(|ui| {
-                show_context_menu(ui, item.id, &item.path, cmds);
+                if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
+                    show_multi_context_menu(ui, &state.selected_media_ids, cmds);
+                } else {
+                    show_context_menu(ui, item.id, &item.path, cmds);
+                }
             });
 
             col_idx += 1;
@@ -793,6 +864,9 @@ struct MediaRow {
     fps: klipp_core::Fps,
     file_size_bytes: u64,
     added_at: u64,
+    /// Effective shoot date: media_created_at > file_modified_at > added_at
+    shoot_date: u64,
+    color_label: klipp_media::ColorLabel,
 }
 
 fn show_context_menu(
@@ -835,6 +909,18 @@ fn show_context_menu(
             }
         }
     });
+    ui.menu_button("Label colour", |ui| {
+        for label in klipp_media::ColorLabel::ALL {
+            let mut text = egui::RichText::new(label.label()).size(11.0);
+            if let Some((r, g, b)) = label.rgb() {
+                text = text.color(egui::Color32::from_rgb(r, g, b));
+            }
+            if ui.button(text).clicked() {
+                cmds.push(AppCommand::SetMediaColorLabel { media_id, label: label.to_u8() });
+                ui.close_menu();
+            }
+        }
+    });
     ui.separator();
     if ui.button("Move to Root").clicked() {
         cmds.push(AppCommand::MoveItemToBin { media_id, bin: None });
@@ -849,6 +935,82 @@ fn show_context_menu(
         cmds.push(AppCommand::RevealInFileManager {
             path: path.to_path_buf(),
         });
+        ui.close_menu();
+    }
+}
+
+fn handle_media_click(
+    clicked_id: MediaId,
+    modifiers: &egui::Modifiers,
+    ordered_ids: &[MediaId],
+    selected: &mut std::collections::HashSet<MediaId>,
+    last_clicked: &mut Option<MediaId>,
+) {
+    if modifiers.ctrl || modifiers.command {
+        // Toggle individual item
+        if !selected.remove(&clicked_id) {
+            selected.insert(clicked_id);
+        }
+        *last_clicked = Some(clicked_id);
+    } else if modifiers.shift {
+        // Range select from last_clicked to clicked_id
+        if let Some(anchor) = *last_clicked {
+            let a = ordered_ids.iter().position(|x| *x == anchor).unwrap_or(0);
+            let b = ordered_ids.iter().position(|x| *x == clicked_id).unwrap_or(0);
+            let (lo, hi) = (a.min(b), a.max(b));
+            selected.clear();
+            for i in lo..=hi {
+                selected.insert(ordered_ids[i]);
+            }
+        } else {
+            selected.clear();
+            selected.insert(clicked_id);
+            *last_clicked = Some(clicked_id);
+        }
+    } else {
+        // Plain click — single select
+        selected.clear();
+        selected.insert(clicked_id);
+        *last_clicked = Some(clicked_id);
+    }
+}
+
+fn show_multi_context_menu(
+    ui: &mut egui::Ui,
+    selected_ids: &std::collections::HashSet<MediaId>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let count = selected_ids.len();
+    ui.label(egui::RichText::new(format!("{count} items selected")).strong());
+    ui.separator();
+    ui.menu_button("Move to bin", |ui| {
+        if ui.button("Root (no bin)").clicked() {
+            for &id in selected_ids {
+                cmds.push(AppCommand::MoveItemToBin { media_id: id, bin: None });
+            }
+            ui.close_menu();
+        }
+    });
+    ui.menu_button("Set Rating", |ui| {
+        for r in 0..=5u8 {
+            let label = if r == 0 {
+                "None".to_string()
+            } else {
+                "\u{2605}".repeat(r as usize)
+            };
+            if ui.button(&label).clicked() {
+                for &id in selected_ids {
+                    cmds.push(AppCommand::SetMediaRating { media_id: id, rating: r });
+                }
+                ui.close_menu();
+            }
+        }
+    });
+    ui.separator();
+    if ui.button(format!("Remove {count} items from Project")).clicked() {
+        for &id in selected_ids {
+            cmds.push(AppCommand::RemoveFromPool { media_id: id });
+        }
         ui.close_menu();
     }
 }

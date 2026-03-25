@@ -287,6 +287,12 @@ pub struct MediaItemJson {
     pub has_audio: bool,
     pub file_size_bytes: u64,
     #[serde(default)]
+    pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub audio_channels: Option<u16>,
+    #[serde(default)]
+    pub is_still: bool,
+    #[serde(default)]
     pub proxy_path: Option<String>,
     #[serde(default)]
     pub proxy_ready: bool,
@@ -304,6 +310,12 @@ pub struct MediaItemJson {
     pub bin: Option<String>,
     #[serde(default)]
     pub added_at: Option<u64>,
+    #[serde(default)]
+    pub file_modified_at: Option<u64>,
+    #[serde(default)]
+    pub media_created_at: Option<u64>,
+    #[serde(default)]
+    pub color_label: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

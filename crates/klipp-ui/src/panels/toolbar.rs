@@ -304,7 +304,22 @@ impl ToolbarPanel {
                     }
                 });
             }
-            if ui.button("Import Media...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().add_filter("Video", &["mp4","mkv","mov","avi","webm","m4v","mts"]).pick_file() { cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() }); } }
+            if ui.button("Import Media...").clicked() {
+                ui.close_menu();
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("All media", &[
+                        "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts",
+                        "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
+                        "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp",
+                    ])
+                    .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts"])
+                    .add_filter("Audio", &["wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff"])
+                    .add_filter("Image", &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp"])
+                    .pick_file()
+                {
+                    cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() });
+                }
+            }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
@@ -339,6 +354,8 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(format!("{}Select Tool", check(state.active_tool == Tool::Select))).shortcut_text("V")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Select)); ui.close_menu(); }
             if ui.add(egui::Button::new(format!("{}Blade Tool", check(state.active_tool == Tool::Blade))).shortcut_text("B")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Blade)); ui.close_menu(); }
             if ui.add(egui::Button::new(format!("{}Range Tool", check(state.active_tool == Tool::Range))).shortcut_text("R")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Range)); ui.close_menu(); }
+            ui.separator();
+            if ui.button("Delete Unused Media...").clicked() { cmds.push(AppCommand::DeleteUnusedMedia); ui.close_menu(); }
         });
     }
     fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
