@@ -3134,7 +3134,36 @@ fn sw_frame_to_rgba(
     Some(rgba)
 }
 
-/// Generate a thumbnail for a media file. Uses GPU decode when available.
+/// Open a software-only video decoder (no GPU). Used for thumbnails where
+/// GPU context creation overhead isn't worth it for a single frame.
+fn open_sw_decoder(
+    format_ctx: &ffmpeg_next::format::context::Input,
+) -> Result<(ffmpeg_next::decoder::Video, usize), String> {
+    let video_stream = format_ctx
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or("No video stream")?;
+    let stream_index = video_stream.index();
+    let params = video_stream.parameters();
+
+    let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
+        .map_err(|e| format!("codec context: {e}"))?;
+
+    unsafe {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4) as i32;
+        (*codec_ctx.as_mut_ptr()).thread_count = cores;
+    }
+
+    let decoder = codec_ctx.decoder().video()
+        .map_err(|e| format!("video decoder: {e}"))?;
+
+    Ok((decoder, stream_index))
+}
+
+/// Generate a thumbnail for a media file. Uses software decode (CPU) — thumbnails
+/// are single small frames, not worth GPU context creation overhead.
 pub fn generate_thumbnail(
     path: &std::path::Path,
     seek_secs: f64,
@@ -3142,7 +3171,7 @@ pub fn generate_thumbnail(
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
-    let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
+    let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -3173,14 +3202,13 @@ pub fn generate_thumbnail(
     let dst_w = (src_w as f64 * scale) as u32;
     let dst_h = (src_h as f64 * scale) as u32;
 
-    let mut sws_cache = None;
-    let rgba = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache)
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
         .ok_or("Failed to convert frame to RGBA")?;
     Ok((rgba, dst_w, dst_h))
 }
 
 /// Generate a thumbnail at a specific max width (for viewer-quality poster frames).
-/// Uses GPU decode when available.
+/// Uses software decode — single frame, not worth GPU overhead.
 pub fn generate_thumbnail_at_size(
     path: &std::path::Path,
     seek_secs: f64,
@@ -3189,7 +3217,7 @@ pub fn generate_thumbnail_at_size(
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
-    let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
+    let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -3220,8 +3248,7 @@ pub fn generate_thumbnail_at_size(
     let dst_w = ((src_w as f64 * scale) as u32).max(1);
     let dst_h = ((src_h as f64 * scale) as u32).max(1);
 
-    let mut sws_cache = None;
-    let rgba = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache)
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
         .ok_or("Failed to convert frame to RGBA")?;
     Ok((rgba, dst_w, dst_h))
 }
