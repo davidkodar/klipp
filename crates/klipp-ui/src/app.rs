@@ -578,20 +578,48 @@ impl KlippApp {
         });
     }
 
+    /// Queue a filmstrip for generation. Deduplicates and serializes — only one
+    /// filmstrip generates at a time to avoid exhausting GPU NVDEC sessions.
     fn spawn_filmstrip(
         &mut self,
         media_id: MediaId,
         path: PathBuf,
         duration: Timecode,
     ) {
+        // Deduplicate: skip if already in progress or already queued
+        if self.state.filmstrip_in_progress.contains(&media_id) {
+            return;
+        }
+        if self.state.filmstrip_queue.iter().any(|(id, _, _)| *id == media_id) {
+            return;
+        }
+        // Already have filmstrip frames in memory? Skip.
+        if self.state.thumbnail_cache.filmstrip(&media_id).is_some_and(|f| !f.is_empty()) {
+            return;
+        }
+
+        self.state.filmstrip_queue.push((media_id, path, duration));
+
+        // Pump the queue if nothing is currently generating
+        self.pump_filmstrip_queue();
+    }
+
+    /// Start the next filmstrip generation if nothing is in progress.
+    fn pump_filmstrip_queue(&mut self) {
+        if !self.state.filmstrip_in_progress.is_empty() {
+            return; // One is already running
+        }
+        let Some((media_id, path, duration)) = self.state.filmstrip_queue.first().cloned() else {
+            return;
+        };
+        self.state.filmstrip_queue.remove(0);
+        self.state.filmstrip_in_progress.insert(media_id);
+
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         let generate_if_missing = self.state.project_auto_filmstrips
             .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
-        // Dense filmstrip: max 1.5-second gaps so zoomed-in timeline always
-        // has representative thumbnails. Target ~400 frames.
-        // A 15-min clip: every 2.25s. A 1-min clip: every 0.25s.
         let interval = (duration_secs / 400.0).clamp(0.2, 1.5);
         std::thread::Builder::new()
             .name("klipp-filmstrip".into())
@@ -944,7 +972,12 @@ impl KlippApp {
                         .map(|f| f.len())
                         .unwrap_or(0);
                     tracing::info!("Filmstrip complete for {:?}: {count} frames", media_id);
-                    self.state.filmstrip_generating = false;
+                    self.state.filmstrip_in_progress.remove(&media_id);
+                    if self.state.filmstrip_queue.is_empty() && self.state.filmstrip_in_progress.is_empty() {
+                        self.state.filmstrip_generating = false;
+                    }
+                    // Start next queued filmstrip
+                    self.pump_filmstrip_queue();
                 }
                 Err(_) => break,
             }
@@ -3177,6 +3210,8 @@ impl KlippApp {
                     self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                     self.state.thumbnail_textures.clear();
                     self.state.filmstrip_textures.clear();
+                    self.state.filmstrip_in_progress.clear();
+                    self.state.filmstrip_queue.clear();
                     self.state.history = crate::history::CommandHistory::new();
                     self.sync_sequence_to_engine();
                     // Save immediately so the .klipp directory is created
@@ -3554,6 +3589,8 @@ impl KlippApp {
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
         self.state.thumbnail_textures.clear();
         self.state.filmstrip_textures.clear();
+        self.state.filmstrip_in_progress.clear();
+        self.state.filmstrip_queue.clear();
         self.sync_sequence_to_engine();
     }
 
@@ -4136,6 +4173,8 @@ impl KlippApp {
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 self.state.thumbnail_textures.clear();
                 self.state.filmstrip_textures.clear();
+                self.state.filmstrip_in_progress.clear();
+                self.state.filmstrip_queue.clear();
                 // Stop the engine so decoders are released and frame buffer is stale-free
                 self.cmd_tx.send(AppCommand::Stop).ok();
                 // Clear the shared frame buffer so the viewer doesn't show the old frame

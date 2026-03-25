@@ -198,6 +198,10 @@ pub struct AppState {
     pub filmstrip_generating: bool,
     pub filmstrip_generate_start: std::time::Instant,
     pub filmstrip_toast_dismissed: bool,
+    /// Media IDs currently generating filmstrips — prevents duplicate spawns.
+    pub filmstrip_in_progress: std::collections::HashSet<MediaId>,
+    /// Queue of media IDs waiting for filmstrip generation (serialized, one at a time).
+    pub filmstrip_queue: Vec<(MediaId, PathBuf, klipp_core::RationalTime)>,
 
     // Global LUT
     pub global_lut_path: Option<PathBuf>,
@@ -517,6 +521,8 @@ impl Default for AppState {
             filmstrip_generating: false,
             filmstrip_generate_start: std::time::Instant::now(),
             filmstrip_toast_dismissed: false,
+            filmstrip_in_progress: std::collections::HashSet::new(),
+            filmstrip_queue: Vec::new(),
             playhead_anchor: Timecode::zero(),
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,
