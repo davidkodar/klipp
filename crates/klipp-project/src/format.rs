@@ -270,6 +270,16 @@ impl<'de> serde::Deserialize<'de> for OfxValueJson {
 pub struct MediaManifestJson {
     pub version: String,
     pub items: Vec<MediaItemJson>,
+    #[serde(default)]
+    pub bins: Vec<BinJson>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BinJson {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -309,6 +319,8 @@ pub struct MediaItemJson {
     #[serde(default)]
     pub bin: Option<String>,
     #[serde(default)]
+    pub bin_id: Option<String>,
+    #[serde(default)]
     pub added_at: Option<u64>,
     #[serde(default)]
     pub file_modified_at: Option<u64>,
@@ -316,6 +328,8 @@ pub struct MediaItemJson {
     pub media_created_at: Option<u64>,
     #[serde(default)]
     pub color_label: u8,
+    #[serde(default)]
+    pub colour_space: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

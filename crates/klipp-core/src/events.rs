@@ -1,4 +1,4 @@
-use crate::id::{ClipId, GroupId, MarkerId, MediaId, TrackId};
+use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TrackId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use std::path::PathBuf;
@@ -419,6 +419,15 @@ pub enum AppCommand {
 
     // Bins
     CreateBin { name: String },
+    /// Create a child bin inside an existing bin.
+    CreateSubBin { parent_id: BinId, name: String },
+    /// Import a detected image sequence as a single video clip.
+    ImportImageSequence {
+        pattern: String,   // ffmpeg pattern e.g. "/path/frame_%04d.png"
+        start_frame: u32,
+        frame_count: u32,
+        fps: f64,
+    },
     DeleteBin { name: String },
     MoveItemToBin { media_id: MediaId, bin: Option<String> },
     RenameBin { old_name: String, new_name: String },
@@ -547,6 +556,7 @@ pub enum AppEvent {
         is_still: bool,
         file_modified_at: Option<u64>,
         media_created_at: Option<u64>,
+        colour_space: u8,
     },
     MediaLoadFailed {
         media_id: MediaId,

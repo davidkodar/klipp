@@ -320,6 +320,31 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() });
                 }
             }
+            if ui.button("Import Image Sequence...").clicked() {
+                ui.close_menu();
+                if let Some(files) = rfd::FileDialog::new()
+                    .set_title("Select image sequence files")
+                    .add_filter("Image", &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr"])
+                    .pick_files()
+                {
+                    if let Some((pattern, start, count)) = crate::app::detect_image_sequence(&files) {
+                        cmds.push(AppCommand::ImportImageSequence {
+                            pattern,
+                            start_frame: start,
+                            frame_count: count,
+                            fps: 25.0, // default — could prompt user
+                        });
+                    } else if files.len() == 1 {
+                        // Single image — import as still
+                        cmds.push(AppCommand::LoadMediaFile { path: files[0].clone(), media_id: klipp_core::MediaId::new() });
+                    } else {
+                        // Multiple files but not a sequence — import each individually
+                        for f in files {
+                            cmds.push(AppCommand::LoadMediaFile { path: f, media_id: klipp_core::MediaId::new() });
+                        }
+                    }
+                }
+            }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }

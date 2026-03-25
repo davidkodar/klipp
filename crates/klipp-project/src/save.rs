@@ -71,6 +71,11 @@ pub fn save_project_with_color(
     let manifest = MediaManifestJson {
         version: "1.0.0".to_string(),
         items: media_pool.all().map(|item| media_item_to_json(item, dir)).collect(),
+        bins: media_pool.bins.iter().map(|b| BinJson {
+            id: b.id.to_string(),
+            name: b.name.clone(),
+            parent_id: b.parent_id.map(|p| p.to_string()),
+        }).collect(),
     };
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -267,9 +272,11 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         tags: item.tags.clone(),
         user_notes: item.user_notes.clone(),
         bin: item.bin.clone(),
+        bin_id: item.bin_id.map(|id| id.to_string()),
         added_at: if item.added_at > 0 { Some(item.added_at) } else { None },
         file_modified_at: item.file_modified_at,
         media_created_at: item.media_created_at,
         color_label: item.color_label.to_u8(),
+        colour_space: item.colour_space.to_u8(),
     }
 }

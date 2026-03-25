@@ -400,6 +400,7 @@ impl KlippApp {
                     is_still,
                     file_modified_at,
                     media_created_at,
+                    colour_space,
                 } => {
                     let filename = path
                         .file_name()
@@ -443,6 +444,7 @@ impl KlippApp {
                         tags: Vec::new(),
                         user_notes: String::new(),
                         bin: None,
+                        bin_id: None,
                         added_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
@@ -451,6 +453,7 @@ impl KlippApp {
                         file_modified_at,
                         media_created_at,
                         color_label: Default::default(),
+                        colour_space: klipp_media::ColourSpace::from_u8(colour_space),
                         needs_reprobe: false,
                         log_format: Default::default(),
                         skim_file: None,
@@ -1330,6 +1333,20 @@ impl KlippApp {
                         ));
                         self.state.source_media_id = Some(existing_id);
                         continue; // skip engine probe
+                    }
+                    // Content-based duplicate check: same file at different path
+                    if let Some(fp) = compute_media_fingerprint(path) {
+                        if let Some(existing) = self.state.media_pool.find_by_fingerprint(fp) {
+                            let existing_id = existing.id;
+                            let existing_name = existing.filename.clone();
+                            self.state.toast.show(format!(
+                                "'{}' appears to be the same file as '{}'",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                existing_name,
+                            ));
+                            self.state.source_media_id = Some(existing_id);
+                            continue; // skip engine probe
+                        }
                     }
                     self.state.pending_media_path = Some(path.clone());
                 }
@@ -3122,9 +3139,92 @@ impl KlippApp {
                     self.browser.scroll_to_media_id = Some(*media_id);
                     continue;
                 }
+                AppCommand::ImportImageSequence { pattern, start_frame, frame_count, fps } => {
+                    // Import an image sequence as a single media item.
+                    // Compute duration from frame count and fps.
+                    let fps_val = klipp_core::Fps::new((*fps * 1000.0) as u32, 1000);
+                    let duration = klipp_core::RationalTime {
+                        value: *frame_count as i64,
+                        rate: fps_val.rate(),
+                    };
+                    // Use the pattern path as the media path (ffmpeg image2 demuxer)
+                    let path = std::path::PathBuf::from(pattern);
+                    let display_name = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("Sequence ({frame_count} frames)"));
+                    // Probe first frame for resolution
+                    let first_frame_path = pattern.replacen(
+                        &format!("%0{}d", pattern.matches('0').count().max(1)),
+                        &format!("{start_frame}"),
+                        1,
+                    );
+                    let file_size: u64 = std::fs::metadata(&first_frame_path).map(|m| m.len()).unwrap_or(0)
+                        * (*frame_count as u64);
+                    let media_item = klipp_media::MediaItem {
+                        id: klipp_core::MediaId::new(),
+                        path,
+                        filename: display_name,
+                        duration,
+                        fps: fps_val,
+                        resolution: klipp_core::Resolution { width: 1920, height: 1080 }, // will be overridden by probe
+                        video_codec: "ImageSequence".to_string(),
+                        audio_codec: String::new(),
+                        has_audio: false,
+                        file_size_bytes: file_size,
+                        sample_rate: None,
+                        audio_channels: None,
+                        offline: false,
+                        is_still: false,
+                        proxy_path: None,
+                        proxy_ready: false,
+                        default_source_in: None,
+                        default_source_out: None,
+                        rating: 0,
+                        tags: vec!["sequence".to_string()],
+                        user_notes: format!("{frame_count} frames, start #{start_frame}"),
+                        bin: None,
+                        bin_id: None,
+                        added_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                        fingerprint: None,
+                        file_modified_at: None,
+                        media_created_at: None,
+                        color_label: Default::default(),
+                        colour_space: Default::default(),
+                        needs_reprobe: false,
+                        log_format: Default::default(),
+                        skim_file: None,
+                        waveform_data: None,
+                        audio_cache: None,
+                    };
+                    self.state.media_pool.add(media_item.clone());
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::AddMediaToPool { item: media_item },
+                    });
+                    self.state.dirty = true;
+                    self.sync_media_pool_to_engine();
+                    self.state.toast.show(format!("Imported image sequence: {frame_count} frames at {fps}fps"));
+                    continue;
+                }
                 AppCommand::CreateBin { name } => {
-                    // Bins are implicit — just log. Items get assigned via MoveItemToBin.
+                    // Create a root-level bin in the bins collection
+                    let _bin_id = self.state.media_pool.find_or_create_bin(&name);
                     tracing::info!("Bin created: {}", name);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::CreateSubBin { parent_id, name } => {
+                    let bin = klipp_media::Bin {
+                        id: klipp_core::BinId::new(),
+                        name: name.clone(),
+                        parent_id: Some(*parent_id),
+                    };
+                    self.state.media_pool.bins.push(bin);
+                    tracing::info!("Sub-bin created: {} (parent: {})", name, parent_id);
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::DeleteBin { name } => {
@@ -3136,16 +3236,23 @@ impl KlippApp {
                     for id in ids {
                         if let Some(item) = self.state.media_pool.get_mut(&id) {
                             item.bin = None;
+                            item.bin_id = None;
                         }
                     }
+                    // Remove the bin from the collection
+                    self.state.media_pool.bins.retain(|b| b.name != *name);
                     tracing::info!("Bin deleted: {}", name);
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::MoveItemToBin { media_id, bin } => {
+                    // Also sync bin_id from bin name
+                    let new_bin_id = bin.as_ref().map(|name| self.state.media_pool.find_or_create_bin(name));
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         let from_bin = item.bin.clone();
                         if from_bin != *bin {
                             item.bin = bin.clone();
+                            item.bin_id = new_bin_id;
                             self.state.history.push(crate::history::HistoryEntry {
                                 sequence_idx: self.state.active_sequence_idx,
                                 command: crate::history::EditCommand::MoveMediaToBin {
@@ -7396,6 +7503,61 @@ fn compute_media_fingerprint(path: &Path) -> Option<u64> {
         hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
     }
     Some(hash)
+}
+
+/// Detect if a set of paths forms a numbered image sequence.
+/// Returns (ffmpeg_pattern, start_frame, frame_count) if detected.
+pub fn detect_image_sequence(paths: &[PathBuf]) -> Option<(String, u32, u32)> {
+    if paths.len() < 2 { return None; }
+
+    // All must be in the same directory with the same extension
+    let dir = paths[0].parent()?;
+    let ext = paths[0].extension()?.to_str()?;
+    if !paths.iter().all(|p| {
+        p.parent() == Some(dir)
+            && p.extension().and_then(|e| e.to_str()) == Some(ext)
+    }) {
+        return None;
+    }
+
+    // Only image extensions
+    let ext_lower = ext.to_lowercase();
+    if !matches!(ext_lower.as_str(), "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp" | "exr") {
+        return None;
+    }
+
+    // Extract numeric suffix from each filename: name_NNNN.ext
+    let mut frames: Vec<(u32, &PathBuf)> = paths.iter()
+        .filter_map(|p| {
+            let stem = p.file_stem()?.to_str()?;
+            // Find trailing digits
+            let digit_start = stem.rfind(|c: char| !c.is_ascii_digit())?;
+            let num_str = &stem[digit_start + 1..];
+            if num_str.is_empty() { return None; }
+            let n: u32 = num_str.parse().ok()?;
+            Some((n, p))
+        })
+        .collect();
+
+    if frames.len() < 2 { return None; }
+    frames.sort_by_key(|(n, _)| *n);
+
+    let start = frames[0].0;
+    let end = frames.last()?.0;
+    let count = frames.len() as u32;
+
+    // Must be mostly contiguous (allow up to 5% gaps)
+    let expected = end - start + 1;
+    if (count as f64) < (expected as f64 * 0.95) { return None; }
+
+    // Build ffmpeg pattern: determine padding width
+    let sample_stem = frames[0].1.file_stem()?.to_str()?;
+    let digit_start = sample_stem.rfind(|c: char| !c.is_ascii_digit())?;
+    let prefix = &sample_stem[..=digit_start];
+    let padding = sample_stem.len() - digit_start - 1;
+    let pattern = format!("{}/{prefix}%0{padding}d.{ext}", dir.display());
+
+    Some((pattern, start, count))
 }
 
 /// Returns the autosave path for a given project path: `<stem>_autosave.klipp`

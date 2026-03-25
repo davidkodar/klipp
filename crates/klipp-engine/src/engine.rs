@@ -2805,18 +2805,38 @@ impl PlaybackEngine {
                 let mut has_audio = false;
                 let mut sample_rate: Option<u32> = None;
                 let mut audio_channels: Option<u16> = None;
+                let mut colour_space: u8 = 0; // 0=Unknown, 1=SDR, 2=HDR10, 3=HLG
 
                 for stream in format_ctx.streams() {
                     let params = stream.parameters();
                     let medium = params.medium();
                     match medium {
                         ffmpeg_next::media::Type::Video => {
-                            let decoder = ffmpeg_next::codec::context::Context::from_parameters(params)
+                            let decoder = ffmpeg_next::codec::context::Context::from_parameters(params.clone())
                                 .and_then(|ctx| ctx.decoder().video());
                             if let Ok(dec) = decoder {
                                 video_w = dec.width();
                                 video_h = dec.height();
                                 video_codec = format!("{:?}", dec.id());
+                                // Extract colour space from codec parameters (FFI)
+                                // color_primaries: BT.709=1, BT.2020=9
+                                // color_trc: BT.709=1, PQ/SMPTE2084=16, HLG/ARIB=18
+                                unsafe {
+                                    let par = params.as_ptr();
+                                    if !par.is_null() {
+                                        let primaries = (*par).color_primaries as i32;
+                                        let transfer = (*par).color_trc as i32;
+                                        colour_space = if primaries == 9 && transfer == 16 {
+                                            2 // HDR10: BT.2020 + PQ
+                                        } else if primaries == 9 && transfer == 18 {
+                                            3 // HLG: BT.2020 + HLG
+                                        } else if primaries == 1 || primaries == 0 || primaries == 2 {
+                                            1 // SDR: BT.709 or unspecified
+                                        } else {
+                                            0 // Unknown
+                                        };
+                                    }
+                                }
                             }
                             let rate = stream.avg_frame_rate();
                             if rate.1 != 0 {
@@ -2880,6 +2900,7 @@ impl PlaybackEngine {
                     is_still,
                     file_modified_at,
                     media_created_at,
+                    colour_space,
                 });
 
                 self.grab_first_frame();

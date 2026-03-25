@@ -79,11 +79,13 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             tags: item_json.tags.clone(),
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
+            bin_id: item_json.bin_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
             added_at: item_json.added_at.unwrap_or(0),
             fingerprint: None, // recomputed if needed
             file_modified_at: item_json.file_modified_at,
             media_created_at: item_json.media_created_at,
             color_label: klipp_media::ColorLabel::from_u8(item_json.color_label),
+            colour_space: klipp_media::ColourSpace::from_u8(item_json.colour_space),
             needs_reprobe: false,
             log_format: Default::default(),
             skim_file: None,
@@ -91,6 +93,30 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             audio_cache: None,
         };
         media_pool.add(media_item);
+    }
+
+    // Load bins from manifest
+    for bin_json in &manifest.bins {
+        if let Ok(uuid) = parse_uuid(&bin_json.id) {
+            media_pool.bins.push(klipp_media::Bin {
+                id: klipp_core::BinId(uuid),
+                name: bin_json.name.clone(),
+                parent_id: bin_json.parent_id.as_ref()
+                    .and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
+            });
+        }
+    }
+
+    // Migration: if items have bin (String) but no bin_id, create bins and assign IDs
+    let items_needing_migration: Vec<(klipp_core::MediaId, String)> = media_pool.all()
+        .filter(|m| m.bin.is_some() && m.bin_id.is_none())
+        .map(|m| (m.id, m.bin.clone().unwrap()))
+        .collect();
+    for (mid, bin_name) in items_needing_migration {
+        let bin_id = media_pool.find_or_create_bin(&bin_name);
+        if let Some(item) = media_pool.get_mut(&mid) {
+            item.bin_id = Some(bin_id);
+        }
     }
 
     // Reconstruct all sequences

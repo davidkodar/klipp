@@ -38,3 +38,4 @@ klipp_id!(MediaId);
 klipp_id!(MarkerId);
 klipp_id!(TransitionId);
 klipp_id!(GroupId);
+klipp_id!(BinId);

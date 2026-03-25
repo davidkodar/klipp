@@ -6,7 +6,7 @@ mod thumbnail;
 pub mod waveform;
 
 pub use audio_cache::AudioCacheEntry;
-pub use item::{ColorLabel, MediaItem};
+pub use item::{Bin, ColorLabel, ColourSpace, MediaItem};
 pub use pool::MediaPool;
 pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};
 pub use waveform::generate_waveform_from_samples;

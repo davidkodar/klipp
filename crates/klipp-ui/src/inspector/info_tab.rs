@@ -66,6 +66,11 @@ pub fn show(
     };
     info_row(ui, theme, "File size", &size_str);
 
+    // Colour space
+    if media.colour_space != klipp_media::ColourSpace::Unknown {
+        info_row(ui, theme, "Colour", media.colour_space.label());
+    }
+
     // Shoot date (from container metadata or file mtime)
     let shoot_date = media.media_created_at.or(media.file_modified_at);
     if let Some(epoch_secs) = shoot_date {

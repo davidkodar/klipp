@@ -1,6 +1,16 @@
-use klipp_core::{Fps, MediaId, Resolution, Timecode};
+use klipp_core::{BinId, Fps, MediaId, Resolution, Timecode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// A bin (folder) for organising media items. Supports nesting via parent_id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bin {
+    pub id: BinId,
+    pub name: String,
+    /// None = root-level bin. Some(id) = child of another bin.
+    #[serde(default)]
+    pub parent_id: Option<BinId>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorLabel {
@@ -61,6 +71,38 @@ impl ColorLabel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColourSpace {
+    #[default]
+    Unknown,
+    Sdr,    // BT.709 / sRGB
+    Hdr10,  // BT.2020 + PQ (SMPTE ST 2084)
+    Hlg,    // BT.2020 + HLG (ARIB STD-B67)
+}
+
+impl ColourSpace {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::Sdr     => "SDR (BT.709)",
+            Self::Hdr10   => "HDR10 (BT.2020 / PQ)",
+            Self::Hlg     => "HLG (BT.2020 / HLG)",
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0, Self::Sdr => 1, Self::Hdr10 => 2, Self::Hlg => 3,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Sdr, 2 => Self::Hdr10, 3 => Self::Hlg, _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaItem {
     pub id: MediaId,
@@ -101,9 +143,12 @@ pub struct MediaItem {
     /// User notes
     #[serde(default)]
     pub user_notes: String,
-    /// Bin name (None = root/unassigned)
+    /// Legacy bin name (used for backward compat with old projects). Prefer bin_id.
     #[serde(default)]
     pub bin: Option<String>,
+    /// Bin ID reference (None = root/unassigned). Used for nested bin hierarchy.
+    #[serde(default)]
+    pub bin_id: Option<BinId>,
     /// Unix epoch seconds when item was added to the project (0 for pre-existing items)
     #[serde(default)]
     pub added_at: u64,
@@ -120,6 +165,9 @@ pub struct MediaItem {
     /// Visual colour label for organisation.
     #[serde(default)]
     pub color_label: ColorLabel,
+    /// Detected colour space / HDR format.
+    #[serde(default)]
+    pub colour_space: ColourSpace,
     /// Camera log encoding format (for IDT conversion)
     #[serde(default)]
     pub log_format: klipp_core::LogFormat,
