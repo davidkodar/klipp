@@ -323,6 +323,27 @@ impl PreferencesPanel {
             .size(10.0)
             .color(egui::Color32::from_rgb(120, 120, 130)),
         );
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("History").strong().size(12.0));
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Undo history limit:");
+            let mut limit = prefs.editing.undo_limit;
+            if ui.add(egui::DragValue::new(&mut limit).range(10..=10000).speed(1.0).suffix(" steps")).changed() {
+                prefs.editing.undo_limit = limit;
+                *dirty = true;
+            }
+        });
+        ui.label(
+            egui::RichText::new(
+                "Maximum number of undo steps. Higher values use more memory. \
+                 Set to 0 for unlimited.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+
         let _ = cmds; // suppress unused warning
     }
 

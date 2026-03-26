@@ -205,10 +205,15 @@ impl CommandHistory {
         }
     }
 
+    /// Set the maximum undo stack size. 0 = unlimited.
+    pub fn set_max_size(&mut self, max: usize) {
+        self.max_size = max;
+    }
+
     pub fn push(&mut self, entry: HistoryEntry) {
         self.undo_stack.push(entry);
         self.redo_stack.clear();
-        if self.undo_stack.len() > self.max_size {
+        if self.max_size > 0 && self.undo_stack.len() > self.max_size {
             self.undo_stack.remove(0);
         }
     }

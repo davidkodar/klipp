@@ -226,6 +226,7 @@ impl KlippApp {
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
+        app.state.history.set_max_size(app.prefs.editing.undo_limit);
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
@@ -5849,6 +5850,8 @@ impl eframe::App for KlippApp {
 
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
+            // Sync undo limit from prefs
+            self.state.history.set_max_size(self.prefs.editing.undo_limit);
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }

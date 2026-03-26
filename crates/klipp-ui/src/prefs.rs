@@ -114,6 +114,13 @@ pub struct EditingPrefs {
     /// Media browser view mode (persisted across sessions).
     #[serde(default)]
     pub media_browser_view_mode: crate::browser::media_tab::BrowserViewMode,
+    /// Maximum number of undo steps (0 = unlimited).
+    #[serde(default = "default_undo_limit")]
+    pub undo_limit: usize,
+}
+
+fn default_undo_limit() -> usize {
+    100
 }
 
 fn default_still_duration() -> f64 {
@@ -127,6 +134,7 @@ impl Default for EditingPrefs {
             auto_generate_filmstrips: true,
             auto_generate_skim: true,
             default_still_duration_secs: default_still_duration(),
+            undo_limit: default_undo_limit(),
             media_browser_view_mode: Default::default(),
         }
     }
