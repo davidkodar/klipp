@@ -114,6 +114,28 @@ pub enum EditCommand {
         old_graph: klipp_nodes::NodeGraph,
         new_graph: klipp_nodes::NodeGraph,
     },
+
+    // === CLIP AUDIO ===
+    EditClipAudio {
+        clip_id: ClipId,
+        old_volume: f32,
+        old_pan: f32,
+        old_fade_in: f32,
+        old_fade_out: f32,
+        new_volume: f32,
+        new_pan: f32,
+        new_fade_in: f32,
+        new_fade_out: f32,
+    },
+
+    // === BUILTIN EFFECTS ===
+    EditBuiltinEffect {
+        clip_id: ClipId,
+        effect_index: usize,
+        old_effect: klipp_effects::BuiltinEffect,
+        new_effect: klipp_effects::BuiltinEffect,
+    },
+
 }
 
 impl EditCommand {
@@ -136,6 +158,8 @@ impl EditCommand {
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
+            EditCommand::EditClipAudio { .. } => "Edit Audio",
+            EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
         }
     }
 }
@@ -158,6 +182,12 @@ pub struct CommandHistory {
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
     max_size: usize,
+
+    // Coalescing state — for drag gesture support
+    /// Identifies which param is being dragged (e.g. "clip_id:builtin:index")
+    pending_coalesce_key: Option<String>,
+    /// "Before" state captured at drag start
+    pending_old_entry: Option<HistoryEntry>,
 }
 
 impl CommandHistory {
@@ -166,6 +196,8 @@ impl CommandHistory {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             max_size: 100,
+            pending_coalesce_key: None,
+            pending_old_entry: None,
         }
     }
 
@@ -175,6 +207,39 @@ impl CommandHistory {
         if self.undo_stack.len() > self.max_size {
             self.undo_stack.remove(0);
         }
+    }
+
+    /// Call when the user starts dragging a parameter (mouse down on slider/DragValue).
+    /// Captures the current state as the "before" snapshot.
+    /// While a drag is active, calls to push() with the same key are suppressed
+    /// by the command handler checking is_dragging().
+    pub fn begin_drag(&mut self, key: String, old_state: HistoryEntry) {
+        self.pending_coalesce_key = Some(key);
+        self.pending_old_entry = Some(old_state);
+    }
+
+    /// Call when the user releases the drag (mouse up).
+    /// Pushes exactly ONE undo entry using the "before" snapshot from begin_drag
+    /// and the "after" state passed here.
+    pub fn end_drag(&mut self, final_state: HistoryEntry) {
+        if self.pending_coalesce_key.take().is_some() {
+            if let Some(old_entry) = self.pending_old_entry.take() {
+                // Construct a combined entry: old state from begin_drag, new state from final_state
+                let combined = combine_old_new(old_entry, final_state);
+                self.push(combined);
+            }
+        }
+    }
+
+    /// Returns true if a drag is in progress for the given key.
+    /// Command handlers check this to suppress individual undo pushes during drag.
+    pub fn is_dragging(&self, key: &str) -> bool {
+        self.pending_coalesce_key.as_deref() == Some(key)
+    }
+
+    /// Returns a reference to the pending old entry (for reading old state at end_drag).
+    pub fn pending_old_entry_ref(&self) -> Option<&HistoryEntry> {
+        self.pending_old_entry.as_ref()
     }
 
     pub fn undo(&mut self) -> Option<HistoryEntry> {
@@ -203,5 +268,42 @@ impl CommandHistory {
 
     pub fn redo_label(&self) -> Option<&'static str> {
         self.redo_stack.last().map(|e| e.label())
+    }
+}
+
+/// Combines the old state from begin_drag with the new state from end_drag.
+/// For EditBuiltinEffect: takes old_effect from old_entry, new_effect from new_entry.
+/// For EditClipAudio: takes old_* from old_entry, new_* from new_entry.
+fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryEntry {
+    let command = match (&old_entry.command, &new_entry.command) {
+        (
+            EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. },
+            EditCommand::EditBuiltinEffect { new_effect, .. },
+        ) => EditCommand::EditBuiltinEffect {
+            clip_id: *clip_id,
+            effect_index: *effect_index,
+            old_effect: old_effect.clone(),
+            new_effect: new_effect.clone(),
+        },
+        (
+            EditCommand::EditClipAudio { clip_id, old_volume, old_pan, old_fade_in, old_fade_out, .. },
+            EditCommand::EditClipAudio { new_volume, new_pan, new_fade_in, new_fade_out, .. },
+        ) => EditCommand::EditClipAudio {
+            clip_id: *clip_id,
+            old_volume: *old_volume,
+            old_pan: *old_pan,
+            old_fade_in: *old_fade_in,
+            old_fade_out: *old_fade_out,
+            new_volume: *new_volume,
+            new_pan: *new_pan,
+            new_fade_in: *new_fade_in,
+            new_fade_out: *new_fade_out,
+        },
+        // For any other type, just use the new entry as-is
+        _ => new_entry.command.clone(),
+    };
+    HistoryEntry {
+        sequence_idx: new_entry.sequence_idx,
+        command,
     }
 }

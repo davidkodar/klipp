@@ -374,6 +374,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let mut seq = make_sequence();
@@ -427,6 +431,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let mut seq = make_sequence();
@@ -464,6 +472,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let mut seq = make_sequence();
@@ -494,6 +506,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let pool = MediaPool::new();
@@ -527,6 +543,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let pool = MediaPool::new();
@@ -561,6 +581,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let clip_b = Clip {
@@ -576,6 +600,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let mut seq = make_sequence();
@@ -615,6 +643,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
         let clip_b = Clip {
             id: clip_b_id,
@@ -629,6 +661,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let transition = Transition {
@@ -674,6 +710,10 @@ mod tests {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         };
 
         let mut seq = make_sequence();

@@ -286,6 +286,7 @@ pub struct Track {
 fn default_opacity() -> f32 { 1.0 }
 fn default_volume() -> f32 { 1.0 }
 fn default_true() -> bool { true }
+fn default_clip_volume() -> f32 { 1.0 }
 
 impl Track {
     pub fn new(name: &str, kind: TrackKind) -> Self {
@@ -334,6 +335,10 @@ impl Track {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         });
         clip_id
     }
@@ -440,6 +445,10 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: clip.magnetic_anchor.clone(),
+            volume: clip.volume,
+            pan: clip.pan,
+            fade_in_secs: clip.fade_in_secs,
+            fade_out_secs: clip.fade_out_secs,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -454,6 +463,10 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: None, // right half gets no anchor
+            volume: clip.volume,
+            pan: clip.pan,
+            fade_in_secs: clip.fade_in_secs,
+            fade_out_secs: clip.fade_out_secs,
         };
 
         self.clips.remove(pos);
@@ -513,6 +526,14 @@ pub struct Clip {
     /// If Some, this clip is connected to an anchor on the primary storyline.
     #[serde(default)]
     pub magnetic_anchor: Option<MagneticAnchor>,
+    #[serde(default = "default_clip_volume")]
+    pub volume: f32,
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default)]
+    pub fade_in_secs: f32,
+    #[serde(default)]
+    pub fade_out_secs: f32,
 }
 
 impl Clip {
@@ -559,6 +580,10 @@ impl Clip {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         }
     }
 
@@ -583,6 +608,10 @@ impl Clip {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         }
     }
 }

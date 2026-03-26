@@ -2329,9 +2329,8 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    // When not playing, re-seek to force re-render with updated effects
                     if self.state.playback != PlaybackState::Playing {
-                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     }
                     continue;
                 }
@@ -2346,23 +2345,160 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     if self.state.playback != PlaybackState::Playing {
-                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     }
                     continue;
                 }
                 AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
+                    let mut old_effect = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(fx) = clip.builtin_effects.get_mut(*index) {
+                                old_effect = Some(fx.clone());
                                 *fx = effect.clone();
                             }
                             break;
                         }
                     }
+                    // Push undo if NOT in a coalescing drag
+                    if let Some(old_fx) = old_effect {
+                        let drag_key = format!("{:?}:builtin:{}", clip_id, index);
+                        if !self.state.history.is_dragging(&drag_key) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditBuiltinEffect {
+                                    clip_id: *clip_id,
+                                    effect_index: *index,
+                                    old_effect: old_fx,
+                                    new_effect: effect.clone(),
+                                },
+                            });
+                        }
+                    }
                     self.sync_sequence_to_engine();
                     if self.state.playback != PlaybackState::Playing {
-                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        // Re-process cached frame with updated effects (instant, no re-decode)
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     }
+                    continue;
+                }
+                // Undo coalescing — drag gesture signals for builtin effects
+                AppCommand::UpdateClipAudio { clip_id, volume, pan, fade_in_secs, fade_out_secs } => {
+                    let mut old_vals = None;
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            old_vals = Some((clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs));
+                            clip.volume = *volume;
+                            clip.pan = *pan;
+                            clip.fade_in_secs = *fade_in_secs;
+                            clip.fade_out_secs = *fade_out_secs;
+                            break;
+                        }
+                    }
+                    if let Some((ov, op, ofi, ofo)) = old_vals {
+                        let drag_key = format!("{:?}:audio", clip_id);
+                        if !self.state.history.is_dragging(&drag_key) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditClipAudio {
+                                    clip_id: *clip_id,
+                                    old_volume: ov,
+                                    old_pan: op,
+                                    old_fade_in: ofi,
+                                    old_fade_out: ofo,
+                                    new_volume: *volume,
+                                    new_pan: *pan,
+                                    new_fade_in: *fade_in_secs,
+                                    new_fade_out: *fade_out_secs,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    continue;
+                }
+                AppCommand::BeginAudioDrag { ref key, clip_id, old_volume, old_pan, old_fade_in, old_fade_out } => {
+                    self.state.history.begin_drag(
+                        key.clone(),
+                        HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditClipAudio {
+                                clip_id: *clip_id,
+                                old_volume: *old_volume,
+                                old_pan: *old_pan,
+                                old_fade_in: *old_fade_in,
+                                old_fade_out: *old_fade_out,
+                                new_volume: *old_volume,
+                                new_pan: *old_pan,
+                                new_fade_in: *old_fade_in,
+                                new_fade_out: *old_fade_out,
+                            },
+                        },
+                    );
+                    continue;
+                }
+                AppCommand::EndAudioDrag { ref key, clip_id, new_volume, new_pan, new_fade_in, new_fade_out } => {
+                    let _ = key;
+                    let (ov, op, ofi, ofo) = self.state.history.pending_old_entry_ref()
+                        .and_then(|e| match &e.command {
+                            EditCommand::EditClipAudio { old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
+                                Some((*old_volume, *old_pan, *old_fade_in, *old_fade_out))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or((*new_volume, *new_pan, *new_fade_in, *new_fade_out));
+                    self.state.history.end_drag(HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: EditCommand::EditClipAudio {
+                            clip_id: *clip_id,
+                            old_volume: ov,
+                            old_pan: op,
+                            old_fade_in: ofi,
+                            old_fade_out: ofo,
+                            new_volume: *new_volume,
+                            new_pan: *new_pan,
+                            new_fade_in: *new_fade_in,
+                            new_fade_out: *new_fade_out,
+                        },
+                    });
+                    continue;
+                }
+                AppCommand::BeginEffectDrag { ref key, clip_id, effect_index, ref old_effect } => {
+                    self.state.history.begin_drag(
+                        key.clone(),
+                        HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditBuiltinEffect {
+                                clip_id: *clip_id,
+                                effect_index: *effect_index,
+                                old_effect: old_effect.clone(),
+                                new_effect: old_effect.clone(), // placeholder, replaced at end_drag
+                            },
+                        },
+                    );
+                    continue;
+                }
+                AppCommand::EndEffectDrag { ref key, clip_id, effect_index, ref new_effect } => {
+                    let _ = key; // key is used to match begin_drag
+                    // Read the old_effect from the pending entry
+                    let old_effect = self.state.history.pending_old_entry_ref()
+                        .and_then(|e| match &e.command {
+                            EditCommand::EditBuiltinEffect { old_effect, .. } => Some(old_effect.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| new_effect.clone());
+                    self.state.history.end_drag(HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: EditCommand::EditBuiltinEffect {
+                            clip_id: *clip_id,
+                            effect_index: *effect_index,
+                            old_effect,
+                            new_effect: new_effect.clone(),
+                        },
+                    });
                     continue;
                 }
                 AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
@@ -2456,6 +2592,10 @@ impl KlippApp {
                         linked_clip_id: None,
                         group_id: None,
                         magnetic_anchor: None,
+                        volume: 1.0,
+                        pan: 0.0,
+                        fade_in_secs: 0.0,
+                        fade_out_secs: 0.0,
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -2725,6 +2865,10 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    volume: clip.volume,
+                                    pan: clip.pan,
+                                    fade_in_secs: clip.fade_in_secs,
+                                    fade_out_secs: clip.fade_out_secs,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -2828,6 +2972,10 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    volume: 1.0,
+                                    pan: 0.0,
+                                    fade_in_secs: 0.0,
+                                    fade_out_secs: 0.0,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -2886,6 +3034,10 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    volume: 1.0,
+                                    pan: 0.0,
+                                    fade_in_secs: 0.0,
+                                    fade_out_secs: 0.0,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -3362,12 +3514,18 @@ impl KlippApp {
                     }
                     self.state.skim_audio_session = None;
 
-                    // Try to open PCM cache for this media
-                    let cache_dir = dirs::cache_dir()
-                        .unwrap_or_else(|| PathBuf::from("/tmp"))
-                        .join("klipp")
-                        .join("audio-cache");
-                    let pcm_path = cache_dir.join(format!("{}.pcm", media_id));
+                    // Look up PCM path from the media item's audio cache entry (content-hash based)
+                    // Fall back to media-ID-based path for older caches
+                    let pcm_path = self.state.media_pool.get(media_id)
+                        .and_then(|item| item.audio_cache.as_ref())
+                        .map(|cache| cache.pcm_path.clone())
+                        .unwrap_or_else(|| {
+                            let cache_dir = dirs::cache_dir()
+                                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                                .join("klipp")
+                                .join("audio-cache");
+                            cache_dir.join(format!("{}.pcm", media_id))
+                        });
 
                     if let Some(session) = klipp_engine::skim_audio::SkimAudioSession::new(
                         &pcm_path,
@@ -4158,6 +4316,27 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
+                            *fx = old_effect.clone();
+                        }
+                        break;
+                    }
+                }
+            }
+            EditCommand::EditClipAudio { clip_id, old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.volume = *old_volume;
+                        clip.pan = *old_pan;
+                        clip.fade_in_secs = *old_fade_in;
+                        clip.fade_out_secs = *old_fade_out;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -4307,6 +4486,27 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::EditBuiltinEffect { clip_id, effect_index, new_effect, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
+                            *fx = new_effect.clone();
+                        }
+                        break;
+                    }
+                }
+            }
+            EditCommand::EditClipAudio { clip_id, new_volume, new_pan, new_fade_in, new_fade_out, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.volume = *new_volume;
+                        clip.pan = *new_pan;
+                        clip.fade_in_secs = *new_fade_in;
+                        clip.fade_out_secs = *new_fade_out;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -4373,6 +4573,10 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
+                volume: clip.volume,
+                pan: clip.pan,
+                fade_in_secs: clip.fade_in_secs,
+                fade_out_secs: clip.fade_out_secs,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -4456,6 +4660,10 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
+                volume: clip.volume,
+                pan: clip.pan,
+                fade_in_secs: clip.fade_in_secs,
+                fade_out_secs: clip.fade_out_secs,
             };
             track.clips.insert(i + 1, right_clip);
         }

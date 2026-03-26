@@ -5,6 +5,7 @@ pub mod keyframe_editor;
 pub mod resizer;
 pub mod scopes;
 pub mod role_pill;
+pub mod scrubby_param;
 pub mod slider;
 pub mod toast;
 pub mod tooltip;

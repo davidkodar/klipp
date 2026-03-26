@@ -109,6 +109,9 @@ define_icons! {
     SortDescending  => "sort-descending",
     Star            => "star",
 
+    // Inspector
+    Diamond         => "diamond",
+
     // Misc
     Lightning       => "lightning",
 }

@@ -735,7 +735,7 @@ impl InspectorPanel {
                     });
                 })
                 .body(|ui| {
-                    if let Some(updated) = show_builtin_effect_params(ui, effect) {
+                    if let Some(updated) = show_builtin_effect_params(ui, effect, clip_id, i, cmds) {
                         cmds.push(AppCommand::UpdateBuiltinEffect {
                             clip_id,
                             index: i,
@@ -1108,38 +1108,53 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
 fn show_builtin_effect_params(
     ui: &mut egui::Ui,
     effect: &klipp_effects::BuiltinEffect,
+    clip_id: klipp_core::ClipId,
+    effect_index: usize,
+    cmds: &mut Vec<AppCommand>,
 ) -> Option<klipp_effects::BuiltinEffect> {
     let mut changed = false;
     let mut updated = effect.clone();
+    let mut any_drag_started = false;
+    let mut any_drag_stopped = false;
+    let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
+
+    macro_rules! track_slider {
+        ($resp:expr) => {{
+            let r = $resp;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }};
+    }
 
     match &mut updated {
         klipp_effects::BuiltinEffect::Opacity { value } => {
-            changed |= ui.add(egui::Slider::new(value, 0.0..=1.0).text("Opacity")).changed();
+            track_slider!(ui.add(egui::Slider::new(value, 0.0..=1.0).text("Opacity")));
         }
         klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-            changed |= ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")).changed();
+            track_slider!(ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")));
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
-            changed |= ui.add(egui::Slider::new(amount, 0.0..=2.0).text("Amount")).changed();
+            track_slider!(ui.add(egui::Slider::new(amount, 0.0..=2.0).text("Amount")));
         }
         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-            changed |= ui.add(egui::Slider::new(left, 0.0..=0.5).text("Left")).changed();
-            changed |= ui.add(egui::Slider::new(right, 0.0..=0.5).text("Right")).changed();
-            changed |= ui.add(egui::Slider::new(top, 0.0..=0.5).text("Top")).changed();
-            changed |= ui.add(egui::Slider::new(bottom, 0.0..=0.5).text("Bottom")).changed();
-            changed |= ui.add(egui::Slider::new(feather, 0.0..=100.0).text("Feather")).changed();
+            track_slider!(ui.add(egui::Slider::new(left, 0.0..=0.5).text("Left")));
+            track_slider!(ui.add(egui::Slider::new(right, 0.0..=0.5).text("Right")));
+            track_slider!(ui.add(egui::Slider::new(top, 0.0..=0.5).text("Top")));
+            track_slider!(ui.add(egui::Slider::new(bottom, 0.0..=0.5).text("Bottom")));
+            track_slider!(ui.add(egui::Slider::new(feather, 0.0..=100.0).text("Feather")));
         }
         klipp_effects::BuiltinEffect::Transform {
             position_x, position_y, scale_x, scale_y,
             rotation, anchor_x, anchor_y,
         } => {
-            changed |= ui.add(egui::Slider::new(position_x, -1920.0..=1920.0).text("Position X")).changed();
-            changed |= ui.add(egui::Slider::new(position_y, -1080.0..=1080.0).text("Position Y")).changed();
-            changed |= ui.add(egui::Slider::new(scale_x, 0.01..=4.0).text("Scale X")).changed();
-            changed |= ui.add(egui::Slider::new(scale_y, 0.01..=4.0).text("Scale Y")).changed();
-            changed |= ui.add(egui::Slider::new(rotation, -360.0..=360.0).text("Rotation")).changed();
-            changed |= ui.add(egui::Slider::new(anchor_x, 0.0..=1.0).text("Anchor X")).changed();
-            changed |= ui.add(egui::Slider::new(anchor_y, 0.0..=1.0).text("Anchor Y")).changed();
+            track_slider!(ui.add(egui::Slider::new(position_x, -1920.0..=1920.0).text("Position X")));
+            track_slider!(ui.add(egui::Slider::new(position_y, -1080.0..=1080.0).text("Position Y")));
+            track_slider!(ui.add(egui::Slider::new(scale_x, 0.01..=4.0).text("Scale X")));
+            track_slider!(ui.add(egui::Slider::new(scale_y, 0.01..=4.0).text("Scale Y")));
+            track_slider!(ui.add(egui::Slider::new(rotation, -360.0..=360.0).text("Rotation")));
+            track_slider!(ui.add(egui::Slider::new(anchor_x, 0.0..=1.0).text("Anchor X")));
+            track_slider!(ui.add(egui::Slider::new(anchor_y, 0.0..=1.0).text("Anchor Y")));
         }
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
             let mut color = egui::Color32::from_rgb(key_color[0], key_color[1], key_color[2]);
@@ -1149,9 +1164,26 @@ fn show_builtin_effect_params(
                 key_color[2] = color.b();
                 changed = true;
             }
-            changed |= ui.add(egui::Slider::new(tolerance, 0.0..=1.0).text("Tolerance")).changed();
-            changed |= ui.add(egui::Slider::new(spill_suppression, 0.0..=1.0).text("Spill")).changed();
+            track_slider!(ui.add(egui::Slider::new(tolerance, 0.0..=1.0).text("Tolerance")));
+            track_slider!(ui.add(egui::Slider::new(spill_suppression, 0.0..=1.0).text("Spill")));
         }
+    }
+
+    if any_drag_started {
+        cmds.push(AppCommand::BeginEffectDrag {
+            key: drag_key.clone(),
+            clip_id,
+            effect_index,
+            old_effect: effect.clone(),
+        });
+    }
+    if any_drag_stopped {
+        cmds.push(AppCommand::EndEffectDrag {
+            key: drag_key,
+            clip_id,
+            effect_index,
+            new_effect: updated.clone(),
+        });
     }
 
     if changed { Some(updated) } else { None }

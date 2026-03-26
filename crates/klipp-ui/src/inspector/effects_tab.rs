@@ -1,5 +1,7 @@
+use crate::icons::Icon;
 use crate::theme::KlippTheme;
 use crate::state::AppState;
+use crate::widgets::scrubby_param::scrubby_param_row;
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
 
@@ -47,6 +49,7 @@ pub fn show(
     let mut builtin_remove = None;
     let mut builtin_move_up = None;
     let mut builtin_move_down = None;
+    let mut builtin_reset: Option<(usize, klipp_effects::BuiltinEffect)> = None;
 
     for (i, effect) in clip.builtin_effects.iter().enumerate() {
         let name = builtin_effect_name(effect);
@@ -55,23 +58,32 @@ pub fn show(
             .show_header(ui, |ui| {
                 ui.label(egui::RichText::new(name).size(11.0).strong().color(theme.text_primary));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                    if ui.add(egui::ImageButton::new(Icon::X.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Remove").clicked() {
                         builtin_remove = Some(i);
                     }
                     if i + 1 < clip.builtin_effects.len()
-                        && ui.small_button("\u{25BC}").on_hover_text("Move down").clicked()
+                        && ui.add(egui::ImageButton::new(Icon::CaretDown.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Move down").clicked()
                     {
                         builtin_move_down = Some(i);
                     }
                     if i > 0
-                        && ui.small_button("\u{25B2}").on_hover_text("Move up").clicked()
+                        && ui.add(egui::ImageButton::new(Icon::CaretUp.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Move up").clicked()
                     {
                         builtin_move_up = Some(i);
+                    }
+                    // Reset-all icon for effects with multiple params
+                    if builtin_effect_has_multi_params(effect) && !builtin_effect_is_default(effect) {
+                        let reset = ui.add(egui::ImageButton::new(
+                            Icon::ArrowCounterClockwise.image(12.0).tint(theme.text_dim)
+                        ).frame(false));
+                        if reset.on_hover_text("Reset all parameters").clicked() {
+                            builtin_reset = Some((i, builtin_effect_default(effect)));
+                        }
                     }
                 });
             })
             .body(|ui| {
-                if let Some(updated) = show_builtin_effect_params(ui, theme, effect) {
+                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds) {
                     cmds.push(AppCommand::UpdateBuiltinEffect {
                         clip_id,
                         index: i,
@@ -90,6 +102,9 @@ pub fn show(
     }
     if let Some(idx) = builtin_move_down {
         cmds.push(AppCommand::ReorderBuiltinEffect { clip_id, from_index: idx, to_index: idx + 1 });
+    }
+    if let Some((idx, default_effect)) = builtin_reset {
+        cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: idx, effect: default_effect });
     }
 
     // ── OFX effects ──
@@ -117,16 +132,16 @@ pub fn show(
                 ui.label(egui::RichText::new(display_name).size(11.0).strong().color(theme.text_primary));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                    if ui.add(egui::ImageButton::new(Icon::X.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Remove").clicked() {
                         ofx_remove = Some(i);
                     }
                     if i + 1 < clip.effects.len()
-                        && ui.small_button("\u{25BC}").on_hover_text("Move down").clicked()
+                        && ui.add(egui::ImageButton::new(Icon::CaretDown.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Move down").clicked()
                     {
                         ofx_move_down = Some(i);
                     }
                     if i > 0
-                        && ui.small_button("\u{25B2}").on_hover_text("Move up").clicked()
+                        && ui.add(egui::ImageButton::new(Icon::CaretUp.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Move up").clicked()
                     {
                         ofx_move_up = Some(i);
                     }
@@ -172,7 +187,7 @@ pub fn show(
 
     // Built-in add button
     let add_btn = egui::Button::new(
-        egui::RichText::new("\u{FF0B} Add Built-in Effect")
+        egui::RichText::new("+ Add Built-in Effect")
             .size(11.0)
             .color(theme.text_dim),
     )
@@ -225,7 +240,7 @@ pub fn show(
     // OFX add button
     ui.add_space(4.0);
     let add_ofx_btn = egui::Button::new(
-        egui::RichText::new("\u{FF0B} Add OFX Plugin")
+        egui::RichText::new("+ Add OFX Plugin")
             .size(11.0)
             .color(theme.text_dim),
     )
@@ -438,58 +453,89 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
     }
 }
 
+/// Returns the default (identity) version of the same effect variant.
+fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effects::BuiltinEffect {
+    use klipp_effects::BuiltinEffect;
+    match effect {
+        BuiltinEffect::Opacity { .. } => BuiltinEffect::Opacity { value: 1.0 },
+        BuiltinEffect::GaussianBlur { .. } => BuiltinEffect::GaussianBlur { radius: 0.0 },
+        BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
+        BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+        BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+        },
+        BuiltinEffect::ChromaKey { .. } => BuiltinEffect::ChromaKey {
+            key_color: [0, 255, 0], tolerance: 0.2, spill_suppression: 0.1,
+        },
+    }
+}
+
+/// Returns true if the effect has more than 1 adjustable parameter (worth a reset-all button).
+fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
+    use klipp_effects::BuiltinEffect;
+    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. })
+}
+
+/// Returns true if the effect is at its default values.
+fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
+    let def = builtin_effect_default(effect);
+    // Compare by debug string — simple and correct for all variants
+    format!("{:?}", effect) == format!("{:?}", def)
+}
+
 fn show_builtin_effect_params(
     ui: &mut egui::Ui,
     _theme: &KlippTheme,
     effect: &klipp_effects::BuiltinEffect,
+    clip_id: klipp_core::ClipId,
+    effect_index: usize,
+    cmds: &mut Vec<AppCommand>,
 ) -> Option<klipp_effects::BuiltinEffect> {
     let mut updated = effect.clone();
     let mut changed = false;
+    let mut any_drag_started = false;
+    let mut any_drag_stopped = false;
+    let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
+
+    // Helper: process a scrubby response for drag coalescing
+    macro_rules! track_scrubby {
+        ($r:expr) => {{
+            let r = $r;
+            changed |= r.changed;
+            if r.drag_started { any_drag_started = true; }
+            if r.drag_stopped { any_drag_stopped = true; }
+        }};
+    }
 
     match &mut updated {
         klipp_effects::BuiltinEffect::Opacity { value } => {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Value").size(10.0));
-                changed |= ui.add(egui::Slider::new(value, 0.0..=1.0).step_by(0.01_f64)).changed();
-            });
+            track_scrubby!(scrubby_param_row(ui, "Opacity", value, 0.0..=1.0, 1.0, 0.005, 2, ""));
         }
         klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Radius").size(10.0));
-                changed |= ui.add(egui::Slider::new(radius, 0.0..=100.0).step_by(0.5_f64)).changed();
-            });
+            track_scrubby!(scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px"));
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Amount").size(10.0));
-                changed |= ui.add(egui::Slider::new(amount, 0.0..=2.0).step_by(0.01_f64)).changed();
-            });
+            track_scrubby!(scrubby_param_row(ui, "Amount", amount, 0.0..=2.0, 0.5, 0.01, 2, ""));
         }
         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-            for (label, val) in [("Left", left as &mut f32), ("Right", right), ("Top", top), ("Bottom", bottom), ("Feather", feather)] {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).size(10.0));
-                    changed |= ui.add(egui::Slider::new(val, 0.0..=1.0).step_by(0.01_f64)).changed();
-                });
-            }
+            track_scrubby!(scrubby_param_row(ui, "Left", left, 0.0..=1.0, 0.0, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Right", right, 0.0..=1.0, 0.0, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Top", top, 0.0..=1.0, 0.0, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, ""));
         }
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } => {
-            for (label, val, range) in [
-                ("Pos X", position_x as &mut f32, -2000.0..=2000.0_f32),
-                ("Pos Y", position_y, -2000.0..=2000.0),
-                ("Scale X", scale_x, 0.0..=4.0),
-                ("Scale Y", scale_y, 0.0..=4.0),
-                ("Rotation", rotation, -360.0..=360.0),
-                ("Anchor X", anchor_x, 0.0..=1.0),
-                ("Anchor Y", anchor_y, 0.0..=1.0),
-            ] {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).size(10.0));
-                    changed |= ui.add(egui::Slider::new(val, range).step_by(0.01_f64)).changed();
-                });
-            }
+            track_scrubby!(scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px"));
+            track_scrubby!(scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px"));
+            track_scrubby!(scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}"));
+            track_scrubby!(scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}"));
+            track_scrubby!(scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}"));
+            track_scrubby!(scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, ""));
         }
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
+            // Color picker stays as-is (not a scrubby candidate)
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Key Color").size(10.0));
                 let mut color = egui::Color32::from_rgb(key_color[0], key_color[1], key_color[2]);
@@ -500,15 +546,29 @@ fn show_builtin_effect_params(
                     changed = true;
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Tolerance").size(10.0));
-                changed |= ui.add(egui::Slider::new(tolerance, 0.0..=1.0).step_by(0.01_f64)).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Spill").size(10.0));
-                changed |= ui.add(egui::Slider::new(spill_suppression, 0.0..=1.0).step_by(0.01_f64)).changed();
-            });
+            track_scrubby!(scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, ""));
         }
+    }
+
+    // Emit begin_drag at the start of a drag gesture
+    if any_drag_started {
+        cmds.push(AppCommand::BeginEffectDrag {
+            key: drag_key.clone(),
+            clip_id,
+            effect_index,
+            old_effect: effect.clone(),
+        });
+    }
+
+    // Emit end_drag when the drag gesture completes
+    if any_drag_stopped {
+        cmds.push(AppCommand::EndEffectDrag {
+            key: drag_key,
+            clip_id,
+            effect_index,
+            new_effect: updated.clone(),
+        });
     }
 
     if changed { Some(updated) } else { None }

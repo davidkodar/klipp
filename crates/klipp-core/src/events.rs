@@ -471,6 +471,25 @@ pub enum AppCommand {
 
     // Application
     Quit,
+
+    // Clip audio
+    UpdateClipAudio { clip_id: ClipId, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32 },
+    BeginAudioDrag { key: String, clip_id: ClipId, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
+    EndAudioDrag { key: String, clip_id: ClipId, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },
+
+    // Undo coalescing — drag gesture signals for builtin effects
+    BeginEffectDrag {
+        key: String,
+        clip_id: ClipId,
+        effect_index: usize,
+        old_effect: klipp_effects::BuiltinEffect,
+    },
+    EndEffectDrag {
+        key: String,
+        clip_id: ClipId,
+        effect_index: usize,
+        new_effect: klipp_effects::BuiltinEffect,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

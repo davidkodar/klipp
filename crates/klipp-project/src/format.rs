@@ -143,6 +143,14 @@ pub struct ClipJson {
     pub linked_clip_id: Option<String>,
     #[serde(default)]
     pub group_id: Option<String>,
+    #[serde(default)]
+    pub volume: Option<f32>,
+    #[serde(default)]
+    pub pan: Option<f32>,
+    #[serde(default)]
+    pub fade_in_secs: Option<f32>,
+    #[serde(default)]
+    pub fade_out_secs: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
