@@ -1,7 +1,7 @@
 use crate::icons::Icon;
 use crate::theme::KlippTheme;
 use crate::state::AppState;
-use crate::widgets::scrubby_param::scrubby_param_row;
+use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
 
@@ -13,6 +13,7 @@ pub fn show(
     cmds: &mut Vec<AppCommand>,
     show_add_builtin: &mut bool,
     show_add_ofx: &mut bool,
+    clip_time_secs: f64,
 ) {
     let clip_id = clip.id;
 
@@ -83,7 +84,7 @@ pub fn show(
                 });
             })
             .body(|ui| {
-                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds) {
+                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds, clip, clip_time_secs) {
                     cmds.push(AppCommand::UpdateBuiltinEffect {
                         clip_id,
                         index: i,
@@ -484,6 +485,41 @@ fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
     format!("{:?}", effect) == format!("{:?}", def)
 }
 
+/// Compute KeyframeState for a given effect param keyframe vec at a given clip-relative time.
+fn effect_keyframe_state(clip: &Clip, effect_index: usize, param_name: &str, clip_time_secs: f64) -> KeyframeState {
+    let key = format!("{}:{}", effect_index, param_name);
+    let kfs = clip.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+    let kf_tolerance = 0.02;
+    KeyframeState {
+        has_keyframe_at_playhead: kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !kfs.is_empty(),
+        prev_keyframe_time: kfs.iter()
+            .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
+            .last()
+            .map(|k| k.time_secs),
+        next_keyframe_time: kfs.iter()
+            .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+            .map(|k| k.time_secs),
+    }
+}
+
+/// Evaluate effect keyframes for a param, returning the keyframed value or the static default.
+fn eval_effect_kf(clip: &Clip, effect_index: usize, param_name: &str, clip_time_secs: f64, default: f32) -> f32 {
+    let key = format!("{}:{}", effect_index, param_name);
+    if let Some(kfs) = clip.effect_keyframes.get(&key) {
+        if !kfs.is_empty() {
+            return klipp_core::keyframe::evaluate(kfs, clip_time_secs, default);
+        }
+    }
+    default
+}
+
+/// Check if any keyframes exist for a given effect param.
+fn has_effect_kfs(clip: &Clip, effect_index: usize, param_name: &str) -> bool {
+    let key = format!("{}:{}", effect_index, param_name);
+    clip.effect_keyframes.get(&key).map_or(false, |kfs| !kfs.is_empty())
+}
+
 fn show_builtin_effect_params(
     ui: &mut egui::Ui,
     _theme: &KlippTheme,
@@ -491,48 +527,91 @@ fn show_builtin_effect_params(
     clip_id: klipp_core::ClipId,
     effect_index: usize,
     cmds: &mut Vec<AppCommand>,
+    clip: &Clip,
+    clip_time_secs: f64,
 ) -> Option<klipp_effects::BuiltinEffect> {
     let mut updated = effect.clone();
     let mut changed = false;
     let mut any_drag_started = false;
     let mut any_drag_stopped = false;
     let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
+    let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
+    let clip_rate = clip.timeline_in.rate;
+    let kf_tolerance = 0.02;
+
+    // Collect keyframe responses: (param_name, ScrubbyParamResponse, current_value)
+    let mut kf_responses: Vec<(&str, crate::widgets::scrubby_param::ScrubbyParamResponse, f32)> = Vec::new();
 
     // Helper: process a scrubby response for drag coalescing
     macro_rules! track_scrubby {
-        ($r:expr) => {{
+        ($param_name:expr, $r:expr, $val:expr) => {{
             let r = $r;
             changed |= r.changed;
             if r.drag_started { any_drag_started = true; }
             if r.drag_stopped { any_drag_stopped = true; }
+            kf_responses.push(($param_name, r, $val));
         }};
     }
 
     match &mut updated {
         klipp_effects::BuiltinEffect::Opacity { value } => {
-            track_scrubby!(scrubby_param_row(ui, "Opacity", value, 0.0..=1.0, 1.0, 0.005, 2, "", None));
+            *value = eval_effect_kf(clip, effect_index, "value", clip_time_secs, *value);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "value", clip_time_secs));
+            let r = scrubby_param_row(ui, "Opacity", value, 0.0..=1.0, 1.0, 0.005, 2, "", ks);
+            track_scrubby!("value", r, *value);
         }
         klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-            track_scrubby!(scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px", None));
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let r = scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px", ks);
+            track_scrubby!("radius", r, *radius);
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
-            track_scrubby!(scrubby_param_row(ui, "Amount", amount, 0.0..=2.0, 0.5, 0.01, 2, "", None));
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let r = scrubby_param_row(ui, "Amount", amount, 0.0..=2.0, 0.5, 0.01, 2, "", ks);
+            track_scrubby!("amount", r, *amount);
         }
         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-            track_scrubby!(scrubby_param_row(ui, "Left", left, 0.0..=1.0, 0.0, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Right", right, 0.0..=1.0, 0.0, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Top", top, 0.0..=1.0, 0.0, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, "", None));
+            *left = eval_effect_kf(clip, effect_index, "left", clip_time_secs, *left);
+            *right = eval_effect_kf(clip, effect_index, "right", clip_time_secs, *right);
+            *top = eval_effect_kf(clip, effect_index, "top", clip_time_secs, *top);
+            *bottom = eval_effect_kf(clip, effect_index, "bottom", clip_time_secs, *bottom);
+            *feather = eval_effect_kf(clip, effect_index, "feather", clip_time_secs, *feather);
+
+            let ks_l = Some(effect_keyframe_state(clip, effect_index, "left", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "right", clip_time_secs));
+            let ks_t = Some(effect_keyframe_state(clip, effect_index, "top", clip_time_secs));
+            let ks_b = Some(effect_keyframe_state(clip, effect_index, "bottom", clip_time_secs));
+            let ks_f = Some(effect_keyframe_state(clip, effect_index, "feather", clip_time_secs));
+
+            let r_l = scrubby_param_row(ui, "Left", left, 0.0..=1.0, 0.0, 0.005, 3, "", ks_l);
+            track_scrubby!("left", r_l, *left);
+            let r_r = scrubby_param_row(ui, "Right", right, 0.0..=1.0, 0.0, 0.005, 3, "", ks_r);
+            track_scrubby!("right", r_r, *right);
+            let r_t = scrubby_param_row(ui, "Top", top, 0.0..=1.0, 0.0, 0.005, 3, "", ks_t);
+            track_scrubby!("top", r_t, *top);
+            let r_b = scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, "", ks_b);
+            track_scrubby!("bottom", r_b, *bottom);
+            let r_f = scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, "", ks_f);
+            track_scrubby!("feather", r_f, *feather);
         }
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } => {
-            track_scrubby!(scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None));
-            track_scrubby!(scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None));
-            track_scrubby!(scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None));
-            track_scrubby!(scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None));
-            track_scrubby!(scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None));
-            track_scrubby!(scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None));
+            // Transform in effects tab: no keyframes (handled by video tab's dedicated keyframes)
+            let r = scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
+            track_scrubby!("", r, *position_x);
+            let r = scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
+            track_scrubby!("", r, *position_y);
+            let r = scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
+            track_scrubby!("", r, *scale_x);
+            let r = scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
+            track_scrubby!("", r, *scale_y);
+            let r = scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None);
+            track_scrubby!("", r, *rotation);
+            let r = scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, "", None);
+            track_scrubby!("", r, *anchor_x);
+            let r = scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None);
+            track_scrubby!("", r, *anchor_y);
         }
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
             // Color picker stays as-is (not a scrubby candidate)
@@ -546,8 +625,16 @@ fn show_builtin_effect_params(
                     changed = true;
                 }
             });
-            track_scrubby!(scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, "", None));
-            track_scrubby!(scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, "", None));
+            *tolerance = eval_effect_kf(clip, effect_index, "tolerance", clip_time_secs, *tolerance);
+            *spill_suppression = eval_effect_kf(clip, effect_index, "spill", clip_time_secs, *spill_suppression);
+
+            let ks_t = Some(effect_keyframe_state(clip, effect_index, "tolerance", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "spill", clip_time_secs));
+
+            let r_t = scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, "", ks_t);
+            track_scrubby!("tolerance", r_t, *tolerance);
+            let r_s = scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, "", ks_s);
+            track_scrubby!("spill", r_s, *spill_suppression);
         }
     }
 
@@ -569,6 +656,63 @@ fn show_builtin_effect_params(
             effect_index,
             new_effect: updated.clone(),
         });
+    }
+
+    // Handle keyframe toggle/nav and auto-update for each param
+    for (param_name, resp, value) in &kf_responses {
+        if param_name.is_empty() {
+            continue; // Transform/Opacity in effects tab -- no effect keyframes
+        }
+
+        // Auto-update keyframe at playhead when slider changes and keyframes exist
+        if resp.changed && has_effect_kfs(clip, effect_index, param_name) {
+            cmds.push(AppCommand::AddEffectKeyframe {
+                clip_id,
+                effect_index,
+                param_name: param_name.to_string(),
+                time_secs: clip_time_secs,
+                value: *value,
+            });
+        }
+
+        // Toggle keyframe on diamond click
+        if resp.keyframe_toggled {
+            let key = format!("{}:{}", effect_index, param_name);
+            let has_at_playhead = clip.effect_keyframes.get(&key)
+                .map_or(false, |kfs| kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance));
+            if has_at_playhead {
+                cmds.push(AppCommand::RemoveEffectKeyframe {
+                    clip_id,
+                    effect_index,
+                    param_name: param_name.to_string(),
+                    time_secs: clip_time_secs,
+                });
+            } else {
+                cmds.push(AppCommand::AddEffectKeyframe {
+                    clip_id,
+                    effect_index,
+                    param_name: param_name.to_string(),
+                    time_secs: clip_time_secs,
+                    value: *value,
+                });
+            }
+        }
+
+        // Navigate to previous keyframe
+        if resp.keyframe_nav_prev {
+            let ks = effect_keyframe_state(clip, effect_index, param_name, clip_time_secs);
+            if let Some(t) = ks.prev_keyframe_time {
+                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+            }
+        }
+
+        // Navigate to next keyframe
+        if resp.keyframe_nav_next {
+            let ks = effect_keyframe_state(clip, effect_index, param_name, clip_time_secs);
+            if let Some(t) = ks.next_keyframe_time {
+                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+            }
+        }
     }
 
     if changed { Some(updated) } else { None }

@@ -170,7 +170,8 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Effects => {
                     if let Some((_, clip)) = clip_info {
-                        effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx);
+                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
                     } else {
                         no_selection(ui, theme);
                     }

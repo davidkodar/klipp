@@ -2883,6 +2883,59 @@ impl PlaybackEngine {
                 }
             }
 
+            // Evaluate effect keyframes (blur, sharpen, crop, chroma key)
+            if !c.effect_keyframes.is_empty() {
+                for (i, effect) in fx.iter_mut().enumerate() {
+                    match effect {
+                        klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
+                            let key = format!("{}:radius", i);
+                            if let Some(kfs) = c.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *radius = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *radius);
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Sharpen { amount } => {
+                            let key = format!("{}:amount", i);
+                            if let Some(kfs) = c.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *amount = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *amount);
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
+                            for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
+                                let key = format!("{}:{}", i, name);
+                                if let Some(kfs) = c.effect_keyframes.get(&key) {
+                                    if !kfs.is_empty() {
+                                        *val = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *val);
+                                    }
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
+                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                                let key = format!("{}:{}", i, name);
+                                if let Some(kfs) = c.effect_keyframes.get(&key) {
+                                    if !kfs.is_empty() {
+                                        *val = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *val);
+                                    }
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Opacity { value } => {
+                            let key = format!("{}:value", i);
+                            if let Some(kfs) = c.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *value = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *value);
+                                }
+                            }
+                        }
+                        _ => {} // Transform already handled by dedicated keyframes
+                    }
+                }
+            }
+
             fx
         } else {
             Vec::new()

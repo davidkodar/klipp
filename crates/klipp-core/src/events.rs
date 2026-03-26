@@ -537,6 +537,10 @@ pub enum AppCommand {
     AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },
     RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
 
+    // Effect keyframes
+    AddEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
+    RemoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
+
     // Clip audio
     UpdateClipAudio {
         clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,

@@ -186,6 +186,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                                 color: format!("{:?}", m.color),
                             }).collect())
                         },
+                        effect_keyframes: if c.effect_keyframes.is_empty() { None } else { Some(c.effect_keyframes.clone()) },
                     }
                 }).collect(),
             }

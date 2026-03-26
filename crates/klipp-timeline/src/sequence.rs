@@ -354,6 +354,7 @@ impl Track {
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
         });
         clip_id
     }
@@ -473,6 +474,19 @@ impl Track {
         let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
         let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
 
+        // Split effect keyframes at the cut point
+        let mut effect_kfs_a = std::collections::HashMap::new();
+        let mut effect_kfs_b = std::collections::HashMap::new();
+        for (key, kfs) in &clip.effect_keyframes {
+            let (a, b) = split_kfs(kfs);
+            if !a.is_empty() {
+                effect_kfs_a.insert(key.clone(), a);
+            }
+            if !b.is_empty() {
+                effect_kfs_b.insert(key.clone(), b);
+            }
+        }
+
         // Split clip markers at the cut point
         let mut markers_a = Vec::new();
         let mut markers_b = Vec::new();
@@ -516,6 +530,7 @@ impl Track {
             transform_scale_keyframes: scale_a,
             transform_rotation_keyframes: rot_a,
             clip_markers: markers_a,
+            effect_keyframes: effect_kfs_a,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -547,6 +562,7 @@ impl Track {
             transform_scale_keyframes: scale_b,
             transform_rotation_keyframes: rot_b,
             clip_markers: markers_b,
+            effect_keyframes: effect_kfs_b,
         };
 
         self.clips.remove(pos);
@@ -652,6 +668,9 @@ pub struct Clip {
     /// Per-clip markers at specific times within the clip.
     #[serde(default)]
     pub clip_markers: Vec<ClipMarker>,
+    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    #[serde(default)]
+    pub effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
 }
 
 impl Clip {
@@ -715,6 +734,7 @@ impl Clip {
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
         }
     }
 
@@ -756,6 +776,7 @@ impl Clip {
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
         }
     }
 }

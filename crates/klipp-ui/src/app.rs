@@ -2583,6 +2583,47 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::AddEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let kf = klipp_core::Keyframe {
+                                time_secs: *time_secs,
+                                value: *value,
+                                interpolation: klipp_core::Interpolation::Linear,
+                                tangent_out: (0.0, 0.0),
+                                tangent_in: (0.0, 0.0),
+                            };
+                            let keyframes = clip.effect_keyframes.entry(key.clone()).or_default();
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            keyframes.push(kf);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.effect_keyframes.get_mut(&key) {
+                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                if keyframes.is_empty() {
+                                    clip.effect_keyframes.remove(&key);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -2877,6 +2918,7 @@ impl KlippApp {
                         transform_scale_keyframes: Vec::new(),
                         transform_rotation_keyframes: Vec::new(),
                         clip_markers: Vec::new(),
+                        effect_keyframes: std::collections::HashMap::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -3163,6 +3205,7 @@ impl KlippApp {
                                     transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                                     transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                                     clip_markers: clip.clip_markers.clone(),
+                                    effect_keyframes: clip.effect_keyframes.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -3283,6 +3326,7 @@ impl KlippApp {
                                     transform_scale_keyframes: Vec::new(),
                                     transform_rotation_keyframes: Vec::new(),
                                     clip_markers: Vec::new(),
+                                    effect_keyframes: std::collections::HashMap::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -3358,6 +3402,7 @@ impl KlippApp {
                                     transform_scale_keyframes: Vec::new(),
                                     transform_rotation_keyframes: Vec::new(),
                                     clip_markers: Vec::new(),
+                                    effect_keyframes: std::collections::HashMap::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -5119,6 +5164,7 @@ impl KlippApp {
                 transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
+                effect_keyframes: clip.effect_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -5219,6 +5265,7 @@ impl KlippApp {
                 transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
+                effect_keyframes: clip.effect_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }

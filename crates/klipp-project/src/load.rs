@@ -261,6 +261,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                             },
                         }).collect()
                     }).unwrap_or_default(),
+                    effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
                 }
             }).collect();
             track
