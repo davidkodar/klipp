@@ -277,6 +277,7 @@ pub enum AppCommand {
     SetMasterVolume(f32),
     SetClipVolume(f32),
     SetClipPan(f32),
+    SetClipGain(f32),
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },

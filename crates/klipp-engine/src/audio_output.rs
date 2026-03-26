@@ -53,6 +53,8 @@ pub struct AudioOutput {
     clip_volume: Arc<AtomicU32>,
     /// Per-clip pan applied in the cpal callback (-1.0 left, 0.0 center, 1.0 right).
     clip_pan: Arc<AtomicU32>,
+    /// Per-clip pre-fader gain applied in the cpal callback.
+    clip_gain: Arc<AtomicU32>,
     /// Consumer side of the skim audio ring buffer.
     /// Mixed into the cpal callback output alongside playback audio.
     skim_consumer: SkimConsumer,
@@ -100,6 +102,8 @@ impl AudioOutput {
         let clip_vol_flag = clip_volume.clone();
         let clip_pan = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
         let clip_pan_flag = clip_pan.clone();
+        let clip_gain = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let clip_gain_flag = clip_gain.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
         let stream = device
@@ -155,11 +159,12 @@ impl AudioOutput {
                         }
                         let filled = consumer.pop_slice(data);
                         data[filled..].fill(0.0);
-                        // Apply clip volume + master volume + clip pan (lock-free, instant)
+                        // Apply gain + clip volume + master volume + clip pan (lock-free, instant)
                         let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
                         let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));
+                        let clip_gn = f32::from_bits(clip_gain_flag.load(Ordering::Relaxed));
                         let pan = f32::from_bits(clip_pan_flag.load(Ordering::Relaxed));
-                        let vol = master_vol * clip_vol;
+                        let vol = master_vol * clip_vol * clip_gn;
 
                         // Balance-style pan: center = unity, hard L/R attenuates opposite
                         let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
@@ -221,6 +226,7 @@ impl AudioOutput {
             master_volume,
             clip_volume,
             clip_pan,
+            clip_gain,
             skim_consumer,
         })
     }
@@ -264,6 +270,11 @@ impl AudioOutput {
     /// -1.0 = hard left, 0.0 = center, 1.0 = hard right.
     pub fn set_clip_pan(&self, pan: f32) {
         self.clip_pan.store(f32::to_bits(pan), Ordering::Relaxed);
+    }
+
+    /// Set per-clip pre-fader gain (applied instantly in cpal callback, no buffer lag).
+    pub fn set_clip_gain(&self, gain: f32) {
+        self.clip_gain.store(f32::to_bits(gain), Ordering::Relaxed);
     }
 
     /// Wire a skim audio consumer into the cpal callback for mixing.

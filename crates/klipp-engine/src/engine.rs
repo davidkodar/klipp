@@ -553,6 +553,12 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetClipGain(gain) => {
+                if let Some(aout) = &self.audio_output {
+                    aout.0.set_clip_gain(gain);
+                }
+            }
+
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
@@ -889,6 +895,7 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap();
         let mut clip_volume = 1.0f32;
         let mut clip_pan = 0.0f32;
+        let mut clip_gain_out = 1.0f32;
 
         for active in &self.audio_sources {
             if let Some(track) = seq.tracks.get(active.track_index) {
@@ -929,12 +936,14 @@ impl PlaybackEngine {
                         fade_curve_to_u32(fo_curve),
                         clip_gain,
                     );
+                    clip_gain_out = clip_gain;
                     break;
                 }
             }
         }
         drop(seq);
         if let Some(aout) = &self.audio_output {
+            aout.0.set_clip_gain(clip_gain_out);
             aout.0.set_clip_volume(clip_volume);
             aout.0.set_clip_pan(clip_pan);
         }
