@@ -1627,7 +1627,7 @@ impl TimelinePanel {
                 };
 
                 // Color per param: amber=Volume, cyan=Pan, green=Gain
-                let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, diamond_stroke_color) = match rb_param {
+                let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, _diamond_stroke_color) = match rb_param {
                     klipp_core::AudioParam::Volume => (
                         egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
                         egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140),
@@ -1650,33 +1650,46 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
                     ),
                 };
-                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
                 let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
-                let diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+                let _diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
                 let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
+                let rb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
+                let rb_shadow_width = rb_line_width + 1.0;
 
-                // Draw param label at top-left of clip
+                // Draw param pill badge at top-left of clip (below clip name area)
                 let param_label = match rb_param {
-                    klipp_core::AudioParam::Volume => "V",
-                    klipp_core::AudioParam::Pan => "P",
-                    klipp_core::AudioParam::Gain => "G",
+                    klipp_core::AudioParam::Volume => "Vol",
+                    klipp_core::AudioParam::Pan => "Pan",
+                    klipp_core::AudioParam::Gain => "Gain",
                 };
-                let label_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 3.0);
-                let label_rect = egui::Rect::from_min_size(label_pos, egui::vec2(12.0, 12.0));
+                // Measure text width to size the pill dynamically
+                let pill_font = egui::FontId::proportional(9.0);
+                let pill_text_galley = ui.painter().layout_no_wrap(param_label.to_string(), pill_font.clone(), egui::Color32::WHITE);
+                let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
+                let pill_h = 14.0;
+                let pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0);
+                let pill_rect = egui::Rect::from_min_size(pill_pos, egui::vec2(pill_w, pill_h));
                 // Only draw and handle clicks if clip is wide enough
                 if clip_rect.width() > 30.0 {
-                    clip_painter.rect_filled(label_rect, 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                    // Background: rubber band color at ~40% opacity
+                    let pill_bg = match rb_param {
+                        klipp_core::AudioParam::Volume => egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100),
+                        klipp_core::AudioParam::Pan => egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100),
+                        klipp_core::AudioParam::Gain => egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100),
+                    };
+                    clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
                     clip_painter.text(
-                        label_rect.center(),
+                        pill_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         param_label,
-                        egui::FontId::monospace(8.0),
-                        active_line_color,
+                        pill_font,
+                        egui::Color32::WHITE,
                     );
-                    // Click label to cycle param
+                    // Click pill to cycle param
                     if interactive {
                         if let Some(pos) = pointer_pos {
-                            if label_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
+                            if pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
                                 state.rubber_band_param = match rb_param {
                                     klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
                                     klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
@@ -1693,11 +1706,11 @@ impl TimelinePanel {
                     // Shadow line behind for contrast
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(2.5, shadow_color),
+                        egui::Stroke::new(rb_shadow_width, shadow_color),
                     );
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(2.0, active_line_color),
+                        egui::Stroke::new(rb_line_width, active_line_color),
                     );
                 } else {
                     // Draw line segments between evaluated points
@@ -1731,36 +1744,67 @@ impl TimelinePanel {
                     for i in 0..points.len().saturating_sub(1) {
                         clip_painter.line_segment(
                             [points[i], points[i + 1]],
-                            egui::Stroke::new(2.5, shadow_color),
+                            egui::Stroke::new(rb_shadow_width, shadow_color),
                         );
                     }
-                    // Draw amber line segments on top
+                    // Draw colored line segments on top
                     for i in 0..points.len().saturating_sub(1) {
                         clip_painter.line_segment(
                             [points[i], points[i + 1]],
-                            egui::Stroke::new(2.0, active_line_color),
+                            egui::Stroke::new(rb_line_width, active_line_color),
                         );
                     }
 
                     // Draw diamond markers at each keyframe
-                    for kf in kf_keyframes.iter() {
+                    // Check if pointer is near any keyframe for hover effect
+                    let hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
+                        if !clip_rect.contains(pos) { return None; }
+                        let mut best: Option<(usize, f32)> = None;
+                        for (ki, kf) in kf_keyframes.iter().enumerate() {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                                let kx = time_to_x(kf.time_secs);
+                                let ky = value_to_y(kf.value);
+                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                                if dist < 10.0 {
+                                    if best.map_or(true, |(_, bd)| dist < bd) {
+                                        best = Some((ki, dist));
+                                    }
+                                }
+                            }
+                        }
+                        best.map(|(i, _)| i)
+                    });
+
+                    for (ki, kf) in kf_keyframes.iter().enumerate() {
                         if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
                             let cx = time_to_x(kf.time_secs);
                             let cy = value_to_y(kf.value);
-                            let d = 6.0_f32;
-                            // Dark shadow diamond behind for contrast
-                            let shadow_d = d + 2.0;
-                            let shadow_diamond = vec![
-                                egui::pos2(cx, cy - shadow_d),
-                                egui::pos2(cx + shadow_d, cy),
-                                egui::pos2(cx, cy + shadow_d),
-                                egui::pos2(cx - shadow_d, cy),
+                            let is_hovered = hovered_kf_idx == Some(ki);
+                            let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
+                            // Dark outline diamond behind for contrast
+                            let outline_d = d + 1.5;
+                            let outline_diamond = vec![
+                                egui::pos2(cx, cy - outline_d),
+                                egui::pos2(cx + outline_d, cy),
+                                egui::pos2(cx, cy + outline_d),
+                                egui::pos2(cx - outline_d, cy),
                             ];
                             clip_painter.add(egui::Shape::convex_polygon(
-                                shadow_diamond,
-                                diamond_shadow_color,
+                                outline_diamond,
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
                                 egui::Stroke::NONE,
                             ));
+                            // Brighten fill on hover
+                            let fill = if is_hovered {
+                                egui::Color32::from_rgba_unmultiplied(
+                                    diamond_fill.r().saturating_add(30),
+                                    diamond_fill.g().saturating_add(30),
+                                    diamond_fill.b().saturating_add(30),
+                                    255,
+                                )
+                            } else {
+                                diamond_fill
+                            };
                             let diamond = vec![
                                 egui::pos2(cx, cy - d),
                                 egui::pos2(cx + d, cy),
@@ -1769,8 +1813,8 @@ impl TimelinePanel {
                             ];
                             clip_painter.add(egui::Shape::convex_polygon(
                                 diamond,
-                                diamond_fill,
-                                egui::Stroke::new(1.5, diamond_stroke_color),
+                                fill,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
                             ));
                         }
                     }
