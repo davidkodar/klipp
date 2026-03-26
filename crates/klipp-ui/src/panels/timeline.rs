@@ -1495,9 +1495,12 @@ impl TimelinePanel {
                     }
                 }
             } else {
-                // Non-video clip (audio, etc): draw waveform if available
+                // Non-video clip (audio, etc): fill background, then rubber band, then waveform on top
                 painter.rect_filled(clip_rect, 3.0, fill);
+            }
 
+            // ── Waveform overlay (drawn AFTER rubber band so it's on top) ──
+            if track_kind == TrackKind::Audio && !clip.kind.is_gap() {
                 // Draw waveform overlay for clips with audio peak data
                 if let Some(mid) = clip.media_id() {
                     if let Some(peaks) = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref()) {
@@ -1522,41 +1525,27 @@ impl TimelinePanel {
 
                                 let clip_painter = ui.painter().with_clip_rect(clip_rect);
                                 let center_y = clip_rect.center().y;
-                                let half_h = clip_rect.height() * 0.45; // 90% of clip height for waveform
+                                let half_h = clip_rect.height() * 0.45;
                                 let w = clip_rect.width();
 
-                                // Scale waveform by clip volume * gain (so waveform reflects actual output level)
-                                // For linked audio clips, read from the linked video clip
-                                let (clip_vol, clip_gn) = if let Some(linked_id) = clip.linked_clip_id {
-                                    state.sequence().tracks.iter()
-                                        .find_map(|t| t.find_clip(linked_id))
-                                        .map(|vc| (vc.volume, vc.gain))
-                                        .unwrap_or((clip.volume, clip.gain))
-                                } else {
-                                    (clip.volume, clip.gain)
-                                };
-                                let vol_gain_scale = (clip_vol * clip_gn).max(0.01);
-
-                                // Find the peak amplitude for normalization
+                                // ALWAYS normalize waveform to fill the available height.
+                                // This makes quiet and loud audio equally visible on the timeline.
+                                // Volume/gain changes are shown by the rubber band position, not waveform size.
                                 let max_peak = clip_peaks.iter()
                                     .map(|(lo, hi)| lo.abs().max(hi.abs()))
                                     .fold(0.0f32, f32::max)
-                                    .max(0.01);
-                                // Normalize then apply volume/gain — quiet audio fills the area,
-                                // and volume/gain changes visually scale the waveform
-                                let amp_scale = ((1.0 / max_peak) * vol_gain_scale).min(8.0);
+                                    .max(0.001);
+                                let amp_scale = 1.0 / max_peak; // always normalize to fill full height
 
                                 // Draw min/max envelope: one vertical line per pixel
                                 let num_cols = (w as usize).max(1);
                                 for col in 0..num_cols {
                                     let x = clip_rect.left() + col as f32;
-                                    // Map pixel column to peak index
                                     let peak_idx = col * clip_peaks.len() / num_cols;
                                     let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
 
-                                    // Normalize so waveform fills the available height
-                                    let y_top = center_y - (pmax.abs() * amp_scale) * half_h;
-                                    let y_bot = center_y + (pmin.abs() * amp_scale) * half_h;
+                                    let y_top = center_y - (pmax.abs() * amp_scale).min(1.0) * half_h;
+                                    let y_bot = center_y + (pmin.abs() * amp_scale).min(1.0) * half_h;
 
                                     if (y_bot - y_top) > 0.5 {
                                         clip_painter.line_segment(
