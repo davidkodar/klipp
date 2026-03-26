@@ -324,7 +324,10 @@ mod tests {
             audio_codec: "aac".into(),
             has_audio: true,
             file_size_bytes: 1_000_000,
+            sample_rate: None,
+            audio_channels: None,
             offline: false,
+            is_still: false,
             proxy_path: None,
             proxy_ready: false,
             default_source_in: None,
@@ -333,9 +336,16 @@ mod tests {
             tags: vec![],
             user_notes: String::new(),
             bin: None,
+            bin_id: None,
             added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: klipp_media::ColorLabel::default(),
+            colour_space: klipp_media::ColourSpace::default(),
             log_format: klipp_core::LogFormat::default(),
             skim_file: None,
+            needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
         }
@@ -379,6 +389,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let mut seq = make_sequence();
@@ -437,6 +450,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let mut seq = make_sequence();
@@ -479,6 +495,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let mut seq = make_sequence();
@@ -514,6 +533,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let pool = MediaPool::new();
@@ -552,6 +574,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let pool = MediaPool::new();
@@ -591,6 +616,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let clip_b = Clip {
@@ -611,6 +639,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let mut seq = make_sequence();
@@ -655,6 +686,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
         let clip_b = Clip {
             id: clip_b_id,
@@ -674,6 +708,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let transition = Transition {
@@ -724,6 +761,9 @@ mod tests {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
         };
 
         let mut seq = make_sequence();

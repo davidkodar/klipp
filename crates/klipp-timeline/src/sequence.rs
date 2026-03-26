@@ -3,7 +3,7 @@ use crate::marker::Marker;
 use klipp_core::{ClipId, Fps, GroupId, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
-pub use klipp_core::types::FadeCurve;
+pub use klipp_core::types::{ChannelConfig, FadeCurve};
 
 // ═══════════════════════════════════════════════════════════════════
 // Magnetic Timeline Types
@@ -344,6 +344,7 @@ impl Track {
             fade_out_secs: 0.0,
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
+            channel_config: ChannelConfig::default(),
         });
         clip_id
     }
@@ -457,6 +458,7 @@ impl Track {
             fade_out_secs: clip.fade_out_secs,
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
+            channel_config: clip.channel_config,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -478,6 +480,7 @@ impl Track {
             fade_out_secs: clip.fade_out_secs,
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
+            channel_config: clip.channel_config,
         };
 
         self.clips.remove(pos);
@@ -551,6 +554,8 @@ pub struct Clip {
     pub fade_in_curve: FadeCurve,
     #[serde(default)]
     pub fade_out_curve: FadeCurve,
+    #[serde(default)]
+    pub channel_config: ChannelConfig,
 }
 
 impl Clip {
@@ -604,6 +609,7 @@ impl Clip {
             fade_out_secs: 0.0,
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
+            channel_config: ChannelConfig::default(),
         }
     }
 
@@ -635,6 +641,7 @@ impl Clip {
             fade_out_secs: 0.0,
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
+            channel_config: ChannelConfig::default(),
         }
     }
 }

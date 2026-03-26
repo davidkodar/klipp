@@ -278,6 +278,7 @@ pub enum AppCommand {
     SetClipVolume(f32),
     SetClipPan(f32),
     SetClipGain(f32),
+    SetClipChannelConfig(u32),
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },
@@ -479,6 +480,7 @@ pub enum AppCommand {
     UpdateClipAudio {
         clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,
         fade_in_curve: crate::types::FadeCurve, fade_out_curve: crate::types::FadeCurve,
+        channel_config: crate::types::ChannelConfig,
     },
     BeginAudioDrag { key: String, clip_id: ClipId, old_gain: f32, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
     EndAudioDrag { key: String, clip_id: ClipId, new_gain: f32, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },

@@ -76,6 +76,15 @@ pub enum BlendMode {
     Overlay,
 }
 
+/// Per-clip audio channel routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ChannelConfig {
+    #[default]
+    Default,      // Use source as-is (stereo stays stereo, mono gets centered)
+    MonoDownmix,  // Sum L+R, halve amplitude, output to both channels
+    SwapLR,       // Swap left and right channels
+}
+
 /// Audio fade curve shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FadeCurve {

@@ -158,7 +158,10 @@ impl NewInspectorPanel {
                             .and_then(|item| item.audio_cache.as_ref())
                             .map(|cache| cache.peaks.iter().map(|(lo, hi)| lo.abs().max(hi.abs())).collect());
                         let peaks_slice = media_peaks.as_deref();
-                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice);
+                        let source_channels = clip.media_id()
+                            .and_then(|mid| state.media_pool.get(&mid))
+                            .and_then(|item| item.audio_channels);
+                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels);
                     } else {
                         no_selection(ui, theme);
                     }

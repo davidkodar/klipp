@@ -9,6 +9,6 @@ pub use clip_kind::{
 };
 pub use marker::Marker;
 pub use sequence::{
-    AnchorAlignment, Clip, FadeCurve, MagneticAnchor, Sequence, Track, TrackKind,
+    AnchorAlignment, ChannelConfig, Clip, FadeCurve, MagneticAnchor, Sequence, Track, TrackKind,
     TrackRole, Transition, TransitionKind,
 };

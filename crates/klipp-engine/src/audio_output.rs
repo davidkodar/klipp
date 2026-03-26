@@ -55,6 +55,8 @@ pub struct AudioOutput {
     clip_pan: Arc<AtomicU32>,
     /// Per-clip pre-fader gain applied in the cpal callback.
     clip_gain: Arc<AtomicU32>,
+    /// Per-clip channel config (0=Default, 1=MonoDownmix, 2=SwapLR).
+    clip_channel_config: Arc<AtomicU32>,
     /// Consumer side of the skim audio ring buffer.
     /// Mixed into the cpal callback output alongside playback audio.
     skim_consumer: SkimConsumer,
@@ -104,6 +106,8 @@ impl AudioOutput {
         let clip_pan_flag = clip_pan.clone();
         let clip_gain = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let clip_gain_flag = clip_gain.clone();
+        let clip_channel_config = Arc::new(AtomicU32::new(0));
+        let clip_channel_config_flag = clip_channel_config.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
         let stream = device
@@ -183,6 +187,26 @@ impl AudioOutput {
                                 }
                             }
                         }
+
+                        // Apply channel config (after gain/volume/pan)
+                        let ch_config = clip_channel_config_flag.load(Ordering::Relaxed);
+                        if ch_config != 0 {
+                            for pair in data[..filled].chunks_mut(2) {
+                                if pair.len() == 2 {
+                                    match ch_config {
+                                        1 => { // MonoDownmix
+                                            let mono = (pair[0] + pair[1]) * 0.5;
+                                            pair[0] = mono;
+                                            pair[1] = mono;
+                                        }
+                                        2 => { // SwapLR
+                                            pair.swap(0, 1);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
                         // NO clock update — master clock is external
                     });
 
@@ -227,6 +251,7 @@ impl AudioOutput {
             clip_volume,
             clip_pan,
             clip_gain,
+            clip_channel_config,
             skim_consumer,
         })
     }
@@ -275,6 +300,11 @@ impl AudioOutput {
     /// Set per-clip pre-fader gain (applied instantly in cpal callback, no buffer lag).
     pub fn set_clip_gain(&self, gain: f32) {
         self.clip_gain.store(f32::to_bits(gain), Ordering::Relaxed);
+    }
+
+    /// Set per-clip channel config (0=Default, 1=MonoDownmix, 2=SwapLR).
+    pub fn set_channel_config(&self, config: u32) {
+        self.clip_channel_config.store(config, Ordering::Relaxed);
     }
 
     /// Wire a skim audio consumer into the cpal callback for mixing.

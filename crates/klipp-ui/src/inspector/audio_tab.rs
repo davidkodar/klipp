@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::{scrubby_param::scrubby_param_row, waveform};
 use klipp_core::AppCommand;
-use klipp_timeline::{Clip, FadeCurve};
+use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 
 /// Find peak levels for the clip's audio. If the clip is on a video track
 /// with a linked audio clip, use the audio track's peaks.
@@ -34,6 +34,7 @@ pub fn show(
     cmds: &mut Vec<AppCommand>,
     peak: (f32, f32),
     waveform_peaks: Option<&[f32]>,
+    source_channels: Option<u16>,
 ) {
     let clip_id = clip.id;
 
@@ -45,6 +46,7 @@ pub fn show(
     let mut fade_out = clip.fade_out_secs;
     let mut fade_in_curve = clip.fade_in_curve;
     let mut fade_out_curve = clip.fade_out_curve;
+    let mut channel_config = clip.channel_config;
 
     // ── Audio section header with global reset ──
     ui.horizontal(|ui| {
@@ -60,7 +62,8 @@ pub fn show(
             && (volume - 1.0).abs() < f32::EPSILON
             && pan.abs() < f32::EPSILON
             && fade_in.abs() < f32::EPSILON
-            && fade_out.abs() < f32::EPSILON;
+            && fade_out.abs() < f32::EPSILON
+            && channel_config == ChannelConfig::Default;
 
         if !is_default {
             let (reset_rect, reset_resp) = ui.allocate_exact_size(
@@ -82,6 +85,7 @@ pub fn show(
                 fade_out = 0.0;
                 fade_in_curve = FadeCurve::default();
                 fade_out_curve = FadeCurve::default();
+                channel_config = ChannelConfig::default();
                 cmds.push(AppCommand::UpdateClipAudio {
                     clip_id,
                     gain,
@@ -91,11 +95,63 @@ pub fn show(
                     fade_out_secs: fade_out,
                     fade_in_curve,
                     fade_out_curve,
+                    channel_config,
                 });
             }
         }
     });
     ui.add_space(7.0);
+
+    // ── Source channel info ──
+    if let Some(ch) = source_channels {
+        let label = match ch {
+            1 => "Source: Mono (1ch)".to_string(),
+            2 => "Source: Stereo (2ch)".to_string(),
+            6 => "Source: 5.1 (6ch)".to_string(),
+            8 => "Source: 7.1 (8ch)".to_string(),
+            n => format!("Source: {n}ch"),
+        };
+        ui.label(
+            egui::RichText::new(label)
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        ui.add_space(4.0);
+    }
+
+    // ── Channel Config ──
+    {
+        let prev = channel_config;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Channel")
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+            egui::ComboBox::from_id_salt("channel_config")
+                .selected_text(channel_config_label(channel_config))
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for &variant in CHANNEL_CONFIG_VARIANTS {
+                        ui.selectable_value(&mut channel_config, variant, channel_config_label(variant));
+                    }
+                });
+        });
+        if channel_config != prev {
+            cmds.push(AppCommand::UpdateClipAudio {
+                clip_id,
+                gain,
+                volume,
+                pan,
+                fade_in_secs: fade_in,
+                fade_out_secs: fade_out,
+                fade_in_curve,
+                fade_out_curve,
+                channel_config,
+            });
+        }
+    }
+    ui.add_space(4.0);
 
     // ── Gain (pre-fader) ──
     let drag_key = format!("{:?}:audio", clip_id);
@@ -123,6 +179,7 @@ pub fn show(
             fade_out_secs: fade_out,
             fade_in_curve,
             fade_out_curve,
+            channel_config,
         });
     }
     if gain_resp.drag_stopped {
@@ -162,6 +219,7 @@ pub fn show(
             fade_out_secs: fade_out,
             fade_in_curve,
             fade_out_curve,
+            channel_config,
         });
     }
     if vol_resp.drag_stopped {
@@ -201,6 +259,7 @@ pub fn show(
             fade_out_secs: fade_out,
             fade_in_curve,
             fade_out_curve,
+            channel_config,
         });
     }
     if pan_resp.drag_stopped {
@@ -240,6 +299,7 @@ pub fn show(
             fade_out_secs: fade_out,
             fade_in_curve,
             fade_out_curve,
+            channel_config,
         });
     }
     if fi_resp.drag_stopped {
@@ -275,6 +335,7 @@ pub fn show(
                 fade_out_secs: fade_out,
                 fade_in_curve,
                 fade_out_curve,
+                channel_config,
             });
         }
     }
@@ -304,6 +365,7 @@ pub fn show(
             fade_out_secs: fade_out,
             fade_in_curve,
             fade_out_curve,
+            channel_config,
         });
     }
     if fo_resp.drag_stopped {
@@ -339,6 +401,7 @@ pub fn show(
                 fade_out_secs: fade_out,
                 fade_in_curve,
                 fade_out_curve,
+                channel_config,
             });
         }
     }
@@ -399,6 +462,20 @@ const FADE_CURVE_VARIANTS: &[FadeCurve] = &[
     FadeCurve::Logarithmic,
     FadeCurve::SCurve,
 ];
+
+const CHANNEL_CONFIG_VARIANTS: &[ChannelConfig] = &[
+    ChannelConfig::Default,
+    ChannelConfig::MonoDownmix,
+    ChannelConfig::SwapLR,
+];
+
+fn channel_config_label(config: ChannelConfig) -> &'static str {
+    match config {
+        ChannelConfig::Default => "Default",
+        ChannelConfig::MonoDownmix => "Mono Downmix",
+        ChannelConfig::SwapLR => "Swap L/R",
+    }
+}
 
 fn fade_curve_label(curve: FadeCurve) -> &'static str {
     match curve {

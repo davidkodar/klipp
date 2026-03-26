@@ -21,6 +21,14 @@ fn fade_curve_to_u32(c: klipp_timeline::FadeCurve) -> u32 {
     }
 }
 
+fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
+    match c {
+        klipp_timeline::ChannelConfig::Default => 0,
+        klipp_timeline::ChannelConfig::MonoDownmix => 1,
+        klipp_timeline::ChannelConfig::SwapLR => 2,
+    }
+}
+
 /// One entry per active audio source (one per playing track).
 struct ActiveAudioSource {
     #[allow(dead_code)]
@@ -559,6 +567,12 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetClipChannelConfig(config) => {
+                if let Some(aout) = &self.audio_output {
+                    aout.0.set_channel_config(config);
+                }
+            }
+
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
@@ -896,6 +910,7 @@ impl PlaybackEngine {
         let mut clip_volume = 1.0f32;
         let mut clip_pan = 0.0f32;
         let mut clip_gain_out = 1.0f32;
+        let mut clip_ch_config = 0u32;
 
         for active in &self.audio_sources {
             if let Some(track) = seq.tracks.get(active.track_index) {
@@ -907,6 +922,7 @@ impl PlaybackEngine {
                     let mut fade_out = audio_clip.fade_out_secs;
                     let mut fi_curve = audio_clip.fade_in_curve;
                     let mut fo_curve = audio_clip.fade_out_curve;
+                    let mut ch_config = audio_clip.channel_config;
                     let source_in_secs = audio_clip.source_in.to_secs_f64();
                     let clip_dur_secs = audio_clip.duration().to_secs_f64();
 
@@ -921,6 +937,7 @@ impl PlaybackEngine {
                                 fade_out = video_clip.fade_out_secs;
                                 fi_curve = video_clip.fade_in_curve;
                                 fo_curve = video_clip.fade_out_curve;
+                                ch_config = video_clip.channel_config;
                                 break;
                             }
                         }
@@ -937,6 +954,7 @@ impl PlaybackEngine {
                         clip_gain,
                     );
                     clip_gain_out = clip_gain;
+                    clip_ch_config = channel_config_to_u32(ch_config);
                     break;
                 }
             }
@@ -946,6 +964,7 @@ impl PlaybackEngine {
             aout.0.set_clip_gain(clip_gain_out);
             aout.0.set_clip_volume(clip_volume);
             aout.0.set_clip_pan(clip_pan);
+            aout.0.set_channel_config(clip_ch_config);
         }
     }
 
