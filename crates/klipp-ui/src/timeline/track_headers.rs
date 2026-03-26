@@ -1,3 +1,4 @@
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
@@ -159,13 +160,8 @@ pub fn show(
             3.0,
             if mute_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
         );
-        ui.painter().text(
-            mute_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            if mute_active { "\u{1F507}" } else { "\u{1F50A}" },
-            egui::FontId::proportional(9.0),
-            mute_color,
-        );
+        let mute_icon = if mute_active { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+        mute_icon.image(12.0).tint(mute_color).paint_at(ui, mute_rect.shrink(2.0));
         styled_tooltip(&mute_resp, theme, "Mute track", None);
         if mute_resp.clicked() {
             toggle_mute = Some(track_idx);
@@ -187,13 +183,8 @@ pub fn show(
             3.0,
             if lock_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
         );
-        ui.painter().text(
-            lock_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            if lock_active { "\u{1F512}" } else { "\u{1F513}" },
-            egui::FontId::proportional(9.0),
-            lock_color,
-        );
+        let lock_icon = if lock_active { Icon::Lock } else { Icon::LockOpen };
+        lock_icon.image(12.0).tint(lock_color).paint_at(ui, lock_rect.shrink(2.0));
         styled_tooltip(&lock_resp, theme, "Lock track", None);
         if lock_resp.clicked() {
             toggle_lock = Some(track_idx);
