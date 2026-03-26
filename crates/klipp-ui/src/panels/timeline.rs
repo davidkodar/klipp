@@ -1992,14 +1992,14 @@ impl TimelinePanel {
                 egui::Stroke::new(border_width, border_color),
             );
 
-            // Linked-clip indicator — subtle lock icon
+            // Linked-clip indicator — subtle lock icon at top-right corner
             if clip.linked_clip_id.is_some() && clip_rect.width() > 20.0 {
                 let icon_rect = egui::Rect::from_center_size(
-                    egui::pos2(clip_rect.left() + 10.0, clip_rect.top() + 8.0),
+                    egui::pos2(clip_rect.right() - 8.0, clip_rect.top() + 8.0),
                     egui::vec2(9.0, 9.0),
                 );
                 crate::icons::Icon::Lock.image(9.0)
-                    .tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 100))
+                    .tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 120))
                     .paint_at(ui, icon_rect);
             }
 
