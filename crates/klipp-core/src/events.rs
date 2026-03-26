@@ -442,6 +442,10 @@ pub enum AppCommand {
     UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },
     JumpToMarker { marker_id: MarkerId },
 
+    // Per-clip markers
+    AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },
+    RemoveClipMarker { clip_id: ClipId, index: usize },
+
     // Dynamic tracks
     AddVideoTrack,
     AddAudioTrack,

@@ -179,6 +179,13 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
                         transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
                         transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
+                        clip_markers: if c.clip_markers.is_empty() { None } else {
+                            Some(c.clip_markers.iter().map(|m| crate::format::ClipMarkerJson {
+                                time_secs: m.time_secs,
+                                name: m.name.clone(),
+                                color: format!("{:?}", m.color),
+                            }).collect())
+                        },
                     }
                 }).collect(),
             }

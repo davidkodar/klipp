@@ -1,6 +1,6 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{ClipId, Fps, GroupId, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{ClipId, Fps, GroupId, MarkerColor, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
 pub use klipp_core::types::{ChannelConfig, FadeCurve};
@@ -353,6 +353,7 @@ impl Track {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
         });
         clip_id
     }
@@ -472,6 +473,19 @@ impl Track {
         let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
         let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
 
+        // Split clip markers at the cut point
+        let mut markers_a = Vec::new();
+        let mut markers_b = Vec::new();
+        for m in &clip.clip_markers {
+            if m.time_secs < cut_secs {
+                markers_a.push(m.clone());
+            } else {
+                let mut shifted = m.clone();
+                shifted.time_secs -= cut_secs;
+                markers_b.push(shifted);
+            }
+        }
+
         let clip_a = Clip {
             id: ClipId::new(),
             kind: clip.kind.clone(),
@@ -501,6 +515,7 @@ impl Track {
             transform_pos_y_keyframes: pos_y_a,
             transform_scale_keyframes: scale_a,
             transform_rotation_keyframes: rot_a,
+            clip_markers: markers_a,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -531,6 +546,7 @@ impl Track {
             transform_pos_y_keyframes: pos_y_b,
             transform_scale_keyframes: scale_b,
             transform_rotation_keyframes: rot_b,
+            clip_markers: markers_b,
         };
 
         self.clips.remove(pos);
@@ -567,6 +583,17 @@ pub enum TrackKind {
     Audio,
     Text,
     Subtitle,
+}
+
+/// A marker placed at a specific time within a clip (relative to source_in).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipMarker {
+    /// Time relative to clip's source_in, in seconds.
+    pub time_secs: f64,
+    /// Display name.
+    pub name: String,
+    /// Color.
+    pub color: MarkerColor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,6 +649,9 @@ pub struct Clip {
     pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+    /// Per-clip markers at specific times within the clip.
+    #[serde(default)]
+    pub clip_markers: Vec<ClipMarker>,
 }
 
 impl Clip {
@@ -684,6 +714,7 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
         }
     }
 
@@ -724,6 +755,7 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
         }
     }
 }

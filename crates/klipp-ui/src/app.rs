@@ -2872,6 +2872,7 @@ impl KlippApp {
                         transform_pos_y_keyframes: Vec::new(),
                         transform_scale_keyframes: Vec::new(),
                         transform_rotation_keyframes: Vec::new(),
+                        clip_markers: Vec::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -3157,6 +3158,7 @@ impl KlippApp {
                                     transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
                                     transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                                     transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                                    clip_markers: clip.clip_markers.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -3276,6 +3278,7 @@ impl KlippApp {
                                     transform_pos_y_keyframes: Vec::new(),
                                     transform_scale_keyframes: Vec::new(),
                                     transform_rotation_keyframes: Vec::new(),
+                                    clip_markers: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -3350,6 +3353,7 @@ impl KlippApp {
                                     transform_pos_y_keyframes: Vec::new(),
                                     transform_scale_keyframes: Vec::new(),
                                     transform_rotation_keyframes: Vec::new(),
+                                    clip_markers: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -4337,6 +4341,36 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Per-clip markers
+                AppCommand::AddClipMarker { clip_id, time_secs, name, color } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.clip_markers.push(klipp_timeline::ClipMarker {
+                                time_secs: *time_secs,
+                                name: name.clone(),
+                                color: *color,
+                            });
+                            clip.clip_markers.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveClipMarker { clip_id, index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *index < clip.clip_markers.len() {
+                                clip.clip_markers.remove(*index);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 // Linked clips
                 AppCommand::UnlinkClip { clip_id } => {
                     let cid = *clip_id;
@@ -5080,6 +5114,7 @@ impl KlippApp {
                 transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
                 transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                clip_markers: clip.clip_markers.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -5179,6 +5214,7 @@ impl KlippApp {
                 transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
                 transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                clip_markers: clip.clip_markers.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -6059,13 +6095,37 @@ impl KlippApp {
             if i.key_pressed(egui::Key::K) && !i.modifiers.ctrl && !i.modifiers.alt {
                 self.state.show_keyframe_editor = !self.state.show_keyframe_editor;
             }
-            // M — Add marker (no modifiers)
-            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt {
+            // M — Add sequence marker (no modifiers, no shift)
+            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
                 cmds.push(AppCommand::AddMarker {
                     position: self.state.playhead,
                     label: String::new(),
                     color: klipp_core::MarkerColor::Blue,
                 });
+            }
+            // Shift+M — Add per-clip marker at playhead on selected clip
+            if i.key_pressed(egui::Key::M) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
+                if let Some(clip_id) = self.state.selected_clip {
+                    // Find the clip and compute the time relative to source_in
+                    let clip_info = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id)
+                        .map(|c| (c.timeline_in, c.timeline_out));
+                    if let Some((tl_in, tl_out)) = clip_info {
+                        let playhead_secs = self.state.playhead.to_secs_f64();
+                        let clip_start_secs = tl_in.to_secs_f64();
+                        let clip_end_secs = tl_out.to_secs_f64();
+                        if playhead_secs >= clip_start_secs && playhead_secs <= clip_end_secs {
+                            let rel_time = playhead_secs - clip_start_secs;
+                            cmds.push(AppCommand::AddClipMarker {
+                                clip_id,
+                                time_secs: rel_time,
+                                name: String::new(),
+                                color: klipp_core::MarkerColor::Green,
+                            });
+                        }
+                    }
+                }
             }
             // Z — Fit to window (no modifiers)
             if i.key_pressed(egui::Key::Z) && !i.modifiers.ctrl && !i.modifiers.shift {

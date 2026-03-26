@@ -175,6 +175,16 @@ pub struct ClipJson {
     pub transform_scale_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_rotation_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub clip_markers: Option<Vec<ClipMarkerJson>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipMarkerJson {
+    pub time_secs: f64,
+    #[serde(default)]
+    pub name: String,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

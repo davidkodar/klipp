@@ -247,6 +247,20 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
                     transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
                     transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
+                    clip_markers: c.clip_markers.as_ref().map(|markers| {
+                        markers.iter().map(|m| klipp_timeline::ClipMarker {
+                            time_secs: m.time_secs,
+                            name: m.name.clone(),
+                            color: match m.color.as_str() {
+                                "Red" => klipp_core::MarkerColor::Red,
+                                "Orange" => klipp_core::MarkerColor::Orange,
+                                "Yellow" => klipp_core::MarkerColor::Yellow,
+                                "Green" => klipp_core::MarkerColor::Green,
+                                "Purple" => klipp_core::MarkerColor::Purple,
+                                _ => klipp_core::MarkerColor::Blue,
+                            },
+                        }).collect()
+                    }).unwrap_or_default(),
                 }
             }).collect();
             track

@@ -3,6 +3,7 @@ use crate::state::{AppState, PlayheadFollow};
 use klipp_core::{AppCommand, ClipId, RationalTime, Timecode, Tool};
 use klipp_engine::PlaybackState;
 use klipp_timeline::TrackKind;
+use std::collections::HashMap;
 
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
@@ -54,6 +55,8 @@ pub struct TimelinePanel {
     last_refine_request: Option<std::time::Instant>,
     /// Track rects from last frame — used for cross-track drag detection
     track_rects: Vec<(usize, TrackKind, egui::Rect)>,
+    /// Clip id -> screen rect, populated during clip drawing for connection lines
+    clip_screen_rects: HashMap<ClipId, egui::Rect>,
 }
 
 struct DragState {
@@ -366,6 +369,8 @@ impl TimelinePanel {
 
         // Reset snap line
         self.snap_line_x = None;
+        // Reset clip screen rects for connection line drawing
+        self.clip_screen_rects.clear();
 
         // Draw tracks: Video 2, Video 1, Audio 1
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
@@ -833,6 +838,53 @@ impl TimelinePanel {
             track_y += track_height;
         }
 
+        // ── Linked clip connection lines ──────────────────────────────
+        // Draw subtle vertical lines between linked video+audio clip pairs
+        {
+            let connection_color = egui::Color32::from_rgba_premultiplied(150, 150, 160, 60);
+            let connection_stroke = egui::Stroke::new(1.0, connection_color);
+            // Collect linked pairs to avoid double-drawing (only draw from video -> audio)
+            let mut drawn_pairs = std::collections::HashSet::new();
+            for track in &state.sequence().tracks {
+                for clip in &track.clips {
+                    if let Some(linked_id) = clip.linked_clip_id {
+                        // Only draw once per pair
+                        let pair_key = if clip.id.0 < linked_id.0 {
+                            (clip.id, linked_id)
+                        } else {
+                            (linked_id, clip.id)
+                        };
+                        if drawn_pairs.contains(&pair_key) {
+                            continue;
+                        }
+                        drawn_pairs.insert(pair_key);
+
+                        if let (Some(rect_a), Some(rect_b)) = (
+                            self.clip_screen_rects.get(&clip.id),
+                            self.clip_screen_rects.get(&linked_id),
+                        ) {
+                            // Only draw if clips are on different tracks (vertically separated)
+                            if (rect_a.top() - rect_b.top()).abs() > 1.0 {
+                                let (upper, lower) = if rect_a.top() < rect_b.top() {
+                                    (rect_a, rect_b)
+                                } else {
+                                    (rect_b, rect_a)
+                                };
+                                let x = upper.left() + 4.0;
+                                // Only draw if x is in visible area
+                                if x >= content_rect.left() && x <= content_rect.right() {
+                                    painter.line_segment(
+                                        [egui::pos2(x, upper.bottom()), egui::pos2(x, lower.top())],
+                                        connection_stroke,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Media drag released outside any track — auto-create track if enabled
         if let Some(drag_media_id) = state.dragging_media {
             if !ui.input(|i| i.pointer.any_down()) {
@@ -1293,6 +1345,9 @@ impl TimelinePanel {
                 egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
                 egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
             );
+
+            // Cache clip rect for connection line drawing
+            self.clip_screen_rects.insert(clip.id, clip_rect);
 
             // Skip if not visible
             if clip_rect.right() < content_rect.left()
@@ -2533,6 +2588,42 @@ impl TimelinePanel {
                                 egui::pos2(x - d, cy),
                             ];
                             kf_painter.add(egui::Shape::convex_polygon(diamond, amber_color, egui::Stroke::new(0.5, dark_outline)));
+                        }
+                    }
+                }
+            }
+
+            // ── Per-clip markers ──
+            // Draw small colored ticks at the top edge of clips at marker positions
+            if !clip.clip_markers.is_empty() && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+                let clip_dur = clip.duration().to_secs_f64();
+                if clip_dur > 0.0 {
+                    let marker_painter = painter.with_clip_rect(clip_rect);
+                    for m in &clip.clip_markers {
+                        let frac = (m.time_secs / clip_dur) as f32;
+                        if frac >= 0.0 && frac <= 1.0 {
+                            let x = clip_rect.left() + frac * clip_rect.width();
+                            let (r, g, b) = m.color.to_rgb();
+                            let color = egui::Color32::from_rgb(r, g, b);
+                            let dark = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+                            // Small downward-pointing triangle at top edge
+                            let half_w = 3.0;
+                            let tick_h = 6.0;
+                            let top = clip_rect.top();
+                            // Dark outline
+                            let outline = vec![
+                                egui::pos2(x - half_w - 0.5, top),
+                                egui::pos2(x + half_w + 0.5, top),
+                                egui::pos2(x, top + tick_h + 0.5),
+                            ];
+                            marker_painter.add(egui::Shape::convex_polygon(outline, dark, egui::Stroke::NONE));
+                            // Colored fill
+                            let tri = vec![
+                                egui::pos2(x - half_w, top),
+                                egui::pos2(x + half_w, top),
+                                egui::pos2(x, top + tick_h),
+                            ];
+                            marker_painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
                         }
                     }
                 }
