@@ -2415,8 +2415,9 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    // Instant clip volume — bypass command channel latency
+                    // Instant clip volume + pan — bypass command channel latency
                     let _ = self.cmd_tx.send(AppCommand::SetClipVolume(*volume));
+                    let _ = self.cmd_tx.send(AppCommand::SetClipPan(*pan));
                     // Also sync sequence for persistence + paused frame refresh
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     continue;

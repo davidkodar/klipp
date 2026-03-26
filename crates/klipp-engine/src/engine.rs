@@ -538,6 +538,12 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetClipPan(pan) => {
+                if let Some(aout) = &self.audio_output {
+                    aout.0.set_clip_pan(pan);
+                }
+            }
+
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
@@ -868,34 +874,36 @@ impl PlaybackEngine {
         self.sync_clip_volumes();
     }
 
-    /// Sync per-clip volume from sequence data to the audio output.
+    /// Sync per-clip volume and pan from sequence data to the audio output.
     /// Called on start_all_audio and SequenceUpdated.
     fn sync_clip_volumes(&self) {
         let seq = self.sequence.read().unwrap();
-        // Find the clip volume: check each audio source's track, follow linked_clip_id
         let mut clip_volume = 1.0f32;
+        let mut clip_pan = 0.0f32;
         for active in &self.audio_sources {
             if let Some(track) = seq.tracks.get(active.track_index) {
                 if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
                     clip_volume = audio_clip.volume;
-                    // If linked to a video clip, use the video clip's volume
+                    clip_pan = audio_clip.pan;
+                    // If linked to a video clip, use the video clip's volume/pan
                     // (the user selects the video clip in the inspector)
                     if let Some(linked_id) = audio_clip.linked_clip_id {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
                                 clip_volume = video_clip.volume;
+                                clip_pan = video_clip.pan;
                                 break;
                             }
                         }
                     }
-                    break; // use the first audio source's clip
+                    break;
                 }
             }
         }
         drop(seq);
-        // Set on audio output for instant response in cpal callback
         if let Some(aout) = &self.audio_output {
             aout.0.set_clip_volume(clip_volume);
+            aout.0.set_clip_pan(clip_pan);
         }
     }
 
