@@ -233,6 +233,16 @@ pub enum AppCommand {
         new_timeline_out: Timecode,
         ripple: bool,
     },
+    /// Roll trim: adjust the boundary between two adjacent clips.
+    /// Clip A's out moves and Clip B's in moves by the same amount, keeping total duration constant.
+    RollTrimClip {
+        clip_a_id: ClipId,
+        clip_b_id: ClipId,
+        new_a_source_out: Timecode,
+        new_a_timeline_out: Timecode,
+        new_b_source_in: Timecode,
+        new_b_timeline_in: Timecode,
+    },
     SelectClip(Option<ClipId>),
 
     // Project

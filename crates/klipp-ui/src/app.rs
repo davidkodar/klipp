@@ -1729,6 +1729,82 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::RollTrimClip {
+                    clip_a_id,
+                    clip_b_id,
+                    new_a_source_out,
+                    new_a_timeline_out,
+                    new_b_source_in,
+                    new_b_timeline_in,
+                } => {
+                    if self.clip_track_is_locked(clip_a_id) || self.clip_track_is_locked(clip_b_id) { continue; }
+
+                    // Save old values for undo, then apply
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let old_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_a_id)
+                        .map(|c| (c.source_out, c.timeline_out));
+                    let old_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_b_id)
+                        .map(|c| (c.source_in, c.timeline_in));
+
+                    if let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) {
+                        self.state.history.push(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::LegacyRollTrimClip {
+                                clip_a_id: *clip_a_id,
+                                clip_b_id: *clip_b_id,
+                                old_a_source_out: old_a_src_out,
+                                old_a_timeline_out: old_a_tl_out,
+                                old_b_source_in: old_b_src_in,
+                                old_b_timeline_in: old_b_tl_in,
+                                new_a_source_out: *new_a_source_out,
+                                new_a_timeline_out: *new_a_timeline_out,
+                                new_b_source_in: *new_b_source_in,
+                                new_b_timeline_in: *new_b_timeline_in,
+                            },
+                        });
+
+                        // Apply to clip A
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        for track in &mut seq.tracks {
+                            if let Some(c) = track.find_clip_mut(*clip_a_id) {
+                                c.source_out = *new_a_source_out;
+                                c.timeline_out = *new_a_timeline_out;
+                            }
+                            if let Some(c) = track.find_clip_mut(*clip_b_id) {
+                                c.source_in = *new_b_source_in;
+                                c.timeline_in = *new_b_timeline_in;
+                            }
+                        }
+
+                        // Also roll-trim linked partners
+                        let linked_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_a_id).and_then(|c| c.linked_clip_id);
+                        let linked_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_b_id).and_then(|c| c.linked_clip_id);
+                        if let Some(la) = linked_a {
+                            for track in &mut seq.tracks {
+                                if let Some(c) = track.find_clip_mut(la) {
+                                    c.source_out = *new_a_source_out;
+                                    c.timeline_out = *new_a_timeline_out;
+                                }
+                            }
+                        }
+                        if let Some(lb) = linked_b {
+                            for track in &mut seq.tracks {
+                                if let Some(c) = track.find_clip_mut(lb) {
+                                    c.source_in = *new_b_source_in;
+                                    c.timeline_in = *new_b_timeline_in;
+                                }
+                            }
+                        }
+                    }
+
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::Undo => {
                     self.apply_undo();
                     continue;
@@ -4362,6 +4438,23 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::LegacyRollTrimClip {
+                clip_a_id, clip_b_id,
+                old_a_source_out, old_a_timeline_out,
+                old_b_source_in, old_b_timeline_in, ..
+            } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_a_id) {
+                        c.source_out = *old_a_source_out;
+                        c.timeline_out = *old_a_timeline_out;
+                    }
+                    if let Some(c) = track.find_clip_mut(*clip_b_id) {
+                        c.source_in = *old_b_source_in;
+                        c.timeline_in = *old_b_timeline_in;
+                    }
+                }
+            }
             EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     // Undo: remove clip_a and clip_b, insert original
@@ -4536,6 +4629,23 @@ impl KlippApp {
                         clip.source_out = *new_source_out;
                         clip.timeline_in = *new_timeline_in;
                         clip.timeline_out = *new_timeline_out;
+                    }
+                }
+            }
+            EditCommand::LegacyRollTrimClip {
+                clip_a_id, clip_b_id,
+                new_a_source_out, new_a_timeline_out,
+                new_b_source_in, new_b_timeline_in, ..
+            } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_a_id) {
+                        c.source_out = *new_a_source_out;
+                        c.timeline_out = *new_a_timeline_out;
+                    }
+                    if let Some(c) = track.find_clip_mut(*clip_b_id) {
+                        c.source_in = *new_b_source_in;
+                        c.timeline_in = *new_b_timeline_in;
                     }
                 }
             }

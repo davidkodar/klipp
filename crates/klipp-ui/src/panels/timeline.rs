@@ -40,6 +40,7 @@ pub struct TimelinePanel {
     pub embedded: bool,
     dragging_clip: Option<DragState>,
     trimming_clip: Option<TrimState>,
+    roll_trimming: Option<RollTrimState>,
     snap_line_x: Option<f32>,
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
@@ -73,6 +74,25 @@ struct TrimState {
     original_timeline_out: Timecode,
     /// For ripple trim: original positions of clips after the trimmed clip
     subsequent_clips: Vec<(ClipId, Timecode, Timecode)>, // (id, original_timeline_in, original_timeline_out)
+}
+
+/// Roll trim: adjusts the boundary between two adjacent clips simultaneously.
+/// Clip A's out point and Clip B's in point move together, keeping total duration constant.
+struct RollTrimState {
+    clip_a_id: ClipId,
+    clip_b_id: ClipId,
+    track_idx: usize,
+    start_x: f32,
+    /// Original boundary timecode (clip A's timeline_out == clip B's timeline_in)
+    original_boundary: Timecode,
+    /// Original source out of clip A
+    original_a_source_out: Timecode,
+    /// Original source in of clip B
+    original_b_source_in: Timecode,
+    /// Original timeline_out of clip A
+    original_a_timeline_out: Timecode,
+    /// Original timeline_in of clip B
+    original_b_timeline_in: Timecode,
 }
 
 #[derive(Clone, Copy)]
@@ -2957,86 +2977,186 @@ impl TimelinePanel {
             }
         }
 
-        // Trim handle hover highlight — edge-first detection
-        if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.dragging_clip.is_none() {
+        // Trim handle hover highlight — edge-first detection + roll trim junction detection
+        if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none() {
             if let Some(pos) = pointer_pos {
-                if let Some((cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    // Check if pointer is in the fade handle zone (top corner) — skip trim highlight there
-                    let at_top = pos.y - cr.top() < 12.0;
-                    let at_near_edge = match edge {
-                        TrimEdge::Left => pos.x - cr.left() < 10.0,
-                        TrimEdge::Right => cr.right() - pos.x < 10.0,
-                    };
-                    let clip_has_audio = track_kind == TrackKind::Audio
-                        || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
-                    let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
+                // First: check for roll trim junction (boundary between two adjacent clips)
+                let mut found_roll_junction = false;
+                if clips.len() >= 2 {
+                    let roll_threshold = 4.0_f32; // pixels
+                    for i in 0..clips.len() - 1 {
+                        let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
+                        let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                        // Junction is where clip A ends and clip B begins
+                        let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
+                        if (pos.x - junction_x).abs() < roll_threshold
+                            && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
+                            && !clips[i].kind.is_gap() && !clips[i + 1].kind.is_gap()
+                        {
+                            // Check clips are truly adjacent (no gap between them)
+                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
+                            if gap_secs < 0.001 {
+                                found_roll_junction = true;
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
 
-                    if !in_fade_zone {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        let handle_w = 6.0;
-                        let edge_x = match edge {
-                            TrimEdge::Left => cr.left(),
-                            TrimEdge::Right => cr.right() - handle_w,
+                                // Highlight both edges — amber color for roll trim
+                                let roll_color = egui::Color32::from_rgba_premultiplied(255, 180, 40, 200);
+                                let bar_w = 3.0;
+                                // Right edge of clip A
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(cr_a.right() - bar_w, cr_a.top()),
+                                        egui::vec2(bar_w, cr_a.height()),
+                                    ),
+                                    0.0, roll_color,
+                                );
+                                // Left edge of clip B
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(cr_b.left(), cr_b.top()),
+                                        egui::vec2(bar_w, cr_b.height()),
+                                    ),
+                                    0.0, roll_color,
+                                );
+                                // "Roll trim" label
+                                painter.text(
+                                    egui::pos2(junction_x, cr_a.top() - 2.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    "Roll trim",
+                                    egui::FontId::proportional(8.0),
+                                    egui::Color32::from_rgba_premultiplied(255, 200, 80, 220),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !found_roll_junction {
+                    if let Some((cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                        // Check if pointer is in the fade handle zone (top corner) — skip trim highlight there
+                        let at_top = pos.y - cr.top() < 12.0;
+                        let at_near_edge = match edge {
+                            TrimEdge::Left => pos.x - cr.left() < 10.0,
+                            TrimEdge::Right => cr.right() - pos.x < 10.0,
                         };
-                        // Bright highlight bar
-                        let handle_rect = egui::Rect::from_min_size(
-                            egui::pos2(edge_x, cr.top()),
-                            egui::vec2(handle_w, cr.height()),
-                        );
-                        painter.rect_filled(
-                            handle_rect,
-                            2.0,
-                            egui::Color32::from_rgba_premultiplied(100, 180, 255, 180),
-                        );
-                        // Bright grip lines
-                        let cx = handle_rect.center().x;
-                        let cy = handle_rect.center().y;
-                        for dy in [-6.0_f32, -2.0, 2.0, 6.0] {
-                            painter.line_segment(
-                                [egui::pos2(cx - 1.5, cy + dy), egui::pos2(cx + 1.5, cy + dy)],
-                                egui::Stroke::new(1.0, egui::Color32::WHITE),
+                        let clip_has_audio = track_kind == TrackKind::Audio
+                            || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+                        let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
+
+                        if !in_fade_zone {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+
+                            // Amber/yellow highlight bar at the trim edge (2-3px, full clip height)
+                            let amber_hover = egui::Color32::from_rgba_premultiplied(255, 200, 60, 200);
+                            let bar_w = 3.0;
+                            let edge_x = match edge {
+                                TrimEdge::Left => cr.left(),
+                                TrimEdge::Right => cr.right() - bar_w,
+                            };
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(edge_x, cr.top()),
+                                    egui::vec2(bar_w, cr.height()),
+                                ),
+                                0.0, amber_hover,
+                            );
+
+                            // Handle grip area with grip lines
+                            let handle_w = 6.0;
+                            let handle_x = match edge {
+                                TrimEdge::Left => cr.left(),
+                                TrimEdge::Right => cr.right() - handle_w,
+                            };
+                            let handle_rect = egui::Rect::from_min_size(
+                                egui::pos2(handle_x, cr.top()),
+                                egui::vec2(handle_w, cr.height()),
+                            );
+                            let cx = handle_rect.center().x;
+                            let cy = handle_rect.center().y;
+                            for dy in [-6.0_f32, -2.0, 2.0, 6.0] {
+                                painter.line_segment(
+                                    [egui::pos2(cx - 1.5, cy + dy), egui::pos2(cx + 1.5, cy + dy)],
+                                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                );
+                            }
+                            // Trim tooltip label
+                            let tip_x = match edge {
+                                TrimEdge::Left => cr.left() + 10.0,
+                                TrimEdge::Right => cr.right() - 10.0,
+                            };
+                            let tip_align = match edge {
+                                TrimEdge::Left => egui::Align2::LEFT_CENTER,
+                                TrimEdge::Right => egui::Align2::RIGHT_CENTER,
+                            };
+                            painter.text(
+                                egui::pos2(tip_x, cr.top() + 6.0),
+                                tip_align,
+                                "Drag to trim clip",
+                                egui::FontId::proportional(8.0),
+                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
                             );
                         }
-                        // Trim tooltip label
-                        let tip_x = match edge {
-                            TrimEdge::Left => cr.left() + 10.0,
-                            TrimEdge::Right => cr.right() - 10.0,
-                        };
-                        let tip_align = match edge {
-                            TrimEdge::Left => egui::Align2::LEFT_CENTER,
-                            TrimEdge::Right => egui::Align2::RIGHT_CENTER,
-                        };
-                        painter.text(
-                            egui::pos2(tip_x, cr.top() + 6.0),
-                            tip_align,
-                            "Drag to trim clip",
-                            egui::FontId::proportional(8.0),
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
-                        );
                     }
                 }
             }
         }
 
-        // Active trim highlight — show bright handle during active trim
+        // Active trim highlight — show bright bar + colored tint during active trim
         if let Some(ref trim) = self.trimming_clip {
             if trim.track_idx == track_idx {
                 if let Some(clip) = clips.iter().find(|c| c.id == trim.clip_id) {
                     let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
-                    let handle_w = 6.0;
+
+                    // Brighter, wider bar (3-4px) at the active trim edge
+                    let active_bar_w = 4.0;
+                    let active_color = egui::Color32::from_rgba_premultiplied(255, 220, 80, 240);
                     let edge_x = match trim.edge {
                         TrimEdge::Left => cr.left(),
-                        TrimEdge::Right => cr.right() - handle_w,
+                        TrimEdge::Right => cr.right() - active_bar_w,
                     };
-                    let handle_rect = egui::Rect::from_min_size(
-                        egui::pos2(edge_x, cr.top()),
-                        egui::vec2(handle_w, cr.height()),
-                    );
                     painter.rect_filled(
-                        handle_rect,
-                        2.0,
-                        egui::Color32::from_rgba_premultiplied(255, 200, 60, 200),
+                        egui::Rect::from_min_size(
+                            egui::pos2(edge_x, cr.top()),
+                            egui::vec2(active_bar_w, cr.height()),
+                        ),
+                        0.0, active_color,
                     );
+
+                    // Subtle colored tint over the clip being trimmed
+                    let tint_color = egui::Color32::from_rgba_unmultiplied(255, 200, 60, 20);
+                    painter.rect_filled(cr, 3.0, tint_color);
+                }
+            }
+        }
+
+        // Active roll trim highlight — show both edges highlighted
+        if let Some(ref roll) = self.roll_trimming {
+            if roll.track_idx == track_idx {
+                let roll_active_color = egui::Color32::from_rgba_premultiplied(255, 180, 40, 240);
+                let bar_w = 4.0;
+                if let Some(clip_a) = clips.iter().find(|c| c.id == roll.clip_a_id) {
+                    let cr_a = Self::clip_screen_rect(clip_a, content_rect, track_rect, zoom, scroll, track_height);
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(cr_a.right() - bar_w, cr_a.top()),
+                            egui::vec2(bar_w, cr_a.height()),
+                        ),
+                        0.0, roll_active_color,
+                    );
+                    // Subtle tint
+                    painter.rect_filled(cr_a, 3.0, egui::Color32::from_rgba_unmultiplied(255, 180, 40, 15));
+                }
+                if let Some(clip_b) = clips.iter().find(|c| c.id == roll.clip_b_id) {
+                    let cr_b = Self::clip_screen_rect(clip_b, content_rect, track_rect, zoom, scroll, track_height);
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(cr_b.left(), cr_b.top()),
+                            egui::vec2(bar_w, cr_b.height()),
+                        ),
+                        0.0, roll_active_color,
+                    );
+                    painter.rect_filled(cr_b, 3.0, egui::Color32::from_rgba_unmultiplied(255, 180, 40, 15));
                 }
             }
         }
@@ -3527,8 +3647,41 @@ impl TimelinePanel {
                         }
                     }
                 }
+                // Check for roll trim junction before regular trim
+                let mut started_roll_trim = false;
+                if !started_fade_drag && state.active_tool == Tool::Select && clips.len() >= 2 {
+                    let roll_threshold = 4.0_f32;
+                    for i in 0..clips.len() - 1 {
+                        if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
+                        let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
+                        let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                        let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
+                        if (pos.x - junction_x).abs() < roll_threshold
+                            && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
+                        {
+                            // Verify clips are truly adjacent (no gap)
+                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
+                            if gap_secs < 0.001 {
+                                tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
+                                self.roll_trimming = Some(RollTrimState {
+                                    clip_a_id: clips[i].id,
+                                    clip_b_id: clips[i + 1].id,
+                                    track_idx,
+                                    start_x: pos.x,
+                                    original_boundary: clips[i].timeline_out,
+                                    original_a_source_out: clips[i].source_out,
+                                    original_b_source_in: clips[i + 1].source_in,
+                                    original_a_timeline_out: clips[i].timeline_out,
+                                    original_b_timeline_in: clips[i + 1].timeline_in,
+                                });
+                                started_roll_trim = true;
+                                break;
+                            }
+                        }
+                    }
+                }
                 // First: check if pointer is near any clip edge (trim)
-                if !started_fade_drag {
+                if !started_fade_drag && !started_roll_trim {
                 if let Some((_cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip.id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
                     // Collect subsequent clips for ripple trim
@@ -3794,14 +3947,13 @@ impl TimelinePanel {
                                     }
                                 }
 
-                                let tc_str = new_timeline_in.to_timecode_string();
-                                egui::show_tooltip_at_pointer(
-                                    ui.ctx(),
-                                    ui.layer_id(),
-                                    ui.id().with("trim_tooltip"),
-                                    |ui: &mut egui::Ui| {
-                                        ui.label(format!("In: {tc_str}"));
-                                    },
+                                // Rich timecode overlay during trim
+                                let new_duration = trim.original_timeline_out - new_timeline_in;
+                                let delta_frames = new_timeline_in - trim.original_timeline_in;
+                                Self::paint_trim_overlay(
+                                    painter, content_rect, track_rect, zoom, scroll,
+                                    new_timeline_in, delta_frames, new_duration,
+                                    "In", fps,
                                 );
                             } else {
                                 // Ripple: keep timeline_in fixed, shrink/grow timeline_out,
@@ -3847,14 +3999,13 @@ impl TimelinePanel {
                                     }
                                 }
 
-                                let tc_str = clamped_source_in.to_timecode_string();
-                                egui::show_tooltip_at_pointer(
-                                    ui.ctx(),
-                                    ui.layer_id(),
-                                    ui.id().with("trim_tooltip"),
-                                    |ui: &mut egui::Ui| {
-                                        ui.label(format!("In: {tc_str}"));
-                                    },
+                                // Rich timecode overlay during ripple trim
+                                let new_duration = final_timeline_out - trim.original_timeline_in;
+                                let delta_frames = clamped_source_in - trim.original_source_in;
+                                Self::paint_trim_overlay(
+                                    painter, content_rect, track_rect, zoom, scroll,
+                                    trim.original_timeline_in, delta_frames, new_duration,
+                                    "In", fps,
                                 );
                             }
                         }
@@ -3900,14 +4051,17 @@ impl TimelinePanel {
                                 }
                             }
 
-                            let tc_str = new_timeline_out.to_timecode_string();
-                            egui::show_tooltip_at_pointer(
-                                ui.ctx(),
-                                ui.layer_id(),
-                                ui.id().with("trim_tooltip"),
-                                |ui: &mut egui::Ui| {
-                                    ui.label(format!("Out: {tc_str}"));
-                                },
+                            // Rich timecode overlay during trim
+                            let cur_timeline_in = state.sequence().tracks.get(trim.track_idx)
+                                .and_then(|t| t.find_clip(trim.clip_id))
+                                .map(|c| c.timeline_in)
+                                .unwrap_or(trim.original_timeline_in);
+                            let new_duration = new_timeline_out - cur_timeline_in;
+                            let delta_frames = new_timeline_out - trim.original_timeline_out;
+                            Self::paint_trim_overlay(
+                                painter, content_rect, track_rect, zoom, scroll,
+                                new_timeline_out, delta_frames, new_duration,
+                                "Out", fps,
                             );
                         }
                     }
@@ -3928,6 +4082,148 @@ impl TimelinePanel {
                     }
                 }
                 self.trimming_clip = None;
+                self.press_origin = None;
+            }
+        }
+
+        // Handle ongoing roll trim
+        if let Some(ref roll) = self.roll_trimming {
+            if roll.track_idx != track_idx {
+                // Skip — will be handled when we draw the correct track
+            } else if let Some(pos) = pointer_pos {
+                if pointer_down {
+                    let dx = pos.x - roll.start_x;
+                    let dt_secs = dx as f64 / zoom as f64;
+                    let dt_frames = RationalTime::from_secs_f64(dt_secs, fps.rate());
+
+                    // Get media durations for clamping
+                    let media_a_dur = state.sequence().tracks.get(roll.track_idx)
+                        .and_then(|t| t.find_clip(roll.clip_a_id))
+                        .and_then(|c| c.media_id())
+                        .and_then(|mid| state.media_pool.get(&mid))
+                        .map(|m| m.duration)
+                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
+                    let _media_b_dur = state.sequence().tracks.get(roll.track_idx)
+                        .and_then(|t| t.find_clip(roll.clip_b_id))
+                        .and_then(|c| c.media_id())
+                        .and_then(|mid| state.media_pool.get(&mid))
+                        .map(|m| m.duration)
+                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
+
+                    // Compute new boundary position
+                    let mut new_a_source_out = roll.original_a_source_out + dt_frames;
+                    let mut new_b_source_in = roll.original_b_source_in + dt_frames;
+
+                    // Get clip A's source_in (start of used range) for clamping
+                    let clip_a_source_in = state.sequence().tracks.get(roll.track_idx)
+                        .and_then(|t| t.find_clip(roll.clip_a_id))
+                        .map(|c| c.source_in)
+                        .unwrap_or(roll.original_a_source_out);
+                    // Get clip B's source_out for clamping
+                    let clip_b_source_out = state.sequence().tracks.get(roll.track_idx)
+                        .and_then(|t| t.find_clip(roll.clip_b_id))
+                        .map(|c| c.source_out)
+                        .unwrap_or(roll.original_b_source_in);
+
+                    // Clamp: clip A source_out must stay > clip A source_in (min 1 frame)
+                    let min_a_out = clip_a_source_in + RationalTime { value: 1, rate: clip_a_source_in.rate };
+                    // Clamp: clip A source_out must not exceed media duration
+                    if new_a_source_out < min_a_out { new_a_source_out = min_a_out; }
+                    if new_a_source_out > media_a_dur { new_a_source_out = media_a_dur; }
+                    // Clamp: clip B source_in must stay >= 0 and < clip B source_out
+                    let zero = RationalTime { value: 0, rate: new_b_source_in.rate };
+                    let max_b_in = clip_b_source_out - RationalTime { value: 1, rate: clip_b_source_out.rate };
+                    if new_b_source_in < zero { new_b_source_in = zero; }
+                    if new_b_source_in > max_b_in { new_b_source_in = max_b_in; }
+
+                    // Recompute consistent delta from the clamped values
+                    let actual_delta_a = new_a_source_out - roll.original_a_source_out;
+                    let actual_delta_b = new_b_source_in - roll.original_b_source_in;
+                    // Use the smaller magnitude delta to keep both clips valid
+                    let use_delta = if actual_delta_a.value.abs() <= actual_delta_b.value.abs() {
+                        actual_delta_a
+                    } else {
+                        actual_delta_b
+                    };
+
+                    let pre_snap_tl_out = roll.original_a_timeline_out + use_delta;
+
+                    // Snap the boundary to playhead (8px threshold)
+                    let mut snapped_boundary = pre_snap_tl_out;
+                    if snap_enabled {
+                        let playhead_secs = state.playhead.to_secs_f64();
+                        let boundary_secs = pre_snap_tl_out.to_secs_f64();
+                        let dist_px = ((boundary_secs - playhead_secs).abs() * zoom as f64) as f32;
+                        if dist_px < 8.0 {
+                            snapped_boundary = state.playhead;
+                            let snap_x = content_rect.left() + playhead_secs as f32 * zoom - state.timeline_scroll_x;
+                            self.snap_line_x = Some(snap_x);
+                        }
+                    }
+
+                    let snap_delta = snapped_boundary - roll.original_a_timeline_out;
+                    let final_a_source_out = roll.original_a_source_out + snap_delta;
+                    let final_b_source_in = roll.original_b_source_in + snap_delta;
+                    let final_a_timeline_out = snapped_boundary;
+                    let final_b_timeline_in = snapped_boundary;
+
+                    // Apply to state
+                    if let Some(track) = state.sequence_mut().tracks.get_mut(roll.track_idx) {
+                        if let Some(c) = track.find_clip_mut(roll.clip_a_id) {
+                            c.source_out = final_a_source_out;
+                            c.timeline_out = final_a_timeline_out;
+                        }
+                        if let Some(c) = track.find_clip_mut(roll.clip_b_id) {
+                            c.source_in = final_b_source_in;
+                            c.timeline_in = final_b_timeline_in;
+                        }
+                    }
+
+                    // Rich overlay for roll trim
+                    let delta_frames = snapped_boundary - roll.original_boundary;
+                    let dur_a = final_a_timeline_out - state.sequence().tracks.get(roll.track_idx)
+                        .and_then(|t| t.find_clip(roll.clip_a_id))
+                        .map(|c| c.timeline_in)
+                        .unwrap_or(roll.original_a_timeline_out);
+                    Self::paint_trim_overlay(
+                        painter, content_rect, track_rect, zoom, scroll,
+                        snapped_boundary, delta_frames, dur_a,
+                        "Roll", fps,
+                    );
+                }
+            }
+
+            if pointer_released && roll.track_idx == track_idx {
+                // Read final values and emit command
+                let a_out = state.sequence().tracks.get(roll.track_idx)
+                    .and_then(|t| t.find_clip(roll.clip_a_id))
+                    .map(|c| (c.source_out, c.timeline_out));
+                let b_in = state.sequence().tracks.get(roll.track_idx)
+                    .and_then(|t| t.find_clip(roll.clip_b_id))
+                    .map(|c| (c.source_in, c.timeline_in));
+
+                if let (Some((a_src_out, a_tl_out)), Some((b_src_in, b_tl_in))) = (a_out, b_in) {
+                    // Restore to original before emitting command (command handler does the mutation)
+                    if let Some(track) = state.sequence_mut().tracks.get_mut(roll.track_idx) {
+                        if let Some(c) = track.find_clip_mut(roll.clip_a_id) {
+                            c.source_out = roll.original_a_source_out;
+                            c.timeline_out = roll.original_a_timeline_out;
+                        }
+                        if let Some(c) = track.find_clip_mut(roll.clip_b_id) {
+                            c.source_in = roll.original_b_source_in;
+                            c.timeline_in = roll.original_b_timeline_in;
+                        }
+                    }
+                    cmds.push(AppCommand::RollTrimClip {
+                        clip_a_id: roll.clip_a_id,
+                        clip_b_id: roll.clip_b_id,
+                        new_a_source_out: a_src_out,
+                        new_a_timeline_out: a_tl_out,
+                        new_b_source_in: b_src_in,
+                        new_b_timeline_in: b_tl_in,
+                    });
+                }
+                self.roll_trimming = None;
                 self.press_origin = None;
             }
         }
@@ -4678,6 +4974,86 @@ impl TimelinePanel {
             egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
             egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
         )
+    }
+
+    /// Paint a floating timecode overlay near a trim edge.
+    /// Shows: timecode at the edge, delta from original, new clip duration.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_trim_overlay(
+        painter: &egui::Painter,
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        zoom: f32,
+        scroll: f32,
+        edge_time: RationalTime,
+        delta: RationalTime,
+        duration: RationalTime,
+        label: &str,
+        _fps: klipp_core::Fps,
+    ) {
+        let edge_x = content_rect.left() + edge_time.to_secs_f64() as f32 * zoom - scroll;
+
+        // Format the timecode
+        let tc_str = edge_time.to_timecode_string();
+
+        // Format delta as +/-frames
+        let delta_frames = delta.value;
+        let delta_sign = if delta_frames >= 0 { "+" } else { "" };
+        // Convert delta to seconds:frames for readability
+        let abs_frames = delta_frames.unsigned_abs() as i64;
+        let rate = delta.rate.max(1) as i64;
+        let d_secs = abs_frames / rate;
+        let d_ff = abs_frames % rate;
+        let delta_str = if d_secs > 0 {
+            format!("{delta_sign}{d_secs}:{d_ff:02}")
+        } else {
+            format!("{delta_sign}{d_ff}")
+        };
+
+        // Format duration
+        let dur_str = duration.to_timecode_string();
+
+        // Build overlay text lines
+        let line1 = format!("{label}: {tc_str}");
+        let line2 = format!("\u{0394} {delta_str}");
+        let line3 = format!("Dur: {dur_str}");
+
+        let font = egui::FontId::proportional(9.0);
+        let text_color = egui::Color32::WHITE;
+        let bg_color = egui::Color32::from_rgba_unmultiplied(20, 20, 25, 220);
+        let border_color = egui::Color32::from_rgba_unmultiplied(255, 200, 60, 180);
+
+        // Measure text width for the panel
+        let galley1 = painter.layout_no_wrap(line1.clone(), font.clone(), text_color);
+        let galley2 = painter.layout_no_wrap(line2.clone(), font.clone(), text_color);
+        let galley3 = painter.layout_no_wrap(line3.clone(), font.clone(), text_color);
+        let max_w = galley1.rect.width()
+            .max(galley2.rect.width())
+            .max(galley3.rect.width());
+
+        let pad = 4.0;
+        let line_h = 12.0;
+        let panel_w = max_w + pad * 2.0;
+        let panel_h = line_h * 3.0 + pad * 2.0;
+
+        // Position: above the track, near the trim edge
+        let panel_x = (edge_x - panel_w / 2.0).clamp(content_rect.left(), content_rect.right() - panel_w);
+        let panel_y = track_rect.top() - panel_h - 4.0;
+
+        let panel_rect = egui::Rect::from_min_size(
+            egui::pos2(panel_x, panel_y),
+            egui::vec2(panel_w, panel_h),
+        );
+
+        painter.rect_filled(panel_rect, 4.0, bg_color);
+        painter.rect_stroke(panel_rect, 4.0, egui::Stroke::new(1.0, border_color));
+
+        // Draw text
+        let text_x = panel_rect.left() + pad;
+        let text_y = panel_rect.top() + pad;
+        painter.galley(egui::pos2(text_x, text_y), galley1, text_color);
+        painter.galley(egui::pos2(text_x, text_y + line_h), galley2, text_color);
+        painter.galley(egui::pos2(text_x, text_y + line_h * 2.0), galley3, text_color);
     }
 
     /// Edge-first hit-test: find the closest clip edge within TRIM_HANDLE_WIDTH.
