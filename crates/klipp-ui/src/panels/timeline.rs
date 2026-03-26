@@ -1153,6 +1153,11 @@ impl TimelinePanel {
             }
         }
 
+        // ── Flat rubber band drag release ────────────────────────────────
+        if state.dragging_rubber_band.is_some() && (pointer_released || !pointer_down) {
+            state.dragging_rubber_band = None;
+        }
+
         cmds
     }
 
@@ -1544,17 +1549,18 @@ impl TimelinePanel {
             if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
                 // Resolve the clip that holds the keyframes (may be linked video clip)
                 // Clone keyframes to avoid borrow conflict with state mutation for drag interaction
-                let (kf_volume, kf_keyframes, kf_clip_id) = if let Some(linked_id) = clip.linked_clip_id {
-                    let mut found = (clip.volume, clip.volume_keyframes.clone(), clip.id);
+                // Resolve: (volume, keyframes, clip_id, gain, pan, fade_in, fade_out, fade_in_curve, fade_out_curve, channel_config)
+                let (kf_volume, kf_keyframes, kf_clip_id, kf_gain, kf_pan, kf_fade_in, kf_fade_out, kf_fade_in_curve, kf_fade_out_curve, kf_channel_config) = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut found = (clip.volume, clip.volume_keyframes.clone(), clip.id, clip.gain, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config);
                     for t in &state.sequence().tracks {
                         if let Some(vc) = t.find_clip(linked_id) {
-                            found = (vc.volume, vc.volume_keyframes.clone(), vc.id);
+                            found = (vc.volume, vc.volume_keyframes.clone(), vc.id, vc.gain, vc.pan, vc.fade_in_secs, vc.fade_out_secs, vc.fade_in_curve, vc.fade_out_curve, vc.channel_config);
                             break;
                         }
                     }
                     found
                 } else {
-                    (clip.volume, clip.volume_keyframes.clone(), clip.id)
+                    (clip.volume, clip.volume_keyframes.clone(), clip.id, clip.gain, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config)
                 };
                 let kf_keyframes = &kf_keyframes[..];
 
@@ -1574,22 +1580,29 @@ impl TimelinePanel {
                     clip_rect.left() + frac as f32 * clip_rect.width()
                 };
 
-                let line_color = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 200); // amber
-                let line_color_dim = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 120);
+                let line_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220); // brighter amber
+                let line_color_dim = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140);
+                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
                 let diamond_fill = if is_selected || is_multi_selected {
-                    egui::Color32::from_rgba_unmultiplied(255, 200, 60, 240)
+                    egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250) // brighter amber
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(240, 180, 50, 180)
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200)
                 };
-                let diamond_stroke_color = egui::Color32::from_rgba_unmultiplied(180, 130, 30, 220);
+                let diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+                let diamond_stroke_color = egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240);
                 let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
 
                 if kf_keyframes.is_empty() {
                     // No keyframes: draw a single horizontal line at the static volume
                     let y = value_to_y(kf_volume);
+                    // Shadow line behind for contrast
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(1.0, active_line_color),
+                        egui::Stroke::new(4.0, shadow_color),
+                    );
+                    clip_painter.line_segment(
+                        [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
+                        egui::Stroke::new(2.0, active_line_color),
                     );
                 } else {
                     // Draw line segments between evaluated points
@@ -1619,11 +1632,18 @@ impl TimelinePanel {
                     let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_volume);
                     points.push(egui::pos2(clip_rect.right(), value_to_y(end_val)));
 
-                    // Draw line segments
+                    // Draw shadow line segments first for contrast
                     for i in 0..points.len().saturating_sub(1) {
                         clip_painter.line_segment(
                             [points[i], points[i + 1]],
-                            egui::Stroke::new(1.5, active_line_color),
+                            egui::Stroke::new(4.0, shadow_color),
+                        );
+                    }
+                    // Draw amber line segments on top
+                    for i in 0..points.len().saturating_sub(1) {
+                        clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(2.0, active_line_color),
                         );
                     }
 
@@ -1632,7 +1652,20 @@ impl TimelinePanel {
                         if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
                             let cx = time_to_x(kf.time_secs);
                             let cy = value_to_y(kf.value);
-                            let d = 4.0_f32;
+                            let d = 6.0_f32;
+                            // Dark shadow diamond behind for contrast
+                            let shadow_d = d + 2.0;
+                            let shadow_diamond = vec![
+                                egui::pos2(cx, cy - shadow_d),
+                                egui::pos2(cx + shadow_d, cy),
+                                egui::pos2(cx, cy + shadow_d),
+                                egui::pos2(cx - shadow_d, cy),
+                            ];
+                            clip_painter.add(egui::Shape::convex_polygon(
+                                shadow_diamond,
+                                diamond_shadow_color,
+                                egui::Stroke::NONE,
+                            ));
                             let diamond = vec![
                                 egui::pos2(cx, cy - d),
                                 egui::pos2(cx + d, cy),
@@ -1642,7 +1675,7 @@ impl TimelinePanel {
                             clip_painter.add(egui::Shape::convex_polygon(
                                 diamond,
                                 diamond_fill,
-                                egui::Stroke::new(1.0, diamond_stroke_color),
+                                egui::Stroke::new(1.5, diamond_stroke_color),
                             ));
                         }
                     }
@@ -1675,7 +1708,7 @@ impl TimelinePanel {
                                     let kx = time_to_x(kf.time_secs);
                                     let ky = value_to_y(kf.value);
                                     let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                    if dist < 8.0 && dist < nearest_kf_dist {
+                                    if dist < 10.0 && dist < nearest_kf_dist {
                                         nearest_kf_dist = dist;
                                         nearest_kf_idx = Some(ki);
                                     }
@@ -1689,7 +1722,30 @@ impl TimelinePanel {
                                 let t = x_to_time(pos.x);
                                 value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_volume))
                             };
-                            let near_line = (pos.y - rubber_band_y).abs() < 10.0;
+                            let near_line = (pos.y - rubber_band_y).abs() < 6.0;
+
+                            // ── Cursor feedback ──
+                            let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
+                            let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().map_or(false, |d| d.clip_id == kf_clip_id);
+                            if is_dragging_this_rb || is_dragging_this_kf {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            } else if nearest_kf_idx.is_some() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            } else if near_line {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                            }
+
+                            // ── Double-click diamond to delete keyframe ──
+                            if let Some(ki) = nearest_kf_idx {
+                                if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                                    let kf = &kf_keyframes[ki];
+                                    cmds.push(AppCommand::RemoveAudioKeyframe {
+                                        clip_id: kf_clip_id,
+                                        param: klipp_core::AudioParam::Volume,
+                                        time_secs: kf.time_secs,
+                                    });
+                                }
+                            }
 
                             // Start keyframe drag on primary click near a diamond
                             if nearest_kf_idx.is_some() && pointer_down && state.dragging_audio_keyframe.is_none() && !alt_held {
@@ -1699,6 +1755,41 @@ impl TimelinePanel {
                                         param: klipp_core::AudioParam::Volume,
                                         keyframe_index: ki,
                                     });
+                                }
+                            }
+
+                            // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
+                            if kf_keyframes.is_empty() && near_line && pointer_down
+                                && state.dragging_audio_keyframe.is_none()
+                                && state.dragging_rubber_band.is_none()
+                                && !alt_held
+                            {
+                                state.dragging_rubber_band = Some(kf_clip_id);
+                            }
+
+                            // Process active flat-line rubber band drag
+                            if state.dragging_rubber_band == Some(kf_clip_id) {
+                                if pointer_down {
+                                    let new_volume = y_to_value(pos.y);
+                                    cmds.push(AppCommand::UpdateClipAudio {
+                                        clip_id: kf_clip_id,
+                                        gain: kf_gain,
+                                        volume: new_volume,
+                                        pan: kf_pan,
+                                        fade_in_secs: kf_fade_in,
+                                        fade_out_secs: kf_fade_out,
+                                        fade_in_curve: kf_fade_in_curve,
+                                        fade_out_curve: kf_fade_out_curve,
+                                        channel_config: kf_channel_config,
+                                    });
+                                    // Show volume tooltip while dragging
+                                    clip_painter.text(
+                                        egui::pos2(pos.x, pos.y - 14.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        format!("{:.0}%", new_volume * 100.0),
+                                        egui::FontId::proportional(10.0),
+                                        egui::Color32::from_rgb(255, 220, 80),
+                                    );
                                 }
                             }
 
@@ -1721,7 +1812,7 @@ impl TimelinePanel {
                                 let kx = time_to_x(kf.time_secs);
                                 let ky = value_to_y(kf.value);
                                 clip_painter.text(
-                                    egui::pos2(kx, ky - 10.0),
+                                    egui::pos2(kx, ky - 14.0),
                                     egui::Align2::CENTER_BOTTOM,
                                     tooltip_text,
                                     egui::FontId::proportional(9.0),

@@ -169,35 +169,52 @@ pub fn scrubby_param_row(
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
 
         // ---- KEYFRAME DIAMOND ----
-        let diamond_sense = if keyframe_state.is_some() {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        };
-        let (diamond_rect_inner, diamond_resp) = ui.allocate_exact_size(
-            egui::vec2(diamond_width, 18.0),
-            diamond_sense,
+        // Use a real Button for reliable click handling
+        let is_keyframeable = keyframe_state.is_some();
+        let diamond_btn_resp = ui.add(
+            egui::Button::new("")
+                .frame(false)
+                .min_size(egui::vec2(diamond_width, 18.0))
+                .sense(if is_keyframeable { egui::Sense::click() } else { egui::Sense::hover() })
         );
 
-        let diamond_tint = if let Some(ref ks) = keyframe_state {
+        // Determine diamond color and fill based on keyframe state
+        let (diamond_color, diamond_filled) = if let Some(ref ks) = keyframe_state {
+            let hovered = diamond_btn_resp.hovered();
             if ks.has_keyframe_at_playhead {
-                // Amber filled — keyframe exists at current time
-                egui::Color32::from_rgb(230, 170, 40)
+                let c = if hovered { egui::Color32::from_rgb(255, 200, 60) } else { egui::Color32::from_rgb(240, 180, 40) };
+                (c, true)
             } else if ks.has_any_keyframes {
-                // Dim amber — parameter is keyframed but not at this time
-                egui::Color32::from_rgba_premultiplied(230, 170, 40, 80)
+                let c = if hovered { egui::Color32::from_rgb(240, 180, 40) } else { egui::Color32::from_rgba_premultiplied(240, 180, 40, 140) };
+                (c, false)
             } else {
-                // Grey — no keyframes
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)
+                let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };
+                (c, false)
             }
         } else {
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)
+            (egui::Color32::from_rgb(50, 50, 55), false)
         };
 
-        let diamond_icon_rect = egui::Rect::from_center_size(diamond_rect_inner.center(), egui::vec2(10.0, 10.0));
-        Icon::Diamond.image(10.0).tint(diamond_tint).paint_at(ui, diamond_icon_rect);
+        // Draw diamond shape over the button rect
+        let center = diamond_btn_resp.rect.center();
+        let s = 4.5;
+        let diamond_points = vec![
+            egui::pos2(center.x, center.y - s),
+            egui::pos2(center.x + s, center.y),
+            egui::pos2(center.x, center.y + s),
+            egui::pos2(center.x - s, center.y),
+        ];
+        if diamond_filled {
+            ui.painter().add(egui::Shape::convex_polygon(diamond_points, diamond_color, egui::Stroke::NONE));
+        } else {
+            ui.painter().add(egui::Shape::closed_line(diamond_points, egui::Stroke::new(1.2, diamond_color)));
+        }
 
-        if keyframe_state.is_some() && diamond_resp.clicked() {
+        if is_keyframeable && diamond_btn_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if is_keyframeable && diamond_btn_resp.clicked() {
             keyframe_toggled = true;
         }
     });

@@ -342,6 +342,8 @@ pub struct AppState {
 
     // Audio keyframe rubber band drag state
     pub dragging_audio_keyframe: Option<DraggingKeyframe>,
+    /// Clip whose flat rubber band line is being dragged (no-keyframes volume adjust)
+    pub dragging_rubber_band: Option<ClipId>,
 
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
@@ -585,6 +587,7 @@ impl Default for AppState {
             autosave_recovery_path: None,
             autosave_original_path: None,
             dragging_audio_keyframe: None,
+            dragging_rubber_band: None,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),
