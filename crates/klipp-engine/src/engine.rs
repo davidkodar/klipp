@@ -1558,7 +1558,43 @@ impl PlaybackEngine {
                 self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed); // suppress fade-in on next sync
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                // Audio continues uninterrupted — same file, same stream position
+
+                // CRITICAL: Immediately update fade parameters on audio sources so the
+                // PCM feeder produces correct audio going forward. Without this, the feeder
+                // continues with clip A's parameters, applying fade-out to samples past
+                // clip A's end, filling the ring buffer with ~2s of silence.
+                {
+                    let seq = self.sequence.read().unwrap();
+                    for active_src in &self.audio_sources {
+                        if let Some(track) = seq.tracks.get(active_src.track_index) {
+                            if let Some((_idx, new_clip)) = track.clip_at_timecode(self.playhead) {
+                                let new_source_in = new_clip.source_in.to_secs_f64();
+                                let new_clip_dur = new_clip.duration().to_secs_f64();
+                                // Offset source_in backward so fade_envelope doesn't trigger fade-in
+                                active_src.source.set_fade(
+                                    new_source_in - 1.0,
+                                    new_clip_dur + 1.0,
+                                    new_clip.fade_in_secs as f64,
+                                    new_clip.fade_out_secs as f64,
+                                    fade_curve_to_u32(new_clip.fade_in_curve),
+                                    fade_curve_to_u32(new_clip.fade_out_curve),
+                                    new_clip.gain,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Flush mix thread staging to discard any silence-faded samples
+                // that were produced with the OLD clip's parameters
+                if let Some(ref mt) = self.mix_thread {
+                    mt.flush();
+                }
+                // Bump seek gen so cpal drains stale main buffer
+                if let Some(ref aout) = self.audio_output {
+                    aout.0.notify_seek();
+                }
+
                 // V2 may need updating
                 self.maybe_open_v2_decoder(self.playhead);
                 return;
