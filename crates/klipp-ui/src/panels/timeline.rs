@@ -1559,6 +1559,49 @@ impl TimelinePanel {
                                 let half_h = clip_rect.height() * 0.48; // nearly full height
                                 let w = clip_rect.width();
 
+                                // Resolve fade params for waveform shaping (FCP-style tapered waveform)
+                                let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
+                                    (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
+                                };
+                                let (wf_fi_secs, wf_fo_secs, wf_fi_curve, wf_fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
+                                    let mut found = wf_resolve_fade(clip);
+                                    for t in &state.sequence().tracks {
+                                        if let Some(vc) = t.find_clip(linked_id) {
+                                            found = wf_resolve_fade(vc);
+                                            break;
+                                        }
+                                    }
+                                    found
+                                } else {
+                                    wf_resolve_fade(clip)
+                                };
+                                let wf_clip_dur = clip.duration().to_secs_f64() as f32;
+
+                                // Compute fade envelope at a given time position
+                                let wf_fade_envelope = |col_time: f32| -> f32 {
+                                    let mut gain = 1.0_f32;
+                                    if wf_fi_secs > 0.001 && col_time < wf_fi_secs {
+                                        let frac = (col_time / wf_fi_secs).clamp(0.0, 1.0);
+                                        gain = match wf_fi_curve {
+                                            klipp_timeline::FadeCurve::Linear => frac,
+                                            klipp_timeline::FadeCurve::Exponential => frac * frac,
+                                            klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
+                                            klipp_timeline::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
+                                        };
+                                    }
+                                    if wf_fo_secs > 0.001 && wf_clip_dur > 0.001 && col_time > wf_clip_dur - wf_fo_secs {
+                                        let remaining = wf_clip_dur - col_time;
+                                        let frac = (remaining / wf_fo_secs).clamp(0.0, 1.0);
+                                        gain *= match wf_fo_curve {
+                                            klipp_timeline::FadeCurve::Linear => frac,
+                                            klipp_timeline::FadeCurve::Exponential => frac * frac,
+                                            klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
+                                            klipp_timeline::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
+                                        };
+                                    }
+                                    gain
+                                };
+
                                 // Draw min/max envelope with sqrt scaling.
                                 // sqrt(amplitude) makes quiet parts much more visible while
                                 // preserving the shape. This is how most NLEs display waveforms.
@@ -1570,8 +1613,13 @@ impl TimelinePanel {
                                     let peak_idx = col * clip_peaks.len() / num_cols;
                                     let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
 
-                                    let y_top = center_y - pmax.abs().sqrt().min(1.0) * half_h;
-                                    let y_bot = center_y + pmin.abs().sqrt().min(1.0) * half_h;
+                                    // Shape waveform by fade envelope (FCP-style)
+                                    let col_frac = col as f32 / num_cols as f32;
+                                    let col_time = col_frac * wf_clip_dur;
+                                    let fade = wf_fade_envelope(col_time);
+
+                                    let y_top = center_y - pmax.abs().sqrt().min(1.0) * half_h * fade;
+                                    let y_bot = center_y + pmin.abs().sqrt().min(1.0) * half_h * fade;
 
                                     if (y_bot - y_top) > 0.5 {
                                         clip_painter.line_segment(
@@ -2051,22 +2099,35 @@ impl TimelinePanel {
                     }
                 };
 
-                let fade_overlay_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 80);
                 let fade_line_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200);
+                let fade_line_highlight = egui::Color32::from_rgba_unmultiplied(255, 235, 160, 100);
                 let fade_line_shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
-                let num_segments: usize = 24;
+                let num_segments: usize = 40;
+                let num_gradient_strips: usize = 10;
 
                 // ── Fade In ──
                 if fi_secs > 0.001 && clip_dur_secs > 0.001 {
                     let fade_in_px = (fi_secs / clip_dur_secs) * clip_rect.width();
                     let fade_in_px = fade_in_px.min(clip_rect.width());
 
-                    // Dark overlay rectangle
+                    // Subtle gradient overlay: darker at clip edge (left), transparent at interior (right)
                     let fade_rect = egui::Rect::from_min_max(
                         clip_rect.left_top(),
                         egui::pos2(clip_rect.left() + fade_in_px, clip_rect.bottom()),
                     );
-                    fade_clip_painter.rect_filled(fade_rect, 0.0, fade_overlay_color);
+                    let strip_w = fade_rect.width() / num_gradient_strips as f32;
+                    for s in 0..num_gradient_strips {
+                        // frac=0 at interior (right), frac=1 at edge (left)
+                        let frac = 1.0 - (s as f32 + 0.5) / num_gradient_strips as f32;
+                        let alpha = (frac * frac * 100.0) as u8;
+                        let strip_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha);
+                        let strip_x = fade_rect.left() + s as f32 * strip_w;
+                        let strip_rect = egui::Rect::from_min_size(
+                            egui::pos2(strip_x, fade_rect.top()),
+                            egui::vec2(strip_w, fade_rect.height()),
+                        );
+                        fade_clip_painter.rect_filled(strip_rect, 0.0, strip_color);
+                    }
 
                     // Build curve polyline: from (left, bottom) up to (left + fade_in_px, top-region)
                     // The curve represents the gain going from 0 (bottom) to 1 (rubber band level)
@@ -2085,6 +2146,13 @@ impl TimelinePanel {
                         fade_clip_painter.line_segment(
                             [points[i], points[i + 1]],
                             egui::Stroke::new(2.5, fade_line_shadow),
+                        );
+                    }
+                    // Bright highlight (subtle glow)
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(2.2, fade_line_highlight),
                         );
                     }
                     // Colored curve line
@@ -2111,12 +2179,24 @@ impl TimelinePanel {
                     let fade_out_px = fade_out_px.min(clip_rect.width());
                     let fade_start_x = clip_rect.right() - fade_out_px;
 
-                    // Dark overlay rectangle
+                    // Subtle gradient overlay: transparent at interior (left), darker at clip edge (right)
                     let fade_rect = egui::Rect::from_min_max(
                         egui::pos2(fade_start_x, clip_rect.top()),
                         clip_rect.right_bottom(),
                     );
-                    fade_clip_painter.rect_filled(fade_rect, 0.0, fade_overlay_color);
+                    let strip_w = fade_rect.width() / num_gradient_strips as f32;
+                    for s in 0..num_gradient_strips {
+                        // frac=0 at interior (left), frac=1 at edge (right)
+                        let frac = (s as f32 + 0.5) / num_gradient_strips as f32;
+                        let alpha = (frac * frac * 100.0) as u8;
+                        let strip_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha);
+                        let strip_x = fade_rect.left() + s as f32 * strip_w;
+                        let strip_rect = egui::Rect::from_min_size(
+                            egui::pos2(strip_x, fade_rect.top()),
+                            egui::vec2(strip_w, fade_rect.height()),
+                        );
+                        fade_clip_painter.rect_filled(strip_rect, 0.0, strip_color);
+                    }
 
                     // Build curve polyline: from (fade_start_x, top-region) down to (right, bottom)
                     // t goes 0..1 across the fade-out region; gain goes 1→0
@@ -2136,6 +2216,13 @@ impl TimelinePanel {
                         fade_clip_painter.line_segment(
                             [points[i], points[i + 1]],
                             egui::Stroke::new(2.5, fade_line_shadow),
+                        );
+                    }
+                    // Bright highlight (subtle glow)
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(2.2, fade_line_highlight),
                         );
                     }
                     // Colored curve line
