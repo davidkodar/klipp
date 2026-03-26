@@ -4890,18 +4890,39 @@ impl KlippApp {
         }
 
         let mut open = true;
-        egui::Window::new("Unsaved Changes")
+        let project_name = self.state.project_path.as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+
+        egui::Window::new("Save Changes?")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label("Save changes before closing?");
+                ui.label(format!(
+                    "Do you want to save changes to \"{}\" before closing?",
+                    project_name
+                ));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Your changes will be lost if you don't save them.")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 160, 165)),
+                );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Discard").clicked() {
+                    if ui.button("Don't Save").clicked() {
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
+                        // Clean up autosave backup since user chose not to save
+                        if let Some(ref path) = self.state.project_path {
+                            let autosave = autosave_path_for(path);
+                            if autosave.exists() {
+                                let _ = std::fs::remove_dir_all(&autosave);
+                            }
+                        }
                         let action = self.state.unsaved_dialog_action.clone();
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                         match action {
@@ -4924,7 +4945,6 @@ impl KlippApp {
                     if ui.button("Save").clicked() {
                         self.state.show_unsaved_dialog = false;
                         cmds.push(AppCommand::SaveProject);
-                        // After save, perform the pending action
                         let action = self.state.unsaved_dialog_action.clone();
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                         match action {
@@ -6752,20 +6772,20 @@ impl eframe::App for KlippApp {
         self.update_window_title(ctx);
 
         if has_quit {
-            // Clean exit: save project if dirty, clean up autosave backup
-            if self.state.dirty {
-                if let Some(ref path) = self.state.project_path.clone() {
-                    self.do_save_project(path);
+            if self.state.dirty && self.state.project_path.is_some() {
+                // Show "Save / Don't Save / Cancel" dialog
+                self.state.show_unsaved_dialog = true;
+                self.state.unsaved_dialog_action = UnsavedAction::Quit;
+            } else {
+                // Not dirty or no project — clean up autosave and close
+                if let Some(ref path) = self.state.project_path {
+                    let autosave = autosave_path_for(path);
+                    if autosave.exists() {
+                        let _ = std::fs::remove_dir_all(&autosave);
+                    }
                 }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            // Remove autosave backup on clean exit
-            if let Some(ref path) = self.state.project_path {
-                let autosave = autosave_path_for(path);
-                if autosave.exists() {
-                    let _ = std::fs::remove_dir_all(&autosave);
-                }
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         if self.state.playback == PlaybackState::Playing || self.state.render_queue.has_active_job() {
