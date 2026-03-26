@@ -1502,8 +1502,14 @@ impl TimelinePanel {
             // ── Waveform overlay (drawn AFTER rubber band so it's on top) ──
             if track_kind == TrackKind::Audio && !clip.kind.is_gap() {
                 // Draw waveform overlay for clips with audio peak data
+                // Try waveform_data first, then fall back to audio_cache.peaks
                 if let Some(mid) = clip.media_id() {
-                    if let Some(peaks) = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref()) {
+                    let wf_data = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref().cloned());
+                    let ac_peaks = state.media_pool.get(&mid)
+                        .and_then(|m| m.audio_cache.as_ref())
+                        .map(|c| c.peaks.clone());
+                    let peaks_ref = wf_data.or(ac_peaks);
+                    if let Some(ref peaks) = peaks_ref {
                         if !peaks.is_empty() {
                             // Map clip source range to peak indices
                             // Each peak bin covers PEAK_BIN_SIZE/48000 seconds
@@ -1525,27 +1531,22 @@ impl TimelinePanel {
 
                                 let clip_painter = ui.painter().with_clip_rect(clip_rect);
                                 let center_y = clip_rect.center().y;
-                                let half_h = clip_rect.height() * 0.45;
+                                let half_h = clip_rect.height() * 0.48; // nearly full height
                                 let w = clip_rect.width();
 
-                                // ALWAYS normalize waveform to fill the available height.
-                                // This makes quiet and loud audio equally visible on the timeline.
-                                // Volume/gain changes are shown by the rubber band position, not waveform size.
-                                let max_peak = clip_peaks.iter()
-                                    .map(|(lo, hi)| lo.abs().max(hi.abs()))
-                                    .fold(0.0f32, f32::max)
-                                    .max(0.001);
-                                let amp_scale = 1.0 / max_peak; // always normalize to fill full height
-
-                                // Draw min/max envelope: one vertical line per pixel
+                                // Draw min/max envelope with sqrt scaling.
+                                // sqrt(amplitude) makes quiet parts much more visible while
+                                // preserving the shape. This is how most NLEs display waveforms.
+                                // e.g. peak=0.003 -> sqrt(0.003)=0.055 -> 5.5% of height (visible!)
+                                //      peak=1.0   -> sqrt(1.0)=1.0     -> 100% of height
                                 let num_cols = (w as usize).max(1);
                                 for col in 0..num_cols {
                                     let x = clip_rect.left() + col as f32;
                                     let peak_idx = col * clip_peaks.len() / num_cols;
                                     let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
 
-                                    let y_top = center_y - (pmax.abs() * amp_scale).min(1.0) * half_h;
-                                    let y_bot = center_y + (pmin.abs() * amp_scale).min(1.0) * half_h;
+                                    let y_top = center_y - pmax.abs().sqrt().min(1.0) * half_h;
+                                    let y_bot = center_y + pmin.abs().sqrt().min(1.0) * half_h;
 
                                     if (y_bot - y_top) > 0.5 {
                                         clip_painter.line_segment(
