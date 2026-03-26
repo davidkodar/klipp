@@ -2454,9 +2454,11 @@ impl KlippApp {
                 }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
                     let mut old_vals = None;
+                    let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             old_vals = Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.channel_config));
+                            linked_partner_id = clip.linked_clip_id;
                             clip.gain = *gain;
                             clip.volume = *volume;
                             clip.pan = *pan;
@@ -2466,6 +2468,23 @@ impl KlippApp {
                             clip.fade_out_curve = *fade_out_curve;
                             clip.channel_config = *channel_config;
                             break;
+                        }
+                    }
+                    // Also sync audio params to the linked partner clip
+                    // so both video and audio clips have the same values
+                    if let Some(partner_id) = linked_partner_id {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(partner) = track.find_clip_mut(partner_id) {
+                                partner.gain = *gain;
+                                partner.volume = *volume;
+                                partner.pan = *pan;
+                                partner.fade_in_secs = *fade_in_secs;
+                                partner.fade_out_secs = *fade_out_secs;
+                                partner.fade_in_curve = *fade_in_curve;
+                                partner.fade_out_curve = *fade_out_curve;
+                                partner.channel_config = *channel_config;
+                                break;
+                            }
                         }
                     }
                     if let Some((og, ov, op, ofi, ofo, occ)) = old_vals {
