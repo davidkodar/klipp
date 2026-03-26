@@ -288,6 +288,8 @@ pub enum AppCommand {
     SetClipPan(f32),
     SetClipGain(f32),
     SetClipChannelConfig(u32),
+    /// Switch the timeline rubber band to show a specific audio param.
+    SetRubberBandParam(AudioParam),
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },

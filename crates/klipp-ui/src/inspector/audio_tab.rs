@@ -205,6 +205,7 @@ pub fn show(
         ui, "Gain", &mut gain, 0.0..=4.0, 1.0, 0.005, 2, "", gain_ks,
     );
     if gain_resp.drag_started {
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Gain));
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
@@ -245,6 +246,8 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs, value: gain });
         }
+        // Auto-switch rubber band to Gain so the diamond is visible on the timeline
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Gain));
     }
     if gain_resp.keyframe_nav_prev {
         if let Some(t) = gain_prev_kf {
@@ -262,6 +265,7 @@ pub fn show(
         ui, "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "", vol_ks,
     );
     if vol_resp.drag_started {
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Volume));
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
@@ -302,6 +306,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs, value: volume });
         }
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Volume));
     }
     if vol_resp.keyframe_nav_prev {
         if let Some(t) = vol_prev_kf {
@@ -319,6 +324,7 @@ pub fn show(
         ui, "Pan", &mut pan, -1.0..=1.0, 0.0, 0.005, 2, "", pan_ks,
     );
     if pan_resp.drag_started {
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Pan));
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
@@ -359,6 +365,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs, value: pan });
         }
+        cmds.push(AppCommand::SetRubberBandParam(AudioParam::Pan));
     }
     if pan_resp.keyframe_nav_prev {
         if let Some(t) = pan_prev_kf {
