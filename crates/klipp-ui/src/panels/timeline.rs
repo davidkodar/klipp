@@ -1500,7 +1500,7 @@ impl TimelinePanel {
             }
 
             // ── Waveform overlay (drawn AFTER rubber band so it's on top) ──
-            if track_kind == TrackKind::Audio && !clip.kind.is_gap() {
+            if track_kind == TrackKind::Audio && !clip.kind.is_gap() && state.audio_show_waveform {
                 // Draw waveform overlay for clips with audio peak data
                 // Try waveform_data first, then fall back to audio_cache.peaks
                 if let Some(mid) = clip.media_id() {
@@ -1564,7 +1564,7 @@ impl TimelinePanel {
             // ── Audio parameter rubber band overlay ──────────────────────
             // Drawn on audio track clips. Displays the parameter selected by rubber_band_param.
             // For linked audio clips, reads keyframes from the linked video clip.
-            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() && state.audio_show_rubber_band {
                 let rb_param = state.rubber_band_param;
 
                 // Resolve the clip that holds the keyframes (may be linked video clip)
@@ -1986,10 +1986,15 @@ impl TimelinePanel {
             }
 
             // ── Audio fade in/out visual indicators ────────────────────────
-            // Drawn on audio track clips AND video clips with audio (for combined clips).
-            let has_audio_for_fade = track_kind == TrackKind::Audio
-                || (clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio));
-            if has_audio_for_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+            let show_fade = match state.audio_fade_overlay_mode {
+                crate::prefs::FadeOverlayMode::Hidden => false,
+                crate::prefs::FadeOverlayMode::AudioOnly => track_kind == TrackKind::Audio,
+                crate::prefs::FadeOverlayMode::Both => {
+                    track_kind == TrackKind::Audio
+                        || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio)
+                }
+            };
+            if show_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
                 // Resolve fade params (same pattern as rubber band)
                 let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
                     (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)

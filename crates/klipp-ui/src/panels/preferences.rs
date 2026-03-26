@@ -7,6 +7,7 @@ enum PrefsTab {
     General,
     Playback,
     Editing,
+    Audio,
     Export,
     Proxy,
 }
@@ -72,6 +73,7 @@ impl PreferencesPanel {
                         (PrefsTab::General, "General"),
                         (PrefsTab::Playback, "Playback"),
                         (PrefsTab::Editing, "Editing"),
+                        (PrefsTab::Audio, "Audio"),
                         (PrefsTab::Export, "Export"),
                         (PrefsTab::Proxy, "Proxy"),
                     ] {
@@ -95,6 +97,7 @@ impl PreferencesPanel {
                         PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
                         PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
                         PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
+                        PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                         PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
                     }
@@ -345,6 +348,68 @@ impl PreferencesPanel {
         );
 
         let _ = cmds; // suppress unused warning
+    }
+
+    fn show_audio(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs: &mut Preferences,
+        dirty: &mut bool,
+    ) {
+        ui.label(egui::RichText::new("Timeline Display").strong().size(12.0));
+        ui.add_space(4.0);
+
+        // Fade overlay mode
+        ui.horizontal(|ui| {
+            ui.label("Fade overlay:");
+            let current = prefs.audio.fade_overlay_mode;
+            egui::ComboBox::from_id_salt("fade_overlay_mode")
+                .selected_text(match current {
+                    crate::prefs::FadeOverlayMode::AudioOnly => "Audio track only",
+                    crate::prefs::FadeOverlayMode::Both => "Both video and audio",
+                    crate::prefs::FadeOverlayMode::Hidden => "Hidden",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::AudioOnly, "Audio track only").changed() {
+                        *dirty = true;
+                    }
+                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::Both, "Both video and audio").changed() {
+                        *dirty = true;
+                    }
+                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::Hidden, "Hidden").changed() {
+                        *dirty = true;
+                    }
+                });
+        });
+        ui.label(
+            egui::RichText::new("Controls where audio fade in/out overlays appear on timeline clips.")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+
+        ui.add_space(8.0);
+
+        // Show rubber band
+        if ui.checkbox(&mut prefs.audio.show_rubber_band, "Show automation rubber band").changed() {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new("Display the volume/pan/gain automation line on audio clips.")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+
+        ui.add_space(4.0);
+
+        // Show waveform
+        if ui.checkbox(&mut prefs.audio.show_waveform, "Show waveform on audio clips").changed() {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new("Display the audio waveform envelope on audio track clips.")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
     }
 
     fn show_export(

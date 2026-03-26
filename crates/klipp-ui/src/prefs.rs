@@ -10,6 +10,8 @@ pub struct Preferences {
     pub playback: PlaybackPrefs,
     #[serde(default)]
     pub editing: EditingPrefs,
+    #[serde(default)]
+    pub audio: AudioPrefs,
     pub export: ExportPrefs,
     pub proxy: ProxyPrefs,
 }
@@ -94,6 +96,41 @@ pub struct PlaybackPrefs {
     /// Whether loop playback is enabled (cycle between in/out points or whole sequence).
     #[serde(default)]
     pub loop_playback: bool,
+}
+
+/// Where to show audio fade overlays on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FadeOverlayMode {
+    /// Show fade overlay on audio track clips only.
+    #[default]
+    AudioOnly,
+    /// Show fade overlay on both video and audio track clips.
+    Both,
+    /// Don't show fade overlays on the timeline.
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioPrefs {
+    /// Where to display fade in/out overlays on the timeline.
+    #[serde(default)]
+    pub fade_overlay_mode: FadeOverlayMode,
+    /// Show the rubber band (volume/pan/gain automation line) on audio clips.
+    #[serde(default = "default_true")]
+    pub show_rubber_band: bool,
+    /// Show waveform on audio track clips.
+    #[serde(default = "default_true")]
+    pub show_waveform: bool,
+}
+
+impl Default for AudioPrefs {
+    fn default() -> Self {
+        Self {
+            fade_overlay_mode: FadeOverlayMode::default(),
+            show_rubber_band: true,
+            show_waveform: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

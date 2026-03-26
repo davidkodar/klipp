@@ -349,6 +349,10 @@ pub struct AppState {
     pub dragging_rubber_band: Option<ClipId>,
     /// Which audio parameter the timeline rubber band displays.
     pub rubber_band_param: AudioParam,
+    /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
+    pub audio_fade_overlay_mode: crate::prefs::FadeOverlayMode,
+    pub audio_show_rubber_band: bool,
+    pub audio_show_waveform: bool,
 
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
@@ -611,6 +615,9 @@ impl Default for AppState {
             dragging_audio_keyframe: None,
             dragging_rubber_band: None,
             rubber_band_param: AudioParam::Volume,
+            audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
+            audio_show_rubber_band: true,
+            audio_show_waveform: true,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),
