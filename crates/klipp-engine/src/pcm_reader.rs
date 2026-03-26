@@ -56,11 +56,15 @@ fn fade_envelope(
     }
 
     // Fade out: ramp 1→0 over fade_out seconds to clip end
-    if clip_pos > clip_end - eff_fade_out {
+    // Only apply fade-out when there's an explicit fade_out configured.
+    // For anti-click only (no explicit fade), don't fade to silence at clip_end —
+    // contiguous clips need audio to continue seamlessly past the boundary.
+    // The anti-click fade-out is only needed at the ACTUAL end of playback,
+    // which is handled by the audio source stopping.
+    if fade_out > 0.001 && clip_pos > clip_end - eff_fade_out {
         let remaining = clip_end - clip_pos;
         let t = (remaining / eff_fade_out).clamp(0.0, 1.0);
-        let curve = if fade_out > 0.001 { fade_out_curve } else { 0 };
-        gain *= apply_curve(t, curve);
+        gain *= apply_curve(t, fade_out_curve);
     }
 
     gain as f32
