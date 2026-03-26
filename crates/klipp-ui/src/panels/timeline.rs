@@ -2050,7 +2050,7 @@ impl TimelinePanel {
                     }
                 };
 
-                let fade_overlay_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
+                let fade_overlay_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 80);
                 let fade_line_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200);
                 let fade_line_shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
                 let num_segments: usize = 24;
@@ -2226,6 +2226,29 @@ impl TimelinePanel {
                 // Cursor feedback when hovering handles
                 if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+
+                // Hover tooltip labels for fade handles (only when not dragging)
+                if !dragging_fi && !dragging_fo && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+                    let tip_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 180);
+                    let tip_font = egui::FontId::proportional(8.0);
+                    if near_fi {
+                        painter.text(
+                            egui::pos2(fi_x + 10.0, clip_rect.top() + 6.0),
+                            egui::Align2::LEFT_CENTER,
+                            "Drag to set fade in",
+                            tip_font,
+                            tip_color,
+                        );
+                    } else if near_fo {
+                        painter.text(
+                            egui::pos2(fo_x - 10.0, clip_rect.top() + 6.0),
+                            egui::Align2::RIGHT_CENTER,
+                            "Drag to set fade out",
+                            tip_font,
+                            tip_color,
+                        );
+                    }
                 }
 
                 // Draw visual feedback during fade handle drag
@@ -2848,30 +2871,58 @@ impl TimelinePanel {
         // Trim handle hover highlight — edge-first detection
         if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.dragging_clip.is_none() {
             if let Some(pos) = pointer_pos {
-                if let Some((cr, _, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    let handle_w = 6.0;
-                    let edge_x = match edge {
-                        TrimEdge::Left => cr.left(),
-                        TrimEdge::Right => cr.right() - handle_w,
+                if let Some((cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                    // Check if pointer is in the fade handle zone (top corner) — skip trim highlight there
+                    let at_top = pos.y - cr.top() < 12.0;
+                    let at_near_edge = match edge {
+                        TrimEdge::Left => pos.x - cr.left() < 10.0,
+                        TrimEdge::Right => cr.right() - pos.x < 10.0,
                     };
-                    // Bright highlight bar
-                    let handle_rect = egui::Rect::from_min_size(
-                        egui::pos2(edge_x, cr.top()),
-                        egui::vec2(handle_w, cr.height()),
-                    );
-                    painter.rect_filled(
-                        handle_rect,
-                        2.0,
-                        egui::Color32::from_rgba_premultiplied(100, 180, 255, 180),
-                    );
-                    // Bright grip lines
-                    let cx = handle_rect.center().x;
-                    let cy = handle_rect.center().y;
-                    for dy in [-6.0_f32, -2.0, 2.0, 6.0] {
-                        painter.line_segment(
-                            [egui::pos2(cx - 1.5, cy + dy), egui::pos2(cx + 1.5, cy + dy)],
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    let clip_has_audio = track_kind == TrackKind::Audio
+                        || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+                    let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
+
+                    if !in_fade_zone {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        let handle_w = 6.0;
+                        let edge_x = match edge {
+                            TrimEdge::Left => cr.left(),
+                            TrimEdge::Right => cr.right() - handle_w,
+                        };
+                        // Bright highlight bar
+                        let handle_rect = egui::Rect::from_min_size(
+                            egui::pos2(edge_x, cr.top()),
+                            egui::vec2(handle_w, cr.height()),
+                        );
+                        painter.rect_filled(
+                            handle_rect,
+                            2.0,
+                            egui::Color32::from_rgba_premultiplied(100, 180, 255, 180),
+                        );
+                        // Bright grip lines
+                        let cx = handle_rect.center().x;
+                        let cy = handle_rect.center().y;
+                        for dy in [-6.0_f32, -2.0, 2.0, 6.0] {
+                            painter.line_segment(
+                                [egui::pos2(cx - 1.5, cy + dy), egui::pos2(cx + 1.5, cy + dy)],
+                                egui::Stroke::new(1.0, egui::Color32::WHITE),
+                            );
+                        }
+                        // Trim tooltip label
+                        let tip_x = match edge {
+                            TrimEdge::Left => cr.left() + 10.0,
+                            TrimEdge::Right => cr.right() - 10.0,
+                        };
+                        let tip_align = match edge {
+                            TrimEdge::Left => egui::Align2::LEFT_CENTER,
+                            TrimEdge::Right => egui::Align2::RIGHT_CENTER,
+                        };
+                        painter.text(
+                            egui::pos2(tip_x, cr.top() + 6.0),
+                            tip_align,
+                            "Drag to trim clip",
+                            egui::FontId::proportional(8.0),
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
                         );
                     }
                 }
