@@ -146,11 +146,45 @@ pub fn show(
             );
         }
 
+        // Per-track VU meter (audio tracks only)
+        if track.kind == TrackKind::Audio {
+            if let Some(&(peak_l, peak_r)) = state.track_peak_levels.get(track_idx) {
+                let meter_w = 40.0;
+                let bar_h = 3.0;
+                let meter_x = name_x + 2.0;
+                let meter_y = track_rect.center().y + 8.0; // below track name
+
+                for (ch, peak) in [(0, peak_l), (1, peak_r)] {
+                    let y = meter_y + ch as f32 * (bar_h + 1.0);
+                    // Background
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(egui::pos2(meter_x, y), egui::vec2(meter_w, bar_h)),
+                        1.0, egui::Color32::from_rgb(25, 25, 30),
+                    );
+                    // Fill
+                    let fill_w = (peak.min(1.0) * meter_w).max(0.0);
+                    if fill_w > 0.0 {
+                        let color = if peak > 0.9 { egui::Color32::from_rgb(220, 50, 50) }
+                            else if peak > 0.7 { egui::Color32::from_rgb(220, 180, 40) }
+                            else { egui::Color32::from_rgb(50, 180, 70) };
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(egui::pos2(meter_x, y), egui::vec2(fill_w, bar_h)),
+                            1.0, color,
+                        );
+                    }
+                }
+                // Request repaint during playback for animation
+                if peak_l > 0.001 || peak_r > 0.001 {
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
+
         // Mute button (right side, 16x16)
         let btn_size = 16.0;
         let mute_rect = egui::Rect::from_min_size(
             egui::pos2(
-                track_rect.max.x - btn_size * 2.0 - 8.0,
+                track_rect.max.x - btn_size * 3.0 - 12.0,
                 track_rect.center().y - btn_size / 2.0,
             ),
             egui::vec2(btn_size, btn_size),
@@ -168,6 +202,37 @@ pub fn show(
         styled_tooltip(&mute_resp, theme, "Mute track", None);
         if mute_resp.clicked() {
             toggle_mute = Some(track_idx);
+        }
+
+        // Solo button (16x16)
+        let solo_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                track_rect.max.x - btn_size * 2.0 - 8.0,
+                track_rect.center().y - btn_size / 2.0,
+            ),
+            egui::vec2(btn_size, btn_size),
+        );
+        let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
+        let solo_active = track.solo;
+        let solo_bg = if solo_active {
+            egui::Color32::from_rgb(200, 170, 40) // bright gold when active
+        } else if solo_resp.hovered() {
+            theme.bg_raised
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let solo_text_color = if solo_active { egui::Color32::from_rgb(30, 25, 10) } else { theme.text_dim };
+        ui.painter().rect_filled(solo_rect, 3.0, solo_bg);
+        ui.painter().text(
+            solo_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "S",
+            egui::FontId::proportional(10.0),
+            solo_text_color,
+        );
+        styled_tooltip(&solo_resp, theme, "Solo track", None);
+        if solo_resp.clicked() {
+            cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !solo_active });
         }
 
         // Lock button (16x16)

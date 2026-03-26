@@ -1155,7 +1155,44 @@ impl TimelinePanel {
                             let clip_dur_secs = clip.duration().to_secs_f64();
                             if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
                                 let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
-                                let new_time = frac * clip_dur_secs;
+                                let mut new_time = frac * clip_dur_secs;
+
+                                // ── Snap keyframe to notable positions ──
+                                // Snap threshold: 8px converted to time
+                                let snap_thresh_secs = 8.0_f64 / (zoom as f64);
+
+                                // Snap to playhead position (relative to clip start)
+                                let playhead_abs = state.playhead_smooth_secs;
+                                let clip_start_abs = clip.timeline_in.to_secs_f64();
+                                let playhead_rel = playhead_abs - clip_start_abs;
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs {
+                                    if (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                        new_time = playhead_rel;
+                                    }
+                                }
+
+                                // Snap to clip start boundary
+                                if new_time < snap_thresh_secs {
+                                    new_time = 0.0;
+                                }
+                                // Snap to clip end boundary
+                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs {
+                                    new_time = clip_dur_secs;
+                                }
+
+                                // Snap to other keyframes on the same clip/param
+                                let keyframes = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                };
+                                for (ki, kf) in keyframes.iter().enumerate() {
+                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                        new_time = kf.time_secs;
+                                        break;
+                                    }
+                                }
+
                                 let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
                                 // Map normalized position to param range
                                 let (p_min, p_range) = match drag_kf.param {
@@ -1301,13 +1338,21 @@ impl TimelinePanel {
             let is_being_dragged = self.dragging_clip.as_ref()
                 .is_some_and(|d| d.clip_id == clip.id);
 
+            // Future: when Clip has a role field, use theme.role_xxx for the fill color.
+            // For now, audio clips use the track's role color (dialogue green from theme).
+            let theme_colors = crate::theme::KlippTheme::default();
+            let audio_role_color = theme_colors.role_dialogue;
             let base_color = if is_title {
                 egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
             } else if is_offline {
                 egui::Color32::from_rgb(58, 32, 32)
             } else {
                 match track_kind {
-                    TrackKind::Audio => egui::Color32::from_rgb(42, 90, 58),
+                    TrackKind::Audio => egui::Color32::from_rgb(
+                        audio_role_color.r().saturating_sub(10),
+                        audio_role_color.g().saturating_sub(10),
+                        audio_role_color.b().saturating_sub(10),
+                    ),
                     _ => clip_color(clip_index),
                 }
             };
@@ -1317,7 +1362,11 @@ impl TimelinePanel {
                 egui::Color32::from_rgb(80, 45, 45)
             } else {
                 match track_kind {
-                    TrackKind::Audio => egui::Color32::from_rgb(72, 120, 88),
+                    TrackKind::Audio => egui::Color32::from_rgb(
+                        audio_role_color.r().saturating_add(20),
+                        audio_role_color.g().saturating_add(20),
+                        audio_role_color.b().saturating_add(20),
+                    ),
                     _ => clip_color_bright(clip_index),
                 }
             };
