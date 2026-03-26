@@ -228,6 +228,7 @@ pub fn show(
     if let Some(idx) = toggle_mute {
         let muted = state.sequence().tracks[idx].muted;
         state.sequence_mut().tracks[idx].muted = !muted;
+        cmds.push(AppCommand::SetTrackMute { track_index: idx, muted: !muted });
     }
     if let Some(idx) = toggle_lock {
         let locked = state.sequence().tracks[idx].locked;
