@@ -1585,15 +1585,11 @@ impl PlaybackEngine {
                     }
                 }
 
-                // Flush mix thread staging to discard any silence-faded samples
-                // that were produced with the OLD clip's parameters
-                if let Some(ref mt) = self.mix_thread {
-                    mt.flush();
-                }
-                // Bump seek gen so cpal drains stale main buffer
-                if let Some(ref aout) = self.audio_output {
-                    aout.0.notify_seek();
-                }
+                // Do NOT flush or notify_seek here — that would empty the pipeline
+                // and create a 2-3 second silence while the ring buffer refills.
+                // Instead, let the existing buffered audio play naturally. The immediate
+                // set_fade() above ensures the feeder produces correct audio going forward.
+                // At most ~10-40ms of silence-faded audio may play before new params take effect.
 
                 // V2 may need updating
                 self.maybe_open_v2_decoder(self.playhead);
