@@ -1985,6 +1985,146 @@ impl TimelinePanel {
                 }
             }
 
+            // ── Audio fade in/out visual indicators ────────────────────────
+            // Drawn after rubber band so fade overlays are clearly visible.
+            // Uses the same resolved fade params from the rubber band section.
+            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+                // Resolve fade params (same pattern as rubber band)
+                let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
+                    (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
+                };
+                let (fi_secs, fo_secs, fi_curve, fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut found = resolve_fade(clip);
+                    for t in &state.sequence().tracks {
+                        if let Some(vc) = t.find_clip(linked_id) {
+                            found = resolve_fade(vc);
+                            break;
+                        }
+                    }
+                    found
+                } else {
+                    resolve_fade(clip)
+                };
+
+                let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+                let fade_clip_painter = ui.painter().with_clip_rect(clip_rect);
+
+                // Curve evaluation: maps t in 0..1 through the selected curve shape
+                let eval_curve = |t: f32, curve: klipp_timeline::FadeCurve| -> f32 {
+                    match curve {
+                        klipp_timeline::FadeCurve::Linear => t,
+                        klipp_timeline::FadeCurve::Exponential => t * t,
+                        klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
+                        klipp_timeline::FadeCurve::SCurve => 3.0 * t * t - 2.0 * t * t * t,
+                    }
+                };
+
+                let fade_overlay_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
+                let fade_line_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200);
+                let fade_line_shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
+                let num_segments: usize = 24;
+
+                // ── Fade In ──
+                if fi_secs > 0.001 && clip_dur_secs > 0.001 {
+                    let fade_in_px = (fi_secs / clip_dur_secs) * clip_rect.width();
+                    let fade_in_px = fade_in_px.min(clip_rect.width());
+
+                    // Dark overlay rectangle
+                    let fade_rect = egui::Rect::from_min_max(
+                        clip_rect.left_top(),
+                        egui::pos2(clip_rect.left() + fade_in_px, clip_rect.bottom()),
+                    );
+                    fade_clip_painter.rect_filled(fade_rect, 0.0, fade_overlay_color);
+
+                    // Build curve polyline: from (left, bottom) up to (left + fade_in_px, top-region)
+                    // The curve represents the gain going from 0 (bottom) to 1 (rubber band level)
+                    let mut points: Vec<egui::Pos2> = Vec::with_capacity(num_segments + 1);
+                    for i in 0..=num_segments {
+                        let t = i as f32 / num_segments as f32;
+                        let gain = eval_curve(t, fi_curve);
+                        let x = clip_rect.left() + t * fade_in_px;
+                        // Map gain 0..1 to bottom..top of clip rect
+                        let y = clip_rect.bottom() - gain * clip_rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+
+                    // Shadow
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(2.5, fade_line_shadow),
+                        );
+                    }
+                    // Colored curve line
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(1.5, fade_line_color),
+                        );
+                    }
+
+                    // Vertical boundary line at fade end
+                    fade_clip_painter.line_segment(
+                        [
+                            egui::pos2(clip_rect.left() + fade_in_px, clip_rect.top()),
+                            egui::pos2(clip_rect.left() + fade_in_px, clip_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 195, 50, 80)),
+                    );
+                }
+
+                // ── Fade Out ──
+                if fo_secs > 0.001 && clip_dur_secs > 0.001 {
+                    let fade_out_px = (fo_secs / clip_dur_secs) * clip_rect.width();
+                    let fade_out_px = fade_out_px.min(clip_rect.width());
+                    let fade_start_x = clip_rect.right() - fade_out_px;
+
+                    // Dark overlay rectangle
+                    let fade_rect = egui::Rect::from_min_max(
+                        egui::pos2(fade_start_x, clip_rect.top()),
+                        clip_rect.right_bottom(),
+                    );
+                    fade_clip_painter.rect_filled(fade_rect, 0.0, fade_overlay_color);
+
+                    // Build curve polyline: from (fade_start_x, top-region) down to (right, bottom)
+                    // t goes 0..1 across the fade-out region; gain goes 1→0
+                    let mut points: Vec<egui::Pos2> = Vec::with_capacity(num_segments + 1);
+                    for i in 0..=num_segments {
+                        let t = i as f32 / num_segments as f32;
+                        // remaining = 1 - t, so gain fades from 1 to 0
+                        let remaining = 1.0 - t;
+                        let gain = eval_curve(remaining, fo_curve);
+                        let x = fade_start_x + t * fade_out_px;
+                        let y = clip_rect.bottom() - gain * clip_rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+
+                    // Shadow
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(2.5, fade_line_shadow),
+                        );
+                    }
+                    // Colored curve line
+                    for i in 0..points.len().saturating_sub(1) {
+                        fade_clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(1.5, fade_line_color),
+                        );
+                    }
+
+                    // Vertical boundary line at fade start
+                    fade_clip_painter.line_segment(
+                        [
+                            egui::pos2(fade_start_x, clip_rect.top()),
+                            egui::pos2(fade_start_x, clip_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 195, 50, 80)),
+                    );
+                }
+            }
+
             // Border
             painter.rect_stroke(
                 clip_rect,
