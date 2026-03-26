@@ -2738,12 +2738,97 @@ impl PlaybackEngine {
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clips.get(self.current_clip_index));
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
-        let builtin_fx = clip.map(|c| c.builtin_effects.clone()).unwrap_or_default();
         let node_graph = clip.map(|c| c.node_graph.clone());
         let clip_time_secs = clip.map(|_c| {
             (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64())
                 + self.clip_source_start
         }).unwrap_or(0.0);
+
+        // Clip-relative time for keyframe evaluation (time since clip's timeline_in)
+        let clip_relative_secs = clip.map(|c| {
+            (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0)
+        }).unwrap_or(0.0);
+
+        // Build builtin_fx with keyframed values overriding static ones
+        let builtin_fx = if let Some(c) = clip {
+            let mut fx = c.builtin_effects.clone();
+
+            // Evaluate opacity keyframes
+            if !c.opacity_keyframes.is_empty() {
+                let opacity_val = klipp_core::keyframe::evaluate(
+                    &c.opacity_keyframes,
+                    clip_relative_secs,
+                    fx.iter().find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+                        _ => None,
+                    }).unwrap_or(1.0),
+                );
+                let mut found = false;
+                for effect in &mut fx {
+                    if let klipp_effects::BuiltinEffect::Opacity { value } = effect {
+                        *value = opacity_val;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found && (opacity_val - 1.0).abs() > 0.001 {
+                    fx.push(klipp_effects::BuiltinEffect::Opacity { value: opacity_val });
+                }
+            }
+
+            // Evaluate transform keyframes
+            let has_transform_kf = !c.transform_pos_x_keyframes.is_empty()
+                || !c.transform_pos_y_keyframes.is_empty()
+                || !c.transform_scale_keyframes.is_empty()
+                || !c.transform_rotation_keyframes.is_empty();
+
+            if has_transform_kf {
+                // Get current transform values (or defaults)
+                let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y) =
+                    fx.iter().find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Transform {
+                            position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
+                        } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+                        _ => None,
+                    }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+
+                if !c.transform_pos_x_keyframes.is_empty() {
+                    pos_x = klipp_core::keyframe::evaluate(&c.transform_pos_x_keyframes, clip_relative_secs, pos_x);
+                }
+                if !c.transform_pos_y_keyframes.is_empty() {
+                    pos_y = klipp_core::keyframe::evaluate(&c.transform_pos_y_keyframes, clip_relative_secs, pos_y);
+                }
+                if !c.transform_scale_keyframes.is_empty() {
+                    let s = klipp_core::keyframe::evaluate(&c.transform_scale_keyframes, clip_relative_secs, scale_x);
+                    scale_x = s;
+                    scale_y = s; // uniform scale from the Video tab
+                }
+                if !c.transform_rotation_keyframes.is_empty() {
+                    rotation = klipp_core::keyframe::evaluate(&c.transform_rotation_keyframes, clip_relative_secs, rotation);
+                }
+
+                let new_transform = klipp_effects::BuiltinEffect::Transform {
+                    position_x: pos_x, position_y: pos_y,
+                    scale_x, scale_y, rotation, anchor_x, anchor_y,
+                };
+                let mut found = false;
+                for effect in &mut fx {
+                    if matches!(effect, klipp_effects::BuiltinEffect::Transform { .. }) {
+                        *effect = new_transform.clone();
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    fx.push(new_transform);
+                }
+            }
+
+            fx
+        } else {
+            Vec::new()
+        };
+
         drop(seq);
 
         // Save pre-grade frame for Before/After split view
