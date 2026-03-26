@@ -159,6 +159,12 @@ pub struct ClipJson {
     pub fade_out_curve: Option<klipp_timeline::FadeCurve>,
     #[serde(default)]
     pub channel_config: Option<klipp_timeline::ChannelConfig>,
+    #[serde(default)]
+    pub volume_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub pan_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub gain_keyframes: Option<Vec<klipp_core::Keyframe>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

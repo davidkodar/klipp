@@ -345,6 +345,9 @@ impl Track {
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
             channel_config: ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
         });
         clip_id
     }
@@ -438,6 +441,27 @@ impl Track {
         }
 
         let offset = cut_at - clip.timeline_in;
+        let cut_secs = offset.to_secs_f64();
+
+        // Split keyframes at the cut point
+        let split_kfs = |kfs: &[klipp_core::Keyframe]| -> (Vec<klipp_core::Keyframe>, Vec<klipp_core::Keyframe>) {
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for kf in kfs {
+                if kf.time_secs < cut_secs {
+                    before.push(kf.clone());
+                } else {
+                    let mut shifted = kf.clone();
+                    shifted.time_secs -= cut_secs;
+                    after.push(shifted);
+                }
+            }
+            (before, after)
+        };
+        let (vol_a, vol_b) = split_kfs(&clip.volume_keyframes);
+        let (pan_a, pan_b) = split_kfs(&clip.pan_keyframes);
+        let (gain_a, gain_b) = split_kfs(&clip.gain_keyframes);
+
         let clip_a = Clip {
             id: ClipId::new(),
             kind: clip.kind.clone(),
@@ -459,6 +483,9 @@ impl Track {
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
+            volume_keyframes: vol_a,
+            pan_keyframes: pan_a,
+            gain_keyframes: gain_a,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -481,6 +508,9 @@ impl Track {
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
+            volume_keyframes: vol_b,
+            pan_keyframes: pan_b,
+            gain_keyframes: gain_b,
         };
 
         self.clips.remove(pos);
@@ -556,6 +586,12 @@ pub struct Clip {
     pub fade_out_curve: FadeCurve,
     #[serde(default)]
     pub channel_config: ChannelConfig,
+    #[serde(default)]
+    pub volume_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub pan_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub gain_keyframes: Vec<klipp_core::Keyframe>,
 }
 
 impl Clip {
@@ -610,6 +646,9 @@ impl Clip {
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
             channel_config: ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
         }
     }
 
@@ -642,6 +681,9 @@ impl Clip {
             fade_in_curve: FadeCurve::default(),
             fade_out_curve: FadeCurve::default(),
             channel_config: ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
         }
     }
 }

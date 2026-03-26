@@ -161,7 +161,8 @@ impl NewInspectorPanel {
                         let source_channels = clip.media_id()
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
-                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels);
+                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels, clip_time_secs);
                     } else {
                         no_selection(ui, theme);
                     }

@@ -169,10 +169,10 @@ pub fn show(
     let mut scale_val = transform.scale_x;
     let mut rotation = transform.rotation;
 
-    let r_px = scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px");
-    let r_py = scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px");
-    let r_sc = scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}");
-    let r_ro = scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}");
+    let r_px = scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
+    let r_py = scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
+    let r_sc = scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
+    let r_ro = scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None);
 
     // Undo coalescing for transform drags
     if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started {
@@ -217,7 +217,7 @@ pub fn show(
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
     let mut opacity = get_opacity(clip);
-    let r_op = scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "");
+    let r_op = scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", None);
 
     if r_op.drag_started {
         if let Some(idx) = find_opacity_index(clip) {
@@ -250,7 +250,7 @@ pub fn show(
 
     // Rate is a placeholder for now -- no speed field on Clip yet
     let mut rate = 100.0f32;
-    let _r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=400.0, 100.0, 0.5, 0, " %");
+    let _r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=400.0, 100.0, 0.5, 0, " %", None);
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Direction")

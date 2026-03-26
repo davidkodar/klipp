@@ -2383,6 +2383,50 @@ impl KlippApp {
                     continue;
                 }
                 // Undo coalescing — drag gesture signals for builtin effects
+                AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let kf = klipp_core::Keyframe {
+                                time_secs: *time_secs,
+                                value: *value,
+                                interpolation: klipp_core::Interpolation::Linear,
+                                tangent_out: (0.0, 0.0),
+                                tangent_in: (0.0, 0.0),
+                            };
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            // Remove existing keyframe at same time (within tolerance)
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            keyframes.push(kf);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
                     let mut old_vals = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -2629,6 +2673,9 @@ impl KlippApp {
                         fade_in_curve: klipp_timeline::FadeCurve::default(),
                         fade_out_curve: klipp_timeline::FadeCurve::default(),
                         channel_config: klipp_timeline::ChannelConfig::default(),
+                        volume_keyframes: Vec::new(),
+                        pan_keyframes: Vec::new(),
+                        gain_keyframes: Vec::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -2906,6 +2953,9 @@ impl KlippApp {
                                     fade_in_curve: clip.fade_in_curve,
                                     fade_out_curve: clip.fade_out_curve,
                                     channel_config: clip.channel_config,
+                                    volume_keyframes: clip.volume_keyframes.clone(),
+                                    pan_keyframes: clip.pan_keyframes.clone(),
+                                    gain_keyframes: clip.gain_keyframes.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -3017,6 +3067,9 @@ impl KlippApp {
                                     fade_in_curve: klipp_timeline::FadeCurve::default(),
                                     fade_out_curve: klipp_timeline::FadeCurve::default(),
                                     channel_config: klipp_timeline::ChannelConfig::default(),
+                                    volume_keyframes: Vec::new(),
+                                    pan_keyframes: Vec::new(),
+                                    gain_keyframes: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -3083,6 +3136,9 @@ impl KlippApp {
                                     fade_in_curve: klipp_timeline::FadeCurve::default(),
                                     fade_out_curve: klipp_timeline::FadeCurve::default(),
                                     channel_config: klipp_timeline::ChannelConfig::default(),
+                                    volume_keyframes: Vec::new(),
+                                    pan_keyframes: Vec::new(),
+                                    gain_keyframes: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -4630,6 +4686,9 @@ impl KlippApp {
                 fade_in_curve: clip.fade_in_curve,
                 fade_out_curve: clip.fade_out_curve,
                 channel_config: clip.channel_config,
+                volume_keyframes: clip.volume_keyframes.clone(),
+                pan_keyframes: clip.pan_keyframes.clone(),
+                gain_keyframes: clip.gain_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -4721,6 +4780,9 @@ impl KlippApp {
                 fade_in_curve: clip.fade_in_curve,
                 fade_out_curve: clip.fade_out_curve,
                 channel_config: clip.channel_config,
+                volume_keyframes: clip.volume_keyframes.clone(),
+                pan_keyframes: clip.pan_keyframes.clone(),
+                gain_keyframes: clip.gain_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }

@@ -239,6 +239,9 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     fade_in_curve: c.fade_in_curve.unwrap_or_default(),
                     fade_out_curve: c.fade_out_curve.unwrap_or_default(),
                     channel_config: c.channel_config.unwrap_or_default(),
+                    volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
+                    pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
+                    gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
                 }
             }).collect();
             track

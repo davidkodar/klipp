@@ -510,29 +510,29 @@ fn show_builtin_effect_params(
 
     match &mut updated {
         klipp_effects::BuiltinEffect::Opacity { value } => {
-            track_scrubby!(scrubby_param_row(ui, "Opacity", value, 0.0..=1.0, 1.0, 0.005, 2, ""));
+            track_scrubby!(scrubby_param_row(ui, "Opacity", value, 0.0..=1.0, 1.0, 0.005, 2, "", None));
         }
         klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-            track_scrubby!(scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px"));
+            track_scrubby!(scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px", None));
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
-            track_scrubby!(scrubby_param_row(ui, "Amount", amount, 0.0..=2.0, 0.5, 0.01, 2, ""));
+            track_scrubby!(scrubby_param_row(ui, "Amount", amount, 0.0..=2.0, 0.5, 0.01, 2, "", None));
         }
         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-            track_scrubby!(scrubby_param_row(ui, "Left", left, 0.0..=1.0, 0.0, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Right", right, 0.0..=1.0, 0.0, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Top", top, 0.0..=1.0, 0.0, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Left", left, 0.0..=1.0, 0.0, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Right", right, 0.0..=1.0, 0.0, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Top", top, 0.0..=1.0, 0.0, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, "", None));
         }
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } => {
-            track_scrubby!(scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px"));
-            track_scrubby!(scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px"));
-            track_scrubby!(scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}"));
-            track_scrubby!(scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}"));
-            track_scrubby!(scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}"));
-            track_scrubby!(scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None));
+            track_scrubby!(scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None));
+            track_scrubby!(scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None));
+            track_scrubby!(scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None));
+            track_scrubby!(scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None));
+            track_scrubby!(scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None));
         }
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
             // Color picker stays as-is (not a scrubby candidate)
@@ -546,8 +546,8 @@ fn show_builtin_effect_params(
                     changed = true;
                 }
             });
-            track_scrubby!(scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, ""));
-            track_scrubby!(scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, ""));
+            track_scrubby!(scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, "", None));
+            track_scrubby!(scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, "", None));
         }
     }
 

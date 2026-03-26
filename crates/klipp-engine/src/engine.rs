@@ -290,6 +290,8 @@ impl PlaybackEngine {
 
             if self.state == PlaybackState::Playing {
                 self.update_playback();
+                // Sync clip audio params periodically during playback (for keyframe animation)
+                self.sync_clip_volumes();
             }
 
             // Emit perf stats periodically
@@ -915,9 +917,12 @@ impl PlaybackEngine {
         for active in &self.audio_sources {
             if let Some(track) = seq.tracks.get(active.track_index) {
                 if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
-                    clip_volume = audio_clip.volume;
-                    clip_pan = audio_clip.pan;
-                    let mut clip_gain = audio_clip.gain;
+                    // Compute clip-relative time for keyframe evaluation
+                    let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
+
+                    clip_volume = klipp_core::keyframe::evaluate(&audio_clip.volume_keyframes, clip_time_secs, audio_clip.volume);
+                    clip_pan = klipp_core::keyframe::evaluate(&audio_clip.pan_keyframes, clip_time_secs, audio_clip.pan);
+                    let mut clip_gain = klipp_core::keyframe::evaluate(&audio_clip.gain_keyframes, clip_time_secs, audio_clip.gain);
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
                     let mut fi_curve = audio_clip.fade_in_curve;
@@ -930,9 +935,10 @@ impl PlaybackEngine {
                     if let Some(linked_id) = audio_clip.linked_clip_id {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
-                                clip_volume = video_clip.volume;
-                                clip_pan = video_clip.pan;
-                                clip_gain = video_clip.gain;
+                                let linked_clip_time = (self.playhead.to_secs_f64() - video_clip.timeline_in.to_secs_f64()).max(0.0);
+                                clip_volume = klipp_core::keyframe::evaluate(&video_clip.volume_keyframes, linked_clip_time, video_clip.volume);
+                                clip_pan = klipp_core::keyframe::evaluate(&video_clip.pan_keyframes, linked_clip_time, video_clip.pan);
+                                clip_gain = klipp_core::keyframe::evaluate(&video_clip.gain_keyframes, linked_clip_time, video_clip.gain);
                                 fade_in = video_clip.fade_in_secs;
                                 fade_out = video_clip.fade_out_secs;
                                 fi_curve = video_clip.fade_in_curve;

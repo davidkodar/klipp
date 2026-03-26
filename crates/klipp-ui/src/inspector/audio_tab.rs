@@ -1,8 +1,9 @@
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use crate::widgets::{scrubby_param::scrubby_param_row, waveform};
-use klipp_core::AppCommand;
+use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
+use crate::widgets::waveform;
+use klipp_core::{AppCommand, AudioParam};
 use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 
 /// Find peak levels for the clip's audio. If the clip is on a video track
@@ -35,6 +36,7 @@ pub fn show(
     peak: (f32, f32),
     waveform_peaks: Option<&[f32]>,
     source_channels: Option<u16>,
+    clip_time_secs: f64,
 ) {
     let clip_id = clip.id;
 
@@ -153,10 +155,25 @@ pub fn show(
     }
     ui.add_space(4.0);
 
+    // ── Keyframe state helpers ──
+    let kf_tolerance = 0.02;
+    let gain_ks = Some(KeyframeState {
+        has_keyframe_at_playhead: clip.gain_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !clip.gain_keyframes.is_empty(),
+    });
+    let vol_ks = Some(KeyframeState {
+        has_keyframe_at_playhead: clip.volume_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !clip.volume_keyframes.is_empty(),
+    });
+    let pan_ks = Some(KeyframeState {
+        has_keyframe_at_playhead: clip.pan_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !clip.pan_keyframes.is_empty(),
+    });
+
     // ── Gain (pre-fader) ──
     let drag_key = format!("{:?}:audio", clip_id);
     let gain_resp = scrubby_param_row(
-        ui, "Gain", &mut gain, 0.0..=4.0, 1.0, 0.005, 2, "",
+        ui, "Gain", &mut gain, 0.0..=4.0, 1.0, 0.005, 2, "", gain_ks,
     );
     if gain_resp.drag_started {
         cmds.push(AppCommand::BeginAudioDrag {
@@ -193,10 +210,17 @@ pub fn show(
             new_fade_out: fade_out,
         });
     }
+    if gain_resp.keyframe_toggled {
+        if clip.gain_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs, value: gain });
+        }
+    }
 
     // ── Volume ──
     let vol_resp = scrubby_param_row(
-        ui, "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "",
+        ui, "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "", vol_ks,
     );
     if vol_resp.drag_started {
         cmds.push(AppCommand::BeginAudioDrag {
@@ -233,10 +257,17 @@ pub fn show(
             new_fade_out: fade_out,
         });
     }
+    if vol_resp.keyframe_toggled {
+        if clip.volume_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs, value: volume });
+        }
+    }
 
     // ── Pan ──
     let pan_resp = scrubby_param_row(
-        ui, "Pan", &mut pan, -1.0..=1.0, 0.0, 0.005, 2, "",
+        ui, "Pan", &mut pan, -1.0..=1.0, 0.0, 0.005, 2, "", pan_ks,
     );
     if pan_resp.drag_started {
         cmds.push(AppCommand::BeginAudioDrag {
@@ -273,10 +304,17 @@ pub fn show(
             new_fade_out: fade_out,
         });
     }
+    if pan_resp.keyframe_toggled {
+        if clip.pan_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs, value: pan });
+        }
+    }
 
     // ── Fade In ──
     let fi_resp = scrubby_param_row(
-        ui, "Fade In", &mut fade_in, 0.0..=10.0, 0.0, 0.02, 2, " s",
+        ui, "Fade In", &mut fade_in, 0.0..=10.0, 0.0, 0.02, 2, " s", None,
     );
     if fi_resp.drag_started {
         cmds.push(AppCommand::BeginAudioDrag {
@@ -342,7 +380,7 @@ pub fn show(
 
     // ── Fade Out ──
     let fo_resp = scrubby_param_row(
-        ui, "Fade Out", &mut fade_out, 0.0..=10.0, 0.0, 0.02, 2, " s",
+        ui, "Fade Out", &mut fade_out, 0.0..=10.0, 0.0, 0.02, 2, " s", None,
     );
     if fo_resp.drag_started {
         cmds.push(AppCommand::BeginAudioDrag {

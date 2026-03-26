@@ -1,7 +1,16 @@
 use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TrackId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// Which audio parameter a keyframe operates on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioParam {
+    Volume,
+    Pan,
+    Gain,
+}
 
 #[derive(Debug, Clone)]
 pub struct ExportSettings {
@@ -475,6 +484,10 @@ pub enum AppCommand {
 
     // Application
     Quit,
+
+    // Audio keyframes
+    AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
+    RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
 
     // Clip audio
     UpdateClipAudio {

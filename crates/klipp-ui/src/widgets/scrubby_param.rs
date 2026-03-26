@@ -5,6 +5,14 @@
 
 use crate::icons::Icon;
 
+/// State passed to indicate keyframe status for the diamond button.
+pub struct KeyframeState {
+    /// A keyframe exists at the current playhead time.
+    pub has_keyframe_at_playhead: bool,
+    /// The parameter has any keyframes at all.
+    pub has_any_keyframes: bool,
+}
+
 /// Returned by scrubby_param_row() so callers can check what happened.
 pub struct ScrubbyParamResponse {
     pub changed: bool,          // value was modified (drag, label-drag, type, or reset)
@@ -12,6 +20,7 @@ pub struct ScrubbyParamResponse {
     pub drag_stopped: bool,     // mouse-up ended a drag gesture
     pub lost_focus: bool,       // text entry finished (Enter/Tab/click away after typing)
     pub reset_clicked: bool,    // user clicked the reset-to-default indicator
+    pub keyframe_toggled: bool, // user clicked the diamond to add/remove keyframe
 }
 
 /// Renders a single inspector parameter row with FCP-style scrubby interaction.
@@ -35,6 +44,7 @@ pub fn scrubby_param_row(
     speed: f64,
     decimals: usize,
     suffix: &str,
+    keyframe_state: Option<KeyframeState>,
 ) -> ScrubbyParamResponse {
     let old_value = *value;
     let is_at_default = (*value - default).abs() < f32::EPSILON;
@@ -52,6 +62,7 @@ pub fn scrubby_param_row(
     let mut label_drag_started = false;
     let mut label_drag_stopped = false;
     let mut reset_clicked = false;
+    let mut keyframe_toggled = false;
 
     // Use a persistent ID to track whether the row was hovered last frame,
     // preventing the reset button from flickering when the mouse moves to it.
@@ -157,14 +168,38 @@ pub fn scrubby_param_row(
         // Store hover state for next frame (prevents reset button flicker)
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
 
-        // ---- KEYFRAME DIAMOND STUB (Phosphor Diamond, always grey -- no keyframing yet) ----
-        let (diamond_rect_inner, _diamond_resp) = ui.allocate_exact_size(
+        // ---- KEYFRAME DIAMOND ----
+        let diamond_sense = if keyframe_state.is_some() {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let (diamond_rect_inner, diamond_resp) = ui.allocate_exact_size(
             egui::vec2(diamond_width, 18.0),
-            egui::Sense::hover(),
+            diamond_sense,
         );
-        let diamond_tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, 40);
+
+        let diamond_tint = if let Some(ref ks) = keyframe_state {
+            if ks.has_keyframe_at_playhead {
+                // Amber filled — keyframe exists at current time
+                egui::Color32::from_rgb(230, 170, 40)
+            } else if ks.has_any_keyframes {
+                // Dim amber — parameter is keyframed but not at this time
+                egui::Color32::from_rgba_premultiplied(230, 170, 40, 80)
+            } else {
+                // Grey — no keyframes
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)
+            }
+        } else {
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)
+        };
+
         let diamond_icon_rect = egui::Rect::from_center_size(diamond_rect_inner.center(), egui::vec2(10.0, 10.0));
         Icon::Diamond.image(10.0).tint(diamond_tint).paint_at(ui, diamond_icon_rect);
+
+        if keyframe_state.is_some() && diamond_resp.clicked() {
+            keyframe_toggled = true;
+        }
     });
 
     // ---- RANGE INDICATOR (subtle fill bar under the label area only) ----
@@ -189,5 +224,6 @@ pub fn scrubby_param_row(
         drag_stopped: dv_resp.drag_stopped() || label_drag_stopped,
         lost_focus: dv_resp.lost_focus(),
         reset_clicked,
+        keyframe_toggled,
     }
 }

@@ -31,3 +31,49 @@ pub struct Keyframe {
     pub tangent_in: (f64, f32),
 }
 
+/// Evaluate a keyframe track at a given time (relative to clip source_in).
+/// Returns the interpolated value, or `default` if no keyframes exist.
+pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
+    if keyframes.is_empty() {
+        return default;
+    }
+    // Before first keyframe: use first keyframe's value
+    if time_secs <= keyframes[0].time_secs {
+        return keyframes[0].value;
+    }
+    // After last keyframe: use last keyframe's value
+    let last = &keyframes[keyframes.len() - 1];
+    if time_secs >= last.time_secs {
+        return last.value;
+    }
+    // Find surrounding keyframes and interpolate
+    for i in 0..keyframes.len() - 1 {
+        let a = &keyframes[i];
+        let b = &keyframes[i + 1];
+        if time_secs >= a.time_secs && time_secs <= b.time_secs {
+            let t = if (b.time_secs - a.time_secs).abs() < 1e-9 {
+                0.0
+            } else {
+                (time_secs - a.time_secs) / (b.time_secs - a.time_secs)
+            };
+            return match a.interpolation {
+                Interpolation::Step => a.value,
+                Interpolation::Linear => a.value + (b.value - a.value) * t as f32,
+                Interpolation::Bezier => {
+                    let p0 = a.value;
+                    let p3 = b.value;
+                    let p1 = p0 + a.tangent_out.1;
+                    let p2 = p3 + b.tangent_in.1;
+                    let t = t as f32;
+                    let mt = 1.0 - t;
+                    mt * mt * mt * p0
+                        + 3.0 * mt * mt * t * p1
+                        + 3.0 * mt * t * t * p2
+                        + t * t * t * p3
+                }
+            };
+        }
+    }
+    default
+}
+
