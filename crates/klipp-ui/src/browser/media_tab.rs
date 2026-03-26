@@ -743,7 +743,7 @@ fn handle_hover_skim(
     cmds: &mut Vec<AppCommand>,
     draw_scrubber: bool,
 ) -> bool {
-    if !state.skimming_enabled {
+    if !state.skimming_enabled || state.has_modal_open() {
         return false;
     }
     // Use raw pointer position

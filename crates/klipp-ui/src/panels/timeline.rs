@@ -2013,12 +2013,13 @@ impl TimelinePanel {
             }
 
             // Hover detection — only if pointer is inside the visible content area
+            // Blocked when a modal dialog is open to prevent background interaction
             if let Some(pos) = pointer_pos {
-                if clip_rect.contains(pos) && content_rect.contains(pos) {
+                if clip_rect.contains(pos) && content_rect.contains(pos) && !state.has_modal_open() {
                     state.hovered_clip = Some(clip.id);
 
                     // Timeline skimming: show frame at hover position in viewer
-                    if state.skimming_enabled {
+                    if state.skimming_enabled && !state.has_modal_open() {
                         if let Some(media_id) = clip.media_id() {
                             state.browser_skim_active_this_frame = true;
 

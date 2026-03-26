@@ -419,6 +419,21 @@ pub struct ClipboardContent {
     pub source_track_index: usize,
 }
 
+impl AppState {
+    /// Returns true when any modal dialog or window is open.
+    /// Used to block background interactions like skimming, timeline hover, etc.
+    pub fn has_modal_open(&self) -> bool {
+        self.show_preferences
+            || self.show_unsaved_dialog
+            || self.show_export_dialog
+            || self.show_new_project_dialog
+            || self.show_relink_dialog
+            || self.show_about_dialog
+            || self.show_autosave_recovery
+            || self.show_render_queue
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum UnsavedAction {
     None,
