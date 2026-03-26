@@ -43,9 +43,10 @@ pub fn show(
     let clip_rate = clip.timeline_in.rate;
 
     // Read current values into local mutable copies
-    let mut gain = clip.gain;
-    let mut volume = clip.volume;
-    let mut pan = clip.pan;
+    // Use keyframed value at playhead if keyframes exist, otherwise static value
+    let mut gain = klipp_core::keyframe::evaluate(&clip.gain_keyframes, clip_time_secs, clip.gain);
+    let mut volume = klipp_core::keyframe::evaluate(&clip.volume_keyframes, clip_time_secs, clip.volume);
+    let mut pan = klipp_core::keyframe::evaluate(&clip.pan_keyframes, clip_time_secs, clip.pan);
     let mut fade_in = clip.fade_in_secs;
     let mut fade_out = clip.fade_out_secs;
     let mut fade_in_curve = clip.fade_in_curve;
@@ -228,6 +229,9 @@ pub fn show(
             fade_out_curve,
             channel_config,
         });
+        if !clip.gain_keyframes.is_empty() {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs, value: gain });
+        }
     }
     if gain_resp.drag_stopped {
         cmds.push(AppCommand::EndAudioDrag {
@@ -288,6 +292,9 @@ pub fn show(
             fade_out_curve,
             channel_config,
         });
+        if !clip.volume_keyframes.is_empty() {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs, value: volume });
+        }
     }
     if vol_resp.drag_stopped {
         cmds.push(AppCommand::EndAudioDrag {
@@ -347,6 +354,9 @@ pub fn show(
             fade_out_curve,
             channel_config,
         });
+        if !clip.pan_keyframes.is_empty() {
+            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs, value: pan });
+        }
     }
     if pan_resp.drag_stopped {
         cmds.push(AppCommand::EndAudioDrag {

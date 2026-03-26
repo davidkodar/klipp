@@ -183,11 +183,12 @@ pub fn show(
     let transform = get_transform(clip);
     let transform_drag_key = format!("{:?}:video_transform", clip_id);
 
-    // Local copies for scrubby rows
-    let mut pos_x = transform.position_x;
-    let mut pos_y = transform.position_y;
-    let mut scale_val = transform.scale_x;
-    let mut rotation = transform.rotation;
+    // Local copies for scrubby rows — use keyframed value at playhead if keyframes exist,
+    // otherwise use the static value from the builtin effect
+    let mut pos_x = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_time_secs, transform.position_x);
+    let mut pos_y = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_time_secs, transform.position_y);
+    let mut scale_val = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_time_secs, transform.scale_x);
+    let mut rotation = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_time_secs, transform.rotation);
 
     // Compute keyframe states for transform params
     let pos_x_ks = keyframe_state(&clip.transform_pos_x_keyframes, clip_time_secs);
@@ -221,6 +222,21 @@ pub fn show(
         t.scale_y = scale_val; // uniform scale
         t.rotation = rotation;
         emit_transform(cmds, clip, clip_id, t);
+
+        // When keyframes exist, also update the keyframe at the current playhead
+        // so slider changes affect the keyframed value, not just the static value
+        if r_px.changed && !clip.transform_pos_x_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs, value: pos_x });
+        }
+        if r_py.changed && !clip.transform_pos_y_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs, value: pos_y });
+        }
+        if r_sc.changed && !clip.transform_scale_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs, value: scale_val });
+        }
+        if r_ro.changed && !clip.transform_rotation_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs, value: rotation });
+        }
     }
 
     if r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped {
@@ -318,7 +334,7 @@ pub fn show(
 
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
-    let mut opacity = get_opacity(clip);
+    let mut opacity = klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_time_secs, get_opacity(clip));
     let opacity_ks = keyframe_state(&clip.opacity_keyframes, clip_time_secs);
     let r_op = scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks));
 
@@ -334,6 +350,10 @@ pub fn show(
     }
     if r_op.changed {
         emit_opacity(cmds, clip, clip_id, opacity);
+        // Update keyframe at playhead when keyframes exist
+        if !clip.opacity_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
+        }
     }
     if r_op.drag_stopped {
         if let Some(idx) = find_opacity_index(clip) {
