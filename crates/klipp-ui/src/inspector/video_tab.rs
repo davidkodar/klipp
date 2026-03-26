@@ -1,7 +1,7 @@
 use crate::theme::KlippTheme;
 use crate::widgets::role_pill;
-use crate::widgets::scrubby_param::scrubby_param_row;
-use klipp_core::AppCommand;
+use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
+use klipp_core::{AppCommand, Timecode, VideoParam};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::Clip;
 
@@ -94,13 +94,33 @@ impl TransformParams {
     }
 }
 
+/// Compute KeyframeState for a given keyframe vec at a given clip-relative time.
+fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64) -> KeyframeState {
+    let kf_tolerance = 0.02;
+    KeyframeState {
+        has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !keyframes.is_empty(),
+        prev_keyframe_time: keyframes.iter()
+            .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
+            .last()
+            .map(|k| k.time_secs),
+        next_keyframe_time: keyframes.iter()
+            .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+            .map(|k| k.time_secs),
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip: &Clip,
     cmds: &mut Vec<AppCommand>,
+    clip_time_secs: f64,
 ) {
     let clip_id = clip.id;
+    let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
+    let clip_rate = clip.timeline_in.rate;
+    let kf_tolerance = 0.02;
 
     // ── Role section ──
     section_header(ui, theme, "Role");
@@ -169,10 +189,16 @@ pub fn show(
     let mut scale_val = transform.scale_x;
     let mut rotation = transform.rotation;
 
-    let r_px = scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
-    let r_py = scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
-    let r_sc = scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
-    let r_ro = scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None);
+    // Compute keyframe states for transform params
+    let pos_x_ks = keyframe_state(&clip.transform_pos_x_keyframes, clip_time_secs);
+    let pos_y_ks = keyframe_state(&clip.transform_pos_y_keyframes, clip_time_secs);
+    let scale_ks = keyframe_state(&clip.transform_scale_keyframes, clip_time_secs);
+    let rot_ks = keyframe_state(&clip.transform_rotation_keyframes, clip_time_secs);
+
+    let r_px = scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks));
+    let r_py = scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks));
+    let r_sc = scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks));
+    let r_ro = scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks));
 
     // Undo coalescing for transform drags
     if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started {
@@ -214,10 +240,87 @@ pub fn show(
         }
     }
 
+    // ── Keyframe toggle/nav for Position X ──
+    if r_px.keyframe_toggled {
+        if clip.transform_pos_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs, value: pos_x });
+        }
+    }
+    if r_px.keyframe_nav_prev {
+        if let Some(t) = pos_x_ks.prev_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if r_px.keyframe_nav_next {
+        if let Some(t) = pos_x_ks.next_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+
+    // ── Keyframe toggle/nav for Position Y ──
+    if r_py.keyframe_toggled {
+        if clip.transform_pos_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs, value: pos_y });
+        }
+    }
+    if r_py.keyframe_nav_prev {
+        if let Some(t) = pos_y_ks.prev_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if r_py.keyframe_nav_next {
+        if let Some(t) = pos_y_ks.next_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+
+    // ── Keyframe toggle/nav for Scale ──
+    if r_sc.keyframe_toggled {
+        if clip.transform_scale_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs, value: scale_val });
+        }
+    }
+    if r_sc.keyframe_nav_prev {
+        if let Some(t) = scale_ks.prev_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if r_sc.keyframe_nav_next {
+        if let Some(t) = scale_ks.next_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+
+    // ── Keyframe toggle/nav for Rotation ──
+    if r_ro.keyframe_toggled {
+        if clip.transform_rotation_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs, value: rotation });
+        }
+    }
+    if r_ro.keyframe_nav_prev {
+        if let Some(t) = rot_ks.prev_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if r_ro.keyframe_nav_next {
+        if let Some(t) = rot_ks.next_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
     let mut opacity = get_opacity(clip);
-    let r_op = scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", None);
+    let opacity_ks = keyframe_state(&clip.opacity_keyframes, clip_time_secs);
+    let r_op = scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks));
 
     if r_op.drag_started {
         if let Some(idx) = find_opacity_index(clip) {
@@ -240,6 +343,25 @@ pub fn show(
                 effect_index: idx,
                 new_effect: BuiltinEffect::Opacity { value: opacity },
             });
+        }
+    }
+
+    // ── Keyframe toggle/nav for Opacity ──
+    if r_op.keyframe_toggled {
+        if clip.opacity_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
+        }
+    }
+    if r_op.keyframe_nav_prev {
+        if let Some(t) = opacity_ks.prev_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if r_op.keyframe_nav_next {
+        if let Some(t) = opacity_ks.next_keyframe_time {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
         }
     }
 
@@ -324,4 +446,3 @@ fn section_header(ui: &mut egui::Ui, theme: &KlippTheme, label: &str) {
     );
     ui.add_space(7.0);
 }
-

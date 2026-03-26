@@ -143,7 +143,8 @@ impl NewInspectorPanel {
             match active_tab {
                 InspectorTab::Video => {
                     if let Some((_, clip)) = clip_info {
-                        video_tab::show(ui, theme, clip, &mut cmds);
+                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        video_tab::show(ui, theme, clip, &mut cmds, clip_time_secs);
                     } else {
                         no_selection(ui, theme);
                     }

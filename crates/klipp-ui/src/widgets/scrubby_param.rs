@@ -6,6 +6,7 @@
 use crate::icons::Icon;
 
 /// State passed to indicate keyframe status for the diamond button.
+#[derive(Clone, Copy)]
 pub struct KeyframeState {
     /// A keyframe exists at the current playhead time.
     pub has_keyframe_at_playhead: bool,

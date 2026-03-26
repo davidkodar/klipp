@@ -165,6 +165,16 @@ pub struct ClipJson {
     pub pan_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub gain_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub opacity_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub transform_pos_x_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub transform_pos_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub transform_scale_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default)]
+    pub transform_rotation_keyframes: Option<Vec<klipp_core::Keyframe>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

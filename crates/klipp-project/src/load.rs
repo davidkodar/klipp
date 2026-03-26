@@ -242,6 +242,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
                     pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
                     gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
+                    opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
+                    transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
+                    transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
+                    transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
+                    transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
                 }
             }).collect();
             track

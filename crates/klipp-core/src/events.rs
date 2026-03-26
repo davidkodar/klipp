@@ -12,6 +12,16 @@ pub enum AudioParam {
     Gain,
 }
 
+/// Which video parameter a keyframe operates on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoParam {
+    Opacity,
+    PositionX,
+    PositionY,
+    Scale,
+    Rotation,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
@@ -501,6 +511,10 @@ pub enum AppCommand {
     AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
     RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
     MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },
+
+    // Video keyframes
+    AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },
+    RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
 
     // Clip audio
     UpdateClipAudio {

@@ -174,6 +174,11 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         volume_keyframes: if c.volume_keyframes.is_empty() { None } else { Some(c.volume_keyframes.clone()) },
                         pan_keyframes: if c.pan_keyframes.is_empty() { None } else { Some(c.pan_keyframes.clone()) },
                         gain_keyframes: if c.gain_keyframes.is_empty() { None } else { Some(c.gain_keyframes.clone()) },
+                        opacity_keyframes: if c.opacity_keyframes.is_empty() { None } else { Some(c.opacity_keyframes.clone()) },
+                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() { None } else { Some(c.transform_pos_x_keyframes.clone()) },
+                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
+                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
+                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
                     }
                 }).collect(),
             }

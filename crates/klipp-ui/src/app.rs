@@ -2511,6 +2511,53 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let kf = klipp_core::Keyframe {
+                                time_secs: *time_secs,
+                                value: *value,
+                                interpolation: klipp_core::Interpolation::Linear,
+                                tangent_out: (0.0, 0.0),
+                                tangent_in: (0.0, 0.0),
+                            };
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            keyframes.push(kf);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -2799,6 +2846,11 @@ impl KlippApp {
                         volume_keyframes: Vec::new(),
                         pan_keyframes: Vec::new(),
                         gain_keyframes: Vec::new(),
+                        opacity_keyframes: Vec::new(),
+                        transform_pos_x_keyframes: Vec::new(),
+                        transform_pos_y_keyframes: Vec::new(),
+                        transform_scale_keyframes: Vec::new(),
+                        transform_rotation_keyframes: Vec::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -3079,6 +3131,11 @@ impl KlippApp {
                                     volume_keyframes: clip.volume_keyframes.clone(),
                                     pan_keyframes: clip.pan_keyframes.clone(),
                                     gain_keyframes: clip.gain_keyframes.clone(),
+                                    opacity_keyframes: clip.opacity_keyframes.clone(),
+                                    transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                                    transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                                    transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                                    transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -3193,6 +3250,11 @@ impl KlippApp {
                                     volume_keyframes: Vec::new(),
                                     pan_keyframes: Vec::new(),
                                     gain_keyframes: Vec::new(),
+                                    opacity_keyframes: Vec::new(),
+                                    transform_pos_x_keyframes: Vec::new(),
+                                    transform_pos_y_keyframes: Vec::new(),
+                                    transform_scale_keyframes: Vec::new(),
+                                    transform_rotation_keyframes: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -3262,6 +3324,11 @@ impl KlippApp {
                                     volume_keyframes: Vec::new(),
                                     pan_keyframes: Vec::new(),
                                     gain_keyframes: Vec::new(),
+                                    opacity_keyframes: Vec::new(),
+                                    transform_pos_x_keyframes: Vec::new(),
+                                    transform_pos_y_keyframes: Vec::new(),
+                                    transform_scale_keyframes: Vec::new(),
+                                    transform_rotation_keyframes: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -4846,6 +4913,11 @@ impl KlippApp {
                 volume_keyframes: clip.volume_keyframes.clone(),
                 pan_keyframes: clip.pan_keyframes.clone(),
                 gain_keyframes: clip.gain_keyframes.clone(),
+                opacity_keyframes: clip.opacity_keyframes.clone(),
+                transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -4940,6 +5012,11 @@ impl KlippApp {
                 volume_keyframes: clip.volume_keyframes.clone(),
                 pan_keyframes: clip.pan_keyframes.clone(),
                 gain_keyframes: clip.gain_keyframes.clone(),
+                opacity_keyframes: clip.opacity_keyframes.clone(),
+                transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }

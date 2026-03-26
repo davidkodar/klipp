@@ -348,6 +348,11 @@ impl Track {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
         });
         clip_id
     }
@@ -461,6 +466,11 @@ impl Track {
         let (vol_a, vol_b) = split_kfs(&clip.volume_keyframes);
         let (pan_a, pan_b) = split_kfs(&clip.pan_keyframes);
         let (gain_a, gain_b) = split_kfs(&clip.gain_keyframes);
+        let (opacity_a, opacity_b) = split_kfs(&clip.opacity_keyframes);
+        let (pos_x_a, pos_x_b) = split_kfs(&clip.transform_pos_x_keyframes);
+        let (pos_y_a, pos_y_b) = split_kfs(&clip.transform_pos_y_keyframes);
+        let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
+        let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
 
         let clip_a = Clip {
             id: ClipId::new(),
@@ -486,6 +496,11 @@ impl Track {
             volume_keyframes: vol_a,
             pan_keyframes: pan_a,
             gain_keyframes: gain_a,
+            opacity_keyframes: opacity_a,
+            transform_pos_x_keyframes: pos_x_a,
+            transform_pos_y_keyframes: pos_y_a,
+            transform_scale_keyframes: scale_a,
+            transform_rotation_keyframes: rot_a,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -511,6 +526,11 @@ impl Track {
             volume_keyframes: vol_b,
             pan_keyframes: pan_b,
             gain_keyframes: gain_b,
+            opacity_keyframes: opacity_b,
+            transform_pos_x_keyframes: pos_x_b,
+            transform_pos_y_keyframes: pos_y_b,
+            transform_scale_keyframes: scale_b,
+            transform_rotation_keyframes: rot_b,
         };
 
         self.clips.remove(pos);
@@ -592,6 +612,16 @@ pub struct Clip {
     pub pan_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub gain_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub opacity_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
 }
 
 impl Clip {
@@ -649,6 +679,11 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
         }
     }
 
@@ -684,6 +719,11 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
         }
     }
 }
