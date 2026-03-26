@@ -197,13 +197,8 @@ pub fn scrubby_param_row(
                 } else {
                     egui::Color32::from_rgb(140, 140, 145)
                 };
-                ui.painter().text(
-                    prev_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{25C0}",
-                    egui::FontId::proportional(7.0),
-                    arrow_color,
-                );
+                let icon_rect = egui::Rect::from_center_size(prev_rect.center(), egui::vec2(8.0, 8.0));
+                Icon::CaretLeft.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
                 if has_prev && prev_resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
@@ -276,13 +271,8 @@ pub fn scrubby_param_row(
                 } else {
                     egui::Color32::from_rgb(140, 140, 145)
                 };
-                ui.painter().text(
-                    next_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{25B6}",
-                    egui::FontId::proportional(7.0),
-                    arrow_color,
-                );
+                let icon_rect = egui::Rect::from_center_size(next_rect.center(), egui::vec2(8.0, 8.0));
+                Icon::CaretRight.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
                 if has_next && next_resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
