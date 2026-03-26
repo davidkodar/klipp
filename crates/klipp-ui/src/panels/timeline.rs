@@ -1986,9 +1986,10 @@ impl TimelinePanel {
             }
 
             // ── Audio fade in/out visual indicators ────────────────────────
-            // Drawn after rubber band so fade overlays are clearly visible.
-            // Uses the same resolved fade params from the rubber band section.
-            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+            // Drawn on audio track clips AND video clips with audio (for combined clips).
+            let has_audio_for_fade = track_kind == TrackKind::Audio
+                || (clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio));
+            if has_audio_for_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
                 // Resolve fade params (same pattern as rubber band)
                 let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
                     (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
