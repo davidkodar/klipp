@@ -121,6 +121,12 @@ pub struct AudioPrefs {
     /// Show waveform on audio track clips.
     #[serde(default = "default_true")]
     pub show_waveform: bool,
+    /// Apply a short anti-click crossfade (2ms) at clip boundaries to prevent pops.
+    #[serde(default = "default_true")]
+    pub anti_click_fade: bool,
+    /// Show crossfade indicator at adjacent clip boundaries.
+    #[serde(default = "default_true")]
+    pub show_crossfade_indicators: bool,
 }
 
 impl Default for AudioPrefs {
@@ -129,6 +135,8 @@ impl Default for AudioPrefs {
             fade_overlay_mode: FadeOverlayMode::default(),
             show_rubber_band: true,
             show_waveform: true,
+            anti_click_fade: true,
+            show_crossfade_indicators: true,
         }
     }
 }

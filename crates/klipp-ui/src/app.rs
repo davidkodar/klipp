@@ -230,11 +230,15 @@ impl KlippApp {
         app.state.audio_fade_overlay_mode = app.prefs.audio.fade_overlay_mode;
         app.state.audio_show_rubber_band = app.prefs.audio.show_rubber_band;
         app.state.audio_show_waveform = app.prefs.audio.show_waveform;
+        app.state.audio_anti_click_fade = app.prefs.audio.anti_click_fade;
+        app.state.audio_show_crossfade_indicators = app.prefs.audio.show_crossfade_indicators;
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
         }
+        // Sync anti-click fade to engine
+        let _ = app.cmd_tx.send(AppCommand::SetAntiClickFade(app.state.audio_anti_click_fade));
 
         // Enrich any stale recent project entries with metadata from disk
         let mut prefs_changed = app.prefs.enrich_recent_projects();
@@ -6298,6 +6302,9 @@ impl eframe::App for KlippApp {
             self.state.audio_fade_overlay_mode = self.prefs.audio.fade_overlay_mode;
             self.state.audio_show_rubber_band = self.prefs.audio.show_rubber_band;
             self.state.audio_show_waveform = self.prefs.audio.show_waveform;
+            self.state.audio_anti_click_fade = self.prefs.audio.anti_click_fade;
+            self.state.audio_show_crossfade_indicators = self.prefs.audio.show_crossfade_indicators;
+            let _ = self.cmd_tx.send(AppCommand::SetAntiClickFade(self.state.audio_anti_click_fade));
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }

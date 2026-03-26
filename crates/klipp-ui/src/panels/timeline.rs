@@ -3070,7 +3070,7 @@ impl TimelinePanel {
         }
 
         // Draw audio crossfade indicators at adjacent clip boundaries
-        if track_kind == TrackKind::Audio {
+        if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
             let frame_dur = 1.0 / fps.rate() as f64;
             for i in 0..clips.len().saturating_sub(1) {
                 if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }

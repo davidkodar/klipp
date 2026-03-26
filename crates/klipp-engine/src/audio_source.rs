@@ -98,4 +98,11 @@ impl AudioSource {
             f.set_fade(source_in_secs, clip_duration_secs, fade_in, fade_out, fade_in_curve, fade_out_curve, gain);
         }
     }
+
+    /// Enable/disable anti-click fade at clip boundaries.
+    pub fn set_anti_click(&self, enabled: bool) {
+        if let Self::PcmFeeder(f) = self {
+            f.set_anti_click(enabled);
+        }
+    }
 }

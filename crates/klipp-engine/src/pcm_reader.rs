@@ -35,15 +35,17 @@ fn fade_envelope(
     pos_secs: f64, source_in: f64, clip_dur: f64,
     fade_in: f64, fade_out: f64,
     fade_in_curve: u8, fade_out_curve: u8,
+    anti_click: bool,
 ) -> f32 {
     let clip_pos = pos_secs - source_in;
     let clip_end = clip_dur;
 
     let mut gain = 1.0;
 
-    // Effective fade durations: at least ANTI_CLICK_FADE_SECS
-    let eff_fade_in = fade_in.max(ANTI_CLICK_FADE_SECS);
-    let eff_fade_out = fade_out.max(ANTI_CLICK_FADE_SECS);
+    // Effective fade durations: at least ANTI_CLICK_FADE_SECS when anti-click is enabled
+    let min_fade = if anti_click { ANTI_CLICK_FADE_SECS } else { 0.0 };
+    let eff_fade_in = fade_in.max(min_fade);
+    let eff_fade_out = fade_out.max(min_fade);
 
     // Fade in: ramp 0→1 over fade_in seconds from clip start
     if clip_pos < eff_fade_in {
@@ -92,6 +94,7 @@ pub struct PcmAudioFeeder {
     pub fade_in_curve: Arc<AtomicU32>,  // 0=Linear, 1=Exp, 2=Log, 3=SCurve
     pub fade_out_curve: Arc<AtomicU32>,
     pub fade_gain: Arc<AtomicU32>,     // pre-fader gain (f32 bits)
+    pub anti_click: Arc<AtomicBool>,   // apply 2ms anti-click fade at boundaries
 }
 
 impl PcmAudioFeeder {
@@ -131,6 +134,7 @@ impl PcmAudioFeeder {
         let fade_in_curve = Arc::new(AtomicU32::new(0)); // Linear
         let fade_out_curve = Arc::new(AtomicU32::new(0));
         let fade_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let anti_click = Arc::new(AtomicBool::new(true));
 
         let vol = volume.clone();
         let mute = muted.clone();
@@ -143,6 +147,7 @@ impl PcmAudioFeeder {
         let fic = fade_in_curve.clone();
         let foc = fade_out_curve.clone();
         let fg = fade_gain.clone();
+        let ac = anti_click.clone();
 
         let needs_resample = output_rate != SAMPLE_RATE;
 
@@ -166,6 +171,7 @@ impl PcmAudioFeeder {
                     fic,
                     foc,
                     fg,
+                    ac,
                 );
             })
             .map_err(|e| PcmFeederError::Open(format!("spawn thread: {e}")))?;
@@ -185,6 +191,7 @@ impl PcmAudioFeeder {
                 fade_in_curve,
                 fade_out_curve,
                 fade_gain,
+                anti_click,
             },
             consumer,
         ))
@@ -204,6 +211,10 @@ impl PcmAudioFeeder {
         self.fade_in_curve.store(fade_in_curve, Ordering::Relaxed);
         self.fade_out_curve.store(fade_out_curve, Ordering::Relaxed);
         self.fade_gain.store(gain.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_anti_click(&self, enabled: bool) {
+        self.anti_click.store(enabled, Ordering::Relaxed);
     }
 
     pub fn seek(&self, secs: f64) {
@@ -273,6 +284,7 @@ fn pcm_feed_thread(
     fade_in_curve: Arc<AtomicU32>,
     fade_out_curve: Arc<AtomicU32>,
     _fade_gain: Arc<AtomicU32>,
+    anti_click: Arc<AtomicBool>,
 ) {
     // Interpret raw bytes as f32 samples
     let samples: &[f32] = bytemuck::cast_slice(&pcm_data);
@@ -385,7 +397,8 @@ fn pcm_feed_thread(
         let fo_secs = f64::from_bits(fade_out_secs.load(Ordering::Relaxed));
         let fi_curve = fade_in_curve.load(Ordering::Relaxed) as u8;
         let fo_curve = fade_out_curve.load(Ordering::Relaxed) as u8;
-        let has_fade = fi_secs > 0.001 || fo_secs > 0.001;
+        let ac = anti_click.load(Ordering::Relaxed);
+        let has_fade = fi_secs > 0.001 || fo_secs > 0.001 || ac;
 
         if read_pos >= total_floats {
             eof = true;
@@ -409,7 +422,7 @@ fn pcm_feed_thread(
                     .flat_map(|(i, pair)| {
                         let frame_idx = (read_pos / CHANNELS) + i;
                         let pos_secs = frame_idx as f64 / SAMPLE_RATE as f64;
-                        let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve);
+                        let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
                         let mult = vol * fade;
                         pair.iter().map(move |s| s * mult)
                     })
@@ -430,7 +443,7 @@ fn pcm_feed_thread(
                     break;
                 }
                 let pos_secs = src_frame as f64 / SAMPLE_RATE as f64;
-                let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve);
+                let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
                 let mult = vol * fade;
                 for ch in 0..CHANNELS {
                     let s = samples[src_idx + ch];

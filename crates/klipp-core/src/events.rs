@@ -288,6 +288,7 @@ pub enum AppCommand {
     Undo,
     Redo,
     SequenceUpdated,
+    SetAntiClickFade(bool),
 
     // Export
     ShowExportDialog,

@@ -353,6 +353,8 @@ pub struct AppState {
     pub audio_fade_overlay_mode: crate::prefs::FadeOverlayMode,
     pub audio_show_rubber_band: bool,
     pub audio_show_waveform: bool,
+    pub audio_anti_click_fade: bool,
+    pub audio_show_crossfade_indicators: bool,
 
     /// Fade handle drag state: (clip_id, true=fade_in, false=fade_out, original_fade_secs)
     pub dragging_fade_handle: Option<(ClipId, bool, f32)>,
@@ -621,6 +623,8 @@ impl Default for AppState {
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
             audio_show_waveform: true,
+            audio_anti_click_fade: true,
+            audio_show_crossfade_indicators: true,
             dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),

@@ -589,6 +589,12 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetAntiClickFade(enabled) => {
+                for active in &self.audio_sources {
+                    active.source.set_anti_click(enabled);
+                }
+            }
+
             AppCommand::ToggleBeforeAfter => {
                 self.bypass_color_grade = !self.bypass_color_grade;
                 debug!("Before/After: bypass_color_grade = {}", self.bypass_color_grade);

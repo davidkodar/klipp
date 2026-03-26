@@ -410,6 +410,31 @@ impl PreferencesPanel {
                 .size(10.0)
                 .color(egui::Color32::from_rgb(120, 120, 130)),
         );
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Crossfades").strong().size(12.0));
+        ui.add_space(4.0);
+
+        if ui.checkbox(&mut prefs.audio.anti_click_fade, "Anti-click crossfade at clip boundaries").changed() {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new("Apply a tiny 2ms fade at clip start/end to prevent click and pop artifacts. \
+                Disable for perfectly clean cuts (may produce audible clicks at edit points).")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
+
+        ui.add_space(4.0);
+
+        if ui.checkbox(&mut prefs.audio.show_crossfade_indicators, "Show crossfade indicators at clip boundaries").changed() {
+            *dirty = true;
+        }
+        ui.label(
+            egui::RichText::new("Display the X icon where two adjacent audio clips meet.")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 130)),
+        );
     }
 
     fn show_export(
