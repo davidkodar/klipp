@@ -6752,12 +6752,20 @@ impl eframe::App for KlippApp {
         self.update_window_title(ctx);
 
         if has_quit {
+            // Clean exit: save project if dirty, clean up autosave backup
             if self.state.dirty {
-                self.state.show_unsaved_dialog = true;
-                self.state.unsaved_dialog_action = UnsavedAction::Quit;
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if let Some(ref path) = self.state.project_path.clone() {
+                    self.do_save_project(path);
+                }
             }
+            // Remove autosave backup on clean exit
+            if let Some(ref path) = self.state.project_path {
+                let autosave = autosave_path_for(path);
+                if autosave.exists() {
+                    let _ = std::fs::remove_dir_all(&autosave);
+                }
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         if self.state.playback == PlaybackState::Playing || self.state.render_queue.has_active_job() {

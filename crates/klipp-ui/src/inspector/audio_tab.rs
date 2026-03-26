@@ -1,14 +1,39 @@
 use crate::icons::Icon;
+use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::{scrubby_param::scrubby_param_row, waveform};
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
+
+/// Find peak levels for the clip's audio. If the clip is on a video track
+/// with a linked audio clip, use the audio track's peaks.
+pub fn find_clip_peak_levels(clip: &Clip, track_idx: usize, state: &AppState) -> (f32, f32) {
+    // Check if the clip has a linked audio partner on an audio track
+    let audio_track_idx = if let Some(linked_id) = clip.linked_clip_id {
+        state.sequence().tracks.iter().enumerate()
+            .find(|(_, t)| {
+                t.kind == klipp_timeline::TrackKind::Audio
+                    && t.clips.iter().any(|c| c.id == linked_id)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(track_idx)
+    } else {
+        track_idx
+    };
+
+    state.track_peak_levels
+        .get(audio_track_idx)
+        .copied()
+        .unwrap_or((0.0, 0.0))
+}
 
 pub fn show(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip: &Clip,
     cmds: &mut Vec<AppCommand>,
+    peak: (f32, f32),
+    waveform_peaks: Option<&[f32]>,
 ) {
     let clip_id = clip.id;
 
@@ -201,6 +226,17 @@ pub fn show(
 
     ui.add_space(14.0);
 
+    // ── Level Meter ──
+    ui.label(
+        egui::RichText::new("LEVEL")
+            .size(10.0)
+            .strong()
+            .color(theme.text_dim),
+    );
+    ui.add_space(4.0);
+    draw_stereo_meter(ui, theme, peak.0, peak.1);
+    ui.add_space(14.0);
+
     // ── Waveform section ──
     ui.label(
         egui::RichText::new("WAVEFORM")
@@ -217,6 +253,183 @@ pub fn show(
         .inner_margin(egui::Margin::symmetric(4.0, 4.0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(wf_rect_size, egui::Sense::hover());
-            waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, None);
+            // Slice peaks to the clip's source range
+            let clip_peaks = waveform_peaks.map(|peaks| {
+                if peaks.is_empty() { return &peaks[..]; }
+                let total_dur = peaks.len() as f64; // total peaks count
+                let src_in = clip.source_in.to_secs_f64();
+                let src_out = clip.source_out.to_secs_f64();
+                let clip_dur = (src_out - src_in).max(0.0);
+                // Compute the media's total duration from the peaks
+                // (peaks are generated at some fixed rate, we use the ratio)
+                let media_dur = clip.source_out.to_secs_f64().max(clip_dur + src_in);
+                if media_dur <= 0.0 { return &peaks[..]; }
+                let start = ((src_in / media_dur) * total_dur) as usize;
+                let end = (((src_in + clip_dur) / media_dur) * total_dur) as usize;
+                let start = start.min(peaks.len());
+                let end = end.min(peaks.len());
+                &peaks[start..end]
+            });
+            waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, clip_peaks);
         });
+}
+
+/// Persistent state for the level meter (smoothed values + peak hold).
+#[derive(Clone, Default)]
+struct MeterState {
+    smooth_l: f32,
+    smooth_r: f32,
+    peak_hold_l: f32,
+    peak_hold_r: f32,
+    peak_hold_age_l: f32, // seconds since peak was set
+    peak_hold_age_r: f32,
+}
+
+/// Draw a stereo level meter with L/R bars, dB scale, and peak hold indicators.
+fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r: f32) {
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    let meter_id = ui.id().with("audio_meter_state");
+
+    // Load persistent meter state
+    let mut ms: MeterState = ui.ctx().data_mut(|d| d.get_temp(meter_id).unwrap_or_default());
+
+    // Smooth: fast attack (rise instantly), slow release (decay ~300ms to half)
+    let release_coeff = (-dt / 0.15).exp(); // ~150ms time constant
+    ms.smooth_l = if peak_l > ms.smooth_l { peak_l } else { ms.smooth_l * release_coeff };
+    ms.smooth_r = if peak_r > ms.smooth_r { peak_r } else { ms.smooth_r * release_coeff };
+
+    // Peak hold: capture highest peak, hold for 2 seconds, then decay slowly
+    let hold_time = 2.0; // seconds to hold before decay
+    let hold_decay = 0.3; // decay rate after hold expires (units/sec)
+
+    if peak_l >= ms.peak_hold_l {
+        ms.peak_hold_l = peak_l;
+        ms.peak_hold_age_l = 0.0;
+    } else {
+        ms.peak_hold_age_l += dt;
+        if ms.peak_hold_age_l > hold_time {
+            ms.peak_hold_l = (ms.peak_hold_l - hold_decay * dt).max(0.0);
+        }
+    }
+    if peak_r >= ms.peak_hold_r {
+        ms.peak_hold_r = peak_r;
+        ms.peak_hold_age_r = 0.0;
+    } else {
+        ms.peak_hold_age_r += dt;
+        if ms.peak_hold_age_r > hold_time {
+            ms.peak_hold_r = (ms.peak_hold_r - hold_decay * dt).max(0.0);
+        }
+    }
+
+    // Store back
+    ui.ctx().data_mut(|d| d.insert_temp(meter_id, ms.clone()));
+
+    let meter_w = ui.available_width() - 20.0;
+    let bar_h = 6.0;
+    let gap = 2.0;
+    let label_w = 14.0;
+    let total_h = bar_h * 2.0 + gap;
+
+    let (meter_rect, _) = ui.allocate_exact_size(egui::vec2(meter_w, total_h), egui::Sense::hover());
+    let painter = ui.painter();
+
+    let bar_w = meter_w - label_w - 4.0;
+    let bar_left = meter_rect.left() + label_w + 4.0;
+    let max_level = 1.5f32; // meter range in linear (covers ~+3.5dB)
+
+    let smoothed = [ms.smooth_l, ms.smooth_r];
+    let peak_holds = [ms.peak_hold_l, ms.peak_hold_r];
+
+    for (ch, label) in ["L", "R"].iter().enumerate() {
+        let y = meter_rect.top() + ch as f32 * (bar_h + gap);
+        let level = smoothed[ch];
+        let hold = peak_holds[ch];
+
+        // Channel label
+        painter.text(
+            egui::pos2(meter_rect.left() + label_w / 2.0, y + bar_h / 2.0),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            egui::FontId::monospace(9.0),
+            theme.text_dim,
+        );
+
+        // Background bar
+        let bar = egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(bar_w, bar_h));
+        painter.rect_filled(bar, 2.0, egui::Color32::from_rgb(20, 20, 25));
+
+        // Fill bar with gradient colors
+        let fill = (level.min(max_level) / max_level * bar_w).max(0.0);
+        if fill > 0.0 {
+            let green_end = bar_w * 0.25 / max_level * max_level;
+            let yellow_end = bar_w * 0.7 / max_level * max_level;
+
+            let green_w = fill.min(green_end);
+            if green_w > 0.0 {
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(green_w, bar_h)),
+                    2.0, egui::Color32::from_rgb(40, 170, 60),
+                );
+            }
+            if fill > green_end {
+                let yellow_w = (fill - green_end).min(yellow_end - green_end);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(bar_left + green_end, y), egui::vec2(yellow_w, bar_h)),
+                    0.0, egui::Color32::from_rgb(210, 180, 40),
+                );
+            }
+            if fill > yellow_end {
+                let red_w = fill - yellow_end;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(bar_left + yellow_end, y), egui::vec2(red_w, bar_h)),
+                    0.0, egui::Color32::from_rgb(210, 45, 45),
+                );
+            }
+        }
+
+        // Peak hold indicator — thin bright line
+        if hold > 0.005 {
+            let hold_x = bar_left + (hold.min(max_level) / max_level * bar_w);
+            let hold_color = if hold > 0.9 {
+                egui::Color32::from_rgb(255, 60, 60)
+            } else if hold > 0.7 {
+                egui::Color32::from_rgb(255, 210, 50)
+            } else {
+                egui::Color32::from_rgb(80, 220, 100)
+            };
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(hold_x - 1.0, y), egui::vec2(2.0, bar_h)),
+                0.0, hold_color,
+            );
+        }
+    }
+
+    // dB tick marks
+    ui.add_space(2.0);
+    let (tick_rect, _) = ui.allocate_exact_size(egui::vec2(meter_w, 10.0), egui::Sense::hover());
+    let tick_left = tick_rect.left() + label_w + 4.0;
+    let tick_w = meter_w - label_w - 4.0;
+
+    let tick_painter = ui.painter();
+    let db_marks: &[(f32, &str)] = &[
+        (0.004, "-48"), (0.06, "-24"), (0.25, "-12"),
+        (0.5, "-6"), (0.7, "-3"), (1.0, "0"),
+    ];
+    for &(level, label) in db_marks {
+        let x = tick_left + (level / max_level) * tick_w;
+        if x <= tick_left + tick_w {
+            tick_painter.text(
+                egui::pos2(x, tick_rect.center().y),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(7.0),
+                theme.text_dim,
+            );
+        }
+    }
+
+    // Request repaint during playback so meter animates smoothly
+    if ms.smooth_l > 0.001 || ms.smooth_r > 0.001 || ms.peak_hold_l > 0.005 || ms.peak_hold_r > 0.005 {
+        ui.ctx().request_repaint();
+    }
 }

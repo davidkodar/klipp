@@ -149,8 +149,16 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Audio => {
-                    if let Some((_, clip)) = clip_info {
-                        audio_tab::show(ui, theme, clip, &mut cmds);
+                    if let Some((track_idx, clip)) = clip_info {
+                        let peak = audio_tab::find_clip_peak_levels(clip, track_idx, state);
+                        // Get waveform peaks from the media item's audio cache
+                        // Convert (min, max) pairs to absolute max for display
+                        let media_peaks: Option<Vec<f32>> = clip.media_id()
+                            .and_then(|mid| state.media_pool.get(&mid))
+                            .and_then(|item| item.audio_cache.as_ref())
+                            .map(|cache| cache.peaks.iter().map(|(lo, hi)| lo.abs().max(hi.abs())).collect());
+                        let peaks_slice = media_peaks.as_deref();
+                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice);
                     } else {
                         no_selection(ui, theme);
                     }
