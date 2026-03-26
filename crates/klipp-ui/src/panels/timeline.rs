@@ -2063,11 +2063,23 @@ impl TimelinePanel {
                     // Text preview
                     if max_text_width > 10.0 {
                         let text_pos = egui::pos2(clip_rect.left() + 22.0, clip_rect.center().y);
+                        let truncated = truncate_text(&title_data.text, max_text_width, font_size);
+                        let font = egui::FontId::proportional(font_size);
+                        let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
+                        for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                            painter.text(
+                                egui::pos2(text_pos.x + dx, text_pos.y + dy),
+                                egui::Align2::LEFT_CENTER,
+                                truncated.clone(),
+                                font.clone(),
+                                shadow_color,
+                            );
+                        }
                         painter.text(
                             text_pos,
                             egui::Align2::LEFT_CENTER,
-                            truncate_text(&title_data.text, max_text_width, font_size),
-                            egui::FontId::proportional(font_size),
+                            truncated,
+                            font,
                             egui::Color32::from_rgb(220, 200, 255),
                         );
                     }
@@ -2086,11 +2098,27 @@ impl TimelinePanel {
                     };
                     let text_pos =
                         egui::pos2(clip_rect.left() + 4.0, clip_rect.center().y);
+                    let truncated = truncate_text(&label, max_text_width, font_size);
+                    let font = egui::FontId::proportional(font_size);
+                    // Draw dark outline/shadow for readability on any background
+                    let shadow_offsets: &[(f32, f32)] = &[
+                        (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
+                    ];
+                    let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
+                    for &(dx, dy) in shadow_offsets {
+                        painter.text(
+                            egui::pos2(text_pos.x + dx, text_pos.y + dy),
+                            egui::Align2::LEFT_CENTER,
+                            truncated.clone(),
+                            font.clone(),
+                            shadow_color,
+                        );
+                    }
                     painter.text(
                         text_pos,
                         egui::Align2::LEFT_CENTER,
-                        truncate_text(&label, max_text_width, font_size),
-                        egui::FontId::proportional(font_size),
+                        truncated,
+                        font,
                         label_color,
                     );
 
