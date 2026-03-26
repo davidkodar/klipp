@@ -1525,6 +1525,14 @@ impl TimelinePanel {
                                 let half_h = clip_rect.height() * 0.45; // 90% of clip height for waveform
                                 let w = clip_rect.width();
 
+                                // Find the peak amplitude in the visible range for normalization
+                                // This ensures quiet audio still fills the waveform area
+                                let max_peak = clip_peaks.iter()
+                                    .map(|(lo, hi)| lo.abs().max(hi.abs()))
+                                    .fold(0.0f32, f32::max)
+                                    .max(0.01); // avoid division by zero
+                                let amp_scale = (1.0 / max_peak).min(8.0); // normalize, but cap at 8x boost
+
                                 // Draw min/max envelope: one vertical line per pixel
                                 let num_cols = (w as usize).max(1);
                                 for col in 0..num_cols {
@@ -1533,9 +1541,9 @@ impl TimelinePanel {
                                     let peak_idx = col * clip_peaks.len() / num_cols;
                                     let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
 
-                                    // pmin is negative, pmax is positive (audio centered at 0)
-                                    let y_top = center_y - pmax.abs() * half_h;
-                                    let y_bot = center_y + pmin.abs() * half_h;
+                                    // Normalize so waveform fills the available height
+                                    let y_top = center_y - (pmax.abs() * amp_scale) * half_h;
+                                    let y_bot = center_y + (pmin.abs() * amp_scale) * half_h;
 
                                     if (y_bot - y_top) > 0.5 {
                                         clip_painter.line_segment(
