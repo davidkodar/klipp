@@ -1911,8 +1911,8 @@ impl TimelinePanel {
                                 }
                             }
 
-                            // Start keyframe drag on primary click near a diamond
-                            if nearest_kf_idx.is_some() && pointer_down && state.dragging_audio_keyframe.is_none() && !alt_held {
+                            // Start keyframe drag on primary click near a diamond (blocked during fade drag)
+                            if nearest_kf_idx.is_some() && pointer_down && state.dragging_audio_keyframe.is_none() && state.dragging_fade_handle.is_none() && !alt_held {
                                 if let Some(ki) = nearest_kf_idx {
                                     state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
                                         clip_id: kf_clip_id,
@@ -1926,13 +1926,14 @@ impl TimelinePanel {
                             if kf_keyframes.is_empty() && near_line && pointer_down
                                 && state.dragging_audio_keyframe.is_none()
                                 && state.dragging_rubber_band.is_none()
+                                && state.dragging_fade_handle.is_none()
                                 && !alt_held
                             {
                                 state.dragging_rubber_band = Some(kf_clip_id);
                             }
 
-                            // Process active flat-line rubber band drag
-                            if state.dragging_rubber_band == Some(kf_clip_id) {
+                            // Process active flat-line rubber band drag (blocked during fade handle drag)
+                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() {
                                 if pointer_down {
                                     let new_val = y_to_value(pos.y);
                                     let (drag_gain, drag_volume, drag_pan) = match rb_param {
@@ -1971,8 +1972,8 @@ impl TimelinePanel {
                                 }
                             }
 
-                            // Alt+click on line to add keyframe
-                            if alt_held && near_line && ui.input(|i| i.pointer.primary_clicked()) {
+                            // Alt+click on line to add keyframe (blocked during fade drag)
+                            if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
                                 let t = x_to_time(pos.x);
                                 let v = y_to_value(pos.y);
                                 cmds.push(AppCommand::AddAudioKeyframe {
