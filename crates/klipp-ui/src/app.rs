@@ -2383,7 +2383,7 @@ impl KlippApp {
                     continue;
                 }
                 // Undo coalescing — drag gesture signals for builtin effects
-                AppCommand::UpdateClipAudio { clip_id, volume, pan, fade_in_secs, fade_out_secs } => {
+                AppCommand::UpdateClipAudio { clip_id, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve } => {
                     let mut old_vals = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -2392,6 +2392,8 @@ impl KlippApp {
                             clip.pan = *pan;
                             clip.fade_in_secs = *fade_in_secs;
                             clip.fade_out_secs = *fade_out_secs;
+                            clip.fade_in_curve = *fade_in_curve;
+                            clip.fade_out_curve = *fade_out_curve;
                             break;
                         }
                     }
@@ -2598,6 +2600,8 @@ impl KlippApp {
                         pan: 0.0,
                         fade_in_secs: 0.0,
                         fade_out_secs: 0.0,
+                        fade_in_curve: klipp_timeline::FadeCurve::default(),
+                        fade_out_curve: klipp_timeline::FadeCurve::default(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -2871,6 +2875,8 @@ impl KlippApp {
                                     pan: clip.pan,
                                     fade_in_secs: clip.fade_in_secs,
                                     fade_out_secs: clip.fade_out_secs,
+                                    fade_in_curve: clip.fade_in_curve,
+                                    fade_out_curve: clip.fade_out_curve,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -2978,6 +2984,8 @@ impl KlippApp {
                                     pan: 0.0,
                                     fade_in_secs: 0.0,
                                     fade_out_secs: 0.0,
+                                    fade_in_curve: klipp_timeline::FadeCurve::default(),
+                                    fade_out_curve: klipp_timeline::FadeCurve::default(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -3040,6 +3048,8 @@ impl KlippApp {
                                     pan: 0.0,
                                     fade_in_secs: 0.0,
                                     fade_out_secs: 0.0,
+                                    fade_in_curve: klipp_timeline::FadeCurve::default(),
+                                    fade_out_curve: klipp_timeline::FadeCurve::default(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -4579,6 +4589,8 @@ impl KlippApp {
                 pan: clip.pan,
                 fade_in_secs: clip.fade_in_secs,
                 fade_out_secs: clip.fade_out_secs,
+                fade_in_curve: clip.fade_in_curve,
+                fade_out_curve: clip.fade_out_curve,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -4666,6 +4678,8 @@ impl KlippApp {
                 pan: clip.pan,
                 fade_in_secs: clip.fade_in_secs,
                 fade_out_secs: clip.fade_out_secs,
+                fade_in_curve: clip.fade_in_curve,
+                fade_out_curve: clip.fade_out_curve,
             };
             track.clips.insert(i + 1, right_clip);
         }

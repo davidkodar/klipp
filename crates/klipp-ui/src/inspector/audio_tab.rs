@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::{scrubby_param::scrubby_param_row, waveform};
 use klipp_core::AppCommand;
-use klipp_timeline::Clip;
+use klipp_timeline::{Clip, FadeCurve};
 
 /// Find peak levels for the clip's audio. If the clip is on a video track
 /// with a linked audio clip, use the audio track's peaks.
@@ -42,6 +42,8 @@ pub fn show(
     let mut pan = clip.pan;
     let mut fade_in = clip.fade_in_secs;
     let mut fade_out = clip.fade_out_secs;
+    let mut fade_in_curve = clip.fade_in_curve;
+    let mut fade_out_curve = clip.fade_out_curve;
 
     // ── Audio section header with global reset ──
     ui.horizontal(|ui| {
@@ -75,12 +77,16 @@ pub fn show(
                 pan = 0.0;
                 fade_in = 0.0;
                 fade_out = 0.0;
+                fade_in_curve = FadeCurve::default();
+                fade_out_curve = FadeCurve::default();
                 cmds.push(AppCommand::UpdateClipAudio {
                     clip_id,
                     volume,
                     pan,
                     fade_in_secs: fade_in,
                     fade_out_secs: fade_out,
+                    fade_in_curve,
+                    fade_out_curve,
                 });
             }
         }
@@ -109,6 +115,8 @@ pub fn show(
             pan,
             fade_in_secs: fade_in,
             fade_out_secs: fade_out,
+            fade_in_curve,
+            fade_out_curve,
         });
     }
     if vol_resp.drag_stopped {
@@ -143,6 +151,8 @@ pub fn show(
             pan,
             fade_in_secs: fade_in,
             fade_out_secs: fade_out,
+            fade_in_curve,
+            fade_out_curve,
         });
     }
     if pan_resp.drag_stopped {
@@ -177,6 +187,8 @@ pub fn show(
             pan,
             fade_in_secs: fade_in,
             fade_out_secs: fade_out,
+            fade_in_curve,
+            fade_out_curve,
         });
     }
     if fi_resp.drag_stopped {
@@ -188,6 +200,30 @@ pub fn show(
             new_fade_in: fade_in,
             new_fade_out: fade_out,
         });
+    }
+
+    // ── Fade In Curve ──
+    {
+        let prev = fade_in_curve;
+        egui::ComboBox::from_id_salt("fade_in_curve")
+            .selected_text(fade_curve_label(fade_in_curve))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for variant in FADE_CURVE_VARIANTS {
+                    ui.selectable_value(&mut fade_in_curve, *variant, fade_curve_label(*variant));
+                }
+            });
+        if fade_in_curve != prev {
+            cmds.push(AppCommand::UpdateClipAudio {
+                clip_id,
+                volume,
+                pan,
+                fade_in_secs: fade_in,
+                fade_out_secs: fade_out,
+                fade_in_curve,
+                fade_out_curve,
+            });
+        }
     }
 
     // ── Fade Out ──
@@ -211,6 +247,8 @@ pub fn show(
             pan,
             fade_in_secs: fade_in,
             fade_out_secs: fade_out,
+            fade_in_curve,
+            fade_out_curve,
         });
     }
     if fo_resp.drag_stopped {
@@ -222,6 +260,30 @@ pub fn show(
             new_fade_in: fade_in,
             new_fade_out: fade_out,
         });
+    }
+
+    // ── Fade Out Curve ──
+    {
+        let prev = fade_out_curve;
+        egui::ComboBox::from_id_salt("fade_out_curve")
+            .selected_text(fade_curve_label(fade_out_curve))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for variant in FADE_CURVE_VARIANTS {
+                    ui.selectable_value(&mut fade_out_curve, *variant, fade_curve_label(*variant));
+                }
+            });
+        if fade_out_curve != prev {
+            cmds.push(AppCommand::UpdateClipAudio {
+                clip_id,
+                volume,
+                pan,
+                fade_in_secs: fade_in,
+                fade_out_secs: fade_out,
+                fade_in_curve,
+                fade_out_curve,
+            });
+        }
     }
 
     ui.add_space(14.0);
@@ -272,6 +334,22 @@ pub fn show(
             });
             waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, clip_peaks);
         });
+}
+
+const FADE_CURVE_VARIANTS: &[FadeCurve] = &[
+    FadeCurve::Linear,
+    FadeCurve::Exponential,
+    FadeCurve::Logarithmic,
+    FadeCurve::SCurve,
+];
+
+fn fade_curve_label(curve: FadeCurve) -> &'static str {
+    match curve {
+        FadeCurve::Linear => "Linear",
+        FadeCurve::Exponential => "Exponential",
+        FadeCurve::Logarithmic => "Logarithmic",
+        FadeCurve::SCurve => "S-Curve",
+    }
 }
 
 /// Persistent state for the level meter (smoothed values + peak hold).

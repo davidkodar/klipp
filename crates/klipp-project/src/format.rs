@@ -151,6 +151,10 @@ pub struct ClipJson {
     pub fade_in_secs: Option<f32>,
     #[serde(default)]
     pub fade_out_secs: Option<f32>,
+    #[serde(default)]
+    pub fade_in_curve: Option<klipp_timeline::FadeCurve>,
+    #[serde(default)]
+    pub fade_out_curve: Option<klipp_timeline::FadeCurve>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

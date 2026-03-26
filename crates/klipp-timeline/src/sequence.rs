@@ -3,6 +3,8 @@ use crate::marker::Marker;
 use klipp_core::{ClipId, Fps, GroupId, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 
+pub use klipp_core::types::FadeCurve;
+
 // ═══════════════════════════════════════════════════════════════════
 // Magnetic Timeline Types
 // ═══════════════════════════════════════════════════════════════════
@@ -339,6 +341,8 @@ impl Track {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: FadeCurve::default(),
+            fade_out_curve: FadeCurve::default(),
         });
         clip_id
     }
@@ -449,6 +453,8 @@ impl Track {
             pan: clip.pan,
             fade_in_secs: clip.fade_in_secs,
             fade_out_secs: clip.fade_out_secs,
+            fade_in_curve: clip.fade_in_curve,
+            fade_out_curve: clip.fade_out_curve,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -467,6 +473,8 @@ impl Track {
             pan: clip.pan,
             fade_in_secs: clip.fade_in_secs,
             fade_out_secs: clip.fade_out_secs,
+            fade_in_curve: clip.fade_in_curve,
+            fade_out_curve: clip.fade_out_curve,
         };
 
         self.clips.remove(pos);
@@ -534,6 +542,10 @@ pub struct Clip {
     pub fade_in_secs: f32,
     #[serde(default)]
     pub fade_out_secs: f32,
+    #[serde(default)]
+    pub fade_in_curve: FadeCurve,
+    #[serde(default)]
+    pub fade_out_curve: FadeCurve,
 }
 
 impl Clip {
@@ -584,6 +596,8 @@ impl Clip {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: FadeCurve::default(),
+            fade_out_curve: FadeCurve::default(),
         }
     }
 
@@ -612,6 +626,8 @@ impl Clip {
             pan: 0.0,
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            fade_in_curve: FadeCurve::default(),
+            fade_out_curve: FadeCurve::default(),
         }
     }
 }

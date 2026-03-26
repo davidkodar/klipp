@@ -75,3 +75,13 @@ pub enum BlendMode {
     Screen,
     Overlay,
 }
+
+/// Audio fade curve shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FadeCurve {
+    #[default]
+    Linear,
+    Exponential,
+    Logarithmic,
+    SCurve,
+}

@@ -12,6 +12,15 @@ use crate::video_decoder::VideoDecoder;
 struct SendAudioOutput(#[allow(dead_code)] AudioOutput);
 unsafe impl Send for SendAudioOutput {}
 
+fn fade_curve_to_u32(c: klipp_timeline::FadeCurve) -> u32 {
+    match c {
+        klipp_timeline::FadeCurve::Linear => 0,
+        klipp_timeline::FadeCurve::Exponential => 1,
+        klipp_timeline::FadeCurve::Logarithmic => 2,
+        klipp_timeline::FadeCurve::SCurve => 3,
+    }
+}
+
 /// One entry per active audio source (one per playing track).
 struct ActiveAudioSource {
     #[allow(dead_code)]
@@ -888,6 +897,8 @@ impl PlaybackEngine {
                     clip_pan = audio_clip.pan;
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
+                    let mut fi_curve = audio_clip.fade_in_curve;
+                    let mut fo_curve = audio_clip.fade_out_curve;
                     let source_in_secs = audio_clip.source_in.to_secs_f64();
                     let clip_dur_secs = audio_clip.duration().to_secs_f64();
 
@@ -899,6 +910,8 @@ impl PlaybackEngine {
                                 clip_pan = video_clip.pan;
                                 fade_in = video_clip.fade_in_secs;
                                 fade_out = video_clip.fade_out_secs;
+                                fi_curve = video_clip.fade_in_curve;
+                                fo_curve = video_clip.fade_out_curve;
                                 break;
                             }
                         }
@@ -910,6 +923,8 @@ impl PlaybackEngine {
                         clip_dur_secs,
                         fade_in as f64,
                         fade_out as f64,
+                        fade_curve_to_u32(fi_curve),
+                        fade_curve_to_u32(fo_curve),
                     );
                     break;
                 }

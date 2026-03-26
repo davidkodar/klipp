@@ -475,7 +475,10 @@ pub enum AppCommand {
     Quit,
 
     // Clip audio
-    UpdateClipAudio { clip_id: ClipId, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32 },
+    UpdateClipAudio {
+        clip_id: ClipId, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,
+        fade_in_curve: crate::types::FadeCurve, fade_out_curve: crate::types::FadeCurve,
+    },
     BeginAudioDrag { key: String, clip_id: ClipId, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
     EndAudioDrag { key: String, clip_id: ClipId, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },
 

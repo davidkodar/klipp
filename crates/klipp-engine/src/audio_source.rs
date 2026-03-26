@@ -87,10 +87,14 @@ impl AudioSource {
     }
 
     /// Set fade parameters for per-clip fade in/out.
-    pub fn set_fade(&self, source_in_secs: f64, clip_duration_secs: f64, fade_in: f64, fade_out: f64) {
+    /// Curve values: 0=Linear, 1=Exponential, 2=Logarithmic, 3=S-Curve
+    pub fn set_fade(
+        &self, source_in_secs: f64, clip_duration_secs: f64,
+        fade_in: f64, fade_out: f64,
+        fade_in_curve: u32, fade_out_curve: u32,
+    ) {
         if let Self::PcmFeeder(f) = self {
-            f.set_fade(source_in_secs, clip_duration_secs, fade_in, fade_out);
+            f.set_fade(source_in_secs, clip_duration_secs, fade_in, fade_out, fade_in_curve, fade_out_curve);
         }
-        // AudioDecoder doesn't support fades yet — would need similar wiring
     }
 }
