@@ -110,6 +110,9 @@ pub fn show(
             role_color,
         );
 
+        // Right-click context menu on track header area (allocated FIRST so buttons sit on top)
+        let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
+
         // Track name
         let name_x = track_rect.min.x + crate::theme::CLIP_ROLE_BAR_W + 6.0;
         ui.painter().text(
@@ -190,8 +193,6 @@ pub fn show(
             toggle_lock = Some(track_idx);
         }
 
-        // Right-click context menu on track header area
-        let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
         let track_role = track.magnetic_role.clone();
         header_resp.context_menu(|ui| {
             ui.set_min_width(180.0);
