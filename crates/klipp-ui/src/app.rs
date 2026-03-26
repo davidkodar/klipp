@@ -2427,6 +2427,26 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            if let Some(kf) = keyframes.get_mut(*index) {
+                                kf.time_secs = *new_time_secs;
+                                kf.value = *new_value;
+                            }
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
                     let mut old_vals = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {

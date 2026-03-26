@@ -488,6 +488,7 @@ pub enum AppCommand {
     // Audio keyframes
     AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
     RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
+    MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },
 
     // Clip audio
     UpdateClipAudio {

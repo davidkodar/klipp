@@ -1,5 +1,5 @@
 use crate::history::CommandHistory;
-use klipp_core::{ClipId, Fps, MediaId, Timecode, Tool, TrackId, ViewerMode};
+use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
@@ -10,6 +10,14 @@ pub struct BrowserClipSelection {
     pub media_id: MediaId,
     pub range_in_secs: f64,
     pub range_out_secs: f64,
+}
+
+/// State during an active audio keyframe drag on the timeline rubber band.
+#[derive(Debug, Clone)]
+pub struct DraggingKeyframe {
+    pub clip_id: ClipId,
+    pub param: AudioParam,
+    pub keyframe_index: usize,
 }
 
 /// State during an active range handle drag or ruler range drag.
@@ -332,6 +340,9 @@ pub struct AppState {
     pub autosave_recovery_path: Option<PathBuf>,
     pub autosave_original_path: Option<PathBuf>,
 
+    // Audio keyframe rubber band drag state
+    pub dragging_audio_keyframe: Option<DraggingKeyframe>,
+
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
     pub proxy_generating: std::collections::HashSet<MediaId>,
@@ -573,6 +584,7 @@ impl Default for AppState {
             show_autosave_recovery: false,
             autosave_recovery_path: None,
             autosave_original_path: None,
+            dragging_audio_keyframe: None,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),

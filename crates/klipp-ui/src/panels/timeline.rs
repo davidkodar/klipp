@@ -1102,6 +1102,57 @@ impl TimelinePanel {
             dim,
         );
 
+        // ── Audio keyframe rubber band drag update ─────────────────────
+        // Process dragging_audio_keyframe: update position on drag, clear on release.
+        let pointer_released = ui.input(|i| i.pointer.primary_released());
+        let pointer_down = ui.input(|i| i.pointer.primary_down());
+        if let Some(ref drag_kf) = state.dragging_audio_keyframe.clone() {
+            if pointer_released || !pointer_down {
+                // Release: clear drag state
+                state.dragging_audio_keyframe = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                // Find the clip's screen rect to map position back to time/value
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                // Find clip in sequence to get its rect
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
+                        let track_height = match track.kind {
+                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            _ => VIDEO_TRACK_HEIGHT,
+                        };
+                        // Find track_rect from track_rects cache
+                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left(); // approximation — content_rect not available here
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
+                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let new_time = frac * clip_dur_secs;
+                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                let new_value = normalized * 2.0;
+                                cmds.push(AppCommand::MoveAudioKeyframe {
+                                    clip_id: drag_kf.clip_id,
+                                    param: drag_kf.param,
+                                    index: drag_kf.keyframe_index,
+                                    new_time_secs: new_time,
+                                    new_value,
+                                });
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         cmds
     }
 
@@ -1481,6 +1532,201 @@ impl TimelinePanel {
                                         );
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Volume automation rubber band overlay ──────────────────────
+            // Drawn on audio track clips. For linked audio clips, reads keyframes
+            // from the linked video clip (same pattern as sync_clip_volumes).
+            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+                // Resolve the clip that holds the keyframes (may be linked video clip)
+                // Clone keyframes to avoid borrow conflict with state mutation for drag interaction
+                let (kf_volume, kf_keyframes, kf_clip_id) = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut found = (clip.volume, clip.volume_keyframes.clone(), clip.id);
+                    for t in &state.sequence().tracks {
+                        if let Some(vc) = t.find_clip(linked_id) {
+                            found = (vc.volume, vc.volume_keyframes.clone(), vc.id);
+                            break;
+                        }
+                    }
+                    found
+                } else {
+                    (clip.volume, clip.volume_keyframes.clone(), clip.id)
+                };
+                let kf_keyframes = &kf_keyframes[..];
+
+                let clip_dur_secs = clip.duration().to_secs_f64();
+                let clip_painter = ui.painter().with_clip_rect(clip_rect);
+
+                // Map volume value (0.0..2.0) to Y position within clip rect
+                // 0.0 = bottom, 2.0 = top, 1.0 = center (default unity)
+                let value_to_y = |val: f32| -> f32 {
+                    let normalized = (val / 2.0).clamp(0.0, 1.0);
+                    clip_rect.bottom() - normalized * clip_rect.height()
+                };
+
+                // Map time (relative to clip start) to X position
+                let time_to_x = |t: f64| -> f32 {
+                    let frac = if clip_dur_secs > 0.0 { (t / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                    clip_rect.left() + frac as f32 * clip_rect.width()
+                };
+
+                let line_color = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 200); // amber
+                let line_color_dim = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 120);
+                let diamond_fill = if is_selected || is_multi_selected {
+                    egui::Color32::from_rgba_unmultiplied(255, 200, 60, 240)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(240, 180, 50, 180)
+                };
+                let diamond_stroke_color = egui::Color32::from_rgba_unmultiplied(180, 130, 30, 220);
+                let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
+
+                if kf_keyframes.is_empty() {
+                    // No keyframes: draw a single horizontal line at the static volume
+                    let y = value_to_y(kf_volume);
+                    clip_painter.line_segment(
+                        [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
+                        egui::Stroke::new(1.0, active_line_color),
+                    );
+                } else {
+                    // Draw line segments between evaluated points
+                    // Start with value at clip start, then each keyframe, then value at clip end
+                    let src_in_secs = clip.source_in.to_secs_f64();
+                    let src_out_secs = clip.source_out.to_secs_f64();
+
+                    // Build list of points along the rubber band
+                    let mut points: Vec<egui::Pos2> = Vec::new();
+
+                    // Start point: evaluate at source_in
+                    let start_val = klipp_core::keyframe::evaluate(kf_keyframes, 0.0, kf_volume);
+                    points.push(egui::pos2(clip_rect.left(), value_to_y(start_val)));
+
+                    // Each keyframe that falls within clip range
+                    for kf in kf_keyframes.iter() {
+                        // kf.time_secs is relative to source_in
+                        if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                            let x = time_to_x(kf.time_secs);
+                            let y = value_to_y(kf.value);
+                            points.push(egui::pos2(x, y));
+                        }
+                    }
+
+                    // End point: evaluate at clip end
+                    let end_t = src_out_secs - src_in_secs;
+                    let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_volume);
+                    points.push(egui::pos2(clip_rect.right(), value_to_y(end_val)));
+
+                    // Draw line segments
+                    for i in 0..points.len().saturating_sub(1) {
+                        clip_painter.line_segment(
+                            [points[i], points[i + 1]],
+                            egui::Stroke::new(1.5, active_line_color),
+                        );
+                    }
+
+                    // Draw diamond markers at each keyframe
+                    for kf in kf_keyframes.iter() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                            let cx = time_to_x(kf.time_secs);
+                            let cy = value_to_y(kf.value);
+                            let d = 4.0_f32;
+                            let diamond = vec![
+                                egui::pos2(cx, cy - d),
+                                egui::pos2(cx + d, cy),
+                                egui::pos2(cx, cy + d),
+                                egui::pos2(cx - d, cy),
+                            ];
+                            clip_painter.add(egui::Shape::convex_polygon(
+                                diamond,
+                                diamond_fill,
+                                egui::Stroke::new(1.0, diamond_stroke_color),
+                            ));
+                        }
+                    }
+                }
+
+                // ── Rubber band interaction ──────────────────────────────────
+                if interactive {
+                    if let Some(pos) = pointer_pos {
+                        if clip_rect.contains(pos) && content_rect.contains(pos) {
+                            let alt_held = ui.input(|i| i.modifiers.alt);
+                            let src_in_secs = clip.source_in.to_secs_f64();
+                            let src_out_secs = clip.source_out.to_secs_f64();
+
+                            // Helper: X position to time (relative to source_in)
+                            let x_to_time = |x: f32| -> f64 {
+                                let frac = ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                                frac * clip_dur_secs
+                            };
+                            // Helper: Y position to volume value
+                            let y_to_value = |y: f32| -> f32 {
+                                let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
+                                normalized * 2.0
+                            };
+
+                            // Check if hovering near a keyframe diamond (for drag start)
+                            let mut nearest_kf_idx: Option<usize> = None;
+                            let mut nearest_kf_dist = f32::MAX;
+                            for (ki, kf) in kf_keyframes.iter().enumerate() {
+                                if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                                    let kx = time_to_x(kf.time_secs);
+                                    let ky = value_to_y(kf.value);
+                                    let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                                    if dist < 8.0 && dist < nearest_kf_dist {
+                                        nearest_kf_dist = dist;
+                                        nearest_kf_idx = Some(ki);
+                                    }
+                                }
+                            }
+
+                            // Check if hovering near the rubber band line
+                            let rubber_band_y = if kf_keyframes.is_empty() {
+                                value_to_y(kf_volume)
+                            } else {
+                                let t = x_to_time(pos.x);
+                                value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_volume))
+                            };
+                            let near_line = (pos.y - rubber_band_y).abs() < 10.0;
+
+                            // Start keyframe drag on primary click near a diamond
+                            if nearest_kf_idx.is_some() && pointer_down && state.dragging_audio_keyframe.is_none() && !alt_held {
+                                if let Some(ki) = nearest_kf_idx {
+                                    state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                                        clip_id: kf_clip_id,
+                                        param: klipp_core::AudioParam::Volume,
+                                        keyframe_index: ki,
+                                    });
+                                }
+                            }
+
+                            // Alt+click on line to add keyframe
+                            if alt_held && near_line && ui.input(|i| i.pointer.primary_clicked()) {
+                                let t = x_to_time(pos.x);
+                                let v = y_to_value(pos.y);
+                                cmds.push(AppCommand::AddAudioKeyframe {
+                                    clip_id: kf_clip_id,
+                                    param: klipp_core::AudioParam::Volume,
+                                    time_secs: t,
+                                    value: v,
+                                });
+                            }
+
+                            // Show value tooltip when hovering near a keyframe
+                            if let Some(ki) = nearest_kf_idx {
+                                let kf = &kf_keyframes[ki];
+                                let tooltip_text = format!("{:.1}%", kf.value * 100.0);
+                                let kx = time_to_x(kf.time_secs);
+                                let ky = value_to_y(kf.value);
+                                clip_painter.text(
+                                    egui::pos2(kx, ky - 10.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    tooltip_text,
+                                    egui::FontId::proportional(9.0),
+                                    egui::Color32::from_rgb(255, 220, 80),
+                                );
                             }
                         }
                     }
