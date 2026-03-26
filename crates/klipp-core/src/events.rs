@@ -275,6 +275,7 @@ pub enum AppCommand {
     SetTrackSolo { track_index: usize, solo: bool },
     SetTrackPan { track_index: usize, pan: f32 },
     SetMasterVolume(f32),
+    SetClipVolume(f32),
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },

@@ -2415,9 +2415,10 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    if self.state.playback != PlaybackState::Playing {
-                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    }
+                    // Instant clip volume — bypass command channel latency
+                    let _ = self.cmd_tx.send(AppCommand::SetClipVolume(*volume));
+                    // Also sync sequence for persistence + paused frame refresh
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     continue;
                 }
                 AppCommand::BeginAudioDrag { ref key, clip_id, old_volume, old_pan, old_fade_in, old_fade_out } => {

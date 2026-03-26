@@ -49,6 +49,8 @@ pub struct AudioOutput {
     chirp_active: Arc<AtomicBool>,
     /// Master volume applied in the cpal callback (lock-free, instant response).
     master_volume: Arc<AtomicU32>,
+    /// Per-clip volume applied in the cpal callback (lock-free, instant response).
+    clip_volume: Arc<AtomicU32>,
     /// Consumer side of the skim audio ring buffer.
     /// Mixed into the cpal callback output alongside playback audio.
     skim_consumer: SkimConsumer,
@@ -92,6 +94,8 @@ impl AudioOutput {
         let chirp_flag = chirp_active.clone();
         let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let master_vol_flag = master_volume.clone();
+        let clip_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let clip_vol_flag = clip_volume.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
         let stream = device
@@ -147,11 +151,13 @@ impl AudioOutput {
                         }
                         let filled = consumer.pop_slice(data);
                         data[filled..].fill(0.0);
-                        // Apply master volume (lock-free, instant response)
-                        let vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
-                        if (vol - 1.0).abs() > 0.001 {
+                        // Apply clip volume + master volume (lock-free, instant response)
+                        let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
+                        let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));
+                        let combined = master_vol * clip_vol;
+                        if (combined - 1.0).abs() > 0.001 {
                             for sample in data[..filled].iter_mut() {
-                                *sample *= vol;
+                                *sample *= combined;
                             }
                         }
                         // NO clock update — master clock is external
@@ -195,6 +201,7 @@ impl AudioOutput {
             seek_gen,
             chirp_active,
             master_volume,
+            clip_volume,
             skim_consumer,
         })
     }
@@ -227,6 +234,11 @@ impl AudioOutput {
     /// Set master volume (applied instantly in cpal callback, no buffer lag).
     pub fn set_master_volume(&self, vol: f32) {
         self.master_volume.store(f32::to_bits(vol), Ordering::Relaxed);
+    }
+
+    /// Set per-clip volume (applied instantly in cpal callback, no buffer lag).
+    pub fn set_clip_volume(&self, vol: f32) {
+        self.clip_volume.store(f32::to_bits(vol), Ordering::Relaxed);
     }
 
     /// Wire a skim audio consumer into the cpal callback for mixing.

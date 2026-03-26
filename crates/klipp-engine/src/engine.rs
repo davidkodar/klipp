@@ -532,6 +532,12 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::SetClipVolume(vol) => {
+                if let Some(aout) = &self.audio_output {
+                    aout.0.set_clip_volume(vol);
+                }
+            }
+
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
@@ -566,6 +572,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SequenceUpdated => {
+                // Sync per-clip volume/pan to active audio sources
+                self.sync_clip_volumes();
                 // Re-grade cached frame when paused — instant parameter feedback
                 if self.state != PlaybackState::Playing {
                     self.regrade_cached_frame();
@@ -855,6 +863,39 @@ impl PlaybackEngine {
         debug!("start_all_audio: {} tracks with audio at {:.3}s", track_audio.len(), tc.to_secs_f64());
         for (track_idx, media_id, path, source_secs) in track_audio {
             self.open_audio_source(track_idx, media_id, &path, source_secs);
+        }
+        // Apply per-clip volume from sequence data
+        self.sync_clip_volumes();
+    }
+
+    /// Sync per-clip volume from sequence data to the audio output.
+    /// Called on start_all_audio and SequenceUpdated.
+    fn sync_clip_volumes(&self) {
+        let seq = self.sequence.read().unwrap();
+        // Find the clip volume: check each audio source's track, follow linked_clip_id
+        let mut clip_volume = 1.0f32;
+        for active in &self.audio_sources {
+            if let Some(track) = seq.tracks.get(active.track_index) {
+                if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
+                    clip_volume = audio_clip.volume;
+                    // If linked to a video clip, use the video clip's volume
+                    // (the user selects the video clip in the inspector)
+                    if let Some(linked_id) = audio_clip.linked_clip_id {
+                        for t in &seq.tracks {
+                            if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
+                                clip_volume = video_clip.volume;
+                                break;
+                            }
+                        }
+                    }
+                    break; // use the first audio source's clip
+                }
+            }
+        }
+        drop(seq);
+        // Set on audio output for instant response in cpal callback
+        if let Some(aout) = &self.audio_output {
+            aout.0.set_clip_volume(clip_volume);
         }
     }
 
