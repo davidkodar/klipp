@@ -85,4 +85,12 @@ impl AudioSource {
             f.chirp(position_secs, duration_secs);
         }
     }
+
+    /// Set fade parameters for per-clip fade in/out.
+    pub fn set_fade(&self, source_in_secs: f64, clip_duration_secs: f64, fade_in: f64, fade_out: f64) {
+        if let Self::PcmFeeder(f) = self {
+            f.set_fade(source_in_secs, clip_duration_secs, fade_in, fade_out);
+        }
+        // AudioDecoder doesn't support fades yet — would need similar wiring
+    }
 }

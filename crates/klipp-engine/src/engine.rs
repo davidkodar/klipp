@@ -874,28 +874,43 @@ impl PlaybackEngine {
         self.sync_clip_volumes();
     }
 
-    /// Sync per-clip volume and pan from sequence data to the audio output.
+    /// Sync per-clip volume, pan, and fade from sequence data to the audio output.
     /// Called on start_all_audio and SequenceUpdated.
     fn sync_clip_volumes(&self) {
         let seq = self.sequence.read().unwrap();
         let mut clip_volume = 1.0f32;
         let mut clip_pan = 0.0f32;
+
         for active in &self.audio_sources {
             if let Some(track) = seq.tracks.get(active.track_index) {
                 if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
                     clip_volume = audio_clip.volume;
                     clip_pan = audio_clip.pan;
-                    // If linked to a video clip, use the video clip's volume/pan
-                    // (the user selects the video clip in the inspector)
+                    let mut fade_in = audio_clip.fade_in_secs;
+                    let mut fade_out = audio_clip.fade_out_secs;
+                    let source_in_secs = audio_clip.source_in.to_secs_f64();
+                    let clip_dur_secs = audio_clip.duration().to_secs_f64();
+
+                    // If linked to a video clip, use the video clip's audio params
                     if let Some(linked_id) = audio_clip.linked_clip_id {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
                                 clip_volume = video_clip.volume;
                                 clip_pan = video_clip.pan;
+                                fade_in = video_clip.fade_in_secs;
+                                fade_out = video_clip.fade_out_secs;
                                 break;
                             }
                         }
                     }
+
+                    // Set fade params on the audio source
+                    active.source.set_fade(
+                        source_in_secs,
+                        clip_dur_secs,
+                        fade_in as f64,
+                        fade_out as f64,
+                    );
                     break;
                 }
             }
