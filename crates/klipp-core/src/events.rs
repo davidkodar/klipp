@@ -532,6 +532,8 @@ pub enum AppCommand {
     AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
     RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
     MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },
+    SetAudioKeyframeInterpolation { clip_id: ClipId, param: AudioParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    SetAudioKeyframeTangent { clip_id: ClipId, param: AudioParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
 
     // Video keyframes
     AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },

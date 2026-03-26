@@ -2644,6 +2644,57 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetAudioKeyframeInterpolation { clip_id, param, keyframe_index, interpolation } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                kf.interpolation = *interpolation;
+                                // When switching to Bezier, set default tangent handles if currently zero
+                                if *interpolation == klipp_core::Interpolation::Bezier {
+                                    if kf.tangent_out == (0.0, 0.0) {
+                                        kf.tangent_out = (0.3, 0.0);
+                                    }
+                                    if kf.tangent_in == (0.0, 0.0) {
+                                        kf.tangent_in = (-0.3, 0.0);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                if let Some(ti) = tangent_in {
+                                    kf.tangent_in = *ti;
+                                }
+                                if let Some(to) = tangent_out {
+                                    kf.tangent_out = *to;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
                     let mut old_vals = None;
                     let mut linked_partner_id = None;

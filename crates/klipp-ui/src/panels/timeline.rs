@@ -1308,6 +1308,155 @@ impl TimelinePanel {
             state.dragging_rubber_band = None;
         }
 
+        // ── Bezier tangent handle drag update ──────────────────────────────
+        if let Some(ref drag_bh) = state.dragging_bezier_handle.clone() {
+            if pointer_released || !pointer_down {
+                state.dragging_bezier_handle = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_bh.clip_id) {
+                        let track_height = match track.kind {
+                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            _ => VIDEO_TRACK_HEIGHT,
+                        };
+                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            let (p_min, p_max) = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
+                                klipp_core::AudioParam::Pan => (-1.0_f32, 1.0_f32),
+                                klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32),
+                            };
+                            let p_range = p_max - p_min;
+
+                            let keyframes = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                            };
+                            if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
+                                let kf_x = {
+                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
+                                };
+                                let kf_y = {
+                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
+                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
+                                };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale = clip_rect_approx.height() / p_range;
+
+                                // Convert mouse position to tangent offset
+                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
+                                let value_offset = -(pos.y - kf_y) / value_scale;
+
+                                let (ti_arg, to_arg) = if drag_bh.is_out {
+                                    // Constrain tangent_out time offset to be non-negative
+                                    let clamped_time = time_offset.max(0.0) as f64;
+                                    (None, Some((clamped_time, value_offset)))
+                                } else {
+                                    // Constrain tangent_in time offset to be non-positive
+                                    let clamped_time = time_offset.min(0.0) as f64;
+                                    (Some((clamped_time, value_offset)), None)
+                                };
+                                cmds.push(AppCommand::SetAudioKeyframeTangent {
+                                    clip_id: drag_bh.clip_id,
+                                    param: drag_bh.param,
+                                    keyframe_index: drag_bh.keyframe_index,
+                                    tangent_in: ti_arg,
+                                    tangent_out: to_arg,
+                                });
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Keyframe interpolation context menu popup ───────────────────────
+        if let Some(ref ctx_menu) = state.keyframe_context_menu.clone() {
+            let menu_id = egui::Id::new("kf_interp_ctx_menu");
+            let mut close_menu = false;
+            let menu_resp = egui::Area::new(menu_id)
+                .fixed_pos(ctx_menu.screen_pos)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style())
+                        .inner_margin(egui::Margin::same(4.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(120.0);
+                            ui.label(egui::RichText::new("Interpolation").small().strong());
+                            ui.separator();
+
+                            // Get current interpolation for the keyframe
+                            let current_interp = state.sequence().tracks.iter()
+                                .flat_map(|t| t.clips.iter())
+                                .find(|c| c.id == ctx_menu.clip_id)
+                                .and_then(|clip| {
+                                    let kfs = match ctx_menu.param {
+                                        klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                        klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                        klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                    };
+                                    kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
+                                });
+
+                            for (label, interp) in [
+                                ("Linear", klipp_core::Interpolation::Linear),
+                                ("Bezier", klipp_core::Interpolation::Bezier),
+                                ("Step (Hold)", klipp_core::Interpolation::Step),
+                            ] {
+                                let is_current = current_interp == Some(interp);
+                                let text = if is_current {
+                                    egui::RichText::new(format!("  {label}")).strong()
+                                } else {
+                                    egui::RichText::new(format!("  {label}"))
+                                };
+                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                    cmds.push(AppCommand::SetAudioKeyframeInterpolation {
+                                        clip_id: ctx_menu.clip_id,
+                                        param: ctx_menu.param,
+                                        keyframe_index: ctx_menu.keyframe_index,
+                                        interpolation: interp,
+                                    });
+                                    close_menu = true;
+                                }
+                            }
+                        });
+                });
+
+            // Close menu on click outside or after selection
+            if close_menu {
+                state.keyframe_context_menu = None;
+            } else {
+                // Close if clicked anywhere outside the menu area
+                let menu_rect = menu_resp.response.rect;
+                if ui.input(|i| i.pointer.any_click()) {
+                    if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if !menu_rect.contains(click_pos) {
+                            state.keyframe_context_menu = None;
+                        }
+                    }
+                }
+                // Also close on Escape
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    state.keyframe_context_menu = None;
+                }
+            }
+        }
+
         cmds
     }
 
@@ -1945,46 +2094,120 @@ impl TimelinePanel {
                         egui::Stroke::new(rb_line_width, active_line_color),
                     );
                 } else {
-                    // Draw line segments between evaluated points
-                    // Start with value at clip start, then each keyframe, then value at clip end
+                    // Draw curve segments between keyframes (linear, step, or bezier)
                     let src_in_secs = clip.source_in.to_secs_f64();
                     let src_out_secs = clip.source_out.to_secs_f64();
+                    let clip_time_range = src_out_secs - src_in_secs;
 
-                    // Build list of points along the rubber band
-                    let mut points: Vec<egui::Pos2> = Vec::new();
+                    // Collect visible keyframes with their indices
+                    let visible_kfs: Vec<(usize, &klipp_core::Keyframe)> = kf_keyframes.iter().enumerate()
+                        .filter(|(_, kf)| kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range)
+                        .collect();
 
-                    // Start point: evaluate at source_in
+                    // Helper: sample cubic bezier curve between two keyframes
+                    let sample_bezier = |a_time: f64, a_val: f32, a_tangent_out: (f64, f32),
+                                         b_time: f64, b_val: f32, b_tangent_in: (f64, f32),
+                                         num_samples: usize| -> Vec<egui::Pos2> {
+                        let mut pts = Vec::with_capacity(num_samples + 1);
+                        let p0_x = time_to_x(a_time);
+                        let p0_y = value_to_y(a_val);
+                        let p3_x = time_to_x(b_time);
+                        let p3_y = value_to_y(b_val);
+                        // Control points: tangent offsets mapped to screen space
+                        let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+                        let value_scale = clip_rect.height() / param_range;
+                        let p1_x = p0_x + a_tangent_out.0 as f32 * pixels_per_sec;
+                        let p1_y = p0_y - a_tangent_out.1 * value_scale;
+                        let p2_x = p3_x + b_tangent_in.0 as f32 * pixels_per_sec;
+                        let p2_y = p3_y - b_tangent_in.1 * value_scale;
+                        for si in 0..=num_samples {
+                            let t = si as f32 / num_samples as f32;
+                            let mt = 1.0 - t;
+                            let x = mt*mt*mt*p0_x + 3.0*mt*mt*t*p1_x + 3.0*mt*t*t*p2_x + t*t*t*p3_x;
+                            let y = mt*mt*mt*p0_y + 3.0*mt*mt*t*p1_y + 3.0*mt*t*t*p2_y + t*t*t*p3_y;
+                            pts.push(egui::pos2(x, y));
+                        }
+                        pts
+                    };
+
+                    // Build all polyline segments for the rubber band
+                    // Each segment is a Vec<Pos2> (a polyline to draw)
+                    let mut all_segments: Vec<Vec<egui::Pos2>> = Vec::new();
+
+                    // Segment from clip start to first visible keyframe
                     let start_val = klipp_core::keyframe::evaluate(kf_keyframes, 0.0, kf_static_val);
-                    points.push(egui::pos2(clip_rect.left(), value_to_y(start_val)));
+                    if let Some(&(_, first_kf)) = visible_kfs.first() {
+                        all_segments.push(vec![
+                            egui::pos2(clip_rect.left(), value_to_y(start_val)),
+                            egui::pos2(time_to_x(first_kf.time_secs), value_to_y(first_kf.value)),
+                        ]);
+                    } else {
+                        // No visible keyframes: single line across
+                        let end_val = klipp_core::keyframe::evaluate(kf_keyframes, clip_time_range, kf_static_val);
+                        all_segments.push(vec![
+                            egui::pos2(clip_rect.left(), value_to_y(start_val)),
+                            egui::pos2(clip_rect.right(), value_to_y(end_val)),
+                        ]);
+                    }
 
-                    // Each keyframe that falls within clip range
-                    for kf in kf_keyframes.iter() {
-                        // kf.time_secs is relative to source_in
-                        if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
-                            let x = time_to_x(kf.time_secs);
-                            let y = value_to_y(kf.value);
-                            points.push(egui::pos2(x, y));
+                    // Segments between consecutive visible keyframes
+                    for w in visible_kfs.windows(2) {
+                        let (_, kf_a) = w[0];
+                        let (_, kf_b) = w[1];
+                        match kf_a.interpolation {
+                            klipp_core::Interpolation::Linear => {
+                                all_segments.push(vec![
+                                    egui::pos2(time_to_x(kf_a.time_secs), value_to_y(kf_a.value)),
+                                    egui::pos2(time_to_x(kf_b.time_secs), value_to_y(kf_b.value)),
+                                ]);
+                            }
+                            klipp_core::Interpolation::Step => {
+                                let ax = time_to_x(kf_a.time_secs);
+                                let bx = time_to_x(kf_b.time_secs);
+                                let ay = value_to_y(kf_a.value);
+                                let by = value_to_y(kf_b.value);
+                                all_segments.push(vec![
+                                    egui::pos2(ax, ay),
+                                    egui::pos2(bx, ay),  // horizontal hold
+                                    egui::pos2(bx, by),  // vertical step
+                                ]);
+                            }
+                            klipp_core::Interpolation::Bezier => {
+                                all_segments.push(sample_bezier(
+                                    kf_a.time_secs, kf_a.value, kf_a.tangent_out,
+                                    kf_b.time_secs, kf_b.value, kf_b.tangent_in,
+                                    24,
+                                ));
+                            }
                         }
                     }
 
-                    // End point: evaluate at clip end
-                    let end_t = src_out_secs - src_in_secs;
-                    let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_static_val);
-                    points.push(egui::pos2(clip_rect.right(), value_to_y(end_val)));
-
-                    // Draw shadow line segments first for contrast
-                    for i in 0..points.len().saturating_sub(1) {
-                        clip_painter.line_segment(
-                            [points[i], points[i + 1]],
-                            egui::Stroke::new(rb_shadow_width, shadow_color),
-                        );
+                    // Segment from last visible keyframe to clip end
+                    if let Some(&(_, last_kf)) = visible_kfs.last() {
+                        let end_t = clip_time_range;
+                        let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_static_val);
+                        all_segments.push(vec![
+                            egui::pos2(time_to_x(last_kf.time_secs), value_to_y(last_kf.value)),
+                            egui::pos2(clip_rect.right(), value_to_y(end_val)),
+                        ]);
                     }
-                    // Draw colored line segments on top
-                    for i in 0..points.len().saturating_sub(1) {
-                        clip_painter.line_segment(
-                            [points[i], points[i + 1]],
-                            egui::Stroke::new(rb_line_width, active_line_color),
-                        );
+
+                    // Draw all segments: shadow pass then color pass
+                    for seg in &all_segments {
+                        for i in 0..seg.len().saturating_sub(1) {
+                            clip_painter.line_segment(
+                                [seg[i], seg[i + 1]],
+                                egui::Stroke::new(rb_shadow_width, shadow_color),
+                            );
+                        }
+                    }
+                    for seg in &all_segments {
+                        for i in 0..seg.len().saturating_sub(1) {
+                            clip_painter.line_segment(
+                                [seg[i], seg[i + 1]],
+                                egui::Stroke::new(rb_line_width, active_line_color),
+                            );
+                        }
                     }
 
                     // Draw diamond markers at each keyframe
@@ -1993,7 +2216,7 @@ impl TimelinePanel {
                         if !clip_rect.contains(pos) { return None; }
                         let mut best: Option<(usize, f32)> = None;
                         for (ki, kf) in kf_keyframes.iter().enumerate() {
-                            if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
                                 let kx = time_to_x(kf.time_secs);
                                 let ky = value_to_y(kf.value);
                                 let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
@@ -2008,7 +2231,7 @@ impl TimelinePanel {
                     });
 
                     for (ki, kf) in kf_keyframes.iter().enumerate() {
-                        if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
                             let cx = time_to_x(kf.time_secs);
                             let cy = value_to_y(kf.value);
                             let is_hovered = hovered_kf_idx == Some(ki);
@@ -2048,6 +2271,44 @@ impl TimelinePanel {
                                 fill,
                                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
                             ));
+
+                            // ── Bezier tangent handles (only when clip is selected) ──
+                            if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale = clip_rect.height() / param_range;
+                                let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                    active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
+                                );
+                                let handle_radius = 4.0_f32;
+
+                                // Tangent out handle (right)
+                                let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
+                                let tout_y = cy - kf.tangent_out.1 * value_scale;
+                                clip_painter.line_segment(
+                                    [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
+                                    egui::Stroke::new(1.0, tangent_line_color),
+                                );
+                                clip_painter.circle(
+                                    egui::pos2(tout_x, tout_y),
+                                    handle_radius,
+                                    active_line_color,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                );
+
+                                // Tangent in handle (left)
+                                let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
+                                let tin_y = cy - kf.tangent_in.1 * value_scale;
+                                clip_painter.line_segment(
+                                    [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
+                                    egui::Stroke::new(1.0, tangent_line_color),
+                                );
+                                clip_painter.circle(
+                                    egui::pos2(tin_x, tin_y),
+                                    handle_radius,
+                                    active_line_color,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                );
+                            }
                         }
                     }
                 }
@@ -2070,6 +2331,37 @@ impl TimelinePanel {
                                 let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
                                 param_min + normalized * param_range
                             };
+
+                            // Check if hovering near a bezier tangent handle
+                            let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                            if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none() {
+                                let pixels_per_sec_h = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale_h = clip_rect.height() / param_range;
+                                for (ki, kf) in kf_keyframes.iter().enumerate() {
+                                    if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                                    if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) { continue; }
+                                    let cx_h = time_to_x(kf.time_secs);
+                                    let cy_h = value_to_y(kf.value);
+                                    // Tangent out handle
+                                    let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
+                                    let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                                    let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                                    if dist_out < 8.0 {
+                                        if nearest_bezier_handle.map_or(true, |(_, _, d)| dist_out < d) {
+                                            nearest_bezier_handle = Some((ki, true, dist_out));
+                                        }
+                                    }
+                                    // Tangent in handle
+                                    let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
+                                    let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                                    let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                                    if dist_in < 8.0 {
+                                        if nearest_bezier_handle.map_or(true, |(_, _, d)| dist_in < d) {
+                                            nearest_bezier_handle = Some((ki, false, dist_in));
+                                        }
+                                    }
+                                }
+                            }
 
                             // Check if hovering near a keyframe diamond (for drag start)
                             let mut nearest_kf_idx: Option<usize> = None;
@@ -2098,8 +2390,11 @@ impl TimelinePanel {
                             // ── Cursor feedback ──
                             let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
                             let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().map_or(false, |d| d.clip_id == kf_clip_id);
-                            if is_dragging_this_rb || is_dragging_this_kf {
+                            let is_dragging_bezier = state.dragging_bezier_handle.as_ref().map_or(false, |d| d.clip_id == kf_clip_id);
+                            if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            } else if nearest_bezier_handle.is_some() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             } else if nearest_kf_idx.is_some() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             } else if near_line {
@@ -2118,8 +2413,35 @@ impl TimelinePanel {
                                 }
                             }
 
-                            // Start keyframe drag on primary click near a diamond (blocked during fade drag)
-                            if nearest_kf_idx.is_some() && pointer_down && state.dragging_audio_keyframe.is_none() && state.dragging_fade_handle.is_none() && !alt_held {
+                            // ── Right-click keyframe diamond for interpolation context menu ──
+                            if let Some(ki) = nearest_kf_idx {
+                                if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+                                    state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                        clip_id: kf_clip_id,
+                                        param: rb_param,
+                                        keyframe_index: ki,
+                                        screen_pos: pos,
+                                    });
+                                }
+                            }
+
+                            // ── Start bezier tangent handle drag ──
+                            if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
+                                if pointer_down && state.dragging_bezier_handle.is_none()
+                                    && state.dragging_audio_keyframe.is_none()
+                                    && state.dragging_fade_handle.is_none()
+                                {
+                                    state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
+                                        clip_id: kf_clip_id,
+                                        param: rb_param,
+                                        keyframe_index: bh_ki,
+                                        is_out: bh_is_out,
+                                    });
+                                }
+                            }
+
+                            // Start keyframe drag on primary click near a diamond (blocked during fade drag / bezier handle)
+                            if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none() && pointer_down && state.dragging_audio_keyframe.is_none() && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none() && !alt_held {
                                 if let Some(ki) = nearest_kf_idx {
                                     state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
                                         clip_id: kf_clip_id,

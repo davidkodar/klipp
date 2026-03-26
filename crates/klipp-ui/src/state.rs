@@ -20,6 +20,26 @@ pub struct DraggingKeyframe {
     pub keyframe_index: usize,
 }
 
+/// State during an active Bezier tangent handle drag on the timeline rubber band.
+#[derive(Debug, Clone)]
+pub struct BezierHandleDrag {
+    pub clip_id: ClipId,
+    pub param: AudioParam,
+    pub keyframe_index: usize,
+    /// true = tangent_out (right handle), false = tangent_in (left handle)
+    pub is_out: bool,
+}
+
+/// State for the keyframe interpolation context menu (right-click on diamond).
+#[derive(Debug, Clone)]
+pub struct KeyframeContextMenu {
+    pub clip_id: ClipId,
+    pub param: AudioParam,
+    pub keyframe_index: usize,
+    /// Screen position where the menu was opened.
+    pub screen_pos: egui::Pos2,
+}
+
 /// State during an active range handle drag or ruler range drag.
 #[derive(Debug, Clone)]
 pub struct RangeDragState {
@@ -347,6 +367,10 @@ pub struct AppState {
     pub dragging_audio_keyframe: Option<DraggingKeyframe>,
     /// Clip whose flat rubber band line is being dragged (no-keyframes volume adjust)
     pub dragging_rubber_band: Option<ClipId>,
+    /// Bezier tangent handle drag state
+    pub dragging_bezier_handle: Option<BezierHandleDrag>,
+    /// Keyframe interpolation right-click context menu
+    pub keyframe_context_menu: Option<KeyframeContextMenu>,
     /// Which audio parameter the timeline rubber band displays.
     pub rubber_band_param: AudioParam,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
@@ -619,6 +643,8 @@ impl Default for AppState {
             autosave_original_path: None,
             dragging_audio_keyframe: None,
             dragging_rubber_band: None,
+            dragging_bezier_handle: None,
+            keyframe_context_menu: None,
             rubber_band_param: AudioParam::Volume,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
