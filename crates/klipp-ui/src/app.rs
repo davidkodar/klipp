@@ -5780,8 +5780,13 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check if any popup/menu/combobox is open (blocks background interaction)
-        self.state.modal_or_popup_open = ctx.memory(|m| m.any_popup_open());
+        // Check if any popup/menu/combobox/foreground layer is active (blocks background interaction)
+        let popup_open = ctx.memory(|m| m.any_popup_open());
+        // Also check if pointer is over a foreground layer (menus, context menus)
+        let pointer_over_foreground = ctx.input(|i| i.pointer.hover_pos())
+            .and_then(|pos| ctx.layer_id_at(pos))
+            .is_some_and(|layer| layer.order == egui::Order::Foreground || layer.order == egui::Order::Tooltip);
+        self.state.modal_or_popup_open = popup_open || pointer_over_foreground;
 
         // Smooth playhead interpolation BEFORE draining events
         if self.state.playback == PlaybackState::Playing {
