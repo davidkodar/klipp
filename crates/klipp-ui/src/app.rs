@@ -6927,13 +6927,30 @@ impl eframe::App for KlippApp {
         // 13. Update window title
         self.update_window_title(ctx);
 
-        if has_quit {
+        // Intercept window X button close — treat same as File → Quit
+        let window_close_requested = ctx.input(|i| i.viewport().close_requested());
+        if window_close_requested {
             if self.state.dirty && self.state.project_path.is_some() {
-                // Show "Save / Don't Save / Cancel" dialog
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
-                // Not dirty or no project — clean up autosave and close
+                // Not dirty — clean up and allow close
+                if let Some(ref path) = self.state.project_path {
+                    let autosave = autosave_path_for(path);
+                    if autosave.exists() {
+                        let _ = std::fs::remove_dir_all(&autosave);
+                    }
+                }
+                // Don't cancel — let the close proceed
+            }
+        }
+
+        if has_quit {
+            if self.state.dirty && self.state.project_path.is_some() {
+                self.state.show_unsaved_dialog = true;
+                self.state.unsaved_dialog_action = UnsavedAction::Quit;
+            } else {
                 if let Some(ref path) = self.state.project_path {
                     let autosave = autosave_path_for(path);
                     if autosave.exists() {
