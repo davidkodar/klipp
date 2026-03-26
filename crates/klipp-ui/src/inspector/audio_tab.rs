@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use crate::widgets::waveform;
-use klipp_core::{AppCommand, AudioParam};
+use klipp_core::{AppCommand, AudioParam, Timecode};
 use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 
 /// Find peak levels for the clip's audio. If the clip is on a video track
@@ -39,6 +39,8 @@ pub fn show(
     clip_time_secs: f64,
 ) {
     let clip_id = clip.id;
+    let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
+    let clip_rate = clip.timeline_in.rate;
 
     // Read current values into local mutable copies
     let mut gain = clip.gain;
@@ -157,17 +159,44 @@ pub fn show(
 
     // ── Keyframe state helpers ──
     let kf_tolerance = 0.02;
+    let gain_prev_kf = clip.gain_keyframes.iter()
+        .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
+        .last()
+        .map(|k| k.time_secs);
+    let gain_next_kf = clip.gain_keyframes.iter()
+        .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+        .map(|k| k.time_secs);
     let gain_ks = Some(KeyframeState {
         has_keyframe_at_playhead: clip.gain_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !clip.gain_keyframes.is_empty(),
+        prev_keyframe_time: gain_prev_kf,
+        next_keyframe_time: gain_next_kf,
     });
+    let vol_prev_kf = clip.volume_keyframes.iter()
+        .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
+        .last()
+        .map(|k| k.time_secs);
+    let vol_next_kf = clip.volume_keyframes.iter()
+        .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+        .map(|k| k.time_secs);
     let vol_ks = Some(KeyframeState {
         has_keyframe_at_playhead: clip.volume_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !clip.volume_keyframes.is_empty(),
+        prev_keyframe_time: vol_prev_kf,
+        next_keyframe_time: vol_next_kf,
     });
+    let pan_prev_kf = clip.pan_keyframes.iter()
+        .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
+        .last()
+        .map(|k| k.time_secs);
+    let pan_next_kf = clip.pan_keyframes.iter()
+        .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+        .map(|k| k.time_secs);
     let pan_ks = Some(KeyframeState {
         has_keyframe_at_playhead: clip.pan_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !clip.pan_keyframes.is_empty(),
+        prev_keyframe_time: pan_prev_kf,
+        next_keyframe_time: pan_next_kf,
     });
 
     // ── Gain (pre-fader) ──
@@ -217,6 +246,16 @@ pub fn show(
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs, value: gain });
         }
     }
+    if gain_resp.keyframe_nav_prev {
+        if let Some(t) = gain_prev_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if gain_resp.keyframe_nav_next {
+        if let Some(t) = gain_next_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
 
     // ── Volume ──
     let vol_resp = scrubby_param_row(
@@ -264,6 +303,16 @@ pub fn show(
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs, value: volume });
         }
     }
+    if vol_resp.keyframe_nav_prev {
+        if let Some(t) = vol_prev_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if vol_resp.keyframe_nav_next {
+        if let Some(t) = vol_next_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
 
     // ── Pan ──
     let pan_resp = scrubby_param_row(
@@ -309,6 +358,16 @@ pub fn show(
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param: AudioParam::Pan, time_secs: clip_time_secs, value: pan });
+        }
+    }
+    if pan_resp.keyframe_nav_prev {
+        if let Some(t) = pan_prev_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
+        }
+    }
+    if pan_resp.keyframe_nav_next {
+        if let Some(t) = pan_next_kf {
+            cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
         }
     }
 

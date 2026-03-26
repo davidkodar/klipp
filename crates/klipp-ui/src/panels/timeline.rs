@@ -1137,7 +1137,13 @@ impl TimelinePanel {
                                 let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
                                 let new_time = frac * clip_dur_secs;
                                 let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
-                                let new_value = normalized * 2.0;
+                                // Map normalized position to param range
+                                let (p_min, p_range) = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32),
+                                };
+                                let new_value = p_min + normalized * p_range;
                                 cmds.push(AppCommand::MoveAudioKeyframe {
                                     clip_id: drag_kf.clip_id,
                                     param: drag_kf.param,
@@ -1543,34 +1549,62 @@ impl TimelinePanel {
                 }
             }
 
-            // ── Volume automation rubber band overlay ──────────────────────
-            // Drawn on audio track clips. For linked audio clips, reads keyframes
-            // from the linked video clip (same pattern as sync_clip_volumes).
+            // ── Audio parameter rubber band overlay ──────────────────────
+            // Drawn on audio track clips. Displays the parameter selected by rubber_band_param.
+            // For linked audio clips, reads keyframes from the linked video clip.
             if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+                let rb_param = state.rubber_band_param;
+
                 // Resolve the clip that holds the keyframes (may be linked video clip)
                 // Clone keyframes to avoid borrow conflict with state mutation for drag interaction
-                // Resolve: (volume, keyframes, clip_id, gain, pan, fade_in, fade_out, fade_in_curve, fade_out_curve, channel_config)
-                let (kf_volume, kf_keyframes, kf_clip_id, kf_gain, kf_pan, kf_fade_in, kf_fade_out, kf_fade_in_curve, kf_fade_out_curve, kf_channel_config) = if let Some(linked_id) = clip.linked_clip_id {
-                    let mut found = (clip.volume, clip.volume_keyframes.clone(), clip.id, clip.gain, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config);
+                let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve, klipp_timeline::ChannelConfig) {
+                    let (static_val, kfs) = match rb_param {
+                        klipp_core::AudioParam::Volume => (c.volume, c.volume_keyframes.clone()),
+                        klipp_core::AudioParam::Pan => (c.pan, c.pan_keyframes.clone()),
+                        klipp_core::AudioParam::Gain => (c.gain, c.gain_keyframes.clone()),
+                    };
+                    (static_val, kfs, c.id, c.gain, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config)
+                };
+
+                let (kf_static_val, kf_keyframes, kf_clip_id, kf_gain, kf_pan, kf_fade_in, kf_fade_out, kf_fade_in_curve, kf_fade_out_curve, kf_channel_config) = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut found = resolve_clip(clip);
                     for t in &state.sequence().tracks {
                         if let Some(vc) = t.find_clip(linked_id) {
-                            found = (vc.volume, vc.volume_keyframes.clone(), vc.id, vc.gain, vc.pan, vc.fade_in_secs, vc.fade_out_secs, vc.fade_in_curve, vc.fade_out_curve, vc.channel_config);
+                            found = resolve_clip(vc);
                             break;
                         }
                     }
                     found
                 } else {
-                    (clip.volume, clip.volume_keyframes.clone(), clip.id, clip.gain, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config)
+                    resolve_clip(clip)
+                };
+                // Also capture static volume for the flat-line drag command (always volume)
+                let kf_volume = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut v = clip.volume;
+                    for t in &state.sequence().tracks {
+                        if let Some(vc) = t.find_clip(linked_id) { v = vc.volume; break; }
+                    }
+                    v
+                } else {
+                    clip.volume
                 };
                 let kf_keyframes = &kf_keyframes[..];
+
+                // Param range configuration
+                let (param_min, param_max, _param_default) = match rb_param {
+                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
+                    klipp_core::AudioParam::Pan => (-1.0_f32, 1.0_f32, 0.0_f32),
+                    klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32, 1.0_f32),
+                };
+                let param_range = param_max - param_min;
 
                 let clip_dur_secs = clip.duration().to_secs_f64();
                 let clip_painter = ui.painter().with_clip_rect(clip_rect);
 
-                // Map volume value (0.0..2.0) to Y position within clip rect
-                // 0.0 = bottom, 2.0 = top, 1.0 = center (default unity)
+                // Map param value to Y position within clip rect
+                // min = bottom, max = top
                 let value_to_y = |val: f32| -> f32 {
-                    let normalized = (val / 2.0).clamp(0.0, 1.0);
+                    let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
                     clip_rect.bottom() - normalized * clip_rect.height()
                 };
 
@@ -1580,21 +1614,70 @@ impl TimelinePanel {
                     clip_rect.left() + frac as f32 * clip_rect.width()
                 };
 
-                let line_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220); // brighter amber
-                let line_color_dim = egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140);
-                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                let diamond_fill = if is_selected || is_multi_selected {
-                    egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250) // brighter amber
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200)
+                // Color per param: amber=Volume, cyan=Pan, green=Gain
+                let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, diamond_stroke_color) = match rb_param {
+                    klipp_core::AudioParam::Volume => (
+                        egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
+                        egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140),
+                        egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
+                        egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
+                        egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240),
+                    ),
+                    klipp_core::AudioParam::Pan => (
+                        egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
+                        egui::Color32::from_rgba_unmultiplied(50, 180, 240, 140),
+                        egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
+                        egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
+                        egui::Color32::from_rgba_unmultiplied(30, 150, 200, 240),
+                    ),
+                    klipp_core::AudioParam::Gain => (
+                        egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
+                        egui::Color32::from_rgba_unmultiplied(50, 200, 90, 140),
+                        egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
+                        egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
+                        egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
+                    ),
                 };
+                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
                 let diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
-                let diamond_stroke_color = egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240);
                 let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
 
+                // Draw param label at top-left of clip
+                let param_label = match rb_param {
+                    klipp_core::AudioParam::Volume => "V",
+                    klipp_core::AudioParam::Pan => "P",
+                    klipp_core::AudioParam::Gain => "G",
+                };
+                let label_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 3.0);
+                let label_rect = egui::Rect::from_min_size(label_pos, egui::vec2(12.0, 12.0));
+                // Only draw and handle clicks if clip is wide enough
+                if clip_rect.width() > 30.0 {
+                    clip_painter.rect_filled(label_rect, 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                    clip_painter.text(
+                        label_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        param_label,
+                        egui::FontId::monospace(8.0),
+                        active_line_color,
+                    );
+                    // Click label to cycle param
+                    if interactive {
+                        if let Some(pos) = pointer_pos {
+                            if label_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
+                                state.rubber_band_param = match rb_param {
+                                    klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
+                                    klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
+                                    klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
+                                };
+                            }
+                        }
+                    }
+                }
+
                 if kf_keyframes.is_empty() {
-                    // No keyframes: draw a single horizontal line at the static volume
-                    let y = value_to_y(kf_volume);
+                    // No keyframes: draw a single horizontal line at the static value
+                    let y = value_to_y(kf_static_val);
                     // Shadow line behind for contrast
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
@@ -1614,7 +1697,7 @@ impl TimelinePanel {
                     let mut points: Vec<egui::Pos2> = Vec::new();
 
                     // Start point: evaluate at source_in
-                    let start_val = klipp_core::keyframe::evaluate(kf_keyframes, 0.0, kf_volume);
+                    let start_val = klipp_core::keyframe::evaluate(kf_keyframes, 0.0, kf_static_val);
                     points.push(egui::pos2(clip_rect.left(), value_to_y(start_val)));
 
                     // Each keyframe that falls within clip range
@@ -1629,7 +1712,7 @@ impl TimelinePanel {
 
                     // End point: evaluate at clip end
                     let end_t = src_out_secs - src_in_secs;
-                    let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_volume);
+                    let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_static_val);
                     points.push(egui::pos2(clip_rect.right(), value_to_y(end_val)));
 
                     // Draw shadow line segments first for contrast
@@ -1694,10 +1777,10 @@ impl TimelinePanel {
                                 let frac = ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
                                 frac * clip_dur_secs
                             };
-                            // Helper: Y position to volume value
+                            // Helper: Y position to param value
                             let y_to_value = |y: f32| -> f32 {
                                 let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
-                                normalized * 2.0
+                                param_min + normalized * param_range
                             };
 
                             // Check if hovering near a keyframe diamond (for drag start)
@@ -1717,10 +1800,10 @@ impl TimelinePanel {
 
                             // Check if hovering near the rubber band line
                             let rubber_band_y = if kf_keyframes.is_empty() {
-                                value_to_y(kf_volume)
+                                value_to_y(kf_static_val)
                             } else {
                                 let t = x_to_time(pos.x);
-                                value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_volume))
+                                value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_static_val))
                             };
                             let near_line = (pos.y - rubber_band_y).abs() < 6.0;
 
@@ -1741,7 +1824,7 @@ impl TimelinePanel {
                                     let kf = &kf_keyframes[ki];
                                     cmds.push(AppCommand::RemoveAudioKeyframe {
                                         clip_id: kf_clip_id,
-                                        param: klipp_core::AudioParam::Volume,
+                                        param: rb_param,
                                         time_secs: kf.time_secs,
                                     });
                                 }
@@ -1752,7 +1835,7 @@ impl TimelinePanel {
                                 if let Some(ki) = nearest_kf_idx {
                                     state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
                                         clip_id: kf_clip_id,
-                                        param: klipp_core::AudioParam::Volume,
+                                        param: rb_param,
                                         keyframe_index: ki,
                                     });
                                 }
@@ -1770,25 +1853,39 @@ impl TimelinePanel {
                             // Process active flat-line rubber band drag
                             if state.dragging_rubber_band == Some(kf_clip_id) {
                                 if pointer_down {
-                                    let new_volume = y_to_value(pos.y);
+                                    let new_val = y_to_value(pos.y);
+                                    let (drag_gain, drag_volume, drag_pan) = match rb_param {
+                                        klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
+                                        klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
+                                        klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
+                                    };
                                     cmds.push(AppCommand::UpdateClipAudio {
                                         clip_id: kf_clip_id,
-                                        gain: kf_gain,
-                                        volume: new_volume,
-                                        pan: kf_pan,
+                                        gain: drag_gain,
+                                        volume: drag_volume,
+                                        pan: drag_pan,
                                         fade_in_secs: kf_fade_in,
                                         fade_out_secs: kf_fade_out,
                                         fade_in_curve: kf_fade_in_curve,
                                         fade_out_curve: kf_fade_out_curve,
                                         channel_config: kf_channel_config,
                                     });
-                                    // Show volume tooltip while dragging
+                                    // Show tooltip with param-appropriate format
+                                    let tooltip_text = match rb_param {
+                                        klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
+                                        klipp_core::AudioParam::Pan => {
+                                            if new_val.abs() < 0.01 { "C".to_string() }
+                                            else if new_val < 0.0 { format!("L{:.0}", -new_val * 100.0) }
+                                            else { format!("R{:.0}", new_val * 100.0) }
+                                        }
+                                        klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
+                                    };
                                     clip_painter.text(
                                         egui::pos2(pos.x, pos.y - 14.0),
                                         egui::Align2::CENTER_BOTTOM,
-                                        format!("{:.0}%", new_volume * 100.0),
+                                        tooltip_text,
                                         egui::FontId::proportional(10.0),
-                                        egui::Color32::from_rgb(255, 220, 80),
+                                        active_line_color,
                                     );
                                 }
                             }
@@ -1799,7 +1896,7 @@ impl TimelinePanel {
                                 let v = y_to_value(pos.y);
                                 cmds.push(AppCommand::AddAudioKeyframe {
                                     clip_id: kf_clip_id,
-                                    param: klipp_core::AudioParam::Volume,
+                                    param: rb_param,
                                     time_secs: t,
                                     value: v,
                                 });
@@ -1808,7 +1905,15 @@ impl TimelinePanel {
                             // Show value tooltip when hovering near a keyframe
                             if let Some(ki) = nearest_kf_idx {
                                 let kf = &kf_keyframes[ki];
-                                let tooltip_text = format!("{:.1}%", kf.value * 100.0);
+                                let tooltip_text = match rb_param {
+                                    klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
+                                    klipp_core::AudioParam::Pan => {
+                                        if kf.value.abs() < 0.01 { "C".to_string() }
+                                        else if kf.value < 0.0 { format!("L{:.0}", -kf.value * 100.0) }
+                                        else { format!("R{:.0}", kf.value * 100.0) }
+                                    }
+                                    klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
+                                };
                                 let kx = time_to_x(kf.time_secs);
                                 let ky = value_to_y(kf.value);
                                 clip_painter.text(
@@ -1816,7 +1921,7 @@ impl TimelinePanel {
                                     egui::Align2::CENTER_BOTTOM,
                                     tooltip_text,
                                     egui::FontId::proportional(9.0),
-                                    egui::Color32::from_rgb(255, 220, 80),
+                                    active_line_color,
                                 );
                             }
                         }

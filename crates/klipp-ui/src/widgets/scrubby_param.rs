@@ -11,6 +11,10 @@ pub struct KeyframeState {
     pub has_keyframe_at_playhead: bool,
     /// The parameter has any keyframes at all.
     pub has_any_keyframes: bool,
+    /// Time of the previous keyframe (relative to clip), if any.
+    pub prev_keyframe_time: Option<f64>,
+    /// Time of the next keyframe (relative to clip), if any.
+    pub next_keyframe_time: Option<f64>,
 }
 
 /// Returned by scrubby_param_row() so callers can check what happened.
@@ -21,6 +25,8 @@ pub struct ScrubbyParamResponse {
     pub lost_focus: bool,       // text entry finished (Enter/Tab/click away after typing)
     pub reset_clicked: bool,    // user clicked the reset-to-default indicator
     pub keyframe_toggled: bool, // user clicked the diamond to add/remove keyframe
+    pub keyframe_nav_prev: bool, // user clicked previous keyframe button
+    pub keyframe_nav_next: bool, // user clicked next keyframe button
 }
 
 /// Renders a single inspector parameter row with FCP-style scrubby interaction.
@@ -63,6 +69,8 @@ pub fn scrubby_param_row(
     let mut label_drag_stopped = false;
     let mut reset_clicked = false;
     let mut keyframe_toggled = false;
+    let mut nav_prev = false;
+    let mut nav_next = false;
 
     // Use a persistent ID to track whether the row was hovered last frame,
     // preventing the reset button from flickering when the mouse moves to it.
@@ -72,12 +80,15 @@ pub fn scrubby_param_row(
     let mut label_rect_out = egui::Rect::NOTHING;
 
     let _row_response = ui.horizontal(|ui| {
-        // Reserve space: label takes left portion, value + reset + diamond on right
+        // Reserve space: label takes left portion, value + reset + nav arrows + diamond on right
         let available = ui.available_width();
         let value_width = 70.0;
         let icon_width = 18.0;
+        let nav_arrow_width = 10.0; // per arrow
         let diamond_width = 16.0;
-        let label_width = (available - value_width - icon_width - diamond_width - 12.0).max(40.0);
+        let has_nav = keyframe_state.as_ref().map_or(false, |ks| ks.has_any_keyframes);
+        let nav_total = if has_nav { nav_arrow_width * 2.0 } else { 0.0 };
+        let label_width = (available - value_width - icon_width - nav_total - diamond_width - 12.0).max(40.0);
 
         // ---- LABEL (draggable -- this is the scrubby slider) ----
         // Use allocate_exact_size instead of Label to prevent text selection on drag.
@@ -168,9 +179,41 @@ pub fn scrubby_param_row(
         // Store hover state for next frame (prevents reset button flicker)
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
 
-        // ---- KEYFRAME DIAMOND ----
-        // Use a real Button for reliable click handling
+        // ---- KEYFRAME NAV + DIAMOND ----
         let is_keyframeable = keyframe_state.is_some();
+
+        // Previous keyframe arrow (only when keyframes exist and prev is available)
+        if let Some(ref ks) = keyframe_state {
+            if ks.has_any_keyframes {
+                let has_prev = ks.prev_keyframe_time.is_some();
+                let (prev_rect, prev_resp) = ui.allocate_exact_size(
+                    egui::vec2(nav_arrow_width, 18.0),
+                    if has_prev { egui::Sense::click() } else { egui::Sense::hover() },
+                );
+                let arrow_color = if !has_prev {
+                    egui::Color32::from_rgb(60, 60, 65)
+                } else if prev_resp.hovered() {
+                    egui::Color32::from_rgb(240, 180, 40)
+                } else {
+                    egui::Color32::from_rgb(140, 140, 145)
+                };
+                ui.painter().text(
+                    prev_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "\u{25C0}",
+                    egui::FontId::proportional(7.0),
+                    arrow_color,
+                );
+                if has_prev && prev_resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if has_prev && prev_resp.clicked() {
+                    nav_prev = true;
+                }
+            }
+        }
+
+        // Diamond button
         let diamond_btn_resp = ui.add(
             egui::Button::new("")
                 .frame(false)
@@ -217,6 +260,37 @@ pub fn scrubby_param_row(
         if is_keyframeable && diamond_btn_resp.clicked() {
             keyframe_toggled = true;
         }
+
+        // Next keyframe arrow (only when keyframes exist and next is available)
+        if let Some(ref ks) = keyframe_state {
+            if ks.has_any_keyframes {
+                let has_next = ks.next_keyframe_time.is_some();
+                let (next_rect, next_resp) = ui.allocate_exact_size(
+                    egui::vec2(nav_arrow_width, 18.0),
+                    if has_next { egui::Sense::click() } else { egui::Sense::hover() },
+                );
+                let arrow_color = if !has_next {
+                    egui::Color32::from_rgb(60, 60, 65)
+                } else if next_resp.hovered() {
+                    egui::Color32::from_rgb(240, 180, 40)
+                } else {
+                    egui::Color32::from_rgb(140, 140, 145)
+                };
+                ui.painter().text(
+                    next_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "\u{25B6}",
+                    egui::FontId::proportional(7.0),
+                    arrow_color,
+                );
+                if has_next && next_resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if has_next && next_resp.clicked() {
+                    nav_next = true;
+                }
+            }
+        }
     });
 
     // ---- RANGE INDICATOR (subtle fill bar under the label area only) ----
@@ -242,5 +316,7 @@ pub fn scrubby_param_row(
         lost_focus: dv_resp.lost_focus(),
         reset_clicked,
         keyframe_toggled,
+        keyframe_nav_prev: nav_prev,
+        keyframe_nav_next: nav_next,
     }
 }
