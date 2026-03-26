@@ -1992,16 +1992,15 @@ impl TimelinePanel {
                 egui::Stroke::new(border_width, border_color),
             );
 
-            // Linked-clip chain icon
+            // Linked-clip indicator — subtle lock icon
             if clip.linked_clip_id.is_some() && clip_rect.width() > 20.0 {
-                let chain_pos = egui::pos2(clip_rect.left() + 10.0, clip_rect.top() + 8.0);
-                painter.text(
-                    chain_pos,
-                    egui::Align2::CENTER_CENTER,
-                    "⛓",
-                    egui::FontId::proportional(8.0),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
+                let icon_rect = egui::Rect::from_center_size(
+                    egui::pos2(clip_rect.left() + 10.0, clip_rect.top() + 8.0),
+                    egui::vec2(9.0, 9.0),
                 );
+                crate::icons::Icon::Lock.image(9.0)
+                    .tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 100))
+                    .paint_at(ui, icon_rect);
             }
 
             // Always-visible trim handle bars on both edges
