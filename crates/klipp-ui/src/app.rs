@@ -5780,6 +5780,9 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check if any popup/menu/combobox is open (blocks background interaction)
+        self.state.modal_or_popup_open = ctx.memory(|m| m.any_popup_open());
+
         // Smooth playhead interpolation BEFORE draining events
         if self.state.playback == PlaybackState::Playing {
             let wall_elapsed = self.state.playhead_anchor_wall.elapsed().as_secs_f64();

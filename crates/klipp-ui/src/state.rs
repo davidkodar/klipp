@@ -300,6 +300,9 @@ pub struct AppState {
     pub confirm_remove_track: Option<TrackId>,
     pub show_markers_panel: bool,
 
+    /// True when any egui popup/menu/combobox is open. Set at start of each frame.
+    pub modal_or_popup_open: bool,
+
     // Phase 9: Preferences
     pub show_preferences: bool,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
@@ -420,10 +423,11 @@ pub struct ClipboardContent {
 }
 
 impl AppState {
-    /// Returns true when any modal dialog or window is open.
+    /// Returns true when any modal dialog, window, or popup menu is open.
     /// Used to block background interactions like skimming, timeline hover, etc.
     pub fn has_modal_open(&self) -> bool {
-        self.show_preferences
+        self.modal_or_popup_open
+            || self.show_preferences
             || self.show_unsaved_dialog
             || self.show_export_dialog
             || self.show_new_project_dialog
@@ -583,6 +587,7 @@ impl Default for AppState {
             master_muted: false,
             confirm_remove_track: None,
             show_markers_panel: false,
+            modal_or_popup_open: false,
             show_preferences: false,
             auto_create_tracks: true,
             project_auto_filmstrips: None,
