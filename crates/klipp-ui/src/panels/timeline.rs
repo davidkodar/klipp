@@ -2442,6 +2442,67 @@ impl TimelinePanel {
                 }
             }
 
+            // ── Video keyframe markers ──
+            // Draw small diamond ticks at the bottom edge of video clips for keyframed parameters
+            if track_kind != TrackKind::Audio && !clip.kind.is_gap() {
+                // Collect all keyframe times from video-relevant parameters
+                let kf_vecs: [&[klipp_core::Keyframe]; 5] = [
+                    &clip.opacity_keyframes,
+                    &clip.transform_pos_x_keyframes,
+                    &clip.transform_pos_y_keyframes,
+                    &clip.transform_scale_keyframes,
+                    &clip.transform_rotation_keyframes,
+                ];
+                let has_any_video_kf = kf_vecs.iter().any(|v| !v.is_empty());
+
+                if has_any_video_kf && clip_rect.width() > 8.0 {
+                    // Collect and deduplicate all keyframe times
+                    let mut kf_times: Vec<f64> = Vec::new();
+                    for kfs in &kf_vecs {
+                        for kf in *kfs {
+                            kf_times.push(kf.time_secs);
+                        }
+                    }
+                    kf_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    kf_times.dedup_by(|a, b| (*a - *b).abs() < 0.0001);
+
+                    let clip_dur = clip.duration().to_secs_f64();
+                    if clip_dur > 0.0 {
+                        let kf_painter = painter.with_clip_rect(clip_rect);
+                        let amber_color = egui::Color32::from_rgba_premultiplied(240, 180, 40, 200);
+                        let dark_outline = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+
+                        // Draw thin connecting line at the bottom edge
+                        if kf_times.len() >= 2 {
+                            let first_frac = (kf_times[0] / clip_dur) as f32;
+                            let last_frac = (*kf_times.last().unwrap() / clip_dur) as f32;
+                            let x_first = clip_rect.left() + first_frac * clip_rect.width();
+                            let x_last = clip_rect.left() + last_frac * clip_rect.width();
+                            let line_y = clip_rect.bottom() - 5.0;
+                            kf_painter.line_segment(
+                                [egui::pos2(x_first, line_y), egui::pos2(x_last, line_y)],
+                                egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(240, 180, 40, 100)),
+                            );
+                        }
+
+                        // Draw diamond at each keyframe position
+                        for &kf_time in &kf_times {
+                            let frac = (kf_time / clip_dur) as f32;
+                            let x = clip_rect.left() + frac * clip_rect.width();
+                            let d = 3.0; // half-size
+                            let cy = clip_rect.bottom() - 5.0;
+                            let diamond = vec![
+                                egui::pos2(x, cy - d),
+                                egui::pos2(x + d, cy),
+                                egui::pos2(x, cy + d),
+                                egui::pos2(x - d, cy),
+                            ];
+                            kf_painter.add(egui::Shape::convex_polygon(diamond, amber_color, egui::Stroke::new(0.5, dark_outline)));
+                        }
+                    }
+                }
+            }
+
             // Border
             painter.rect_stroke(
                 clip_rect,

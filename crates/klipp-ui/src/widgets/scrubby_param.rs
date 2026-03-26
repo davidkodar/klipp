@@ -249,6 +249,16 @@ pub fn scrubby_param_row(
             ui.painter().add(egui::Shape::closed_line(diamond_points, egui::Stroke::new(1.2, diamond_color)));
         }
 
+        if let Some(ref ks) = keyframe_state {
+            if !ks.has_any_keyframes {
+                diamond_btn_resp.clone().on_hover_text("Click to enable keyframing");
+            } else if ks.has_keyframe_at_playhead {
+                diamond_btn_resp.clone().on_hover_text("Remove keyframe");
+            } else {
+                diamond_btn_resp.clone().on_hover_text("Add keyframe at playhead");
+            }
+        }
+
         if is_keyframeable && diamond_btn_resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
