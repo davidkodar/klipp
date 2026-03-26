@@ -2160,7 +2160,8 @@ impl TimelinePanel {
             // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
             let clip_has_audio = track_kind == TrackKind::Audio
                 || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
-            let is_hovered_or_selected = state.hovered_clip == Some(clip.id) || state.selected_clip == Some(clip.id);
+            let is_pointer_over_clip = pointer_pos.map_or(false, |p| clip_rect.contains(p) && content_rect.contains(p));
+            let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
             let is_dragging_this_fade = state.dragging_fade_handle.map_or(false, |(id, _, _)| id == clip.id);
             if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
                 && (is_hovered_or_selected || is_dragging_this_fade)
