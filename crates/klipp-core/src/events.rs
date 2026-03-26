@@ -381,6 +381,22 @@ pub enum AppCommand {
     ShowRenderQueue,
     ClearCompletedJobs,
 
+    // Slip & Slide trim
+    SlipClip {
+        clip_id: ClipId,
+        new_source_in: Timecode,
+        new_source_out: Timecode,
+    },
+    SlideClip {
+        clip_id: ClipId,
+        new_timeline_in: Timecode,
+        new_timeline_out: Timecode,
+        left_clip_id: Option<ClipId>,
+        new_left_out: Option<Timecode>,
+        right_clip_id: Option<ClipId>,
+        new_right_in: Option<Timecode>,
+    },
+
     // Snap & Ripple
     SetSnapEnabled(bool),
     SetRippleEnabled(bool),

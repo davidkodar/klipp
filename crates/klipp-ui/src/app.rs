@@ -1805,6 +1805,27 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SlipClip { clip_id, new_source_in: _, new_source_out: _ } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
+                    // Slip was already applied during drag.  Undo entry was pushed by the timeline panel.
+                    // Just sync the engine.
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SlideClip {
+                    clip_id,
+                    new_timeline_in: _, new_timeline_out: _,
+                    left_clip_id: _, new_left_out: _,
+                    right_clip_id: _, new_right_in: _,
+                } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
+                    // Slide was already applied during drag.  Undo entry was pushed by the timeline panel.
+                    // Just sync the engine.
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::Undo => {
                     self.apply_undo();
                     continue;
@@ -4522,6 +4543,78 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::LegacySlipClip {
+                clip_id,
+                old_source_in, old_source_out, ..
+            } => {
+                // Undo slip: restore original source in/out
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                // Also undo linked partner
+                let linked_id = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_id) {
+                        c.source_in = *old_source_in;
+                        c.source_out = *old_source_out;
+                    }
+                }
+                if let Some(lid) = linked_id {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(c) = track.find_clip_mut(lid) {
+                            c.source_in = *old_source_in;
+                            c.source_out = *old_source_out;
+                        }
+                    }
+                }
+            }
+            EditCommand::LegacySlideClip {
+                clip_id,
+                old_timeline_in, old_timeline_out,
+                left_clip_id, old_left_out,
+                right_clip_id, old_right_in, ..
+            } => {
+                // Undo slide: restore original timeline positions for clip and neighbors
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                // Also undo linked partner
+                let linked_id = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                let delta = *old_timeline_in - seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).map(|c| c.timeline_in).unwrap_or(*old_timeline_in);
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_id) {
+                        c.timeline_in = *old_timeline_in;
+                        c.timeline_out = *old_timeline_out;
+                    }
+                    if let Some(lid) = left_clip_id {
+                        if let (Some(c), Some(old_out)) = (track.find_clip_mut(*lid), old_left_out) {
+                            // Restore left neighbor's out point (and source_out by same delta)
+                            let current_out = c.timeline_out;
+                            let dt = *old_out - current_out;
+                            c.timeline_out = *old_out;
+                            c.source_out = c.source_out + dt;
+                        }
+                    }
+                    if let Some(rid) = right_clip_id {
+                        if let (Some(c), Some(old_in)) = (track.find_clip_mut(*rid), old_right_in) {
+                            let current_in = c.timeline_in;
+                            let dt = *old_in - current_in;
+                            c.timeline_in = *old_in;
+                            c.source_in = c.source_in + dt;
+                        }
+                    }
+                    track.sort_clips();
+                }
+                // Undo linked partner
+                if let Some(lid) = linked_id {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(c) = track.find_clip_mut(lid) {
+                            let dur = c.duration();
+                            c.timeline_in = c.timeline_in + delta;
+                            c.timeline_out = c.timeline_in + dur;
+                        }
+                    }
+                }
+            }
             EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     // Undo: remove clip_a and clip_b, insert original
@@ -4713,6 +4806,75 @@ impl KlippApp {
                     if let Some(c) = track.find_clip_mut(*clip_b_id) {
                         c.source_in = *new_b_source_in;
                         c.timeline_in = *new_b_timeline_in;
+                    }
+                }
+            }
+            EditCommand::LegacySlipClip {
+                clip_id,
+                new_source_in, new_source_out, ..
+            } => {
+                // Redo slip: apply new source in/out
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let linked_id = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_id) {
+                        c.source_in = *new_source_in;
+                        c.source_out = *new_source_out;
+                    }
+                }
+                if let Some(lid) = linked_id {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(c) = track.find_clip_mut(lid) {
+                            c.source_in = *new_source_in;
+                            c.source_out = *new_source_out;
+                        }
+                    }
+                }
+            }
+            EditCommand::LegacySlideClip {
+                clip_id,
+                new_timeline_in, new_timeline_out,
+                left_clip_id, new_left_out,
+                right_clip_id, new_right_in, ..
+            } => {
+                // Redo slide: apply new timeline positions for clip and neighbors
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let linked_id = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                let old_in = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id).map(|c| c.timeline_in).unwrap_or(*new_timeline_in);
+                let delta = *new_timeline_in - old_in;
+                for track in &mut seq.tracks {
+                    if let Some(c) = track.find_clip_mut(*clip_id) {
+                        c.timeline_in = *new_timeline_in;
+                        c.timeline_out = *new_timeline_out;
+                    }
+                    if let Some(lid) = left_clip_id {
+                        if let (Some(c), Some(new_out)) = (track.find_clip_mut(*lid), new_left_out) {
+                            let current_out = c.timeline_out;
+                            let dt = *new_out - current_out;
+                            c.timeline_out = *new_out;
+                            c.source_out = c.source_out + dt;
+                        }
+                    }
+                    if let Some(rid) = right_clip_id {
+                        if let (Some(c), Some(new_in)) = (track.find_clip_mut(*rid), new_right_in) {
+                            let current_in = c.timeline_in;
+                            let dt = *new_in - current_in;
+                            c.timeline_in = *new_in;
+                            c.source_in = c.source_in + dt;
+                        }
+                    }
+                    track.sort_clips();
+                }
+                if let Some(lid) = linked_id {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(c) = track.find_clip_mut(lid) {
+                            let dur = c.duration();
+                            c.timeline_in = c.timeline_in + delta;
+                            c.timeline_out = c.timeline_in + dur;
+                        }
                     }
                 }
             }

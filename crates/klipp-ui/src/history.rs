@@ -79,6 +79,27 @@ pub enum EditCommand {
     // === MAGNETIC (Primary/Connected tracks) ===
     Magnetic(klipp_timeline::magnetic_commands::MagneticEditCommand),
 
+    LegacySlipClip {
+        clip_id: ClipId,
+        old_source_in: RationalTime,
+        old_source_out: RationalTime,
+        new_source_in: RationalTime,
+        new_source_out: RationalTime,
+    },
+    LegacySlideClip {
+        clip_id: ClipId,
+        old_timeline_in: RationalTime,
+        old_timeline_out: RationalTime,
+        new_timeline_in: RationalTime,
+        new_timeline_out: RationalTime,
+        left_clip_id: Option<ClipId>,
+        old_left_out: Option<RationalTime>,
+        new_left_out: Option<RationalTime>,
+        right_clip_id: Option<ClipId>,
+        old_right_in: Option<RationalTime>,
+        new_right_in: Option<RationalTime>,
+    },
+
     // === MEDIA POOL ===
     AddMediaToPool {
         item: klipp_media::MediaItem,
@@ -162,6 +183,8 @@ impl EditCommand {
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
             EditCommand::LegacyTrimClip { .. } => "Trim Clip",
             EditCommand::LegacyRollTrimClip { .. } => "Roll Trim",
+            EditCommand::LegacySlipClip { .. } => "Slip Clip",
+            EditCommand::LegacySlideClip { .. } => "Slide Clip",
             EditCommand::LegacyBladeClip { .. } => "Blade Clip",
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",

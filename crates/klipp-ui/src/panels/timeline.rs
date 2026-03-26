@@ -41,6 +41,8 @@ pub struct TimelinePanel {
     dragging_clip: Option<DragState>,
     trimming_clip: Option<TrimState>,
     roll_trimming: Option<RollTrimState>,
+    slipping_clip: Option<SlipState>,
+    sliding_clip: Option<SlideState>,
     snap_line_x: Option<f32>,
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
@@ -93,6 +95,39 @@ struct RollTrimState {
     original_a_timeline_out: Timecode,
     /// Original timeline_in of clip B
     original_b_timeline_in: Timecode,
+}
+
+#[allow(dead_code)]
+struct SlipState {
+    clip_id: ClipId,
+    track_idx: usize,
+    start_x: f32,
+    original_source_in: Timecode,
+    original_source_out: Timecode,
+    /// Media duration for clamping (if known)
+    media_duration: Option<Timecode>,
+    /// Linked partner clip (for linked video+audio)
+    linked_clip_id: Option<ClipId>,
+    linked_original_source_in: Option<Timecode>,
+    linked_original_source_out: Option<Timecode>,
+}
+
+struct SlideState {
+    clip_id: ClipId,
+    track_idx: usize,
+    start_x: f32,
+    original_timeline_in: Timecode,
+    original_timeline_out: Timecode,
+    left_clip_id: Option<ClipId>,
+    original_left_out: Option<Timecode>,
+    original_left_source_out: Option<Timecode>,
+    right_clip_id: Option<ClipId>,
+    original_right_in: Option<Timecode>,
+    original_right_source_in: Option<Timecode>,
+    /// Linked partner clip (for linked video+audio)
+    linked_clip_id: Option<ClipId>,
+    linked_original_in: Option<Timecode>,
+    linked_original_out: Option<Timecode>,
 }
 
 #[derive(Clone, Copy)]
@@ -3825,25 +3860,101 @@ impl TimelinePanel {
                         original_out: state.sequence().out_point,
                     });
                 }
-                // Second: check if pointer is inside a clip body (drag/move)
+                // Second: check if pointer is inside a clip body (drag/move or slip/slide)
                 else if let Some((_cr, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
                     if state.active_tool == Tool::Select {
-                        let linked_id = hit_clip.linked_clip_id;
-                        let linked_orig = linked_id.and_then(|lid| {
-                            state.sequence().tracks.iter()
-                                .flat_map(|t| t.clips.iter())
-                                .find(|c| c.id == lid)
-                                .map(|c| c.timeline_in)
-                        });
-                        self.dragging_clip = Some(DragState {
-                            clip_id: hit_clip.id,
-                            track_idx,
-                            start_x: pos.x,
-                            original_timeline_in: hit_clip.timeline_in,
-                            linked_clip_id: linked_id,
-                            linked_original_in: linked_orig,
-                        });
+                        let alt_held = ui.input(|i| i.modifiers.alt);
+                        let shift_held = ui.input(|i| i.modifiers.shift);
+
+                        if alt_held && shift_held {
+                            // ALT+SHIFT+drag on clip body = SLIDE
+                            tracing::debug!("drag_started SLIDE: clip={:?}", hit_clip.id);
+                            // Find left and right neighbor clips on the same track
+                            let clip_idx = clips.iter().position(|c| c.id == hit_clip.id);
+                            let left = clip_idx.and_then(|i| {
+                                if i > 0 {
+                                    let lc = &clips[i - 1];
+                                    if !lc.kind.is_gap() { Some(lc) } else { None }
+                                } else { None }
+                            });
+                            let right = clip_idx.and_then(|i| {
+                                if i + 1 < clips.len() {
+                                    let rc = &clips[i + 1];
+                                    if !rc.kind.is_gap() { Some(rc) } else { None }
+                                } else { None }
+                            });
+                            let linked_id = hit_clip.linked_clip_id;
+                            let (linked_orig_in, linked_orig_out) = linked_id
+                                .and_then(|lid| {
+                                    state.sequence().tracks.iter()
+                                        .flat_map(|t| t.clips.iter())
+                                        .find(|c| c.id == lid)
+                                        .map(|c| (c.timeline_in, c.timeline_out))
+                                })
+                                .map(|(a, b)| (Some(a), Some(b)))
+                                .unwrap_or((None, None));
+                            self.sliding_clip = Some(SlideState {
+                                clip_id: hit_clip.id,
+                                track_idx,
+                                start_x: pos.x,
+                                original_timeline_in: hit_clip.timeline_in,
+                                original_timeline_out: hit_clip.timeline_out,
+                                left_clip_id: left.map(|c| c.id),
+                                original_left_out: left.map(|c| c.timeline_out),
+                                original_left_source_out: left.map(|c| c.source_out),
+                                right_clip_id: right.map(|c| c.id),
+                                original_right_in: right.map(|c| c.timeline_in),
+                                original_right_source_in: right.map(|c| c.source_in),
+                                linked_clip_id: linked_id,
+                                linked_original_in: linked_orig_in,
+                                linked_original_out: linked_orig_out,
+                            });
+                        } else if alt_held {
+                            // ALT+drag on clip body = SLIP
+                            tracing::debug!("drag_started SLIP: clip={:?}", hit_clip.id);
+                            let media_dur = hit_clip.media_id().and_then(|mid| {
+                                state.media_pool.get(&mid).map(|m| m.duration)
+                            });
+                            let linked_id = hit_clip.linked_clip_id;
+                            let (linked_src_in, linked_src_out) = linked_id
+                                .and_then(|lid| {
+                                    state.sequence().tracks.iter()
+                                        .flat_map(|t| t.clips.iter())
+                                        .find(|c| c.id == lid)
+                                        .map(|c| (c.source_in, c.source_out))
+                                })
+                                .map(|(a, b)| (Some(a), Some(b)))
+                                .unwrap_or((None, None));
+                            self.slipping_clip = Some(SlipState {
+                                clip_id: hit_clip.id,
+                                track_idx,
+                                start_x: pos.x,
+                                original_source_in: hit_clip.source_in,
+                                original_source_out: hit_clip.source_out,
+                                media_duration: media_dur,
+                                linked_clip_id: linked_id,
+                                linked_original_source_in: linked_src_in,
+                                linked_original_source_out: linked_src_out,
+                            });
+                        } else {
+                            // Normal drag/move
+                            tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
+                            let linked_id = hit_clip.linked_clip_id;
+                            let linked_orig = linked_id.and_then(|lid| {
+                                state.sequence().tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == lid)
+                                    .map(|c| c.timeline_in)
+                            });
+                            self.dragging_clip = Some(DragState {
+                                clip_id: hit_clip.id,
+                                track_idx,
+                                start_x: pos.x,
+                                original_timeline_in: hit_clip.timeline_in,
+                                linked_clip_id: linked_id,
+                                linked_original_in: linked_orig,
+                            });
+                        }
                     }
                 }
                 } // end if !started_fade_drag
@@ -4335,6 +4446,279 @@ impl TimelinePanel {
                 }
                 self.roll_trimming = None;
                 self.press_origin = None;
+            }
+        }
+
+        // ── Slip drag processing ─────────────────────────────────────────
+        if let Some(ref slip) = self.slipping_clip {
+            if slip.track_idx == track_idx {
+                if let Some(pos) = pointer_pos {
+                    if pointer_down {
+                        let dx = pos.x - slip.start_x;
+                        let dt_secs = dx as f64 / zoom as f64;
+                        let dt = RationalTime::from_secs_f64(dt_secs, slip.original_source_in.rate);
+
+                        let mut new_src_in = slip.original_source_in + dt;
+                        let mut new_src_out = slip.original_source_out + dt;
+
+                        // Clamp: source_in >= 0
+                        if new_src_in.value < 0 {
+                            let shift = RationalTime { value: -new_src_in.value, rate: new_src_in.rate };
+                            new_src_in.value = 0;
+                            new_src_out = new_src_out + shift;
+                        }
+                        // Clamp: source_out <= media duration
+                        if let Some(media_dur) = slip.media_duration {
+                            let media_dur_rt = media_dur.rescale_to(new_src_out.rate);
+                            if new_src_out.value > media_dur_rt.value {
+                                let overshoot = RationalTime { value: new_src_out.value - media_dur_rt.value, rate: new_src_out.rate };
+                                new_src_out = media_dur_rt;
+                                new_src_in = new_src_in - overshoot;
+                                if new_src_in.value < 0 { new_src_in.value = 0; }
+                            }
+                        }
+
+                        // Apply slip to clip
+                        if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
+                            if let Some(clip) = track.find_clip_mut(slip.clip_id) {
+                                clip.source_in = new_src_in;
+                                clip.source_out = new_src_out;
+                            }
+                        }
+
+                        // Apply to linked partner
+                        if let Some(lid) = slip.linked_clip_id {
+                            for track in &mut state.sequence_mut().tracks {
+                                if let Some(lclip) = track.find_clip_mut(lid) {
+                                    lclip.source_in = new_src_in;
+                                    lclip.source_out = new_src_out;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Visual: cursor + tooltip
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        let delta_secs = dt_secs;
+                        let sign = if delta_secs >= 0.0 { "+" } else { "" };
+                        let badge_text = format!("SLIP  {sign}{:.2}s", delta_secs);
+                        let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
+                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(100.0, 16.0));
+                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
+                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 160, 60)));
+                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
+                            &badge_text, egui::FontId::monospace(9.0), egui::Color32::from_rgb(200, 160, 60));
+
+                        // Draw semi-transparent directional arrow overlay on the clip
+                        if let Some(clip) = clips.iter().find(|c| c.id == slip.clip_id) {
+                            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                            let overlay_color = egui::Color32::from_rgba_unmultiplied(200, 160, 60, 40);
+                            painter.rect_filled(cr, 3.0, overlay_color);
+                        }
+                    }
+                }
+
+                if pointer_released {
+                    // Finalize slip: push undo entry and emit sync command
+                    // Extract values before borrowing state.history
+                    let new_vals = state.sequence().tracks.get(track_idx)
+                        .and_then(|t| t.find_clip(slip.clip_id))
+                        .map(|c| (c.source_in, c.source_out));
+                    if let Some((new_src_in, new_src_out)) = new_vals {
+                        if new_src_in != slip.original_source_in || new_src_out != slip.original_source_out {
+                            let cid = slip.clip_id;
+                            let old_si = slip.original_source_in;
+                            let old_so = slip.original_source_out;
+                            state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: state.active_sequence_idx,
+                                command: crate::history::EditCommand::LegacySlipClip {
+                                    clip_id: cid,
+                                    old_source_in: old_si,
+                                    old_source_out: old_so,
+                                    new_source_in: new_src_in,
+                                    new_source_out: new_src_out,
+                                },
+                            });
+                            cmds.push(AppCommand::SlipClip {
+                                clip_id: cid,
+                                new_source_in: new_src_in,
+                                new_source_out: new_src_out,
+                            });
+                        }
+                    }
+                    self.slipping_clip = None;
+                    self.press_origin = None;
+                }
+            }
+        }
+
+        // ── Slide drag processing ────────────────────────────────────────
+        if let Some(ref slide) = self.sliding_clip {
+            if slide.track_idx == track_idx {
+                if let Some(pos) = pointer_pos {
+                    if pointer_down {
+                        let dx = pos.x - slide.start_x;
+                        let dt_secs = dx as f64 / zoom as f64;
+                        let dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
+
+                        let mut new_tl_in = slide.original_timeline_in + dt;
+                        let mut new_tl_out = slide.original_timeline_out + dt;
+
+                        // Clamp: left neighbor can't get negative duration
+                        if let (Some(left_id), Some(orig_left_out)) = (slide.left_clip_id, slide.original_left_out) {
+                            // Left neighbor's new out = original_left_out + dt
+                            // Its in stays the same, so duration = (orig_left_out + dt) - left_in
+                            // We need the left clip's timeline_in
+                            let left_in = state.sequence().tracks.get(track_idx)
+                                .and_then(|t| t.find_clip(left_id))
+                                .map(|c| c.timeline_in);
+                            if let Some(left_in) = left_in {
+                                let min_dur = RationalTime { value: 1, rate: orig_left_out.rate };
+                                let min_left_out = left_in + min_dur;
+                                let new_left_out = orig_left_out + dt;
+                                if new_left_out.value < min_left_out.value {
+                                    let correction = min_left_out - new_left_out;
+                                    new_tl_in = new_tl_in + correction;
+                                    new_tl_out = new_tl_out + correction;
+                                }
+                            }
+                        }
+
+                        // Clamp: right neighbor can't get negative duration
+                        if let (Some(right_id), Some(orig_right_in)) = (slide.right_clip_id, slide.original_right_in) {
+                            let right_out = state.sequence().tracks.get(track_idx)
+                                .and_then(|t| t.find_clip(right_id))
+                                .map(|c| c.timeline_out);
+                            if let Some(right_out) = right_out {
+                                let recalc_dt = new_tl_in - slide.original_timeline_in;
+                                let new_right_in = orig_right_in + recalc_dt;
+                                let min_dur = RationalTime { value: 1, rate: orig_right_in.rate };
+                                if (right_out - new_right_in).value < min_dur.value {
+                                    let max_right_in = right_out - min_dur;
+                                    let correction = new_right_in - max_right_in;
+                                    new_tl_in = new_tl_in - correction;
+                                    new_tl_out = new_tl_out - correction;
+                                }
+                            }
+                        }
+
+                        let actual_dt = new_tl_in - slide.original_timeline_in;
+
+                        // Apply slide to the clip
+                        if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
+                            if let Some(clip) = track.find_clip_mut(slide.clip_id) {
+                                clip.timeline_in = new_tl_in;
+                                clip.timeline_out = new_tl_out;
+                            }
+                            // Adjust left neighbor's out point (and source_out)
+                            if let (Some(left_id), Some(orig_left_out), Some(orig_left_src_out)) =
+                                (slide.left_clip_id, slide.original_left_out, slide.original_left_source_out)
+                            {
+                                if let Some(lc) = track.find_clip_mut(left_id) {
+                                    lc.timeline_out = orig_left_out + actual_dt;
+                                    lc.source_out = orig_left_src_out + actual_dt;
+                                }
+                            }
+                            // Adjust right neighbor's in point (and source_in)
+                            if let (Some(right_id), Some(orig_right_in), Some(orig_right_src_in)) =
+                                (slide.right_clip_id, slide.original_right_in, slide.original_right_source_in)
+                            {
+                                if let Some(rc) = track.find_clip_mut(right_id) {
+                                    rc.timeline_in = orig_right_in + actual_dt;
+                                    rc.source_in = orig_right_src_in + actual_dt;
+                                }
+                            }
+                        }
+
+                        // Apply slide to linked partner
+                        if let (Some(lid), Some(linked_in), Some(linked_out)) =
+                            (slide.linked_clip_id, slide.linked_original_in, slide.linked_original_out)
+                        {
+                            for track in &mut state.sequence_mut().tracks {
+                                if let Some(lclip) = track.find_clip_mut(lid) {
+                                    lclip.timeline_in = linked_in + actual_dt;
+                                    lclip.timeline_out = linked_out + actual_dt;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Visual: cursor + tooltip
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        let delta_secs = dt_secs;
+                        let sign = if delta_secs >= 0.0 { "+" } else { "" };
+                        let badge_text = format!("SLIDE  {sign}{:.2}s", delta_secs);
+                        let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
+                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(108.0, 16.0));
+                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
+                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 160, 200)));
+                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
+                            &badge_text, egui::FontId::monospace(9.0), egui::Color32::from_rgb(60, 160, 200));
+
+                        // Highlight all three involved clips
+                        let highlight_color = egui::Color32::from_rgba_unmultiplied(60, 160, 200, 50);
+                        let highlight_border = egui::Color32::from_rgba_unmultiplied(60, 160, 200, 140);
+                        for cid in [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id].into_iter().flatten() {
+                            if let Some(clip) = clips.iter().find(|c| c.id == cid) {
+                                let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                                painter.rect_filled(cr, 3.0, highlight_color);
+                                painter.rect_stroke(cr, 3.0, egui::Stroke::new(1.5, highlight_border));
+                            }
+                        }
+                    }
+                }
+
+                if pointer_released {
+                    // Finalize slide: push undo entry and emit sync command
+                    // Extract all values before borrowing state.history
+                    let slide_vals = {
+                        let track = state.sequence().tracks.get(track_idx);
+                        track.and_then(|t| {
+                            let clip = t.find_clip(slide.clip_id)?;
+                            let nl_out = slide.left_clip_id.and_then(|lid| t.find_clip(lid).map(|c| c.timeline_out));
+                            let nr_in = slide.right_clip_id.and_then(|rid| t.find_clip(rid).map(|c| c.timeline_in));
+                            Some((clip.timeline_in, clip.timeline_out, nl_out, nr_in))
+                        })
+                    };
+                    if let Some((new_tl_in, new_tl_out, new_left_out, new_right_in)) = slide_vals {
+                        if new_tl_in != slide.original_timeline_in {
+                            let cid = slide.clip_id;
+                            let old_tl_in = slide.original_timeline_in;
+                            let old_tl_out = slide.original_timeline_out;
+                            let l_id = slide.left_clip_id;
+                            let old_l_out = slide.original_left_out;
+                            let r_id = slide.right_clip_id;
+                            let old_r_in = slide.original_right_in;
+                            state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: state.active_sequence_idx,
+                                command: crate::history::EditCommand::LegacySlideClip {
+                                    clip_id: cid,
+                                    old_timeline_in: old_tl_in,
+                                    old_timeline_out: old_tl_out,
+                                    new_timeline_in: new_tl_in,
+                                    new_timeline_out: new_tl_out,
+                                    left_clip_id: l_id,
+                                    old_left_out: old_l_out,
+                                    new_left_out,
+                                    right_clip_id: r_id,
+                                    old_right_in: old_r_in,
+                                    new_right_in,
+                                },
+                            });
+                            cmds.push(AppCommand::SlideClip {
+                                clip_id: cid,
+                                new_timeline_in: new_tl_in,
+                                new_timeline_out: new_tl_out,
+                                left_clip_id: l_id,
+                                new_left_out,
+                                right_clip_id: r_id,
+                                new_right_in,
+                            });
+                        }
+                    }
+                    self.sliding_clip = None;
+                    self.press_origin = None;
+                }
             }
         }
 
