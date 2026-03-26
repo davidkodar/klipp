@@ -2383,11 +2383,12 @@ impl KlippApp {
                     continue;
                 }
                 // Undo coalescing — drag gesture signals for builtin effects
-                AppCommand::UpdateClipAudio { clip_id, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve } => {
+                AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve } => {
                     let mut old_vals = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            old_vals = Some((clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs));
+                            old_vals = Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs));
+                            clip.gain = *gain;
                             clip.volume = *volume;
                             clip.pan = *pan;
                             clip.fade_in_secs = *fade_in_secs;
@@ -2397,17 +2398,19 @@ impl KlippApp {
                             break;
                         }
                     }
-                    if let Some((ov, op, ofi, ofo)) = old_vals {
+                    if let Some((og, ov, op, ofi, ofo)) = old_vals {
                         let drag_key = format!("{:?}:audio", clip_id);
                         if !self.state.history.is_dragging(&drag_key) {
                             self.state.history.push(HistoryEntry {
                                 sequence_idx: self.state.active_sequence_idx,
                                 command: EditCommand::EditClipAudio {
                                     clip_id: *clip_id,
+                                    old_gain: og,
                                     old_volume: ov,
                                     old_pan: op,
                                     old_fade_in: ofi,
                                     old_fade_out: ofo,
+                                    new_gain: *gain,
                                     new_volume: *volume,
                                     new_pan: *pan,
                                     new_fade_in: *fade_in_secs,
@@ -2424,17 +2427,19 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     continue;
                 }
-                AppCommand::BeginAudioDrag { ref key, clip_id, old_volume, old_pan, old_fade_in, old_fade_out } => {
+                AppCommand::BeginAudioDrag { ref key, clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out } => {
                     self.state.history.begin_drag(
                         key.clone(),
                         HistoryEntry {
                             sequence_idx: self.state.active_sequence_idx,
                             command: EditCommand::EditClipAudio {
                                 clip_id: *clip_id,
+                                old_gain: *old_gain,
                                 old_volume: *old_volume,
                                 old_pan: *old_pan,
                                 old_fade_in: *old_fade_in,
                                 old_fade_out: *old_fade_out,
+                                new_gain: *old_gain,
                                 new_volume: *old_volume,
                                 new_pan: *old_pan,
                                 new_fade_in: *old_fade_in,
@@ -2444,24 +2449,26 @@ impl KlippApp {
                     );
                     continue;
                 }
-                AppCommand::EndAudioDrag { ref key, clip_id, new_volume, new_pan, new_fade_in, new_fade_out } => {
+                AppCommand::EndAudioDrag { ref key, clip_id, new_gain, new_volume, new_pan, new_fade_in, new_fade_out } => {
                     let _ = key;
-                    let (ov, op, ofi, ofo) = self.state.history.pending_old_entry_ref()
+                    let (og, ov, op, ofi, ofo) = self.state.history.pending_old_entry_ref()
                         .and_then(|e| match &e.command {
-                            EditCommand::EditClipAudio { old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
-                                Some((*old_volume, *old_pan, *old_fade_in, *old_fade_out))
+                            EditCommand::EditClipAudio { old_gain, old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
+                                Some((*old_gain, *old_volume, *old_pan, *old_fade_in, *old_fade_out))
                             }
                             _ => None,
                         })
-                        .unwrap_or((*new_volume, *new_pan, *new_fade_in, *new_fade_out));
+                        .unwrap_or((*new_gain, *new_volume, *new_pan, *new_fade_in, *new_fade_out));
                     self.state.history.end_drag(HistoryEntry {
                         sequence_idx: self.state.active_sequence_idx,
                         command: EditCommand::EditClipAudio {
                             clip_id: *clip_id,
+                            old_gain: og,
                             old_volume: ov,
                             old_pan: op,
                             old_fade_in: ofi,
                             old_fade_out: ofo,
+                            new_gain: *new_gain,
                             new_volume: *new_volume,
                             new_pan: *new_pan,
                             new_fade_in: *new_fade_in,
@@ -2596,6 +2603,7 @@ impl KlippApp {
                         linked_clip_id: None,
                         group_id: None,
                         magnetic_anchor: None,
+                        gain: 1.0,
                         volume: 1.0,
                         pan: 0.0,
                         fade_in_secs: 0.0,
@@ -2871,6 +2879,7 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    gain: clip.gain,
                                     volume: clip.volume,
                                     pan: clip.pan,
                                     fade_in_secs: clip.fade_in_secs,
@@ -2980,6 +2989,7 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    gain: 1.0,
                                     volume: 1.0,
                                     pan: 0.0,
                                     fade_in_secs: 0.0,
@@ -3044,6 +3054,7 @@ impl KlippApp {
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
+                                    gain: 1.0,
                                     volume: 1.0,
                                     pan: 0.0,
                                     fade_in_secs: 0.0,
@@ -4338,9 +4349,10 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::EditClipAudio { clip_id, old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
+            EditCommand::EditClipAudio { clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out, .. } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.gain = *old_gain;
                         clip.volume = *old_volume;
                         clip.pan = *old_pan;
                         clip.fade_in_secs = *old_fade_in;
@@ -4508,9 +4520,10 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::EditClipAudio { clip_id, new_volume, new_pan, new_fade_in, new_fade_out, .. } => {
+            EditCommand::EditClipAudio { clip_id, new_gain, new_volume, new_pan, new_fade_in, new_fade_out, .. } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.gain = *new_gain;
                         clip.volume = *new_volume;
                         clip.pan = *new_pan;
                         clip.fade_in_secs = *new_fade_in;
@@ -4585,6 +4598,7 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
+                gain: clip.gain,
                 volume: clip.volume,
                 pan: clip.pan,
                 fade_in_secs: clip.fade_in_secs,
@@ -4674,6 +4688,7 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
+                gain: clip.gain,
                 volume: clip.volume,
                 pan: clip.pan,
                 fade_in_secs: clip.fade_in_secs,

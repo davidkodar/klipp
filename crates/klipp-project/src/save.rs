@@ -163,6 +163,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         },
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         group_id: c.group_id.map(|id| id.to_string()),
+                        gain: if (c.gain - 1.0).abs() > f32::EPSILON { Some(c.gain) } else { None },
                         volume: if (c.volume - 1.0).abs() > f32::EPSILON { Some(c.volume) } else { None },
                         pan: if c.pan.abs() > f32::EPSILON { Some(c.pan) } else { None },
                         fade_in_secs: if c.fade_in_secs.abs() > f32::EPSILON { Some(c.fade_in_secs) } else { None },

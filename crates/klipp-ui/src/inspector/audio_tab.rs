@@ -38,6 +38,7 @@ pub fn show(
     let clip_id = clip.id;
 
     // Read current values into local mutable copies
+    let mut gain = clip.gain;
     let mut volume = clip.volume;
     let mut pan = clip.pan;
     let mut fade_in = clip.fade_in_secs;
@@ -55,7 +56,8 @@ pub fn show(
         );
 
         // Global reset button — only shown when any value differs from default
-        let is_default = (volume - 1.0).abs() < f32::EPSILON
+        let is_default = (gain - 1.0).abs() < f32::EPSILON
+            && (volume - 1.0).abs() < f32::EPSILON
             && pan.abs() < f32::EPSILON
             && fade_in.abs() < f32::EPSILON
             && fade_out.abs() < f32::EPSILON;
@@ -73,6 +75,7 @@ pub fn show(
             Icon::ArrowCounterClockwise.image(12.0).tint(tint).paint_at(ui, reset_rect);
 
             if reset_resp.clicked() {
+                gain = 1.0;
                 volume = 1.0;
                 pan = 0.0;
                 fade_in = 0.0;
@@ -81,6 +84,7 @@ pub fn show(
                 fade_out_curve = FadeCurve::default();
                 cmds.push(AppCommand::UpdateClipAudio {
                     clip_id,
+                    gain,
                     volume,
                     pan,
                     fade_in_secs: fade_in,
@@ -93,8 +97,47 @@ pub fn show(
     });
     ui.add_space(7.0);
 
-    // ── Volume ──
+    // ── Gain (pre-fader) ──
     let drag_key = format!("{:?}:audio", clip_id);
+    let gain_resp = scrubby_param_row(
+        ui, "Gain", &mut gain, 0.0..=4.0, 1.0, 0.005, 2, "",
+    );
+    if gain_resp.drag_started {
+        cmds.push(AppCommand::BeginAudioDrag {
+            key: drag_key.clone(),
+            clip_id,
+            old_gain: clip.gain,
+            old_volume: clip.volume,
+            old_pan: clip.pan,
+            old_fade_in: clip.fade_in_secs,
+            old_fade_out: clip.fade_out_secs,
+        });
+    }
+    if gain_resp.changed {
+        cmds.push(AppCommand::UpdateClipAudio {
+            clip_id,
+            gain,
+            volume,
+            pan,
+            fade_in_secs: fade_in,
+            fade_out_secs: fade_out,
+            fade_in_curve,
+            fade_out_curve,
+        });
+    }
+    if gain_resp.drag_stopped {
+        cmds.push(AppCommand::EndAudioDrag {
+            key: drag_key.clone(),
+            clip_id,
+            new_gain: gain,
+            new_volume: volume,
+            new_pan: pan,
+            new_fade_in: fade_in,
+            new_fade_out: fade_out,
+        });
+    }
+
+    // ── Volume ──
     let vol_resp = scrubby_param_row(
         ui, "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "",
     );
@@ -102,6 +145,7 @@ pub fn show(
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            old_gain: clip.gain,
             old_volume: clip.volume,
             old_pan: clip.pan,
             old_fade_in: clip.fade_in_secs,
@@ -111,6 +155,7 @@ pub fn show(
     if vol_resp.changed {
         cmds.push(AppCommand::UpdateClipAudio {
             clip_id,
+            gain,
             volume,
             pan,
             fade_in_secs: fade_in,
@@ -123,6 +168,7 @@ pub fn show(
         cmds.push(AppCommand::EndAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            new_gain: gain,
             new_volume: volume,
             new_pan: pan,
             new_fade_in: fade_in,
@@ -138,6 +184,7 @@ pub fn show(
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            old_gain: clip.gain,
             old_volume: clip.volume,
             old_pan: clip.pan,
             old_fade_in: clip.fade_in_secs,
@@ -147,6 +194,7 @@ pub fn show(
     if pan_resp.changed {
         cmds.push(AppCommand::UpdateClipAudio {
             clip_id,
+            gain,
             volume,
             pan,
             fade_in_secs: fade_in,
@@ -159,6 +207,7 @@ pub fn show(
         cmds.push(AppCommand::EndAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            new_gain: gain,
             new_volume: volume,
             new_pan: pan,
             new_fade_in: fade_in,
@@ -174,6 +223,7 @@ pub fn show(
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            old_gain: clip.gain,
             old_volume: clip.volume,
             old_pan: clip.pan,
             old_fade_in: clip.fade_in_secs,
@@ -183,6 +233,7 @@ pub fn show(
     if fi_resp.changed {
         cmds.push(AppCommand::UpdateClipAudio {
             clip_id,
+            gain,
             volume,
             pan,
             fade_in_secs: fade_in,
@@ -195,6 +246,7 @@ pub fn show(
         cmds.push(AppCommand::EndAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            new_gain: gain,
             new_volume: volume,
             new_pan: pan,
             new_fade_in: fade_in,
@@ -216,6 +268,7 @@ pub fn show(
         if fade_in_curve != prev {
             cmds.push(AppCommand::UpdateClipAudio {
                 clip_id,
+                gain,
                 volume,
                 pan,
                 fade_in_secs: fade_in,
@@ -234,6 +287,7 @@ pub fn show(
         cmds.push(AppCommand::BeginAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            old_gain: clip.gain,
             old_volume: clip.volume,
             old_pan: clip.pan,
             old_fade_in: clip.fade_in_secs,
@@ -243,6 +297,7 @@ pub fn show(
     if fo_resp.changed {
         cmds.push(AppCommand::UpdateClipAudio {
             clip_id,
+            gain,
             volume,
             pan,
             fade_in_secs: fade_in,
@@ -255,6 +310,7 @@ pub fn show(
         cmds.push(AppCommand::EndAudioDrag {
             key: drag_key.clone(),
             clip_id,
+            new_gain: gain,
             new_volume: volume,
             new_pan: pan,
             new_fade_in: fade_in,
@@ -276,6 +332,7 @@ pub fn show(
         if fade_out_curve != prev {
             cmds.push(AppCommand::UpdateClipAudio {
                 clip_id,
+                gain,
                 volume,
                 pan,
                 fade_in_secs: fade_in,

@@ -895,6 +895,7 @@ impl PlaybackEngine {
                 if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
                     clip_volume = audio_clip.volume;
                     clip_pan = audio_clip.pan;
+                    let mut clip_gain = audio_clip.gain;
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
                     let mut fi_curve = audio_clip.fade_in_curve;
@@ -908,6 +909,7 @@ impl PlaybackEngine {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
                                 clip_volume = video_clip.volume;
                                 clip_pan = video_clip.pan;
+                                clip_gain = video_clip.gain;
                                 fade_in = video_clip.fade_in_secs;
                                 fade_out = video_clip.fade_out_secs;
                                 fi_curve = video_clip.fade_in_curve;
@@ -925,6 +927,7 @@ impl PlaybackEngine {
                         fade_out as f64,
                         fade_curve_to_u32(fi_curve),
                         fade_curve_to_u32(fo_curve),
+                        clip_gain,
                     );
                     break;
                 }

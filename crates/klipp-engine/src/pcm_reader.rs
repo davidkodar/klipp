@@ -77,6 +77,7 @@ pub struct PcmAudioFeeder {
     pub fade_out_secs: Arc<AtomicU64>,
     pub fade_in_curve: Arc<AtomicU32>,  // 0=Linear, 1=Exp, 2=Log, 3=SCurve
     pub fade_out_curve: Arc<AtomicU32>,
+    pub fade_gain: Arc<AtomicU32>,     // pre-fader gain (f32 bits)
 }
 
 impl PcmAudioFeeder {
@@ -115,6 +116,7 @@ impl PcmAudioFeeder {
         let fade_out_secs = Arc::new(AtomicU64::new(0.0f64.to_bits()));
         let fade_in_curve = Arc::new(AtomicU32::new(0)); // Linear
         let fade_out_curve = Arc::new(AtomicU32::new(0));
+        let fade_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
 
         let vol = volume.clone();
         let mute = muted.clone();
@@ -126,6 +128,7 @@ impl PcmAudioFeeder {
         let ffo = fade_out_secs.clone();
         let fic = fade_in_curve.clone();
         let foc = fade_out_curve.clone();
+        let fg = fade_gain.clone();
 
         let needs_resample = output_rate != SAMPLE_RATE;
 
@@ -148,6 +151,7 @@ impl PcmAudioFeeder {
                     ffo,
                     fic,
                     foc,
+                    fg,
                 );
             })
             .map_err(|e| PcmFeederError::Open(format!("spawn thread: {e}")))?;
@@ -166,6 +170,7 @@ impl PcmAudioFeeder {
                 fade_out_secs,
                 fade_in_curve,
                 fade_out_curve,
+                fade_gain,
             },
             consumer,
         ))
@@ -176,6 +181,7 @@ impl PcmAudioFeeder {
         &self, source_in_secs: f64, clip_duration_secs: f64,
         fade_in: f64, fade_out: f64,
         fade_in_curve: u32, fade_out_curve: u32,
+        gain: f32,
     ) {
         self.fade_source_in.store(source_in_secs.to_bits(), Ordering::Relaxed);
         self.fade_clip_dur.store(clip_duration_secs.to_bits(), Ordering::Relaxed);
@@ -183,6 +189,7 @@ impl PcmAudioFeeder {
         self.fade_out_secs.store(fade_out.to_bits(), Ordering::Relaxed);
         self.fade_in_curve.store(fade_in_curve, Ordering::Relaxed);
         self.fade_out_curve.store(fade_out_curve, Ordering::Relaxed);
+        self.fade_gain.store(gain.to_bits(), Ordering::Relaxed);
     }
 
     pub fn seek(&self, secs: f64) {
@@ -251,6 +258,7 @@ fn pcm_feed_thread(
     fade_out_secs: Arc<AtomicU64>,
     fade_in_curve: Arc<AtomicU32>,
     fade_out_curve: Arc<AtomicU32>,
+    fade_gain: Arc<AtomicU32>,
 ) {
     // Interpret raw bytes as f32 samples
     let samples: &[f32] = bytemuck::cast_slice(&pcm_data);
@@ -354,6 +362,7 @@ fn pcm_feed_thread(
 
         let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
         let is_muted = muted.load(Ordering::Relaxed);
+        let gain_val = f32::from_bits(fade_gain.load(Ordering::Relaxed));
 
         // Read fade params (lock-free)
         let src_in = f64::from_bits(fade_source_in.load(Ordering::Relaxed));
@@ -377,7 +386,7 @@ fn pcm_feed_thread(
             if is_muted {
                 let zeros = vec![0.0f32; to_push];
                 producer.push_slice(&zeros);
-            } else if !has_fade && (vol - 1.0).abs() < 0.01 {
+            } else if !has_fade && (vol - 1.0).abs() < 0.01 && (gain_val - 1.0).abs() < 0.01 {
                 producer.push_slice(&samples[read_pos..read_pos + to_push]);
             } else {
                 let scaled: Vec<f32> = samples[read_pos..read_pos + to_push]
@@ -387,8 +396,8 @@ fn pcm_feed_thread(
                         let frame_idx = (read_pos / CHANNELS) + i;
                         let pos_secs = frame_idx as f64 / SAMPLE_RATE as f64;
                         let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve);
-                        let gain = vol * fade;
-                        pair.iter().map(move |s| s * gain)
+                        let mult = vol * gain_val * fade;
+                        pair.iter().map(move |s| s * mult)
                     })
                     .collect();
                 producer.push_slice(&scaled);
@@ -408,13 +417,13 @@ fn pcm_feed_thread(
                 }
                 let pos_secs = src_frame as f64 / SAMPLE_RATE as f64;
                 let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve);
-                let gain = vol * fade;
+                let mult = vol * gain_val * fade;
                 for ch in 0..CHANNELS {
                     let s = samples[src_idx + ch];
                     if is_muted {
                         buf.push(0.0);
                     } else {
-                        buf.push(s * gain);
+                        buf.push(s * mult);
                     }
                 }
             }

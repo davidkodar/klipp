@@ -118,10 +118,12 @@ pub enum EditCommand {
     // === CLIP AUDIO ===
     EditClipAudio {
         clip_id: ClipId,
+        old_gain: f32,
         old_volume: f32,
         old_pan: f32,
         old_fade_in: f32,
         old_fade_out: f32,
+        new_gain: f32,
         new_volume: f32,
         new_pan: f32,
         new_fade_in: f32,
@@ -286,14 +288,16 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             new_effect: new_effect.clone(),
         },
         (
-            EditCommand::EditClipAudio { clip_id, old_volume, old_pan, old_fade_in, old_fade_out, .. },
-            EditCommand::EditClipAudio { new_volume, new_pan, new_fade_in, new_fade_out, .. },
+            EditCommand::EditClipAudio { clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out, .. },
+            EditCommand::EditClipAudio { new_gain, new_volume, new_pan, new_fade_in, new_fade_out, .. },
         ) => EditCommand::EditClipAudio {
             clip_id: *clip_id,
+            old_gain: *old_gain,
             old_volume: *old_volume,
             old_pan: *old_pan,
             old_fade_in: *old_fade_in,
             old_fade_out: *old_fade_out,
+            new_gain: *new_gain,
             new_volume: *new_volume,
             new_pan: *new_pan,
             new_fade_in: *new_fade_in,

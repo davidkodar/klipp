@@ -231,6 +231,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                         parse_uuid(s).ok().map(GroupId)
                     }),
                     magnetic_anchor: None,
+                    gain: c.gain.unwrap_or(1.0),
                     volume: c.volume.unwrap_or(1.0),
                     pan: c.pan.unwrap_or(0.0),
                     fade_in_secs: c.fade_in_secs.unwrap_or(0.0),

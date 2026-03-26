@@ -144,6 +144,8 @@ pub struct ClipJson {
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
+    pub gain: Option<f32>,
+    #[serde(default)]
     pub volume: Option<f32>,
     #[serde(default)]
     pub pan: Option<f32>,

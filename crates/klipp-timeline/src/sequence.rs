@@ -337,6 +337,7 @@ impl Track {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            gain: 1.0,
             volume: 1.0,
             pan: 0.0,
             fade_in_secs: 0.0,
@@ -449,6 +450,7 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: clip.magnetic_anchor.clone(),
+            gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
             fade_in_secs: clip.fade_in_secs,
@@ -469,6 +471,7 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: None, // right half gets no anchor
+            gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
             fade_in_secs: clip.fade_in_secs,
@@ -535,6 +538,8 @@ pub struct Clip {
     #[serde(default)]
     pub magnetic_anchor: Option<MagneticAnchor>,
     #[serde(default = "default_clip_volume")]
+    pub gain: f32,
+    #[serde(default = "default_clip_volume")]
     pub volume: f32,
     #[serde(default)]
     pub pan: f32,
@@ -592,6 +597,7 @@ impl Clip {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            gain: 1.0,
             volume: 1.0,
             pan: 0.0,
             fade_in_secs: 0.0,
@@ -622,6 +628,7 @@ impl Clip {
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
+            gain: 1.0,
             volume: 1.0,
             pan: 0.0,
             fade_in_secs: 0.0,
