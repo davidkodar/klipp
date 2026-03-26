@@ -354,6 +354,9 @@ pub struct AppState {
     pub audio_show_rubber_band: bool,
     pub audio_show_waveform: bool,
 
+    /// Fade handle drag state: (clip_id, true=fade_in, false=fade_out, original_fade_secs)
+    pub dragging_fade_handle: Option<(ClipId, bool, f32)>,
+
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
     pub proxy_generating: std::collections::HashSet<MediaId>,
@@ -618,6 +621,7 @@ impl Default for AppState {
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
             audio_show_waveform: true,
+            dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),

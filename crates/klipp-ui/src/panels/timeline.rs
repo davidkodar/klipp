@@ -1495,8 +1495,33 @@ impl TimelinePanel {
                     }
                 }
             } else {
-                // Non-video clip (audio, etc): fill background, then rubber band, then waveform on top
+                // Non-video clip (audio, etc): fill background, then poster frame, then waveform on top
                 painter.rect_filled(clip_rect, 3.0, fill);
+
+                // Poster frame thumbnail for audio clips linked to video
+                if let Some(linked_id) = clip.linked_clip_id {
+                    let linked_media_id = state.sequence().tracks.iter()
+                        .find_map(|t| t.find_clip(linked_id))
+                        .and_then(|c| c.media_id());
+                    if let Some(mid) = linked_media_id {
+                        if let Some(tex) = state.thumbnail_textures.get(&mid) {
+                            let thumb_h = clip_rect.height();
+                            let aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
+                            let thumb_w = (thumb_h * aspect).min(40.0);
+                            let thumb_rect = egui::Rect::from_min_size(
+                                clip_rect.left_top(),
+                                egui::vec2(thumb_w, thumb_h),
+                            );
+                            let clip_painter = ui.painter().with_clip_rect(clip_rect);
+                            clip_painter.image(
+                                tex.id(),
+                                thumb_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+                            );
+                        }
+                    }
+                }
             }
 
             // ── Waveform overlay (drawn AFTER rubber band so it's on top) ──
@@ -2131,6 +2156,111 @@ impl TimelinePanel {
                 }
             }
 
+            // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
+            // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
+            let clip_has_audio = track_kind == TrackKind::Audio
+                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+            let is_hovered_or_selected = state.hovered_clip == Some(clip.id) || state.selected_clip == Some(clip.id);
+            let is_dragging_this_fade = state.dragging_fade_handle.map_or(false, |(id, _, _)| id == clip.id);
+            if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
+                && (is_hovered_or_selected || is_dragging_this_fade)
+            {
+                let handle_size = 6.0_f32;
+                let handle_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220);
+                let handle_hover_color = egui::Color32::from_rgb(255, 220, 80);
+
+                // Resolve current fade values for visual positioning
+                let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
+                    let mut fi = clip.fade_in_secs;
+                    let mut fo = clip.fade_out_secs;
+                    for t in &state.sequence().tracks {
+                        if let Some(vc) = t.find_clip(linked_id) {
+                            fi = vc.fade_in_secs;
+                            fo = vc.fade_out_secs;
+                            break;
+                        }
+                    }
+                    (fi, fo)
+                } else {
+                    (clip.fade_in_secs, clip.fade_out_secs)
+                };
+                let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+
+                // Fade-in handle position: at the fade boundary (or clip left if no fade)
+                let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+                let fi_x = clip_rect.left() + fi_offset_px;
+                // Fade-out handle position: at the fade boundary (or clip right if no fade)
+                let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+                let fo_x = clip_rect.right() - fo_offset_px;
+
+                // Check if pointer is near a handle for hover highlight
+                let near_fi = pointer_pos.map_or(false, |p| {
+                    (p.x - fi_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
+                        && clip_rect.contains(p) && content_rect.contains(p)
+                });
+                let near_fo = pointer_pos.map_or(false, |p| {
+                    (p.x - fo_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
+                        && clip_rect.contains(p) && content_rect.contains(p)
+                });
+                let dragging_fi = state.dragging_fade_handle.map_or(false, |(id, is_in, _)| id == clip.id && is_in);
+                let dragging_fo = state.dragging_fade_handle.map_or(false, |(id, is_in, _)| id == clip.id && !is_in);
+
+                // Draw fade-in handle (triangle pointing right at top-left area)
+                let fi_color = if near_fi || dragging_fi { handle_hover_color } else { handle_color };
+                let fi_tri = vec![
+                    egui::pos2(fi_x, clip_rect.top()),
+                    egui::pos2(fi_x + handle_size, clip_rect.top()),
+                    egui::pos2(fi_x, clip_rect.top() + handle_size),
+                ];
+                painter.add(egui::Shape::convex_polygon(fi_tri, fi_color, egui::Stroke::NONE));
+
+                // Draw fade-out handle (triangle pointing left at top-right area)
+                let fo_color = if near_fo || dragging_fo { handle_hover_color } else { handle_color };
+                let fo_tri = vec![
+                    egui::pos2(fo_x, clip_rect.top()),
+                    egui::pos2(fo_x - handle_size, clip_rect.top()),
+                    egui::pos2(fo_x, clip_rect.top() + handle_size),
+                ];
+                painter.add(egui::Shape::convex_polygon(fo_tri, fo_color, egui::Stroke::NONE));
+
+                // Cursor feedback when hovering handles
+                if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+
+                // Draw visual feedback during fade handle drag
+                if dragging_fi || dragging_fo {
+                    if let Some(pos) = pointer_pos {
+                        let boundary_x = if dragging_fi {
+                            pos.x.clamp(clip_rect.left(), clip_rect.right())
+                        } else {
+                            pos.x.clamp(clip_rect.left(), clip_rect.right())
+                        };
+                        // Vertical line at current drag position
+                        painter.line_segment(
+                            [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],
+                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 195, 50, 160)),
+                        );
+                        // Tooltip with duration
+                        let frac = if dragging_fi {
+                            ((boundary_x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0)
+                        } else {
+                            ((clip_rect.right() - boundary_x) / clip_rect.width()).clamp(0.0, 1.0)
+                        };
+                        let fade_dur = frac * clip_dur_secs;
+                        let label = if dragging_fi {
+                            format!("Fade In: {:.2}s", fade_dur)
+                        } else {
+                            format!("Fade Out: {:.2}s", fade_dur)
+                        };
+                        egui::show_tooltip_at_pointer(
+                            ui.ctx(), ui.layer_id(), ui.id().with("fade_handle_tooltip"),
+                            |ui: &mut egui::Ui| { ui.label(label); },
+                        );
+                    }
+                }
+            }
+
             // Border
             painter.rect_stroke(
                 clip_rect,
@@ -2566,6 +2696,57 @@ impl TimelinePanel {
                                 egui::Color32::from_rgb(255, 220, 100),
                             );
                         }
+                    }
+                }
+            }
+        }
+
+        // Draw audio crossfade indicators at adjacent clip boundaries
+        if track_kind == TrackKind::Audio {
+            let frame_dur = 1.0 / fps.rate() as f64;
+            for i in 0..clips.len().saturating_sub(1) {
+                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
+                let end_secs = clips[i].timeline_out.to_secs_f64();
+                let start_secs = clips[i + 1].timeline_in.to_secs_f64();
+                // Adjacent within 1 frame tolerance
+                if (end_secs - start_secs).abs() <= frame_dur * 1.5 {
+                    let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;
+                    // Only draw if visible
+                    if boundary_x >= content_rect.left() - 10.0 && boundary_x <= content_rect.right() + 10.0 {
+                        let cy = track_rect.center().y;
+                        let s = 5.0_f32; // half-size of the X
+                        let xf_color = egui::Color32::from_rgba_unmultiplied(180, 220, 255, 140);
+                        // Draw "X" crossfade indicator
+                        painter.line_segment(
+                            [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
+                            egui::Stroke::new(1.5, xf_color),
+                        );
+                        painter.line_segment(
+                            [egui::pos2(boundary_x - s, cy + s), egui::pos2(boundary_x + s, cy - s)],
+                            egui::Stroke::new(1.5, xf_color),
+                        );
+                        // Small overlapping fade triangles
+                        let tri_h = 4.0_f32;
+                        let tri_w = 6.0_f32;
+                        let top_y = cy - s - 4.0;
+                        // Left fade-out triangle (filled)
+                        let tri_out = vec![
+                            egui::pos2(boundary_x - tri_w, top_y),
+                            egui::pos2(boundary_x, top_y),
+                            egui::pos2(boundary_x - tri_w, top_y + tri_h),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            tri_out, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
+                        ));
+                        // Right fade-in triangle (filled)
+                        let tri_in = vec![
+                            egui::pos2(boundary_x, top_y),
+                            egui::pos2(boundary_x + tri_w, top_y),
+                            egui::pos2(boundary_x + tri_w, top_y + tri_h),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            tri_in, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
+                        ));
                     }
                 }
             }
@@ -3125,7 +3306,89 @@ impl TimelinePanel {
         if track_response.drag_started() {
             let decision_pos = self.press_origin.or(pointer_pos);
             if let Some(pos) = decision_pos {
+                // Zero: check if pointer is near a fade handle (top corner of audio clip)
+                let mut started_fade_drag = false;
+                if state.active_tool == Tool::Select {
+                    for clip in &clips {
+                        if clip.kind.is_gap() { continue; }
+                        let clip_has_audio = track_kind == TrackKind::Audio
+                            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+                        if !clip_has_audio { continue; }
+                        let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                        if cr.width() < 20.0 { continue; }
+
+                        // Resolve current fade values
+                        let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
+                            let mut fi = clip.fade_in_secs;
+                            let mut fo = clip.fade_out_secs;
+                            for t in &state.sequence().tracks {
+                                if let Some(vc) = t.find_clip(linked_id) {
+                                    fi = vc.fade_in_secs;
+                                    fo = vc.fade_out_secs;
+                                    break;
+                                }
+                            }
+                            (fi, fo)
+                        } else {
+                            (clip.fade_in_secs, clip.fade_out_secs)
+                        };
+                        let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+                        let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * cr.width() } else { 0.0 };
+                        let fi_x = cr.left() + fi_offset_px;
+                        let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * cr.width() } else { 0.0 };
+                        let fo_x = cr.right() - fo_offset_px;
+
+                        let near_fi = (pos.x - fi_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
+                            && cr.contains(pos) && content_rect.contains(pos);
+                        let near_fo = (pos.x - fo_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
+                            && cr.contains(pos) && content_rect.contains(pos);
+
+                        if near_fi {
+                            // Resolve the clip_id for the UpdateClipAudio command
+                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                            // Emit BeginAudioDrag for undo tracking
+                            let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
+                                state.sequence().tracks.iter()
+                                    .find_map(|t| t.find_clip(linked_id))
+                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
+                                    .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
+                            } else {
+                                (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
+                            };
+                            cmds.push(AppCommand::BeginAudioDrag {
+                                key: format!("fade_handle_{:?}", cmd_clip_id),
+                                clip_id: cmd_clip_id,
+                                old_gain: g, old_volume: v, old_pan: p,
+                                old_fade_in: fi_s, old_fade_out: fo_s,
+                            });
+                            state.dragging_fade_handle = Some((clip.id, true, cur_fi));
+                            started_fade_drag = true;
+                            break;
+                        }
+                        if near_fo {
+                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                            let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
+                                state.sequence().tracks.iter()
+                                    .find_map(|t| t.find_clip(linked_id))
+                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
+                                    .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
+                            } else {
+                                (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
+                            };
+                            cmds.push(AppCommand::BeginAudioDrag {
+                                key: format!("fade_handle_{:?}", cmd_clip_id),
+                                clip_id: cmd_clip_id,
+                                old_gain: g, old_volume: v, old_pan: p,
+                                old_fade_in: fi_s, old_fade_out: fo_s,
+                            });
+                            state.dragging_fade_handle = Some((clip.id, false, cur_fo));
+                            started_fade_drag = true;
+                            break;
+                        }
+                    }
+                }
                 // First: check if pointer is near any clip edge (trim)
+                if !started_fade_drag {
                 if let Some((_cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip.id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
                     // Collect subsequent clips for ripple trim
@@ -3180,6 +3443,76 @@ impl TimelinePanel {
                         });
                     }
                 }
+                } // end if !started_fade_drag
+            }
+        }
+
+        // ── Fade handle drag processing ──────────────────────────────────
+        if let Some((fade_clip_id, is_fade_in, _original_fade)) = state.dragging_fade_handle {
+            if let Some(pos) = pointer_pos {
+                if pointer_down {
+                    // Find the clip to get its rect
+                    if let Some(clip) = clips.iter().find(|c| c.id == fade_clip_id) {
+                        let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                        let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+                        if clip_dur_secs > 0.001 && cr.width() > 0.0 {
+                            let frac = if is_fade_in {
+                                ((pos.x - cr.left()) / cr.width()).clamp(0.0, 0.95)
+                            } else {
+                                ((cr.right() - pos.x) / cr.width()).clamp(0.0, 0.95)
+                            };
+                            let new_fade = frac * clip_dur_secs;
+
+                            // Resolve the command clip_id (linked video clip for linked audio)
+                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+
+                            // Read current audio params from the target clip
+                            let target = if let Some(linked_id) = clip.linked_clip_id {
+                                state.sequence().tracks.iter()
+                                    .find_map(|t| t.find_clip(linked_id))
+                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config))
+                            } else {
+                                Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config))
+                            };
+
+                            if let Some((gain, volume, pan, fi, fo, fi_c, fo_c, ch)) = target {
+                                let (new_fi, new_fo) = if is_fade_in { (new_fade, fo) } else { (fi, new_fade) };
+                                cmds.push(AppCommand::UpdateClipAudio {
+                                    clip_id: cmd_clip_id,
+                                    gain, volume, pan,
+                                    fade_in_secs: new_fi,
+                                    fade_out_secs: new_fo,
+                                    fade_in_curve: fi_c,
+                                    fade_out_curve: fo_c,
+                                    channel_config: ch,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Release: end drag
+            if pointer_released || !pointer_down {
+                // Emit EndAudioDrag for undo
+                if let Some(clip) = clips.iter().find(|c| c.id == fade_clip_id) {
+                    let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                    let target = if let Some(linked_id) = clip.linked_clip_id {
+                        state.sequence().tracks.iter()
+                            .find_map(|t| t.find_clip(linked_id))
+                            .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
+                    } else {
+                        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs))
+                    };
+                    if let Some((g, v, p, fi, fo)) = target {
+                        cmds.push(AppCommand::EndAudioDrag {
+                            key: format!("fade_handle_{:?}", cmd_clip_id),
+                            clip_id: cmd_clip_id,
+                            new_gain: g, new_volume: v, new_pan: p,
+                            new_fade_in: fi, new_fade_out: fo,
+                        });
+                    }
+                }
+                state.dragging_fade_handle = None;
             }
         }
 

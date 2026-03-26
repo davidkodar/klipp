@@ -12,6 +12,11 @@ use crate::audio_decoder::{AudioConsumer, AudioProducer};
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
 
+/// Minimum fade duration (seconds) applied at clip boundaries to prevent click/pop artifacts.
+/// Even when fade_in_secs and fade_out_secs are 0, this tiny linear ramp is applied.
+const ANTI_CLICK_FADE_MS: f64 = 2.0;
+const ANTI_CLICK_FADE_SECS: f64 = ANTI_CLICK_FADE_MS / 1000.0;
+
 /// Apply a curve shape to a linear 0..1 value.
 /// 0 = Linear, 1 = Exponential, 2 = Logarithmic, 3 = S-Curve
 fn apply_curve(t: f64, curve: u8) -> f64 {
@@ -24,6 +29,8 @@ fn apply_curve(t: f64, curve: u8) -> f64 {
 }
 
 /// Compute fade envelope multiplier (0.0..1.0) for a given position in the source.
+/// Always applies a minimum 2ms linear ramp at clip start/end to prevent click artifacts,
+/// even when no explicit fade is configured.
 fn fade_envelope(
     pos_secs: f64, source_in: f64, clip_dur: f64,
     fade_in: f64, fade_out: f64,
@@ -34,17 +41,24 @@ fn fade_envelope(
 
     let mut gain = 1.0;
 
+    // Effective fade durations: at least ANTI_CLICK_FADE_SECS
+    let eff_fade_in = fade_in.max(ANTI_CLICK_FADE_SECS);
+    let eff_fade_out = fade_out.max(ANTI_CLICK_FADE_SECS);
+
     // Fade in: ramp 0→1 over fade_in seconds from clip start
-    if fade_in > 0.001 && clip_pos < fade_in {
-        let t = (clip_pos / fade_in).clamp(0.0, 1.0);
-        gain = apply_curve(t, fade_in_curve);
+    if clip_pos < eff_fade_in {
+        let t = (clip_pos / eff_fade_in).clamp(0.0, 1.0);
+        // Use configured curve for explicit fades, linear for anti-click
+        let curve = if fade_in > 0.001 { fade_in_curve } else { 0 };
+        gain = apply_curve(t, curve);
     }
 
     // Fade out: ramp 1→0 over fade_out seconds to clip end
-    if fade_out > 0.001 && clip_pos > clip_end - fade_out {
+    if clip_pos > clip_end - eff_fade_out {
         let remaining = clip_end - clip_pos;
-        let t = (remaining / fade_out).clamp(0.0, 1.0);
-        gain *= apply_curve(t, fade_out_curve);
+        let t = (remaining / eff_fade_out).clamp(0.0, 1.0);
+        let curve = if fade_out > 0.001 { fade_out_curve } else { 0 };
+        gain *= apply_curve(t, curve);
     }
 
     gain as f32
