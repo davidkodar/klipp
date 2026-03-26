@@ -1512,16 +1512,17 @@ impl TimelinePanel {
 
                             if first_bin < last_bin {
                                 let clip_peaks = &peaks[first_bin..last_bin];
+                                // Bright waveform: lighter than background for clear visibility
                                 let waveform_color = egui::Color32::from_rgba_premultiplied(
-                                    bright_color.r().saturating_add(40),
-                                    bright_color.g().saturating_add(40),
-                                    bright_color.b().saturating_add(40),
-                                    180,
+                                    bright_color.r().saturating_add(100).min(255),
+                                    bright_color.g().saturating_add(100).min(255),
+                                    bright_color.b().saturating_add(100).min(255),
+                                    220,
                                 );
 
                                 let clip_painter = ui.painter().with_clip_rect(clip_rect);
                                 let center_y = clip_rect.center().y;
-                                let half_h = clip_rect.height() * 0.40; // 80% of clip height for waveform
+                                let half_h = clip_rect.height() * 0.45; // 90% of clip height for waveform
                                 let w = clip_rect.width();
 
                                 // Draw min/max envelope: one vertical line per pixel
