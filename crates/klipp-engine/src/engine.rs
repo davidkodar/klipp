@@ -75,6 +75,9 @@ pub struct PlaybackEngine {
     state: PlaybackState,
     current_file: Option<PathBuf>,
     current_clip_index: usize,
+    /// True when audio is continuing seamlessly across a contiguous clip boundary.
+    /// Suppresses fade-in on the new clip to prevent dropout.
+    contiguous_audio: std::sync::atomic::AtomicBool,
     duration: Timecode,
     fps: Fps,
     playhead: Timecode,
@@ -202,6 +205,7 @@ impl PlaybackEngine {
             state: PlaybackState::Idle,
             current_file: None,
             current_clip_index: 0,
+            contiguous_audio: std::sync::atomic::AtomicBool::new(false),
             duration: Timecode::zero(),
             fps: Fps::film_24(),
             playhead: Timecode::zero(),
@@ -956,15 +960,31 @@ impl PlaybackEngine {
                     }
 
                     // Set fade params on the audio source
+                    // When contiguous_audio is true, offset source_in backward so the
+                    // fade envelope doesn't think we're at position 0 (which would
+                    // trigger a fade-in from silence at blade cut boundaries)
+                    let is_contiguous = self.contiguous_audio.load(std::sync::atomic::Ordering::Relaxed);
+                    let effective_source_in = if is_contiguous {
+                        source_in_secs - 1.0 // pretend clip started 1s earlier
+                    } else {
+                        source_in_secs
+                    };
+                    let effective_clip_dur = if is_contiguous {
+                        clip_dur_secs + 1.0 // extend duration to match
+                    } else {
+                        clip_dur_secs
+                    };
                     active.source.set_fade(
-                        source_in_secs,
-                        clip_dur_secs,
+                        effective_source_in,
+                        effective_clip_dur,
                         fade_in as f64,
                         fade_out as f64,
                         fade_curve_to_u32(fi_curve),
                         fade_curve_to_u32(fo_curve),
                         clip_gain,
                     );
+                    // Clear contiguous flag — it's consumed
+                    self.contiguous_audio.store(false, std::sync::atomic::Ordering::Relaxed);
                     clip_gain_out = clip_gain;
                     clip_ch_config = channel_config_to_u32(ch_config);
                     break;
@@ -1535,6 +1555,7 @@ impl PlaybackEngine {
                 self.playhead = timeline_in;
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
+                self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed); // suppress fade-in on next sync
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                 // Audio continues uninterrupted — same file, same stream position
