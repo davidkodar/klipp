@@ -1525,13 +1525,26 @@ impl TimelinePanel {
                                 let half_h = clip_rect.height() * 0.45; // 90% of clip height for waveform
                                 let w = clip_rect.width();
 
-                                // Find the peak amplitude in the visible range for normalization
-                                // This ensures quiet audio still fills the waveform area
+                                // Scale waveform by clip volume * gain (so waveform reflects actual output level)
+                                // For linked audio clips, read from the linked video clip
+                                let (clip_vol, clip_gn) = if let Some(linked_id) = clip.linked_clip_id {
+                                    state.sequence().tracks.iter()
+                                        .find_map(|t| t.find_clip(linked_id))
+                                        .map(|vc| (vc.volume, vc.gain))
+                                        .unwrap_or((clip.volume, clip.gain))
+                                } else {
+                                    (clip.volume, clip.gain)
+                                };
+                                let vol_gain_scale = (clip_vol * clip_gn).max(0.01);
+
+                                // Find the peak amplitude for normalization
                                 let max_peak = clip_peaks.iter()
                                     .map(|(lo, hi)| lo.abs().max(hi.abs()))
                                     .fold(0.0f32, f32::max)
-                                    .max(0.01); // avoid division by zero
-                                let amp_scale = (1.0 / max_peak).min(8.0); // normalize, but cap at 8x boost
+                                    .max(0.01);
+                                // Normalize then apply volume/gain — quiet audio fills the area,
+                                // and volume/gain changes visually scale the waveform
+                                let amp_scale = ((1.0 / max_peak) * vol_gain_scale).min(8.0);
 
                                 // Draw min/max envelope: one vertical line per pixel
                                 let num_cols = (w as usize).max(1);
@@ -1690,7 +1703,7 @@ impl TimelinePanel {
                     // Shadow line behind for contrast
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(4.0, shadow_color),
+                        egui::Stroke::new(2.5, shadow_color),
                     );
                     clip_painter.line_segment(
                         [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
@@ -1728,7 +1741,7 @@ impl TimelinePanel {
                     for i in 0..points.len().saturating_sub(1) {
                         clip_painter.line_segment(
                             [points[i], points[i + 1]],
-                            egui::Stroke::new(4.0, shadow_color),
+                            egui::Stroke::new(2.5, shadow_color),
                         );
                     }
                     // Draw amber line segments on top
