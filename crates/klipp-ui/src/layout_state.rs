@@ -93,6 +93,7 @@ pub enum InspectorTab {
     Video,
     Audio,
     Effects,
+    Title,
     Info,
 }
 
