@@ -2610,6 +2610,7 @@ impl KlippApp {
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
                             };
+                            // Set interpolation on THIS keyframe
                             if let Some(kf) = keyframes.get_mut(*keyframe_index) {
                                 kf.interpolation = *interpolation;
                                 if *interpolation == klipp_core::Interpolation::Bezier {
@@ -2623,6 +2624,25 @@ impl KlippApp {
                                     }
                                     if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
                                         kf.tangent_in = (-0.3, prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0));
+                                    }
+                                }
+                            }
+                            // Also set on the PREVIOUS keyframe so the curve arriving here changes too
+                            if *keyframe_index > 0 {
+                                let prev_ki = *keyframe_index - 1;
+                                if let Some(prev_kf) = keyframes.get_mut(prev_ki) {
+                                    prev_kf.interpolation = *interpolation;
+                                    if *interpolation == klipp_core::Interpolation::Bezier {
+                                        let val = keyframes[prev_ki].value;
+                                        let next_val = keyframes.get(prev_ki + 1).map(|k| k.value);
+                                        let prev_val = if prev_ki > 0 { keyframes.get(prev_ki - 1).map(|k| k.value) } else { None };
+                                        let kf = &mut keyframes[prev_ki];
+                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
+                                            kf.tangent_out = (0.3, next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0));
+                                        }
+                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
+                                            kf.tangent_in = (-0.3, prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0));
+                                        }
                                     }
                                 }
                             }
@@ -2736,26 +2756,39 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
+                            // Set on THIS keyframe
                             if let Some(kf) = keyframes.get_mut(*keyframe_index) {
                                 kf.interpolation = *interpolation;
-                                // When switching to Bezier, set default tangent handles
-                                // that create a visible ease-in/ease-out curve
                                 if *interpolation == klipp_core::Interpolation::Bezier {
                                     let ki = *keyframe_index;
                                     let val = keyframes[ki].value;
                                     let next_val = keyframes.get(ki + 1).map(|k| k.value);
                                     let prev_val = if ki > 0 { keyframes.get(ki - 1).map(|k| k.value) } else { None };
                                     let kf = &mut keyframes[ki];
-
-                                    // Tangent out: ease toward next keyframe
                                     if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
-                                        let v_delta = next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0);
-                                        kf.tangent_out = (0.3, v_delta);
+                                        kf.tangent_out = (0.3, next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0));
                                     }
-                                    // Tangent in: ease from previous keyframe
                                     if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
-                                        let v_delta = prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0);
-                                        kf.tangent_in = (-0.3, v_delta);
+                                        kf.tangent_in = (-0.3, prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0));
+                                    }
+                                }
+                            }
+                            // Also set on PREVIOUS keyframe (controls curve arriving at this one)
+                            if *keyframe_index > 0 {
+                                let prev_ki = *keyframe_index - 1;
+                                if let Some(prev_kf) = keyframes.get_mut(prev_ki) {
+                                    prev_kf.interpolation = *interpolation;
+                                    if *interpolation == klipp_core::Interpolation::Bezier {
+                                        let val = keyframes[prev_ki].value;
+                                        let next_val = keyframes.get(prev_ki + 1).map(|k| k.value);
+                                        let prev_val = if prev_ki > 0 { keyframes.get(prev_ki - 1).map(|k| k.value) } else { None };
+                                        let kf = &mut keyframes[prev_ki];
+                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
+                                            kf.tangent_out = (0.3, next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0));
+                                        }
+                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
+                                            kf.tangent_in = (-0.3, prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0));
+                                        }
                                     }
                                 }
                             }
