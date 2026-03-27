@@ -444,7 +444,47 @@ impl TimelinePanel {
             {
                 let track = &state.sequence().tracks[track_idx];
                 match track_kind {
-                    TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {
+                    TrackKind::Text | TrackKind::Subtitle => {
+                        // Compact header for text/subtitle tracks — just lock + visibility, no opacity bar
+                        let l_rect = egui::Rect::from_min_size(
+                            egui::pos2(header_rect.right() - 42.0, track_y + (track_height - 14.0) / 2.0),
+                            egui::vec2(18.0, 14.0),
+                        );
+                        let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                        let l_bg = if track_locked {
+                            egui::Color32::from_rgb(160, 120, 40)
+                        } else if l_resp.hovered() {
+                            egui::Color32::from_rgb(50, 50, 60)
+                        } else {
+                            egui::Color32::from_rgb(35, 35, 42)
+                        };
+                        bg_painter.rect_filled(l_rect, 2.0, l_bg);
+                        let l_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
+                        let l_color = if track_locked { egui::Color32::WHITE } else { egui::Color32::from_rgb(100, 100, 110) };
+                        l_icon.image(10.0).tint(l_color).paint_at(ui, l_rect.shrink(2.0));
+                        if l_resp.clicked() {
+                            let track_id = state.sequence().tracks[track_idx].id;
+                            cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        }
+
+                        let v_rect = egui::Rect::from_min_size(
+                            egui::pos2(header_rect.right() - 22.0, track_y + (track_height - 14.0) / 2.0),
+                            egui::vec2(18.0, 14.0),
+                        );
+                        let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click());
+                        bg_painter.rect_filled(v_rect, 2.0, if v_resp.hovered() {
+                            egui::Color32::from_rgb(50, 50, 60)
+                        } else {
+                            egui::Color32::from_rgb(35, 35, 42)
+                        });
+                        let v_icon = if track.visible { Icon::Eye } else { Icon::EyeSlash };
+                        let v_col = if track.visible { egui::Color32::from_rgb(120, 120, 140) } else { egui::Color32::from_rgb(60, 60, 70) };
+                        v_icon.image(10.0).tint(v_col).paint_at(ui, v_rect.shrink(2.0));
+                        if v_resp.clicked() {
+                            cmds.push(AppCommand::SetTrackVisibility { track_index: track_idx, visible: !track.visible });
+                        }
+                    }
+                    TrackKind::Video => {
                         // [L] lock toggle
                         let l_rect = egui::Rect::from_min_size(
                             egui::pos2(header_rect.right() - 42.0, track_y + 4.0),
