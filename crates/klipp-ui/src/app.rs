@@ -4575,6 +4575,10 @@ impl KlippApp {
                 // Title clips
                 AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
                     let ti = *track_index;
+                    // Check if this track was just created (it's a fresh text track with no clips)
+                    let created_track = self.state.sequences[self.state.active_sequence_idx].tracks
+                        .get(ti)
+                        .map_or(false, |t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
                     let timeline_out = *timeline_in + duration;
@@ -4617,9 +4621,17 @@ impl KlippApp {
                         audio_effects: Vec::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
-                        track.clips.push(clip);
+                        track.clips.push(clip.clone());
                         track.clips.sort_by_key(|c| c.timeline_in.value);
                     }
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::AddTitleClip {
+                            clip,
+                            track_index: ti,
+                            created_track,
+                        },
+                    });
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     continue;
@@ -6337,6 +6349,17 @@ impl KlippApp {
 
     fn apply_edit_inverse(&mut self, cmd: &EditCommand) {
         match cmd {
+            EditCommand::AddTitleClip { clip, track_index, created_track } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if *created_track {
+                    // Remove the entire auto-created track
+                    if *track_index < seq.tracks.len() {
+                        seq.tracks.remove(*track_index);
+                    }
+                } else if let Some(track) = seq.tracks.get_mut(*track_index) {
+                    track.remove_clip(clip.id);
+                }
+            }
             EditCommand::LegacyAppendClip { clip, track_index } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     track.remove_clip(clip.id);
@@ -6634,6 +6657,20 @@ impl KlippApp {
 
     fn apply_edit_forward(&mut self, cmd: &EditCommand) {
         match cmd {
+            EditCommand::AddTitleClip { clip, track_index, created_track } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if *created_track {
+                    // Re-create the track
+                    let track_num = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+                    let mut track = klipp_timeline::Track::new(&format!("Text {track_num}"), klipp_timeline::TrackKind::Text);
+                    track.clips.push(clip.clone());
+                    let idx = (*track_index).min(seq.tracks.len());
+                    seq.tracks.insert(idx, track);
+                } else if let Some(track) = seq.tracks.get_mut(*track_index) {
+                    track.clips.push(clip.clone());
+                    track.sort_clips();
+                }
+            }
             EditCommand::LegacyAppendClip { clip, track_index } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     track.clips.push(clip.clone());

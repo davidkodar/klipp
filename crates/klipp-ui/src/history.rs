@@ -68,6 +68,13 @@ pub enum EditCommand {
         clip: Clip,
         track_index: usize,
     },
+    /// Title clip added (with optional track creation for undo)
+    AddTitleClip {
+        clip: Clip,
+        track_index: usize,
+        /// If true, undo also removes the track that was auto-created
+        created_track: bool,
+    },
     LegacyRemoveClip {
         clip: Clip,
         track_index: usize,
@@ -261,6 +268,7 @@ pub enum EditCommand {
 impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
+            EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
