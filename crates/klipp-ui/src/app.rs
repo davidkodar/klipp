@@ -2596,6 +2596,40 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index, interpolation } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                kf.interpolation = *interpolation;
+                                if *interpolation == klipp_core::Interpolation::Bezier {
+                                    let ki = *keyframe_index;
+                                    let val = keyframes[ki].value;
+                                    let next_val = keyframes.get(ki + 1).map(|k| k.value);
+                                    let prev_val = if ki > 0 { keyframes.get(ki - 1).map(|k| k.value) } else { None };
+                                    let kf = &mut keyframes[ki];
+                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
+                                        kf.tangent_out = (0.3, next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0));
+                                    }
+                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
+                                        kf.tangent_in = (-0.3, prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0));
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {

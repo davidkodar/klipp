@@ -260,6 +260,11 @@ pub fn show(
     }
 
     // ── Keyframe toggle/nav for Position X ──
+    if let Some(interp) = r_px.keyframe_set_interpolation {
+        if let Some(ki) = clip.transform_pos_x_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionX, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if r_px.keyframe_toggled {
         if clip.transform_pos_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs });
@@ -279,6 +284,11 @@ pub fn show(
     }
 
     // ── Keyframe toggle/nav for Position Y ──
+    if let Some(interp) = r_py.keyframe_set_interpolation {
+        if let Some(ki) = clip.transform_pos_y_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionY, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if r_py.keyframe_toggled {
         if clip.transform_pos_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs });
@@ -298,6 +308,11 @@ pub fn show(
     }
 
     // ── Keyframe toggle/nav for Scale ──
+    if let Some(interp) = r_sc.keyframe_set_interpolation {
+        if let Some(ki) = clip.transform_scale_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Scale, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if r_sc.keyframe_toggled {
         if clip.transform_scale_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs });
@@ -317,6 +332,11 @@ pub fn show(
     }
 
     // ── Keyframe toggle/nav for Rotation ──
+    if let Some(interp) = r_ro.keyframe_set_interpolation {
+        if let Some(ki) = clip.transform_rotation_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Rotation, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if r_ro.keyframe_toggled {
         if clip.transform_rotation_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs });
@@ -370,6 +390,11 @@ pub fn show(
     }
 
     // ── Keyframe toggle/nav for Opacity ──
+    if let Some(interp) = r_op.keyframe_set_interpolation {
+        if let Some(ki) = clip.opacity_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Opacity, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if r_op.keyframe_toggled {
         if clip.opacity_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs });
