@@ -3429,12 +3429,17 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
 
     let mut result = Vec::with_capacity(commands.len());
     let mut last_seek: Option<AppCommand> = None;
+    let mut has_sequence_updated = false;
 
     for cmd in commands {
         match &cmd {
             AppCommand::SeekTo(_) | AppCommand::SetPlayhead(_) => {
                 // Replace any pending seek with this newer one
                 last_seek = Some(cmd);
+            }
+            AppCommand::SequenceUpdated => {
+                // Coalesce multiple SequenceUpdated into one (deferred to end)
+                has_sequence_updated = true;
             }
             _ => {
                 // Flush pending seek before non-seek command
@@ -3449,6 +3454,11 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
     // Flush final pending seek
     if let Some(seek) = last_seek.take() {
         result.push(seek);
+    }
+
+    // Flush single coalesced SequenceUpdated at end
+    if has_sequence_updated {
+        result.push(AppCommand::SequenceUpdated);
     }
 
     result
