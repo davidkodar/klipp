@@ -51,6 +51,7 @@ pub fn show(
     for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
         let track_h = match track.kind {
             TrackKind::Audio => crate::theme::TRACK_AUDIO_H,
+            TrackKind::Text | TrackKind::Subtitle => crate::theme::TRACK_TEXT_H,
             _ => crate::theme::TRACK_VIDEO_H,
         };
 
