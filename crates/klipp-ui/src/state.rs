@@ -473,6 +473,9 @@ pub struct AppState {
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
+
+    /// Whether the curve editor panel is visible
+    pub show_curve_editor: bool,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -743,6 +746,7 @@ impl Default for AppState {
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
             show_transform_controls: true,
+            show_curve_editor: false,
         }
     }
 }

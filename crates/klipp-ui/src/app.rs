@@ -150,6 +150,8 @@ pub struct KlippApp {
     /// Must be kept alive — dropping stops watching.
     #[allow(dead_code)]
     media_watcher: Option<notify::RecommendedWatcher>,
+    // Curve editor panel (spline editor for keyframe animation)
+    curve_editor: crate::panels::curve_editor::CurveEditorPanel,
 }
 
 impl KlippApp {
@@ -221,6 +223,7 @@ impl KlippApp {
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             ui_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
+            curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
         };
         // Sync preferences to state
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
@@ -3022,6 +3025,233 @@ impl KlippApp {
                                     new_state: new_snap,
                                     old_linked_state,
                                     new_linked_state,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
+                    // 1. Capture old keyframe state for undo
+                    let mut old_state = None;
+                    let mut target_timeline_start = 0.0_f64;
+                    let mut target_timeline_end = 0.0_f64;
+                    let mut target_clip_dur_secs = 0.0_f64;
+                    {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(c) = seq.all_clips().find(|c| c.id == *target_clip_id) {
+                            old_state = Some(KeyframeSnapshot::from_clip(c));
+                            target_timeline_start = c.timeline_in.to_secs_f64();
+                            target_timeline_end = c.timeline_out.to_secs_f64();
+                            target_clip_dur_secs = target_timeline_end - target_timeline_start;
+                        }
+                    }
+                    if old_state.is_none() || target_clip_dur_secs <= 0.0 {
+                        continue;
+                    }
+
+                    // 2. Detect active regions on the sidechain track using PCM data or clip boundaries
+                    let active_regions: Vec<(f64, f64)> = {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let sidechain_track_idx = *sidechain_track_idx;
+                        if sidechain_track_idx >= seq.tracks.len() {
+                            continue;
+                        }
+                        let track = &seq.tracks[sidechain_track_idx];
+
+                        // Try PCM-based analysis first
+                        let mut pcm_regions: Vec<(f64, f64)> = Vec::new();
+                        let mut used_pcm = false;
+
+                        for sc_clip in &track.clips {
+                            let sc_start = sc_clip.timeline_in.to_secs_f64();
+                            let sc_end = sc_clip.timeline_out.to_secs_f64();
+                            // Skip clips that don't overlap the target
+                            if sc_end <= target_timeline_start || sc_start >= target_timeline_end {
+                                continue;
+                            }
+
+                            // Try to read PCM data for this clip
+                            let pcm_data = sc_clip.media_id()
+                                .and_then(|mid| self.state.media_pool.get(&mid))
+                                .and_then(|item| item.audio_cache.as_ref())
+                                .and_then(|cache| {
+                                    std::fs::read(&cache.pcm_path).ok().map(|bytes| (bytes, cache.sample_rate, cache.channels))
+                                });
+
+                            if let Some((pcm_bytes, sample_rate, channels)) = pcm_data {
+                                used_pcm = true;
+                                // SAFETY: PCM cache files are written as f32 slices by audio_cache::conform_audio
+                                let samples: &[f32] = unsafe {
+                                    std::slice::from_raw_parts(
+                                        pcm_bytes.as_ptr() as *const f32,
+                                        pcm_bytes.len() / std::mem::size_of::<f32>(),
+                                    )
+                                };
+                                let window_samples = (sample_rate as f64 * 0.05) as usize * channels as usize; // 50ms windows
+                                if window_samples == 0 { continue; }
+
+                                let src_in_secs = sc_clip.source_in.to_secs_f64();
+                                let total_mono_samples = samples.len() / channels as usize;
+                                let total_dur = total_mono_samples as f64 / sample_rate as f64;
+
+                                // Analyze overlapping region
+                                let analyze_start = target_timeline_start.max(sc_start);
+                                let analyze_end = target_timeline_end.min(sc_end);
+
+                                let window_secs = 0.05_f64;
+                                let mut t = analyze_start;
+                                let mut region_start: Option<f64> = None;
+
+                                while t < analyze_end {
+                                    // Map timeline time to source time
+                                    let source_t = src_in_secs + (t - sc_start);
+                                    if source_t < 0.0 || source_t >= total_dur {
+                                        t += window_secs;
+                                        continue;
+                                    }
+                                    let sample_idx = (source_t * sample_rate as f64) as usize * channels as usize;
+                                    let end_idx = ((sample_idx + window_samples).min(samples.len())).max(sample_idx);
+
+                                    // Compute RMS
+                                    let window = &samples[sample_idx..end_idx];
+                                    let rms = if window.is_empty() {
+                                        0.0
+                                    } else {
+                                        let sum: f64 = window.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                                        (sum / window.len() as f64).sqrt() as f32
+                                    };
+
+                                    if rms > *threshold {
+                                        if region_start.is_none() {
+                                            region_start = Some(t);
+                                        }
+                                    } else if let Some(rs) = region_start.take() {
+                                        pcm_regions.push((rs, t));
+                                    }
+                                    t += window_secs;
+                                }
+                                // Close any open region
+                                if let Some(rs) = region_start {
+                                    pcm_regions.push((rs, analyze_end));
+                                }
+                            } else {
+                                // Fallback: use clip boundaries as active region
+                                let region_start = sc_start.max(target_timeline_start);
+                                let region_end = sc_end.min(target_timeline_end);
+                                if region_end > region_start {
+                                    pcm_regions.push((region_start, region_end));
+                                }
+                            }
+                        }
+
+                        // Merge adjacent/overlapping regions (with a small gap tolerance)
+                        if used_pcm && !pcm_regions.is_empty() {
+                            pcm_regions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                            let mut merged: Vec<(f64, f64)> = Vec::new();
+                            for r in pcm_regions {
+                                if let Some(last) = merged.last_mut() {
+                                    if r.0 <= last.1 + 0.05 { // 50ms merge gap
+                                        last.1 = last.1.max(r.1);
+                                        continue;
+                                    }
+                                }
+                                merged.push(r);
+                            }
+                            merged
+                        } else {
+                            pcm_regions
+                        }
+                    };
+
+                    if active_regions.is_empty() {
+                        continue;
+                    }
+
+                    // 3. Generate volume keyframes on the target clip
+                    let attack = *attack_secs as f64;
+                    let release = *release_secs as f64;
+                    let duck = *duck_level;
+                    let mut keyframes: Vec<klipp_core::Keyframe> = Vec::new();
+
+                    for &(region_start, region_end) in &active_regions {
+                        // Convert to clip-local time (relative to target clip's timeline_in)
+                        let ramp_down_start = (region_start - target_timeline_start - attack).max(0.0);
+                        let duck_start = (region_start - target_timeline_start).max(0.0);
+                        let duck_end = (region_end - target_timeline_start).min(target_clip_dur_secs);
+                        let ramp_up_end = (region_end - target_timeline_start + release).min(target_clip_dur_secs);
+
+                        // Before duck: normal volume
+                        if ramp_down_start < duck_start {
+                            keyframes.push(klipp_core::Keyframe {
+                                time_secs: ramp_down_start,
+                                value: 1.0,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_in: (0.0, 0.0),
+                                tangent_out: (attack / 3.0, 0.0),
+                            });
+                        }
+
+                        // Duck start
+                        keyframes.push(klipp_core::Keyframe {
+                            time_secs: duck_start,
+                            value: duck,
+                            interpolation: klipp_core::Interpolation::Bezier,
+                            tangent_in: (-attack / 3.0, 0.0),
+                            tangent_out: (0.0, 0.0),
+                        });
+
+                        // Duck end
+                        keyframes.push(klipp_core::Keyframe {
+                            time_secs: duck_end,
+                            value: duck,
+                            interpolation: klipp_core::Interpolation::Bezier,
+                            tangent_in: (0.0, 0.0),
+                            tangent_out: (release / 3.0, 0.0),
+                        });
+
+                        // After duck: normal volume
+                        if ramp_up_end > duck_end {
+                            keyframes.push(klipp_core::Keyframe {
+                                time_secs: ramp_up_end,
+                                value: 1.0,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_in: (-release / 3.0, 0.0),
+                                tangent_out: (0.0, 0.0),
+                            });
+                        }
+                    }
+
+                    // Remove duplicate times (keep the last keyframe at each time)
+                    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                    keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < 0.01);
+
+                    // 4. Apply keyframes to the target clip
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*target_clip_id) {
+                            clip.volume_keyframes = keyframes;
+                            break;
+                        }
+                    }
+
+                    // 5. Push undo history
+                    if let Some(old_snap) = old_state {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let new_state = seq.all_clips().find(|c| c.id == *target_clip_id).map(KeyframeSnapshot::from_clip);
+                        if let Some(new_snap) = new_state {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *target_clip_id,
+                                    linked_clip_id: None,
+                                    description: "Auto Duck Audio",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
                                 },
                             });
                         }
@@ -8278,11 +8508,18 @@ impl eframe::App for KlippApp {
                         egui::vec2(center_w, timeline_h),
                     );
 
-                    // Horizontal resizer (between viewer and timeline)
+                    // Curve editor (between viewer and timeline when visible)
+                    let curve_editor_h: f32 = if self.state.show_curve_editor { 180.0 } else { 0.0 };
+                    let curve_editor_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, timeline_rect.min.y - curve_editor_h - if curve_editor_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
+                        egui::vec2(center_w, curve_editor_h),
+                    );
+
+                    // Horizontal resizer (between viewer and curve editor / timeline)
                     let h_resizer_rect = egui::Rect::from_min_size(
                         egui::pos2(
                             center_left,
-                            timeline_rect.min.y - theme::RESIZER_THICKNESS,
+                            curve_editor_rect.min.y - theme::RESIZER_THICKNESS,
                         ),
                         egui::vec2(center_w, theme::RESIZER_THICKNESS),
                     );
@@ -8420,6 +8657,16 @@ impl eframe::App for KlippApp {
                         let cmds = self.viewer.show(ui, &mut self.state, &self.theme);
                         all_cmds.extend(cmds);
                     });
+
+                    // Curve editor (between viewer and timeline)
+                    if self.state.show_curve_editor && curve_editor_h > 0.0 {
+                        self.curve_editor.sync_param_from_state(&self.state);
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(curve_editor_rect), |ui| {
+                            ui.set_min_size(curve_editor_rect.size());
+                            let cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
+                            all_cmds.extend(cmds);
+                        });
+                    }
 
                     // Timeline (center bottom) — always visible
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(timeline_rect), |ui| {

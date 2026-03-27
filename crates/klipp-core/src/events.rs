@@ -596,6 +596,21 @@ pub enum AppCommand {
     },
     ClearTransformKeyframes { clip_id: ClipId },
 
+    // Audio ducking
+    AutoDuckAudio {
+        target_clip_id: ClipId,
+        /// Track index of the dialogue/sidechain source
+        sidechain_track_idx: usize,
+        /// How much to reduce volume (0.0 = silence, 0.3 = reduce to 30%)
+        duck_level: f32,
+        /// How quickly to ramp down in seconds
+        attack_secs: f32,
+        /// How quickly to ramp back up in seconds
+        release_secs: f32,
+        /// Threshold: audio level above which ducking activates (0.0-1.0)
+        threshold: f32,
+    },
+
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {
         key: String,

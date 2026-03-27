@@ -13,6 +13,7 @@ pub struct NewInspectorPanel {
     show_add_builtin: bool,
     show_add_ofx: bool,
     pub tag_input: String,
+    pub duck: audio_tab::DuckSettings,
 }
 
 
@@ -152,8 +153,6 @@ impl NewInspectorPanel {
                 InspectorTab::Audio => {
                     if let Some((track_idx, clip)) = clip_info {
                         let peak = audio_tab::find_clip_peak_levels(clip, track_idx, state);
-                        // Get waveform peaks from the media item's audio cache
-                        // Convert (min, max) pairs to absolute max for display
                         let media_peaks: Option<Vec<f32>> = clip.media_id()
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_cache.as_ref())
@@ -163,7 +162,13 @@ impl NewInspectorPanel {
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
-                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels, clip_time_secs);
+                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
+                            .map(|(i, t)| audio_tab::TrackInfo {
+                                index: i,
+                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
+                            })
+                            .collect();
+                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels, clip_time_secs, &mut self.duck, &track_infos);
                     } else {
                         no_selection(ui, theme);
                     }

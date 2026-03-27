@@ -1,3 +1,4 @@
+pub mod curve_editor;
 pub mod inspector;
 pub mod node_graph;
 pub mod node_inspector;

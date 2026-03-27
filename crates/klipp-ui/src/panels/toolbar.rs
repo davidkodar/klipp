@@ -468,6 +468,7 @@ impl ToolbarPanel {
             ui.separator();
             if ui.button(if state.use_proxies { "\u{2713} Proxies" } else { "  Proxies" }).clicked() { cmds.push(AppCommand::SetUseProxies(!state.use_proxies)); ui.close_menu(); }
             if ui.button(if state.show_markers_panel { "\u{2713} Markers" } else { "  Markers" }).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
+            if ui.button(if state.show_curve_editor { "\u{2713} Curve Editor" } else { "  Curve Editor" }).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
             if ui.add(egui::Button::new("Preferences...").shortcut_text("Ctrl+,")).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_menu(); }
         });
     }

@@ -28,6 +28,33 @@ pub fn find_clip_peak_levels(clip: &Clip, track_idx: usize, state: &AppState) ->
         .unwrap_or((0.0, 0.0))
 }
 
+/// Duck settings passed to the audio tab for display and editing.
+pub struct DuckSettings {
+    pub sidechain_track: usize,
+    pub level: f32,
+    pub attack: f32,
+    pub release: f32,
+    pub threshold: f32,
+}
+
+impl Default for DuckSettings {
+    fn default() -> Self {
+        Self {
+            sidechain_track: 0,
+            level: 0.2,
+            attack: 0.1,
+            release: 0.3,
+            threshold: 0.1,
+        }
+    }
+}
+
+/// Track info for the sidechain dropdown.
+pub struct TrackInfo {
+    pub index: usize,
+    pub name: String,
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -37,6 +64,8 @@ pub fn show(
     waveform_peaks: Option<&[f32]>,
     source_channels: Option<u16>,
     clip_time_secs: f64,
+    duck: &mut DuckSettings,
+    tracks: &[TrackInfo],
 ) {
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
@@ -600,6 +629,88 @@ pub fn show(
                 fade_in_curve,
                 fade_out_curve,
                 channel_config,
+            });
+        }
+    }
+
+    ui.add_space(14.0);
+
+    // ── Auto Duck ──
+    ui.label(
+        egui::RichText::new("AUTO DUCK")
+            .size(10.0)
+            .strong()
+            .color(theme.text_dim),
+    );
+    ui.add_space(4.0);
+
+    {
+        // Sidechain track selector
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Sidechain")
+                    .size(11.0)
+                    .color(theme.text_secondary),
+            );
+            let current_label = tracks.iter()
+                .find(|t| t.index == duck.sidechain_track)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "None".to_string());
+            egui::ComboBox::from_id_salt("duck_sidechain")
+                .selected_text(&current_label)
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for t in tracks {
+                        ui.selectable_value(&mut duck.sidechain_track, t.index, &t.name);
+                    }
+                });
+        });
+
+        // Duck Level
+        let dl_resp = scrubby_param_row(
+            ui, "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", None,
+        );
+        let _ = dl_resp;
+
+        // Attack
+        let da_resp = scrubby_param_row(
+            ui, "Attack", &mut duck.attack, 0.01..=2.0, 0.1, 0.01, 2, " s", None,
+        );
+        let _ = da_resp;
+
+        // Release
+        let dr_resp = scrubby_param_row(
+            ui, "Release", &mut duck.release, 0.01..=2.0, 0.3, 0.01, 2, " s", None,
+        );
+        let _ = dr_resp;
+
+        // Threshold
+        let dt_resp = scrubby_param_row(
+            ui, "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", None,
+        );
+        let _ = dt_resp;
+
+        ui.add_space(4.0);
+
+        // Apply button
+        let btn = ui.add_sized(
+            [ui.available_width() - 20.0, 24.0],
+            egui::Button::new(
+                egui::RichText::new("Apply Auto Duck")
+                    .size(11.0)
+                    .color(theme.text_primary),
+            )
+            .fill(theme.accent.linear_multiply(0.3))
+            .stroke(egui::Stroke::new(1.0, theme.accent)),
+        );
+        if btn.clicked() {
+            cmds.push(AppCommand::AutoDuckAudio {
+                target_clip_id: clip_id,
+                sidechain_track_idx: duck.sidechain_track,
+                duck_level: duck.level,
+                attack_secs: duck.attack,
+                release_secs: duck.release,
+                threshold: duck.threshold,
             });
         }
     }
