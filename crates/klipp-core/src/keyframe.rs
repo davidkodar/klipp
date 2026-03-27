@@ -37,11 +37,11 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
     if keyframes.is_empty() {
         return default;
     }
-    // Before first keyframe: use first keyframe's value
+    // Before first keyframe: use the first keyframe's value (holds backward)
     if time_secs <= keyframes[0].time_secs {
         return keyframes[0].value;
     }
-    // After last keyframe: use last keyframe's value
+    // After last keyframe: use last keyframe's value (holds)
     let last = &keyframes[keyframes.len() - 1];
     if time_secs >= last.time_secs {
         return last.value;
