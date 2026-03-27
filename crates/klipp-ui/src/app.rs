@@ -2654,13 +2654,24 @@ impl KlippApp {
                             };
                             if let Some(kf) = keyframes.get_mut(*keyframe_index) {
                                 kf.interpolation = *interpolation;
-                                // When switching to Bezier, set default tangent handles if currently zero
+                                // When switching to Bezier, set default tangent handles
+                                // that create a visible ease-in/ease-out curve
                                 if *interpolation == klipp_core::Interpolation::Bezier {
-                                    if kf.tangent_out == (0.0, 0.0) {
-                                        kf.tangent_out = (0.3, 0.0);
+                                    let ki = *keyframe_index;
+                                    let val = keyframes[ki].value;
+                                    let next_val = keyframes.get(ki + 1).map(|k| k.value);
+                                    let prev_val = if ki > 0 { keyframes.get(ki - 1).map(|k| k.value) } else { None };
+                                    let kf = &mut keyframes[ki];
+
+                                    // Tangent out: ease toward next keyframe
+                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
+                                        let v_delta = next_val.map(|nv| (nv - val) * 0.33).unwrap_or(0.0);
+                                        kf.tangent_out = (0.3, v_delta);
                                     }
-                                    if kf.tangent_in == (0.0, 0.0) {
-                                        kf.tangent_in = (-0.3, 0.0);
+                                    // Tangent in: ease from previous keyframe
+                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
+                                        let v_delta = prev_val.map(|pv| (pv - val) * 0.33).unwrap_or(0.0);
+                                        kf.tangent_in = (-0.3, v_delta);
                                     }
                                 }
                             }
