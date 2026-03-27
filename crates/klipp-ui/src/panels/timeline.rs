@@ -408,6 +408,7 @@ impl TimelinePanel {
             let track_name = state.sequence().tracks[track_idx].name.clone();
             let track_height = match track_kind {
                 TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                 _ => VIDEO_TRACK_HEIGHT,
             };
 
@@ -1361,6 +1362,7 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = match track.kind {
                             TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                             _ => VIDEO_TRACK_HEIGHT,
                         };
                         // Find track_rect from track_rects cache
@@ -1478,6 +1480,7 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = match track.kind {
                             TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                             _ => VIDEO_TRACK_HEIGHT,
                         };
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
@@ -1611,6 +1614,7 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_bh.clip_id) {
                         let track_height = match track.kind {
                             TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                             _ => VIDEO_TRACK_HEIGHT,
                         };
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
@@ -1714,6 +1718,7 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
                         let track_height = match track.kind {
                             TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                             _ => VIDEO_TRACK_HEIGHT,
                         };
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
@@ -6609,7 +6614,8 @@ impl TimelinePanel {
                                     };
                                     let other_h = match other_track.kind {
                                         TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                                        _ => VIDEO_TRACK_HEIGHT,
+                                        TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
+                            _ => VIDEO_TRACK_HEIGHT,
                                     };
 
                                     for clip in &other_track.clips {
