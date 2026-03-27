@@ -133,7 +133,7 @@ impl InspectorPanel {
             }
             InspectorTab::Title => {
                 if let Some((_, clip)) = clip_info {
-                    self.show_title_tab(ui, clip, &mut cmds);
+                    self.show_title_tab(ui, clip, state, &mut cmds);
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.colored_label(
@@ -455,10 +455,20 @@ impl InspectorPanel {
         });
     }
 
+    fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
+        match style {
+            klipp_timeline::FontStyle::Regular => 0,
+            klipp_timeline::FontStyle::Bold => 1,
+            klipp_timeline::FontStyle::Italic => 2,
+            klipp_timeline::FontStyle::BoldItalic => 3,
+        }
+    }
+
     fn show_title_tab(
         &self,
         ui: &mut egui::Ui,
         clip: &klipp_timeline::Clip,
+        state: &AppState,
         cmds: &mut Vec<AppCommand>,
     ) {
         let clip_id = clip.id;
@@ -486,9 +496,107 @@ impl InspectorPanel {
                 clip_id,
                 text: text.clone(),
                 font_size: td.font_size,
+                font_name: td.font_name.clone(),
+                font_style: Self::font_style_to_u8(td.font_style),
                 color: td.color,
             });
         }
+        ui.add_space(8.0);
+
+        // Font family selector
+        ui.label("Font");
+        let current_font = &td.font_name;
+        let display_name = if current_font == "sans-serif" || current_font.is_empty() {
+            "Noto Sans (Default)"
+        } else {
+            current_font
+        };
+        egui::ComboBox::from_id_salt("title_font_family")
+            .selected_text(display_name)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                // Default option
+                if ui.selectable_label(
+                    current_font == "sans-serif" || current_font.is_empty(),
+                    "Noto Sans (Default)",
+                ).clicked() {
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id,
+                        text: td.text.clone(),
+                        font_size: td.font_size,
+                        font_name: "sans-serif".to_string(),
+                        font_style: Self::font_style_to_u8(td.font_style),
+                        color: td.color,
+                    });
+                }
+                ui.separator();
+                // System fonts (alphabetical from BTreeMap)
+                for family in &state.available_fonts {
+                    if ui.selectable_label(current_font == family, family).clicked() {
+                        cmds.push(AppCommand::UpdateTitleData {
+                            clip_id,
+                            text: td.text.clone(),
+                            font_size: td.font_size,
+                            font_name: family.clone(),
+                            font_style: Self::font_style_to_u8(td.font_style),
+                            color: td.color,
+                        });
+                    }
+                }
+            });
+        ui.add_space(4.0);
+
+        // Font style toggles (Bold / Italic)
+        ui.horizontal(|ui| {
+            let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
+            let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+
+            let bold_text = if is_bold {
+                egui::RichText::new("B").strong().size(13.0)
+            } else {
+                egui::RichText::new("B").size(13.0).color(egui::Color32::from_rgb(140, 140, 150))
+            };
+            let italic_text = if is_italic {
+                egui::RichText::new("I").italics().size(13.0)
+            } else {
+                egui::RichText::new("I").size(13.0).color(egui::Color32::from_rgb(140, 140, 150))
+            };
+
+            if ui.selectable_label(is_bold, bold_text).clicked() {
+                let new_bold = !is_bold;
+                let new_style = match (new_bold, is_italic) {
+                    (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                    (true, false) => klipp_timeline::FontStyle::Bold,
+                    (false, true) => klipp_timeline::FontStyle::Italic,
+                    (false, false) => klipp_timeline::FontStyle::Regular,
+                };
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: td.text.clone(),
+                    font_size: td.font_size,
+                    font_name: td.font_name.clone(),
+                    font_style: Self::font_style_to_u8(new_style),
+                    color: td.color,
+                });
+            }
+            if ui.selectable_label(is_italic, italic_text).clicked() {
+                let new_italic = !is_italic;
+                let new_style = match (is_bold, new_italic) {
+                    (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                    (true, false) => klipp_timeline::FontStyle::Bold,
+                    (false, true) => klipp_timeline::FontStyle::Italic,
+                    (false, false) => klipp_timeline::FontStyle::Regular,
+                };
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: td.text.clone(),
+                    font_size: td.font_size,
+                    font_name: td.font_name.clone(),
+                    font_style: Self::font_style_to_u8(new_style),
+                    color: td.color,
+                });
+            }
+        });
         ui.add_space(8.0);
 
         // Font size
@@ -502,6 +610,8 @@ impl InspectorPanel {
                 clip_id,
                 text: td.text.clone(),
                 font_size,
+                font_name: td.font_name.clone(),
+                font_style: Self::font_style_to_u8(td.font_style),
                 color: td.color,
             });
         }
@@ -515,6 +625,8 @@ impl InspectorPanel {
                 clip_id,
                 text: td.text.clone(),
                 font_size: td.font_size,
+                font_name: td.font_name.clone(),
+                font_style: Self::font_style_to_u8(td.font_style),
                 color: [color.r(), color.g(), color.b(), color.a()],
             });
         }

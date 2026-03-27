@@ -235,6 +235,7 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             text: data.text.clone(),
             font_size: data.font_size,
             font_name: data.font_name.clone(),
+            font_style: format!("{:?}", data.font_style),
             color: data.color,
             alignment: format!("{:?}", data.alignment),
             position_x: data.position.x,

@@ -243,6 +243,11 @@ impl KlippApp {
         // Sync anti-click fade to engine
         let _ = app.cmd_tx.send(AppCommand::SetAntiClickFade(app.state.audio_anti_click_fade));
 
+        // Discover system fonts for title clip font selector
+        let font_registry = klipp_title::font_discovery::discover_system_fonts();
+        app.state.available_fonts = font_registry.keys().cloned().collect();
+        tracing::info!("UI font discovery: {} families available", app.state.available_fonts.len());
+
         // Enrich any stale recent project entries with metadata from disk
         let mut prefs_changed = app.prefs.enrich_recent_projects();
 
@@ -4617,12 +4622,19 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
-                AppCommand::UpdateTitleData { clip_id, text, font_size, color } => {
+                AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                                 td.text = text.clone();
                                 td.font_size = *font_size;
+                                td.font_name = font_name.clone();
+                                td.font_style = match font_style {
+                                    1 => klipp_timeline::FontStyle::Bold,
+                                    2 => klipp_timeline::FontStyle::Italic,
+                                    3 => klipp_timeline::FontStyle::BoldItalic,
+                                    _ => klipp_timeline::FontStyle::Regular,
+                                };
                                 td.color = *color;
                             }
                         }

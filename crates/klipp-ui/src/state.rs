@@ -497,6 +497,9 @@ pub struct AppState {
 
     /// Whether the curve editor panel is visible
     pub show_curve_editor: bool,
+
+    /// Available system font families (populated at startup from font discovery)
+    pub available_fonts: Vec<String>,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -769,6 +772,7 @@ impl Default for AppState {
             show_transform_controls: true,
             viewer_mask_drag: None,
             show_curve_editor: false,
+            available_fonts: Vec::new(),
         }
     }
 }

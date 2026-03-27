@@ -209,6 +209,8 @@ pub enum ClipKindJson {
         font_size: f32,
         #[serde(default = "default_font_name")]
         font_name: String,
+        #[serde(default = "default_font_style")]
+        font_style: String,
         #[serde(default = "default_color_white")]
         color: [u8; 4],
         #[serde(default = "default_alignment")]
@@ -227,6 +229,7 @@ pub enum ClipKindJson {
 
 fn default_font_size() -> f32 { 72.0 }
 fn default_font_name() -> String { "sans-serif".to_string() }
+fn default_font_style() -> String { "Regular".to_string() }
 fn default_color_white() -> [u8; 4] { [255, 255, 255, 255] }
 fn default_alignment() -> String { "Center".to_string() }
 fn default_half() -> f32 { 0.5 }

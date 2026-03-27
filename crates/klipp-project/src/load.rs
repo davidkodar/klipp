@@ -3,7 +3,7 @@ use crate::path_util::resolve_media_path;
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
-    Clip, ClipKind, Sequence, TextAlignment, TitleBackground, TitleData,
+    Clip, ClipKind, FontStyle, Sequence, TextAlignment, TitleBackground, TitleData,
     TitlePosition, TitleShadow, Track, TrackKind,
 };
 use std::collections::HashMap;
@@ -312,6 +312,7 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 text,
                 font_size,
                 font_name,
+                font_style,
                 color,
                 alignment,
                 position_x,
@@ -324,6 +325,12 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     "Right" => TextAlignment::Right,
                     _ => TextAlignment::Center,
                 };
+                let fs = match font_style.as_str() {
+                    "Bold" => FontStyle::Bold,
+                    "Italic" => FontStyle::Italic,
+                    "BoldItalic" => FontStyle::BoldItalic,
+                    _ => FontStyle::Regular,
+                };
                 let bg: TitleBackground = serde_json::from_value(background.clone())
                     .unwrap_or(TitleBackground::None);
                 let sh: Option<TitleShadow> = serde_json::from_value(shadow.clone()).ok().flatten();
@@ -331,6 +338,7 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     text: text.clone(),
                     font_size: *font_size,
                     font_name: font_name.clone(),
+                    font_style: fs,
                     color: *color,
                     alignment: align,
                     position: TitlePosition {

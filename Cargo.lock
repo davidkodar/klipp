@@ -2249,6 +2249,7 @@ dependencies = [
  "klipp-plugin",
  "klipp-project",
  "klipp-timeline",
+ "klipp-title",
  "notify",
  "png 0.17.16",
  "rfd",

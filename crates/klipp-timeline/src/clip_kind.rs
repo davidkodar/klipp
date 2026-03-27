@@ -35,6 +35,9 @@ pub struct TitleData {
     pub font_size: f32,
     /// Font family name, default "sans-serif"
     pub font_name: String,
+    /// Font style (Regular, Bold, Italic, Bold Italic)
+    #[serde(default)]
+    pub font_style: FontStyle,
     /// Text colour RGBA
     pub color: [u8; 4],
     pub alignment: TextAlignment,
@@ -50,6 +53,7 @@ impl Default for TitleData {
             text: String::from("Title"),
             font_size: 72.0,
             font_name: String::from("sans-serif"),
+            font_style: FontStyle::Regular,
             color: [255, 255, 255, 255],
             alignment: TextAlignment::Center,
             position: TitlePosition { x: 0.5, y: 0.5 },
@@ -57,6 +61,16 @@ impl Default for TitleData {
             shadow: None,
         }
     }
+}
+
+/// Font style variant — maps to style names in font files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FontStyle {
+    #[default]
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

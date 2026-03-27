@@ -14,6 +14,7 @@ klipp-media = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-export = { workspace = true }
+klipp-title = { workspace = true }
 klipp-project = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }

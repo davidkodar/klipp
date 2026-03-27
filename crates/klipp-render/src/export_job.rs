@@ -102,7 +102,7 @@ impl ExportJob {
             pipeline.begin_export(&self.settings);
         }
 
-        let compositor = FrameCompositor::new();
+        let mut compositor = FrameCompositor::new();
         let mut audio_mixdown = AudioMixdown::new(&self.snapshot)?;
         let mut encoder =
             Encoder::open(&self.output_path, &self.settings, &self.snapshot)?;

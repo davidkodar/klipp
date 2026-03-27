@@ -85,7 +85,7 @@ fn compositor_with_gap_produces_none() {
         global_lut_path: None,
     };
 
-    let compositor = FrameCompositor::new();
+    let mut compositor = FrameCompositor::new();
     let mut decoders = std::collections::HashMap::new();
 
     // No tracks → None

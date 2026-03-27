@@ -29,7 +29,7 @@ impl FrameCompositor {
     /// Composite all video tracks at the given timeline frame into one RGBA frame.
     /// Returns `None` if there is nothing to render (all tracks empty/invisible).
     pub fn composite_frame(
-        &self,
+        &mut self,
         frame_num: u64,
         snapshot: &SequenceSnapshot,
         decoders: &mut HashMap<ClipId, RenderDecoder>,
@@ -87,7 +87,7 @@ impl FrameCompositor {
 
     /// Decode a single frame from a clip (media, title, or gap).
     fn decode_clip_frame(
-        &self,
+        &mut self,
         clip: &ClipSnapshot,
         decoders: &mut HashMap<ClipId, RenderDecoder>,
         width: u32,
@@ -112,7 +112,7 @@ impl FrameCompositor {
     /// Returns `Some(blended_frame)` if a transition is active, `None` otherwise.
     #[allow(clippy::too_many_arguments)]
     fn apply_transition(
-        &self,
+        &mut self,
         current_frame: Option<&Vec<u8>>,
         frame_num: u64,
         current_clip: &ClipSnapshot,

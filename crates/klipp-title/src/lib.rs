@@ -3,7 +3,10 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::{TextAlignment, TitleBackground, TitleData};
+use klipp_timeline::{FontStyle, TextAlignment, TitleBackground, TitleData};
+use std::collections::{BTreeMap, HashMap};
+
+pub mod font_discovery;
 
 /// Embedded fallback font — Noto Sans Regular (OFL license).
 static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
@@ -11,6 +14,8 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
 /// Renders title clips to RGBA pixel buffers.
 pub struct TitleRenderer {
     fallback_font: Font,
+    font_cache: HashMap<String, Font>,
+    font_registry: BTreeMap<String, Vec<font_discovery::FontInfo>>,
 }
 
 impl Default for TitleRenderer {
@@ -26,11 +31,78 @@ impl TitleRenderer {
             fontdue::FontSettings::default(),
         )
         .expect("Failed to load embedded Noto Sans font");
-        Self { fallback_font }
+        let registry = font_discovery::discover_system_fonts();
+        tracing::info!("Font discovery: found {} font families", registry.len());
+        Self {
+            fallback_font,
+            font_cache: HashMap::new(),
+            font_registry: registry,
+        }
+    }
+
+    /// Get a list of available font family names (sorted alphabetically).
+    pub fn available_families(&self) -> Vec<&str> {
+        self.font_registry.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get available styles for a given font family.
+    pub fn available_styles(&self, family: &str) -> Vec<&str> {
+        self.font_registry
+            .get(family)
+            .map(|infos| infos.iter().map(|i| i.style.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Build a cache key from family name and style.
+    fn cache_key(family: &str, style: FontStyle) -> String {
+        let style_str = match style {
+            FontStyle::Regular => "Regular",
+            FontStyle::Bold => "Bold",
+            FontStyle::Italic => "Italic",
+            FontStyle::BoldItalic => "Bold Italic",
+        };
+        format!("{family}::{style_str}")
+    }
+
+    /// Ensure a font is loaded into the cache. Returns the cache key.
+    fn ensure_font_loaded(&mut self, family: &str, style: FontStyle) -> String {
+        let key = Self::cache_key(family, style);
+
+        if family == "sans-serif" || family.is_empty() || self.font_cache.contains_key(&key) {
+            return key;
+        }
+
+        if let Some(infos) = self.font_registry.get(family) {
+            let style_str = match style {
+                FontStyle::Regular => "Regular",
+                FontStyle::Bold => "Bold",
+                FontStyle::Italic => "Italic",
+                FontStyle::BoldItalic => "Bold Italic",
+            };
+
+            // Try exact style match first, then fall back to Regular, then first available
+            let info = infos
+                .iter()
+                .find(|i| i.style == style_str)
+                .or_else(|| infos.iter().find(|i| i.style == "Regular"))
+                .or_else(|| infos.first());
+
+            if let Some(info) = info {
+                if let Ok(data) = std::fs::read(&info.path) {
+                    if let Ok(font) =
+                        Font::from_bytes(data.as_slice(), fontdue::FontSettings::default())
+                    {
+                        self.font_cache.insert(key.clone(), font);
+                    }
+                }
+            }
+        }
+
+        key
     }
 
     /// Render a `TitleData` to an RGBA buffer of `width × height` pixels.
-    pub fn render(&self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+    pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
         let w = width as usize;
         let h = height as usize;
         let mut buf = vec![0u8; w * h * 4];
@@ -41,6 +113,13 @@ impl TitleRenderer {
                 pixel.copy_from_slice(color);
             }
         }
+
+        // Resolve the font: load into cache if needed, then get reference
+        let cache_key = self.ensure_font_loaded(&title.font_name, title.font_style);
+        let font = self
+            .font_cache
+            .get(&cache_key)
+            .unwrap_or(&self.fallback_font);
 
         // Scale font size relative to frame height (72pt at 1080p)
         let scale = height as f32 / 1080.0;
@@ -65,7 +144,7 @@ impl TitleRenderer {
             ..LayoutSettings::default()
         });
 
-        layout.append(&[&self.fallback_font], &TextStyle::new(&title.text, font_px, 0));
+        layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
 
         let glyphs = layout.glyphs();
         if glyphs.is_empty() {
@@ -110,7 +189,8 @@ impl TitleRenderer {
         if let Some(shadow) = &title.shadow {
             let shadow_ox = shadow.offset_x * scale + offset_x;
             let shadow_oy = shadow.offset_y * scale + offset_y;
-            self.rasterize_glyphs(
+            Self::rasterize_glyphs(
+                font,
                 &mut buf,
                 glyphs,
                 shadow_ox,
@@ -122,7 +202,8 @@ impl TitleRenderer {
         }
 
         // Draw text glyphs
-        self.rasterize_glyphs(
+        Self::rasterize_glyphs(
+            font,
             &mut buf,
             glyphs,
             offset_x,
@@ -137,7 +218,7 @@ impl TitleRenderer {
 
     #[allow(clippy::too_many_arguments)]
     fn rasterize_glyphs(
-        &self,
+        font: &Font,
         buf: &mut [u8],
         glyphs: &[fontdue::layout::GlyphPosition],
         offset_x: f32,
@@ -150,7 +231,7 @@ impl TitleRenderer {
             if glyph.width == 0 || glyph.height == 0 {
                 continue;
             }
-            let (_, coverage) = self.fallback_font.rasterize_config(glyph.key);
+            let (_, coverage) = font.rasterize_config(glyph.key);
 
             let gx = (glyph.x + offset_x) as i32;
             let gy = (glyph.y + offset_y) as i32;
@@ -215,7 +296,7 @@ mod tests {
 
     #[test]
     fn renders_non_empty_frame() {
-        let renderer = TitleRenderer::new();
+        let mut renderer = TitleRenderer::new();
         let title = TitleData::default();
         let buf = renderer.render(&title, 1920, 1080);
         assert_eq!(buf.len(), 1920 * 1080 * 4);
@@ -226,7 +307,7 @@ mod tests {
 
     #[test]
     fn white_text_has_correct_color() {
-        let renderer = TitleRenderer::new();
+        let mut renderer = TitleRenderer::new();
         let title = TitleData {
             text: "X".to_string(),
             font_size: 200.0,
@@ -242,7 +323,7 @@ mod tests {
 
     #[test]
     fn full_frame_background() {
-        let renderer = TitleRenderer::new();
+        let mut renderer = TitleRenderer::new();
         let title = TitleData {
             text: "BG".to_string(),
             background: TitleBackground::FullFrame {
@@ -257,7 +338,7 @@ mod tests {
 
     #[test]
     fn shadow_adds_extra_pixels() {
-        let renderer = TitleRenderer::new();
+        let mut renderer = TitleRenderer::new();
         let no_shadow = TitleData {
             text: "S".to_string(),
             font_size: 100.0,
@@ -273,9 +354,8 @@ mod tests {
             }),
             ..no_shadow.clone()
         };
-        let renderer2 = TitleRenderer::new();
         let buf1 = renderer.render(&no_shadow, 640, 480);
-        let buf2 = renderer2.render(&with_shadow, 640, 480);
+        let buf2 = renderer.render(&with_shadow, 640, 480);
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
         let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(count2 > count1, "Shadow should add more non-transparent pixels");
