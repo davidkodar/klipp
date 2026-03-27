@@ -194,6 +194,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
                         },
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
+                        audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
                     }
                 }).collect(),
             }

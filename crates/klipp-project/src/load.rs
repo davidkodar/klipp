@@ -269,6 +269,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                         }).collect()
                     }).unwrap_or_default(),
                     speed: c.speed.unwrap_or(1.0),
+                    audio_effects: c.audio_effects.clone().unwrap_or_default(),
                 }
             }).collect();
             track

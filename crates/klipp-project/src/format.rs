@@ -185,6 +185,8 @@ pub struct ClipJson {
     pub param_modifiers: Option<HashMap<String, klipp_core::ModifierStack>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_effects: Option<Vec<klipp_core::AudioEffectInstance>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

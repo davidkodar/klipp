@@ -30,7 +30,7 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &str,
 ) -> Vec<AppCommand> {
-    let cmds = Vec::new();
+    let mut cmds = Vec::new();
 
     // Live preview waveform (decorative)
     egui::Frame::none()
@@ -128,10 +128,34 @@ pub fn show(
                 .response;
 
             if resp.double_clicked() {
-                state.toast.show(format!(
-                    "\"{}\" applied to selected audio clip",
-                    fx.name
-                ));
+                // Map browser names to DSP effect type IDs
+                let effect_type_id = match fx.name {
+                    "Compressor" => Some("compressor"),
+                    "Parametric EQ" => Some("eq"),
+                    "Limiter" => Some("limiter"),
+                    "Reverb" => Some("reverb"),
+                    "Echo / Delay" => Some("delay"),
+                    "Gate" => Some("gate"),
+                    "De-esser" => Some("deesser"),
+                    _ => None, // Noise Reduction, De-click, Normalize, Pitch Shift, Chorus
+                };
+
+                if let Some(type_id) = effect_type_id {
+                    if let Some(clip_id) = state.selected_clip {
+                        cmds.push(AppCommand::AddAudioEffect {
+                            clip_id,
+                            effect_type: type_id.to_string(),
+                        });
+                        state.toast.show(format!("\"{}\" added to clip", fx.name));
+                    } else {
+                        state.toast.show("Select a clip first".to_string());
+                    }
+                } else {
+                    state.toast.show(format!(
+                        "\"{}\" is not yet implemented",
+                        fx.name
+                    ));
+                }
             }
         }
     });

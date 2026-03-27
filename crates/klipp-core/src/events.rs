@@ -626,6 +626,14 @@ pub enum AppCommand {
     RippleTrimTail { clip_id: ClipId },
     InsertGapAtPlayhead,
 
+    // Audio DSP effects
+    AddAudioEffect { clip_id: ClipId, effect_type: String },
+    RemoveAudioEffect { clip_id: ClipId, effect_index: usize },
+    UpdateAudioEffectParam { clip_id: ClipId, effect_index: usize, param_name: String, value: f32 },
+    ToggleAudioEffect { clip_id: ClipId, effect_index: usize },
+    SetAudioEffectWetDry { clip_id: ClipId, effect_index: usize, wet_dry: f32 },
+    ReorderAudioEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {
         key: String,

@@ -4340,6 +4340,105 @@ impl KlippApp {
                     continue;
                 }
 
+                // Audio DSP effects
+                AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
+                    // Build default instance from effect descriptors
+                    let instance = {
+                        let default_params: Vec<(String, f32)> = klipp_audio::dsp::create_effect(effect_type, 48000)
+                            .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
+                            .unwrap_or_default();
+                        klipp_core::AudioEffectInstance {
+                            effect_type: effect_type.clone(),
+                            enabled: true,
+                            wet_dry: 1.0,
+                            params: default_params,
+                        }
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.audio_effects.push(instance.clone());
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    continue;
+                }
+                AppCommand::RemoveAudioEffect { clip_id, effect_index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *effect_index < clip.audio_effects.len() {
+                                clip.audio_effects.remove(*effect_index);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    continue;
+                }
+                AppCommand::UpdateAudioEffectParam { clip_id, effect_index, ref param_name, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                                if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == param_name) {
+                                    p.1 = *value;
+                                } else {
+                                    inst.params.push((param_name.clone(), *value));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                                inst.enabled = !inst.enabled;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetAudioEffectWetDry { clip_id, effect_index, wet_dry } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                                inst.wet_dry = *wet_dry;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ReorderAudioEffect { clip_id, from_index, to_index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let from = *from_index;
+                            let to = *to_index;
+                            if from < clip.audio_effects.len() && to < clip.audio_effects.len() {
+                                let fx = clip.audio_effects.remove(from);
+                                clip.audio_effects.insert(to, fx);
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
+
                 // Parameter modifiers (behaviors)
                 AppCommand::AddModifier { clip_id, ref param, ref modifier } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -4508,6 +4607,7 @@ impl KlippApp {
                         role: klipp_core::ClipRole::default(),
                         param_modifiers: std::collections::HashMap::new(),
                         speed: 1.0,
+                        audio_effects: Vec::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -4798,6 +4898,7 @@ impl KlippApp {
                                     role: clip.role,
                                     param_modifiers: clip.param_modifiers.clone(),
                                     speed: clip.speed,
+                                    audio_effects: clip.audio_effects.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -4922,6 +5023,7 @@ impl KlippApp {
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
+                                    audio_effects: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -5001,6 +5103,7 @@ impl KlippApp {
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
+                                    audio_effects: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -6882,6 +6985,7 @@ impl KlippApp {
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
+                audio_effects: clip.audio_effects.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -6986,6 +7090,7 @@ impl KlippApp {
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
+                audio_effects: clip.audio_effects.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }

@@ -776,6 +776,11 @@ pub fn show(
             });
             waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, clip_peaks);
         });
+
+    ui.add_space(14.0);
+
+    // ── Audio Effects Chain ──
+    super::audio_fx_inspector::show(ui, theme, clip_id, &clip.audio_effects, cmds);
 }
 
 const FADE_CURVE_VARIANTS: &[FadeCurve] = &[

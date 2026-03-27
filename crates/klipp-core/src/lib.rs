@@ -19,4 +19,4 @@ pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, Tra
 pub use time::{Fps, RationalTime, TimeRange, Timecode};
 pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use ofx_value::OfxValue;
-pub use types::{BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};
+pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};

@@ -2064,6 +2064,7 @@ name = "klipp-audio"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "serde",
 ]
 
 [[package]]

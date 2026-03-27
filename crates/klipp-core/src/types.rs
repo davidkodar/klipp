@@ -138,3 +138,19 @@ impl ClipRole {
         }
     }
 }
+
+/// Serializable audio effect instance (stored on Clip).
+/// Each instance records the effect type, enabled state, wet/dry mix, and param values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioEffectInstance {
+    pub effect_type: String,
+    #[serde(default = "default_audio_fx_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_audio_fx_wet_dry")]
+    pub wet_dry: f32,
+    #[serde(default)]
+    pub params: Vec<(String, f32)>,
+}
+
+fn default_audio_fx_enabled() -> bool { true }
+fn default_audio_fx_wet_dry() -> f32 { 1.0 }

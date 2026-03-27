@@ -1,5 +1,6 @@
 pub mod video_tab;
 pub mod audio_tab;
+pub mod audio_fx_inspector;
 pub mod effects_tab;
 pub mod info_tab;
 pub mod modifier_ui;

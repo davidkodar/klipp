@@ -1,6 +1,6 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{AudioEffectInstance, ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -362,6 +362,7 @@ impl Track {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            audio_effects: Vec::new(),
         });
         clip_id
     }
@@ -541,6 +542,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            audio_effects: clip.audio_effects.clone(),
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -576,6 +578,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            audio_effects: clip.audio_effects.clone(),
         };
 
         self.clips.remove(pos);
@@ -693,6 +696,9 @@ pub struct Clip {
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
+    /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_effects: Vec<AudioEffectInstance>,
 }
 
 impl Clip {
@@ -760,6 +766,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            audio_effects: Vec::new(),
         }
     }
 
@@ -805,6 +812,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            audio_effects: Vec::new(),
         }
     }
 }
