@@ -4,6 +4,8 @@ pub mod events;
 pub mod keyframe;
 pub mod export_preset;
 pub mod id;
+pub mod modifier;
+pub mod modifier_math;
 pub mod ofx_value;
 pub mod time;
 pub mod types;
@@ -15,5 +17,6 @@ pub use events::{AppCommand, AppEvent, AudioParam, EncoderPreset, ExportAudioCod
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
 pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
 pub use time::{Fps, RationalTime, TimeRange, Timecode};
+pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use ofx_value::OfxValue;
 pub use types::{BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};

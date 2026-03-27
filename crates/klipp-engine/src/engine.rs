@@ -29,6 +29,45 @@ fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
     }
 }
 
+/// Evaluate a parameter with optional modifier stack, falling back to plain keyframe evaluation.
+fn eval_with_modifiers(
+    keyframes: &[klipp_core::Keyframe],
+    modifiers: &std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+    param: &klipp_core::ParamId,
+    time_secs: f64,
+    default: f32,
+    ctx: &klipp_core::EvalContext,
+) -> f32 {
+    match modifiers.get(param) {
+        Some(stack) if !stack.modifiers.is_empty() => {
+            klipp_core::evaluate_param(keyframes, stack, time_secs, default, ctx)
+        }
+        _ => klipp_core::keyframe::evaluate(keyframes, time_secs, default),
+    }
+}
+
+/// Evaluate an effect param with optional modifier stack.
+fn eval_effect_with_modifiers(
+    keyframes: &[klipp_core::Keyframe],
+    modifiers: &std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+    effect_index: usize,
+    param_name: &str,
+    time_secs: f64,
+    default: f32,
+    ctx: &klipp_core::EvalContext,
+) -> f32 {
+    let param = klipp_core::ParamId::Effect {
+        effect_index,
+        param_name: param_name.to_string(),
+    };
+    match modifiers.get(&param) {
+        Some(stack) if !stack.modifiers.is_empty() => {
+            klipp_core::evaluate_param(keyframes, stack, time_secs, default, ctx)
+        }
+        _ => klipp_core::keyframe::evaluate(keyframes, time_secs, default),
+    }
+}
+
 /// One entry per active audio source (one per playing track).
 struct ActiveAudioSource {
     #[allow(dead_code)]
@@ -930,9 +969,17 @@ impl PlaybackEngine {
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
-                    clip_volume = klipp_core::keyframe::evaluate(&audio_clip.volume_keyframes, clip_time_secs, audio_clip.volume);
-                    clip_pan = klipp_core::keyframe::evaluate(&audio_clip.pan_keyframes, clip_time_secs, audio_clip.pan);
-                    let mut clip_gain = klipp_core::keyframe::evaluate(&audio_clip.gain_keyframes, clip_time_secs, audio_clip.gain);
+                    let audio_eval_ctx = klipp_core::EvalContext {
+                        clip_time_secs,
+                        clip_duration_secs: (audio_clip.source_out.to_secs_f64() - audio_clip.source_in.to_secs_f64()),
+                        timeline_time_secs: self.playhead.to_secs_f64(),
+                        fps: self.fps.as_f64(),
+                        seed: audio_clip.id.0.as_u64_pair().0,
+                    };
+
+                    clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
+                    clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
+                    let mut clip_gain = eval_with_modifiers(&audio_clip.gain_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Gain, clip_time_secs, audio_clip.gain, &audio_eval_ctx);
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
                     let mut fi_curve = audio_clip.fade_in_curve;
@@ -946,9 +993,16 @@ impl PlaybackEngine {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
                                 let linked_clip_time = (self.playhead.to_secs_f64() - video_clip.timeline_in.to_secs_f64()).max(0.0);
-                                clip_volume = klipp_core::keyframe::evaluate(&video_clip.volume_keyframes, linked_clip_time, video_clip.volume);
-                                clip_pan = klipp_core::keyframe::evaluate(&video_clip.pan_keyframes, linked_clip_time, video_clip.pan);
-                                clip_gain = klipp_core::keyframe::evaluate(&video_clip.gain_keyframes, linked_clip_time, video_clip.gain);
+                                let linked_eval_ctx = klipp_core::EvalContext {
+                                    clip_time_secs: linked_clip_time,
+                                    clip_duration_secs: (video_clip.source_out.to_secs_f64() - video_clip.source_in.to_secs_f64()),
+                                    timeline_time_secs: self.playhead.to_secs_f64(),
+                                    fps: self.fps.as_f64(),
+                                    seed: video_clip.id.0.as_u64_pair().0,
+                                };
+                                clip_volume = eval_with_modifiers(&video_clip.volume_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Volume, linked_clip_time, video_clip.volume, &linked_eval_ctx);
+                                clip_pan = eval_with_modifiers(&video_clip.pan_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Pan, linked_clip_time, video_clip.pan, &linked_eval_ctx);
+                                clip_gain = eval_with_modifiers(&video_clip.gain_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Gain, linked_clip_time, video_clip.gain, &linked_eval_ctx);
                                 fade_in = video_clip.fade_in_secs;
                                 fade_out = video_clip.fade_out_secs;
                                 fi_curve = video_clip.fade_in_curve;
@@ -2808,19 +2862,33 @@ impl PlaybackEngine {
             (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0)
         }).unwrap_or(0.0);
 
+        // Build modifier evaluation context
+        let eval_ctx = clip.map(|c| klipp_core::EvalContext {
+            clip_time_secs: clip_relative_secs,
+            clip_duration_secs: (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()),
+            timeline_time_secs: self.playhead.to_secs_f64(),
+            fps: self.fps.as_f64(),
+            seed: c.id.0.as_u64_pair().0,
+        });
+
         // Build builtin_fx with keyframed values overriding static ones
         let builtin_fx = if let Some(c) = clip {
             let mut fx = c.builtin_effects.clone();
 
-            // Evaluate opacity keyframes
-            if !c.opacity_keyframes.is_empty() {
-                let opacity_val = klipp_core::keyframe::evaluate(
+            // Evaluate opacity keyframes + modifiers
+            let has_opacity_modifiers = c.param_modifiers.contains_key(&klipp_core::ParamId::Opacity);
+            if !c.opacity_keyframes.is_empty() || has_opacity_modifiers {
+                let opacity_default = fx.iter().find_map(|e| match e {
+                    klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+                    _ => None,
+                }).unwrap_or(1.0);
+                let opacity_val = eval_with_modifiers(
                     &c.opacity_keyframes,
+                    &c.param_modifiers,
+                    &klipp_core::ParamId::Opacity,
                     clip_relative_secs,
-                    fx.iter().find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
-                        _ => None,
-                    }).unwrap_or(1.0),
+                    opacity_default,
+                    eval_ctx.as_ref().unwrap(),
                 );
                 let mut found = false;
                 for effect in &mut fx {
@@ -2835,11 +2903,16 @@ impl PlaybackEngine {
                 }
             }
 
-            // Evaluate transform keyframes
+            // Evaluate transform keyframes + modifiers
+            let has_transform_modifiers = c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
+                || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
+                || c.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
+                || c.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
             let has_transform_kf = !c.transform_pos_x_keyframes.is_empty()
                 || !c.transform_pos_y_keyframes.is_empty()
                 || !c.transform_scale_keyframes.is_empty()
-                || !c.transform_rotation_keyframes.is_empty();
+                || !c.transform_rotation_keyframes.is_empty()
+                || has_transform_modifiers;
 
             if has_transform_kf {
                 // Get current transform values (or defaults)
@@ -2851,19 +2924,20 @@ impl PlaybackEngine {
                         _ => None,
                     }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
 
-                if !c.transform_pos_x_keyframes.is_empty() {
-                    pos_x = klipp_core::keyframe::evaluate(&c.transform_pos_x_keyframes, clip_relative_secs, pos_x);
+                let ectx = eval_ctx.as_ref().unwrap();
+                if !c.transform_pos_x_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX) {
+                    pos_x = eval_with_modifiers(&c.transform_pos_x_keyframes, &c.param_modifiers, &klipp_core::ParamId::PositionX, clip_relative_secs, pos_x, ectx);
                 }
-                if !c.transform_pos_y_keyframes.is_empty() {
-                    pos_y = klipp_core::keyframe::evaluate(&c.transform_pos_y_keyframes, clip_relative_secs, pos_y);
+                if !c.transform_pos_y_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionY) {
+                    pos_y = eval_with_modifiers(&c.transform_pos_y_keyframes, &c.param_modifiers, &klipp_core::ParamId::PositionY, clip_relative_secs, pos_y, ectx);
                 }
-                if !c.transform_scale_keyframes.is_empty() {
-                    let s = klipp_core::keyframe::evaluate(&c.transform_scale_keyframes, clip_relative_secs, scale_x);
+                if !c.transform_scale_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::Scale) {
+                    let s = eval_with_modifiers(&c.transform_scale_keyframes, &c.param_modifiers, &klipp_core::ParamId::Scale, clip_relative_secs, scale_x, ectx);
                     scale_x = s;
                     scale_y = s; // uniform scale from the Video tab
                 }
-                if !c.transform_rotation_keyframes.is_empty() {
-                    rotation = klipp_core::keyframe::evaluate(&c.transform_rotation_keyframes, clip_relative_secs, rotation);
+                if !c.transform_rotation_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::Rotation) {
+                    rotation = eval_with_modifiers(&c.transform_rotation_keyframes, &c.param_modifiers, &klipp_core::ParamId::Rotation, clip_relative_secs, rotation, ectx);
                 }
 
                 let new_transform = klipp_effects::BuiltinEffect::Transform {
@@ -2883,52 +2957,54 @@ impl PlaybackEngine {
                 }
             }
 
-            // Evaluate effect keyframes (blur, sharpen, crop, chroma key)
-            if !c.effect_keyframes.is_empty() {
+            // Evaluate effect keyframes + modifiers (blur, sharpen, crop, chroma key)
+            {
+                let ectx = eval_ctx.as_ref().unwrap();
                 for (i, effect) in fx.iter_mut().enumerate() {
                     match effect {
                         klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
                             let key = format!("{}:radius", i);
                             if let Some(kfs) = c.effect_keyframes.get(&key) {
                                 if !kfs.is_empty() {
-                                    *radius = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *radius);
+                                    *radius = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
                                 }
+                            } else {
+                                // No keyframes but may have modifiers
+                                *radius = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
                             }
                         }
                         klipp_effects::BuiltinEffect::Sharpen { amount } => {
                             let key = format!("{}:amount", i);
                             if let Some(kfs) = c.effect_keyframes.get(&key) {
                                 if !kfs.is_empty() {
-                                    *amount = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *amount);
+                                    *amount = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
                                 }
+                            } else {
+                                *amount = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
                             }
                         }
                         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
                             for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
                                 let key = format!("{}:{}", i, name);
-                                if let Some(kfs) = c.effect_keyframes.get(&key) {
-                                    if !kfs.is_empty() {
-                                        *val = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *val);
-                                    }
-                                }
+                                let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
                             }
                         }
                         klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
                             for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
                                 let key = format!("{}:{}", i, name);
-                                if let Some(kfs) = c.effect_keyframes.get(&key) {
-                                    if !kfs.is_empty() {
-                                        *val = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *val);
-                                    }
-                                }
+                                let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
                             }
                         }
                         klipp_effects::BuiltinEffect::Opacity { value } => {
                             let key = format!("{}:value", i);
                             if let Some(kfs) = c.effect_keyframes.get(&key) {
                                 if !kfs.is_empty() {
-                                    *value = klipp_core::keyframe::evaluate(kfs, clip_relative_secs, *value);
+                                    *value = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
                                 }
+                            } else {
+                                *value = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
                             }
                         }
                         _ => {} // Transform already handled by dedicated keyframes

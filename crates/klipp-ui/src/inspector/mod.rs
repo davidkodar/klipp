@@ -2,6 +2,7 @@ pub mod video_tab;
 pub mod audio_tab;
 pub mod effects_tab;
 pub mod info_tab;
+pub mod modifier_ui;
 
 use crate::layout_state::InspectorTab;
 use crate::state::AppState;

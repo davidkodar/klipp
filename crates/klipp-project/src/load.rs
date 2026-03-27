@@ -263,6 +263,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     }).unwrap_or_default(),
                     effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
                     role: c.role.unwrap_or_default(),
+                    param_modifiers: c.param_modifiers.as_ref().map(|m| {
+                        m.iter().filter_map(|(k, v)| {
+                            klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
+                        }).collect()
+                    }).unwrap_or_default(),
                 }
             }).collect();
             track

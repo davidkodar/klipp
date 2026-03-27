@@ -4254,6 +4254,81 @@ impl KlippApp {
                     continue;
                 }
 
+                // Parameter modifiers (behaviors)
+                AppCommand::AddModifier { clip_id, ref param, ref modifier } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.param_modifiers.entry(param.clone()).or_default().modifiers.push(modifier.clone());
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveModifier { clip_id, ref param, modifier_index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                                if *modifier_index < stack.modifiers.len() {
+                                    stack.modifiers.remove(*modifier_index);
+                                }
+                                if stack.modifiers.is_empty() {
+                                    clip.param_modifiers.remove(param);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UpdateModifier { clip_id, ref param, modifier_index, ref modifier } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                                if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
+                                    *m = modifier.clone();
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ToggleModifier { clip_id, ref param, modifier_index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                                if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
+                                    match m {
+                                        klipp_core::Modifier::Oscillate { enabled, .. } |
+                                        klipp_core::Modifier::Wiggle { enabled, .. } |
+                                        klipp_core::Modifier::Throw { enabled, .. } |
+                                        klipp_core::Modifier::Ramp { enabled, .. } |
+                                        klipp_core::Modifier::Loop { enabled, .. } |
+                                        klipp_core::Modifier::PingPong { enabled, .. } |
+                                        klipp_core::Modifier::Clamp { enabled, .. } => {
+                                            *enabled = !*enabled;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+
                 // Transitions
                 AppCommand::AddTransition { track_index, clip_a_id, clip_b_id, kind_id, duration_frames } => {
                     let ti = *track_index;
@@ -4345,6 +4420,7 @@ impl KlippApp {
                         clip_markers: Vec::new(),
                         effect_keyframes: std::collections::HashMap::new(),
                         role: klipp_core::ClipRole::default(),
+                        param_modifiers: std::collections::HashMap::new(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -4633,6 +4709,7 @@ impl KlippApp {
                                     clip_markers: clip.clip_markers.clone(),
                                     effect_keyframes: clip.effect_keyframes.clone(),
                                     role: clip.role,
+                                    param_modifiers: clip.param_modifiers.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -4755,6 +4832,7 @@ impl KlippApp {
                                     clip_markers: Vec::new(),
                                     effect_keyframes: std::collections::HashMap::new(),
                                     role: klipp_core::ClipRole::default(),
+                                    param_modifiers: std::collections::HashMap::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -4832,6 +4910,7 @@ impl KlippApp {
                                     clip_markers: Vec::new(),
                                     effect_keyframes: std::collections::HashMap::new(),
                                     role: klipp_core::ClipRole::default(),
+                                    param_modifiers: std::collections::HashMap::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -6627,6 +6706,7 @@ impl KlippApp {
                 clip_markers: clip.clip_markers.clone(),
                 effect_keyframes: clip.effect_keyframes.clone(),
                 role: clip.role,
+                param_modifiers: clip.param_modifiers.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -6729,6 +6809,7 @@ impl KlippApp {
                 clip_markers: clip.clip_markers.clone(),
                 effect_keyframes: clip.effect_keyframes.clone(),
                 role: clip.role,
+                param_modifiers: clip.param_modifiers.clone(),
             };
             track.clips.insert(i + 1, right_clip);
         }

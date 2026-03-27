@@ -1,4 +1,5 @@
 use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TrackId};
+use crate::modifier::{Modifier, ParamId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use serde::{Deserialize, Serialize};
@@ -526,6 +527,12 @@ pub enum AppCommand {
     GroupClips { clip_ids: Vec<ClipId> },
     UngroupClips { group_id: GroupId },
     UngroupClip { clip_id: ClipId },
+
+    // Parameter modifiers (behaviors)
+    AddModifier { clip_id: ClipId, param: ParamId, modifier: Modifier },
+    RemoveModifier { clip_id: ClipId, param: ParamId, modifier_index: usize },
+    UpdateModifier { clip_id: ClipId, param: ParamId, modifier_index: usize, modifier: Modifier },
+    ToggleModifier { clip_id: ClipId, param: ParamId, modifier_index: usize },
 
     // Application
     Quit,

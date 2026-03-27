@@ -538,6 +538,21 @@ pub fn show(
 
     ui.add_space(14.0);
 
+    // ── Behaviors section ──
+    {
+        use klipp_core::ParamId;
+        let video_params = [
+            ParamId::Opacity,
+            ParamId::PositionX,
+            ParamId::PositionY,
+            ParamId::Scale,
+            ParamId::Rotation,
+        ];
+        super::modifier_ui::show_behaviors_section(ui, theme, clip, &video_params, cmds);
+    }
+
+    ui.add_space(14.0);
+
     // ── Speed section ──
     section_header(ui, theme, "Speed");
 

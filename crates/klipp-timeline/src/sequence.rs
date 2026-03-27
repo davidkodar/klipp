@@ -1,7 +1,8 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{ClipId, Fps, GroupId, MarkerColor, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub use klipp_core::types::{ChannelConfig, FadeCurve};
 
@@ -358,6 +359,7 @@ impl Track {
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
+            param_modifiers: HashMap::new(),
         });
         clip_id
     }
@@ -535,6 +537,7 @@ impl Track {
             clip_markers: markers_a,
             effect_keyframes: effect_kfs_a,
             role: clip.role,
+            param_modifiers: clip.param_modifiers.clone(),
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -568,6 +571,7 @@ impl Track {
             clip_markers: markers_b,
             effect_keyframes: effect_kfs_b,
             role: clip.role,
+            param_modifiers: clip.param_modifiers.clone(),
         };
 
         self.clips.remove(pos);
@@ -679,6 +683,9 @@ pub struct Clip {
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
+    /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub param_modifiers: HashMap<ParamId, ModifierStack>,
 }
 
 impl Clip {
@@ -744,6 +751,7 @@ impl Clip {
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
+            param_modifiers: HashMap::new(),
         }
     }
 
@@ -787,6 +795,7 @@ impl Clip {
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
+            param_modifiers: HashMap::new(),
         }
     }
 }

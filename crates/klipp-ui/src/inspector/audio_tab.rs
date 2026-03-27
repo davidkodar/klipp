@@ -635,6 +635,19 @@ pub fn show(
 
     ui.add_space(14.0);
 
+    // ── Behaviors section ──
+    {
+        use klipp_core::ParamId;
+        let audio_params = [
+            ParamId::Volume,
+            ParamId::Pan,
+            ParamId::Gain,
+        ];
+        super::modifier_ui::show_behaviors_section(ui, theme, clip, &audio_params, cmds);
+    }
+
+    ui.add_space(14.0);
+
     // ── Auto Duck ──
     ui.label(
         egui::RichText::new("AUTO DUCK")

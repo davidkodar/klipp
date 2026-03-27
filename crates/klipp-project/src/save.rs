@@ -188,6 +188,11 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         },
                         effect_keyframes: if c.effect_keyframes.is_empty() { None } else { Some(c.effect_keyframes.clone()) },
                         role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
+                        param_modifiers: if c.param_modifiers.is_empty() {
+                            None
+                        } else {
+                            Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
+                        },
                     }
                 }).collect(),
             }

@@ -181,6 +181,8 @@ pub struct ClipJson {
     pub effect_keyframes: Option<std::collections::HashMap<String, Vec<klipp_core::Keyframe>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<klipp_core::ClipRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_modifiers: Option<HashMap<String, klipp_core::ModifierStack>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
