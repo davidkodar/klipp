@@ -2939,6 +2939,8 @@ impl PlaybackEngine {
 
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(final_result, w, h);
+            drop(fb);
+            let _ = self.event_tx.send(AppEvent::FrameReady);
         } else if let Some(v2_frame) = &self.v2_frame_cache {
             // Case 2: No V1 video, but V2 title overlay exists (standalone title)
             let rgba = v2_frame.to_rgba();
@@ -2946,6 +2948,8 @@ impl PlaybackEngine {
             let h = v2_frame.height;
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(rgba, w, h);
+            drop(fb);
+            let _ = self.event_tx.send(AppEvent::FrameReady);
         }
     }
 
