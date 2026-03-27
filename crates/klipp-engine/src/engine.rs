@@ -2901,9 +2901,43 @@ impl PlaybackEngine {
 
     fn regrade_cached_frame(&mut self) {
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
-            let result = self.post_process_rgba_inner(rgba.clone(), w, h);
+            let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);
+
+            // Composite V2 overlay (title clips) over V1 if present
+            let final_result = if let Some(v2_frame) = &self.v2_frame_cache {
+                let v2_opacity = self.sequence.read().unwrap()
+                    .tracks.iter()
+                    .find(|t| matches!(t.kind, klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle) && !t.muted)
+                    .map(|t| t.opacity)
+                    .unwrap_or(1.0);
+                if v2_opacity > 0.001 {
+                    use crate::composite::{composite_layers, CompositeLayer};
+                    let layers = vec![
+                        CompositeLayer {
+                            rgba: v1_result,
+                            width: w,
+                            height: h,
+                            opacity: 1.0,
+                            blend_mode: klipp_core::BlendMode::Normal,
+                        },
+                        CompositeLayer {
+                            rgba: v2_frame.to_rgba(),
+                            width: v2_frame.width,
+                            height: v2_frame.height,
+                            opacity: v2_opacity,
+                            blend_mode: klipp_core::BlendMode::Normal,
+                        },
+                    ];
+                    composite_layers(&layers, w, h)
+                } else {
+                    v1_result
+                }
+            } else {
+                v1_result
+            };
+
             let mut fb = self.frame_buffer.lock().unwrap();
-            fb.write_frame(result, w, h);
+            fb.write_frame(final_result, w, h);
         }
     }
 
