@@ -48,6 +48,15 @@ pub struct DraggingVideoKeyframe {
     pub keyframe_index: usize,
 }
 
+/// Clipboard for keyframe curves (copy/paste between clips/params).
+#[derive(Debug, Clone)]
+pub struct KeyframeClipboard {
+    /// The copied keyframes.
+    pub keyframes: Vec<klipp_core::Keyframe>,
+    /// Duration of the source clip (for time scaling when pasting to different-length clips).
+    pub source_duration_secs: f64,
+}
+
 /// Which kind of parameter a keyframe context menu or selection refers to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyframeParamKind {
@@ -408,6 +417,8 @@ pub struct AppState {
     pub dragging_video_bezier_handle: Option<BezierVideoHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
+    /// Keyframe clipboard for copy/paste between clips/params
+    pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
     /// Which audio parameter the timeline rubber band displays.
@@ -688,6 +699,7 @@ impl Default for AppState {
             dragging_bezier_handle: None,
             dragging_video_bezier_handle: None,
             keyframe_context_menu: None,
+            keyframe_clipboard: None,
             selected_keyframe: None,
             rubber_band_param: AudioParam::Volume,
             video_rubber_band_param: VideoParam::Opacity,

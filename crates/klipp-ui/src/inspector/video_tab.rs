@@ -481,6 +481,63 @@ pub fn show(
 
     ui.add_space(14.0);
 
+    // ── Ken Burns section ──
+    section_header(ui, theme, "Ken Burns");
+    let has_transform_kfs = !clip.transform_scale_keyframes.is_empty()
+        || !clip.transform_pos_x_keyframes.is_empty()
+        || !clip.transform_pos_y_keyframes.is_empty();
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+        if ui.add(egui::Button::new(btn_text("Zoom In"))
+            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+        ).on_hover_text("Scale 1.0\u{2192}1.3, centered").clicked() {
+            cmds.push(AppCommand::ApplyKenBurns {
+                clip_id, start_scale: 1.0, end_scale: 1.3,
+                start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
+            });
+        }
+        if ui.add(egui::Button::new(btn_text("Zoom Out"))
+            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+        ).on_hover_text("Scale 1.3\u{2192}1.0, centered").clicked() {
+            cmds.push(AppCommand::ApplyKenBurns {
+                clip_id, start_scale: 1.3, end_scale: 1.0,
+                start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
+            });
+        }
+        if ui.add(egui::Button::new(btn_text("Pan L\u{2192}R"))
+            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+        ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
+            cmds.push(AppCommand::ApplyKenBurns {
+                clip_id, start_scale: 1.2, end_scale: 1.2,
+                start_pos_x: -100.0, start_pos_y: 0.0, end_pos_x: 100.0, end_pos_y: 0.0,
+            });
+        }
+        if ui.add(egui::Button::new(btn_text("Pan R\u{2192}L"))
+            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+        ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
+            cmds.push(AppCommand::ApplyKenBurns {
+                clip_id, start_scale: 1.2, end_scale: 1.2,
+                start_pos_x: 100.0, start_pos_y: 0.0, end_pos_x: -100.0, end_pos_y: 0.0,
+            });
+        }
+        if has_transform_kfs {
+            if ui.add(egui::Button::new(btn_text("Remove"))
+                .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5, theme.border))
+                .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+            ).on_hover_text("Clear all transform keyframes").clicked() {
+                cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
+            }
+        }
+    });
+
+    ui.add_space(14.0);
+
     // ── Speed section ──
     section_header(ui, theme, "Speed");
 

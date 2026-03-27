@@ -1698,7 +1698,123 @@ impl TimelinePanel {
                     egui::Frame::menu(ui.style())
                         .inner_margin(egui::Margin::same(4.0))
                         .show(ui, |ui| {
-                            ui.set_min_width(120.0);
+                            ui.set_min_width(140.0);
+
+                            // ── Copy / Paste / Reverse keyframes ────────
+                            {
+                                // Determine if current param has keyframes
+                                let has_kfs = state.sequence().tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == ctx_menu.clip_id)
+                                    .map(|clip| {
+                                        let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(p) => match p {
+                                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                            },
+                                            crate::state::KeyframeParamKind::Video(p) => match p {
+                                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            },
+                                        };
+                                        !kfs.is_empty()
+                                    })
+                                    .unwrap_or(false);
+
+                                // Copy Keyframes (only if keyframes exist)
+                                if has_kfs {
+                                    if ui.add(egui::Button::new("  Copy Keyframes").frame(false)).clicked() {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::CopyAudioKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::CopyVideoKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                        }
+                                        close_menu = true;
+                                    }
+                                }
+
+                                // Paste Keyframes (only if clipboard has data)
+                                if state.keyframe_clipboard.is_some() {
+                                    if ui.add(egui::Button::new("  Paste Keyframes").frame(false)).clicked() {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::PasteAudioKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::PasteVideoKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                        }
+                                        close_menu = true;
+                                    }
+                                }
+
+                                // Reverse Keyframes (only if >= 2 keyframes)
+                                let has_enough = state.sequence().tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == ctx_menu.clip_id)
+                                    .map(|clip| {
+                                        let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(p) => match p {
+                                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                            },
+                                            crate::state::KeyframeParamKind::Video(p) => match p {
+                                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            },
+                                        };
+                                        kfs.len() >= 2
+                                    })
+                                    .unwrap_or(false);
+
+                                if has_enough {
+                                    if ui.add(egui::Button::new("  Reverse Keyframes").frame(false)).clicked() {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::ReverseAudioKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::ReverseVideoKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                });
+                                            }
+                                        }
+                                        close_menu = true;
+                                    }
+                                }
+
+                                if has_kfs || state.keyframe_clipboard.is_some() {
+                                    ui.separator();
+                                }
+                            }
+
                             ui.label(egui::RichText::new("Interpolation").small().strong());
                             ui.separator();
 
@@ -1856,6 +1972,178 @@ impl TimelinePanel {
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
                                     emit_interp(&mut cmds, klipp_core::Interpolation::Step);
                                     close_menu = true;
+                                }
+                            }
+
+                            // ── Timing ──
+                            ui.separator();
+                            ui.label(egui::RichText::new("Timing").small().strong());
+
+                            // Gather clip data for timing operations
+                            let clip_data: Option<(f64, f64)> = state.sequence().tracks.iter()
+                                .flat_map(|t| t.clips.iter())
+                                .find(|c| c.id == ctx_menu.clip_id)
+                                .and_then(|clip| {
+                                    let clip_dur = clip.duration().to_secs_f64();
+                                    let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(p) => match p {
+                                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                        },
+                                        crate::state::KeyframeParamKind::Video(p) => match p {
+                                            klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                            klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                            klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                            klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                            klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                        },
+                                    };
+                                    let max_t = kfs.iter().map(|k| k.time_secs).fold(0.0f64, f64::max);
+                                    Some((clip_dur, max_t))
+                                });
+
+                            if ui.add(egui::Button::new("  Half Speed (0.5x)").frame(false)).clicked() {
+                                match &ctx_menu.param_kind {
+                                    crate::state::KeyframeParamKind::Audio(param) => {
+                                        cmds.push(AppCommand::ScaleAudioKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id, param: *param, factor: 2.0,
+                                        });
+                                    }
+                                    crate::state::KeyframeParamKind::Video(param) => {
+                                        cmds.push(AppCommand::ScaleVideoKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id, param: *param, factor: 2.0,
+                                        });
+                                    }
+                                }
+                                close_menu = true;
+                            }
+                            if ui.add(egui::Button::new("  Double Speed (2x)").frame(false)).clicked() {
+                                match &ctx_menu.param_kind {
+                                    crate::state::KeyframeParamKind::Audio(param) => {
+                                        cmds.push(AppCommand::ScaleAudioKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id, param: *param, factor: 0.5,
+                                        });
+                                    }
+                                    crate::state::KeyframeParamKind::Video(param) => {
+                                        cmds.push(AppCommand::ScaleVideoKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id, param: *param, factor: 0.5,
+                                        });
+                                    }
+                                }
+                                close_menu = true;
+                            }
+                            // Fit to Clip: scale so max keyframe time == clip duration
+                            if let Some((clip_dur, max_t)) = clip_data {
+                                let can_fit = max_t > 0.001 && clip_dur > 0.001;
+                                let btn = egui::Button::new("  Fit to Clip").frame(false);
+                                if ui.add_enabled(can_fit, btn).clicked() {
+                                    let fit_factor = clip_dur / max_t;
+                                    match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(param) => {
+                                            cmds.push(AppCommand::ScaleAudioKeyframeTiming {
+                                                clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
+                                            });
+                                        }
+                                        crate::state::KeyframeParamKind::Video(param) => {
+                                            cmds.push(AppCommand::ScaleVideoKeyframeTiming {
+                                                clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
+                                            });
+                                        }
+                                    }
+                                    close_menu = true;
+                                }
+                            }
+
+                            // ── Insert Bump ──
+                            ui.separator();
+                            {
+                                // Compute bump defaults from playhead and current value
+                                let bump_data: Option<(f64, f32, f64)> = state.sequence().tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == ctx_menu.clip_id)
+                                    .map(|clip| {
+                                        let clip_start = clip.timeline_in.to_secs_f64();
+                                        let clip_dur = clip.duration().to_secs_f64();
+                                        let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur);
+                                        let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(p) => match p {
+                                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                            },
+                                            crate::state::KeyframeParamKind::Video(p) => match p {
+                                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            },
+                                        };
+                                        // Evaluate current value at playhead (simple: nearest keyframe or default)
+                                        let base_val = if kfs.is_empty() {
+                                            match &ctx_menu.param_kind {
+                                                crate::state::KeyframeParamKind::Audio(p) => match p {
+                                                    klipp_core::AudioParam::Volume => clip.volume,
+                                                    klipp_core::AudioParam::Pan => clip.pan,
+                                                    klipp_core::AudioParam::Gain => clip.gain,
+                                                },
+                                                crate::state::KeyframeParamKind::Video(p) => match p {
+                                                    klipp_core::VideoParam::Opacity => 1.0,
+                                                    klipp_core::VideoParam::PositionX => 0.0,
+                                                    klipp_core::VideoParam::PositionY => 0.0,
+                                                    klipp_core::VideoParam::Scale => 1.0,
+                                                    klipp_core::VideoParam::Rotation => 0.0,
+                                                },
+                                            }
+                                        } else {
+                                            // Find the keyframe pair surrounding playhead_rel and interpolate simply
+                                            let before = kfs.iter().rev().find(|k| k.time_secs <= playhead_rel);
+                                            let after = kfs.iter().find(|k| k.time_secs >= playhead_rel);
+                                            match (before, after) {
+                                                (Some(b), _) => b.value,
+                                                (_, Some(a)) => a.value,
+                                                _ => 0.0,
+                                            }
+                                        };
+                                        (playhead_rel, base_val, clip_dur)
+                                    });
+
+                                if let Some((center_time, base_val, _clip_dur)) = bump_data {
+                                    // Compute a sensible bump target: +20% of param range
+                                    let bump_val = match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(p) => match p {
+                                            klipp_core::AudioParam::Volume => (base_val + 0.2).min(2.0),
+                                            klipp_core::AudioParam::Pan => (base_val + 0.2).min(1.0),
+                                            klipp_core::AudioParam::Gain => (base_val + 3.0).min(24.0),
+                                        },
+                                        crate::state::KeyframeParamKind::Video(p) => match p {
+                                            klipp_core::VideoParam::Opacity => (base_val + 0.2).min(1.0),
+                                            klipp_core::VideoParam::PositionX => base_val + 0.05,
+                                            klipp_core::VideoParam::PositionY => base_val + 0.05,
+                                            klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
+                                            klipp_core::VideoParam::Rotation => base_val + 15.0,
+                                        },
+                                    };
+                                    if ui.add(egui::Button::new("  Insert Bump").frame(false)).clicked() {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::InsertAudioKeyframeBump {
+                                                    clip_id: ctx_menu.clip_id, param: *param,
+                                                    center_time, bump_value: bump_val, base_value: base_val,
+                                                    duration_secs: 0.5, ramp_secs: 0.15,
+                                                });
+                                            }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::InsertVideoKeyframeBump {
+                                                    clip_id: ctx_menu.clip_id, param: *param,
+                                                    center_time, bump_value: bump_val, base_value: base_val,
+                                                    duration_secs: 0.5, ramp_secs: 0.15,
+                                                });
+                                            }
+                                        }
+                                        close_menu = true;
+                                    }
                                 }
                             }
                         });

@@ -544,6 +544,16 @@ pub enum AppCommand {
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
     SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
 
+    // Keyframe clipboard operations
+    CopyAudioKeyframes { clip_id: ClipId, param: AudioParam },
+    CopyVideoKeyframes { clip_id: ClipId, param: VideoParam },
+    PasteAudioKeyframes { clip_id: ClipId, param: AudioParam },
+    PasteVideoKeyframes { clip_id: ClipId, param: VideoParam },
+
+    // Reverse keyframes
+    ReverseAudioKeyframes { clip_id: ClipId, param: AudioParam },
+    ReverseVideoKeyframes { clip_id: ClipId, param: VideoParam },
+
     // Effect keyframes
     AddEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
     RemoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
@@ -559,9 +569,29 @@ pub enum AppCommand {
     BeginAudioDrag { key: String, clip_id: ClipId, old_gain: f32, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
     EndAudioDrag { key: String, clip_id: ClipId, new_gain: f32, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },
 
+    // Scale keyframe timing
+    ScaleAudioKeyframeTiming { clip_id: ClipId, param: AudioParam, factor: f64 },
+    ScaleVideoKeyframeTiming { clip_id: ClipId, param: VideoParam, factor: f64 },
+
+    // Insert keyframe bump pattern
+    InsertAudioKeyframeBump { clip_id: ClipId, param: AudioParam, center_time: f64, bump_value: f32, base_value: f32, duration_secs: f64, ramp_secs: f64 },
+    InsertVideoKeyframeBump { clip_id: ClipId, param: VideoParam, center_time: f64, bump_value: f32, base_value: f32, duration_secs: f64, ramp_secs: f64 },
+
     // Undo coalescing — drag gesture signals for keyframe moves/tangents
     BeginKeyframeDrag { key: String, clip_id: ClipId },
     EndKeyframeDrag { key: String, clip_id: ClipId },
+
+    // Ken Burns presets
+    ApplyKenBurns {
+        clip_id: ClipId,
+        start_scale: f32,
+        end_scale: f32,
+        start_pos_x: f32,
+        start_pos_y: f32,
+        end_pos_x: f32,
+        end_pos_y: f32,
+    },
+    ClearTransformKeyframes { clip_id: ClipId },
 
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {

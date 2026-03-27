@@ -2833,6 +2833,602 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::ScaleAudioKeyframeTiming { clip_id, param, factor } => {
+                    let mut linked_partner_id = None;
+                    let mut old_state = None;
+                    let mut old_linked_state = None;
+                    {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
+                            linked_partner_id = c.linked_clip_id;
+                            old_state = Some(KeyframeSnapshot::from_clip(c));
+                        }
+                        if let Some(pid) = linked_partner_id {
+                            if let Some(p) = seq.all_clips().find(|c| c.id == pid) {
+                                old_linked_state = Some(KeyframeSnapshot::from_clip(p));
+                            }
+                        }
+                    }
+                    let all_ids: Vec<klipp_core::ClipId> = {
+                        let mut ids = vec![*clip_id];
+                        if let Some(lid) = linked_partner_id { ids.push(lid); }
+                        ids
+                    };
+                    for target_id in &all_ids {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(clip) = track.find_clip_mut(*target_id) {
+                                let clip_dur = clip.duration().to_secs_f64();
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                                };
+                                for kf in keyframes.iter_mut() {
+                                    kf.time_secs *= factor;
+                                    // Scale bezier tangent time components
+                                    kf.tangent_in.0 *= *factor;
+                                    kf.tangent_out.0 *= *factor;
+                                }
+                                // Clamp and remove out-of-range
+                                keyframes.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                        let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
+                        if let Some(new_snap) = new_state {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: linked_partner_id,
+                                    description: "Scale Audio Keyframe Timing",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state,
+                                    new_linked_state,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ScaleVideoKeyframeTiming { clip_id, param, factor } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            for kf in keyframes.iter_mut() {
+                                kf.time_secs *= factor;
+                                kf.tangent_in.0 *= *factor;
+                                kf.tangent_out.0 *= *factor;
+                            }
+                            keyframes.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Scale Video Keyframe Timing",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::InsertAudioKeyframeBump { clip_id, param, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
+                    let mut linked_partner_id = None;
+                    let mut old_state = None;
+                    let mut old_linked_state = None;
+                    {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
+                            linked_partner_id = c.linked_clip_id;
+                            old_state = Some(KeyframeSnapshot::from_clip(c));
+                        }
+                        if let Some(pid) = linked_partner_id {
+                            if let Some(p) = seq.all_clips().find(|c| c.id == pid) {
+                                old_linked_state = Some(KeyframeSnapshot::from_clip(p));
+                            }
+                        }
+                    }
+                    let bump_kfs: Vec<(f64, f32)> = vec![
+                        (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
+                        (center_time - duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
+                    ];
+                    let all_ids: Vec<klipp_core::ClipId> = {
+                        let mut ids = vec![*clip_id];
+                        if let Some(lid) = linked_partner_id { ids.push(lid); }
+                        ids
+                    };
+                    for target_id in &all_ids {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(clip) = track.find_clip_mut(*target_id) {
+                                let clip_dur = clip.duration().to_secs_f64();
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                                };
+                                for &(t, v) in &bump_kfs {
+                                    if t >= 0.0 && t <= clip_dur {
+                                        keyframes.push(klipp_core::Keyframe {
+                                            time_secs: t,
+                                            value: v,
+                                            interpolation: klipp_core::Interpolation::Linear,
+                                            tangent_out: (0.0, 0.0),
+                                            tangent_in: (0.0, 0.0),
+                                        });
+                                    }
+                                }
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                        let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
+                        if let Some(new_snap) = new_state {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: linked_partner_id,
+                                    description: "Insert Audio Keyframe Bump",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state,
+                                    new_linked_state,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::InsertVideoKeyframeBump { clip_id, param, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    let bump_kfs: Vec<(f64, f32)> = vec![
+                        (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
+                        (center_time - duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
+                    ];
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            for &(t, v) in &bump_kfs {
+                                if t >= 0.0 && t <= clip_dur {
+                                    keyframes.push(klipp_core::Keyframe {
+                                        time_secs: t,
+                                        value: v,
+                                        interpolation: klipp_core::Interpolation::Linear,
+                                        tangent_out: (0.0, 0.0),
+                                        tangent_in: (0.0, 0.0),
+                                    });
+                                }
+                            }
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Insert Video Keyframe Bump",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ApplyKenBurns { clip_id, start_scale, end_scale, start_pos_x, start_pos_y, end_pos_x, end_pos_y } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let duration = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+                            let ease_t = 0.42 * duration;
+
+                            // Clear existing transform keyframes
+                            clip.transform_scale_keyframes.clear();
+                            clip.transform_pos_x_keyframes.clear();
+                            clip.transform_pos_y_keyframes.clear();
+
+                            // Ensure a Transform builtin effect exists
+                            if !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. })) {
+                                clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
+                                    position_x: 0.0, position_y: 0.0,
+                                    scale_x: *start_scale, scale_y: *start_scale,
+                                    rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+                                });
+                            }
+
+                            // Scale keyframes
+                            clip.transform_scale_keyframes.push(klipp_core::Keyframe {
+                                time_secs: 0.0, value: *start_scale,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                            });
+                            clip.transform_scale_keyframes.push(klipp_core::Keyframe {
+                                time_secs: duration, value: *end_scale,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                            });
+
+                            // Position X keyframes
+                            clip.transform_pos_x_keyframes.push(klipp_core::Keyframe {
+                                time_secs: 0.0, value: *start_pos_x,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                            });
+                            clip.transform_pos_x_keyframes.push(klipp_core::Keyframe {
+                                time_secs: duration, value: *end_pos_x,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                            });
+
+                            // Position Y keyframes
+                            clip.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+                                time_secs: 0.0, value: *start_pos_y,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                            });
+                            clip.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+                                time_secs: duration, value: *end_pos_y,
+                                interpolation: klipp_core::Interpolation::Bezier,
+                                tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                            });
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Apply Ken Burns",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ClearTransformKeyframes { clip_id } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.transform_scale_keyframes.clear();
+                            clip.transform_pos_x_keyframes.clear();
+                            clip.transform_pos_y_keyframes.clear();
+                            clip.transform_rotation_keyframes.clear();
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Clear Transform Keyframes",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                // ── Keyframe clipboard: Copy ──────────────────────────────
+                AppCommand::CopyAudioKeyframes { clip_id, param } => {
+                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                    {
+                        let kfs = match param {
+                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        };
+                        self.state.keyframe_clipboard = Some(crate::state::KeyframeClipboard {
+                            keyframes: kfs.clone(),
+                            source_duration_secs: clip.duration().to_secs_f64(),
+                        });
+                    }
+                    continue;
+                }
+                AppCommand::CopyVideoKeyframes { clip_id, param } => {
+                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                    {
+                        let kfs = match param {
+                            klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                            klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                            klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                            klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                            klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                        };
+                        self.state.keyframe_clipboard = Some(crate::state::KeyframeClipboard {
+                            keyframes: kfs.clone(),
+                            source_duration_secs: clip.duration().to_secs_f64(),
+                        });
+                    }
+                    continue;
+                }
+
+                // ── Keyframe clipboard: Paste ──────────────────────────────
+                AppCommand::PasteAudioKeyframes { clip_id, param } => {
+                    if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
+                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
+                        if let Some(target_dur) = target_dur {
+                            let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
+                            let mut new_kfs: Vec<klipp_core::Keyframe> = cb.keyframes.iter().map(|kf| {
+                                let mut k = kf.clone();
+                                k.time_secs *= scale;
+                                k
+                            }).collect();
+                            new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                                if let Some(clip) = track.find_clip_mut(*clip_id) {
+                                    let target = match param {
+                                        klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                        klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                        klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                                    };
+                                    *target = new_kfs;
+                                    break;
+                                }
+                            }
+                            if let Some(old_snap) = old_state {
+                                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                                if let Some(new_snap) = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                    self.state.history.push(HistoryEntry {
+                                        sequence_idx: self.state.active_sequence_idx,
+                                        command: EditCommand::EditKeyframes {
+                                            clip_id: *clip_id,
+                                            linked_clip_id: None,
+                                            description: "Paste Audio Keyframes",
+                                            old_state: old_snap,
+                                            new_state: new_snap,
+                                            old_linked_state: None,
+                                            new_linked_state: None,
+                                        },
+                                    });
+                                }
+                            }
+                            self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            self.state.dirty = true;
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::PasteVideoKeyframes { clip_id, param } => {
+                    if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
+                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
+                        if let Some(target_dur) = target_dur {
+                            let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
+                            let mut new_kfs: Vec<klipp_core::Keyframe> = cb.keyframes.iter().map(|kf| {
+                                let mut k = kf.clone();
+                                k.time_secs *= scale;
+                                k
+                            }).collect();
+                            new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                                if let Some(clip) = track.find_clip_mut(*clip_id) {
+                                    let target = match param {
+                                        klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                        klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                        klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                        klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                        klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                    };
+                                    *target = new_kfs;
+                                    break;
+                                }
+                            }
+                            if let Some(old_snap) = old_state {
+                                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                                if let Some(new_snap) = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                    self.state.history.push(HistoryEntry {
+                                        sequence_idx: self.state.active_sequence_idx,
+                                        command: EditCommand::EditKeyframes {
+                                            clip_id: *clip_id,
+                                            linked_clip_id: None,
+                                            description: "Paste Video Keyframes",
+                                            old_state: old_snap,
+                                            new_state: new_snap,
+                                            old_linked_state: None,
+                                            new_linked_state: None,
+                                        },
+                                    });
+                                }
+                            }
+                            self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            self.state.dirty = true;
+                        }
+                    }
+                    continue;
+                }
+
+                // ── Reverse keyframes ──────────────────────────────────────
+                AppCommand::ReverseAudioKeyframes { clip_id, param } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+                            };
+                            if keyframes.len() >= 2 {
+                                let max_time = keyframes.last().map(|k| k.time_secs).unwrap_or(0.0);
+                                for kf in keyframes.iter_mut() {
+                                    kf.time_secs = max_time - kf.time_secs;
+                                    let old_in = kf.tangent_in;
+                                    let old_out = kf.tangent_out;
+                                    kf.tangent_in = (-old_out.0, old_out.1);
+                                    kf.tangent_out = (-old_in.0, old_in.1);
+                                }
+                                keyframes.reverse();
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(new_snap) = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Reverse Audio Keyframes",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ReverseVideoKeyframes { clip_id, param } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let keyframes = match param {
+                                klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                            };
+                            if keyframes.len() >= 2 {
+                                let max_time = keyframes.last().map(|k| k.time_secs).unwrap_or(0.0);
+                                for kf in keyframes.iter_mut() {
+                                    kf.time_secs = max_time - kf.time_secs;
+                                    let old_in = kf.tangent_in;
+                                    let old_out = kf.tangent_out;
+                                    kf.tangent_in = (-old_out.0, old_out.1);
+                                    kf.tangent_out = (-old_in.0, old_in.1);
+                                }
+                                keyframes.reverse();
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(new_snap) = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Reverse Video Keyframes",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    continue;
+                }
+
                 AppCommand::AddEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
                     let key = format!("{}:{}", effect_index, param_name);
                     let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
