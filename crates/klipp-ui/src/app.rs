@@ -2730,8 +2730,10 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
+                    let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
@@ -2745,7 +2747,26 @@ impl KlippApp {
                             break;
                         }
                     }
+                    // Also move on linked partner clip
+                    if let Some(partner_id) = linked_partner_id {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(partner) = track.find_clip_mut(partner_id) {
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
+                                };
+                                if let Some(kf) = keyframes.get_mut(*index) {
+                                    kf.time_secs = *new_time_secs;
+                                    kf.value = *new_value;
+                                }
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                break;
+                            }
+                        }
+                    }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
@@ -2806,8 +2827,10 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out } => {
+                    let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
@@ -2824,7 +2847,29 @@ impl KlippApp {
                             break;
                         }
                     }
+                    // Also set tangent on linked partner clip
+                    if let Some(partner_id) = linked_partner_id {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(partner) = track.find_clip_mut(partner_id) {
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
+                                };
+                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                    if let Some(ti) = tangent_in {
+                                        kf.tangent_in = *ti;
+                                    }
+                                    if let Some(to) = tangent_out {
+                                        kf.tangent_out = *to;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
