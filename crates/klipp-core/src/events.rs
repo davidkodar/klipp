@@ -618,6 +618,11 @@ pub enum AppCommand {
         threshold: f32,
     },
 
+    // Magnetic timeline ops
+    RippleTrimHead { clip_id: ClipId },
+    RippleTrimTail { clip_id: ClipId },
+    InsertGapAtPlayhead,
+
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {
         key: String,

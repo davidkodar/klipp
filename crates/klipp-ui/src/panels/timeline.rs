@@ -4930,6 +4930,21 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Magnetic operations
+                ui.separator();
+                if ui.button("Ripple Trim Head to Playhead  Alt+[").clicked() {
+                    cmds.push(AppCommand::RippleTrimHead { clip_id });
+                    ui.close_menu();
+                }
+                if ui.button("Ripple Trim Tail to Playhead  Alt+]").clicked() {
+                    cmds.push(AppCommand::RippleTrimTail { clip_id });
+                    ui.close_menu();
+                }
+                if ui.button("Insert Gap (1s)").clicked() {
+                    cmds.push(AppCommand::InsertGapAtPlayhead);
+                    ui.close_menu();
+                }
+
                 // Transitions
                 ui.separator();
                 // Find adjacent clip pairs involving the selected clip

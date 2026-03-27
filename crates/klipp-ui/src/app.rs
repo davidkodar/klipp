@@ -4956,6 +4956,72 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Magnetic: Ripple trim head to playhead
+                AppCommand::RippleTrimHead { clip_id } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
+                        let clip = &seq.tracks[track_idx].clips[clip_idx];
+                        let playhead = self.state.playhead;
+                        // Only trim if playhead is inside the clip
+                        if playhead > clip.timeline_in && playhead < clip.timeline_out {
+                            let new_timeline_in = playhead;
+                            if self.is_magnetic_track(track_idx) {
+                                let result = klipp_timeline::magnetic::MagneticEditor::trim_head(
+                                    &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_in);
+                                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                            } else {
+                                // Non-magnetic: adjust clip in-place
+                                let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
+                                let delta = new_timeline_in - clip.timeline_in;
+                                clip.source_in = clip.source_in + delta;
+                                clip.timeline_in = new_timeline_in;
+                            }
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    continue;
+                }
+                // Magnetic: Ripple trim tail to playhead
+                AppCommand::RippleTrimTail { clip_id } => {
+                    if self.clip_track_is_locked(clip_id) { continue; }
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
+                        let clip = &seq.tracks[track_idx].clips[clip_idx];
+                        let playhead = self.state.playhead;
+                        // Only trim if playhead is inside the clip
+                        if playhead > clip.timeline_in && playhead < clip.timeline_out {
+                            let new_timeline_out = playhead;
+                            if self.is_magnetic_track(track_idx) {
+                                let result = klipp_timeline::magnetic::MagneticEditor::trim_tail(
+                                    &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_out);
+                                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                            } else {
+                                // Non-magnetic: adjust clip in-place
+                                let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
+                                let delta = new_timeline_out - clip.timeline_out;
+                                clip.source_out = clip.source_out + delta;
+                                clip.timeline_out = new_timeline_out;
+                            }
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    continue;
+                }
+                // Magnetic: Insert 1-second gap at playhead
+                AppCommand::InsertGapAtPlayhead => {
+                    let playhead = self.state.playhead;
+                    let rate = if playhead.rate > 1 { playhead.rate } else { 24 };
+                    let one_sec = klipp_core::RationalTime::from_frames(rate as i64, rate);
+                    let result = klipp_timeline::magnetic::MagneticEditor::insert_gap(
+                        &mut self.state.sequences[self.state.active_sequence_idx], one_sec, playhead);
+                    self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 // Phase 4: Proxy
                 AppCommand::GenerateProxy { media_id } => {
                     self.spawn_proxy_generation(*media_id);
@@ -7434,6 +7500,18 @@ impl KlippApp {
                     klipp_timeline::magnetic::EditMode::Insert => klipp_timeline::magnetic::EditMode::Overwrite,
                     klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
                 };
+            }
+            // Alt+[ — Ripple trim head to playhead
+            if i.modifiers.alt && i.key_pressed(egui::Key::OpenBracket) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::RippleTrimHead { clip_id });
+                }
+            }
+            // Alt+] — Ripple trim tail to playhead
+            if i.modifiers.alt && i.key_pressed(egui::Key::CloseBracket) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::RippleTrimTail { clip_id });
+                }
             }
             // Ctrl+X — Cut
             if i.modifiers.ctrl && i.key_pressed(egui::Key::X) {

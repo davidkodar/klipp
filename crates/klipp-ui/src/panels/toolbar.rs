@@ -380,6 +380,22 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(format!("{}Blade Tool", check(state.active_tool == Tool::Blade))).shortcut_text("B")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Blade)); ui.close_menu(); }
             if ui.add(egui::Button::new(format!("{}Range Tool", check(state.active_tool == Tool::Range))).shortcut_text("R")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Range)); ui.close_menu(); }
             ui.separator();
+            // Magnetic trim operations
+            let has_clip = state.selected_clip.is_some();
+            if ui.add_enabled(has_clip, egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
+                if let Some(clip_id) = state.selected_clip {
+                    cmds.push(AppCommand::RippleTrimHead { clip_id });
+                }
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
+                if let Some(clip_id) = state.selected_clip {
+                    cmds.push(AppCommand::RippleTrimTail { clip_id });
+                }
+                ui.close_menu();
+            }
+            if ui.button("Insert Gap (1s)").clicked() { cmds.push(AppCommand::InsertGapAtPlayhead); ui.close_menu(); }
+            ui.separator();
             if ui.button("Delete Unused Media...").clicked() { cmds.push(AppCommand::DeleteUnusedMedia); ui.close_menu(); }
         });
     }
