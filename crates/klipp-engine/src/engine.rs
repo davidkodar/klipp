@@ -664,9 +664,9 @@ impl PlaybackEngine {
                 self.sync_clip_volumes();
                 // Re-grade cached frame when paused — instant parameter feedback
                 if self.state != PlaybackState::Playing {
-                    self.regrade_cached_frame();
-                    // Also refresh V2 overlay (title clips on Text tracks)
+                    // Refresh title overlay FIRST so regrade composites the updated title
                     self.refresh_v2_title_overlay();
+                    self.regrade_cached_frame();
                 }
             }
 
@@ -2900,6 +2900,7 @@ impl PlaybackEngine {
     }
 
     fn regrade_cached_frame(&mut self) {
+        // Case 1: V1 video exists — regrade and composite with V2 overlay
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
             let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);
 
@@ -2938,6 +2939,13 @@ impl PlaybackEngine {
 
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(final_result, w, h);
+        } else if let Some(v2_frame) = &self.v2_frame_cache {
+            // Case 2: No V1 video, but V2 title overlay exists (standalone title)
+            let rgba = v2_frame.to_rgba();
+            let w = v2_frame.width;
+            let h = v2_frame.height;
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame(rgba, w, h);
         }
     }
 
