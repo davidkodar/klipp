@@ -191,12 +191,12 @@ pub fn show(
                     if resp.double_clicked() {
                         let title_data = (title.create_data)();
                         state.pending_title_data = Some(title_data);
-                        // Find a free video track or create one (same logic as Ctrl+T)
+                        // Find a free text track or create one
                         let ph = state.playhead;
                         let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
                             .enumerate()
                             .find(|(_, t)| {
-                                t.kind == klipp_timeline::TrackKind::Video
+                                t.kind == klipp_timeline::TrackKind::Text
                                     && t.clip_at_timecode(ph).is_none()
                             })
                             .map(|(idx, _)| idx);
@@ -204,11 +204,11 @@ pub fn show(
                             Some(idx) => idx,
                             None => {
                                 let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                    .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
                                     .count() + 1;
                                 let track = klipp_timeline::Track::new(
-                                    &format!("Video {track_num}"),
-                                    klipp_timeline::TrackKind::Video,
+                                    &format!("Text {track_num}"),
+                                    klipp_timeline::TrackKind::Text,
                                 );
                                 state.sequences[state.active_sequence_idx].tracks.insert(0, track);
                                 0
