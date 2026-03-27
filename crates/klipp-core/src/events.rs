@@ -540,6 +540,7 @@ pub enum AppCommand {
     // Video keyframes
     AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },
     RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
+    MoveVideoKeyframe { clip_id: ClipId, param: VideoParam, index: usize, new_time_secs: f64, new_value: f32 },
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 
     // Effect keyframes

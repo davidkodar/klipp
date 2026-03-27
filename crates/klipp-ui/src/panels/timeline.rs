@@ -1306,6 +1306,116 @@ impl TimelinePanel {
             }
         }
 
+        // ── Video keyframe rubber band drag update ─────────────────────
+        if let Some(ref drag_kf) = state.dragging_video_keyframe.clone() {
+            if pointer_released || !pointer_down {
+                state.dragging_video_keyframe = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
+                        let track_height = match track.kind {
+                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            _ => VIDEO_TRACK_HEIGHT,
+                        };
+                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
+                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let mut new_time = frac * clip_dur_secs;
+
+                                // Snap to notable positions
+                                let snap_thresh_secs = 8.0_f64 / (zoom as f64);
+                                let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs {
+                                    if (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                        new_time = playhead_rel;
+                                    }
+                                }
+                                if new_time < snap_thresh_secs { new_time = 0.0; }
+                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
+
+                                // Snap to other keyframes
+                                let keyframes = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                };
+                                for (ki, kf) in keyframes.iter().enumerate() {
+                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                        new_time = kf.time_secs;
+                                        break;
+                                    }
+                                }
+
+                                // Map Y to param value using auto-scaled range
+                                let mut val_min = 0.0_f32;
+                                let mut val_max = 0.0_f32;
+                                let static_val = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => {
+                                        let v = clip.builtin_effects.iter()
+                                            .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                                            .unwrap_or(1.0);
+                                        val_min = v; val_max = v; v
+                                    }
+                                    klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY |
+                                    klipp_core::VideoParam::Scale | klipp_core::VideoParam::Rotation => {
+                                        let t = clip.builtin_effects.iter()
+                                            .find_map(|e| match e {
+                                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                                                    Some((*position_x, *position_y, *scale_x, *rotation)),
+                                                _ => None,
+                                            })
+                                            .unwrap_or((0.0, 0.0, 1.0, 0.0));
+                                        let v = match drag_kf.param {
+                                            klipp_core::VideoParam::PositionX => t.0,
+                                            klipp_core::VideoParam::PositionY => t.1,
+                                            klipp_core::VideoParam::Scale => t.2,
+                                            klipp_core::VideoParam::Rotation => t.3,
+                                            _ => unreachable!(),
+                                        };
+                                        val_min = v; val_max = v; v
+                                    }
+                                };
+                                for kf in keyframes.iter() {
+                                    if kf.value < val_min { val_min = kf.value; }
+                                    if kf.value > val_max { val_max = kf.value; }
+                                }
+                                let val_span = (val_max - val_min).max(0.01);
+                                let padding = val_span * 0.2;
+                                let p_min = val_min - padding;
+                                let p_range = val_span + padding * 2.0;
+
+                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                let new_value = p_min + normalized * p_range;
+
+                                cmds.push(AppCommand::MoveVideoKeyframe {
+                                    clip_id: drag_kf.clip_id,
+                                    param: drag_kf.param,
+                                    index: drag_kf.keyframe_index,
+                                    new_time_secs: new_time,
+                                    new_value,
+                                });
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // ── Flat rubber band drag release ────────────────────────────────
         if state.dragging_rubber_band.is_some() && (pointer_released || !pointer_down) {
             state.dragging_rubber_band = None;
@@ -1408,10 +1518,19 @@ impl TimelinePanel {
                                 .flat_map(|t| t.clips.iter())
                                 .find(|c| c.id == ctx_menu.clip_id)
                                 .and_then(|clip| {
-                                    let kfs = match ctx_menu.param {
-                                        klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                        klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                        klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                    let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(p) => match p {
+                                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                        },
+                                        crate::state::KeyframeParamKind::Video(p) => match p {
+                                            klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                            klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                            klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                            klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                            klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                        },
                                     };
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
@@ -1428,12 +1547,24 @@ impl TimelinePanel {
                                     egui::RichText::new(format!("  {label}"))
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    cmds.push(AppCommand::SetAudioKeyframeInterpolation {
-                                        clip_id: ctx_menu.clip_id,
-                                        param: ctx_menu.param,
-                                        keyframe_index: ctx_menu.keyframe_index,
-                                        interpolation: interp,
-                                    });
+                                    match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(param) => {
+                                            cmds.push(AppCommand::SetAudioKeyframeInterpolation {
+                                                clip_id: ctx_menu.clip_id,
+                                                param: *param,
+                                                keyframe_index: ctx_menu.keyframe_index,
+                                                interpolation: interp,
+                                            });
+                                        }
+                                        crate::state::KeyframeParamKind::Video(param) => {
+                                            cmds.push(AppCommand::SetVideoKeyframeInterpolation {
+                                                clip_id: ctx_menu.clip_id,
+                                                param: *param,
+                                                keyframe_index: ctx_menu.keyframe_index,
+                                                interpolation: interp,
+                                            });
+                                        }
+                                    }
                                     close_menu = true;
                                 }
                             }
@@ -2098,120 +2229,34 @@ impl TimelinePanel {
                         egui::Stroke::new(rb_line_width, active_line_color),
                     );
                 } else {
-                    // Draw curve segments between keyframes (linear, step, or bezier)
-                    let src_in_secs = clip.source_in.to_secs_f64();
-                    let src_out_secs = clip.source_out.to_secs_f64();
-                    let clip_time_range = src_out_secs - src_in_secs;
+                    // Draw curve by densely sampling evaluate() — correctly renders
+                    // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
+                    let clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
 
-                    // Collect visible keyframes with their indices
-                    let visible_kfs: Vec<(usize, &klipp_core::Keyframe)> = kf_keyframes.iter().enumerate()
-                        .filter(|(_, kf)| kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range)
-                        .collect();
-
-                    // Helper: sample cubic bezier curve between two keyframes
-                    let sample_bezier = |a_time: f64, a_val: f32, a_tangent_out: (f64, f32),
-                                         b_time: f64, b_val: f32, b_tangent_in: (f64, f32),
-                                         num_samples: usize| -> Vec<egui::Pos2> {
-                        let mut pts = Vec::with_capacity(num_samples + 1);
-                        let p0_x = time_to_x(a_time);
-                        let p0_y = value_to_y(a_val);
-                        let p3_x = time_to_x(b_time);
-                        let p3_y = value_to_y(b_val);
-                        // Control points: tangent offsets mapped to screen space
-                        let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                        let value_scale = clip_rect.height() / param_range;
-                        let p1_x = p0_x + a_tangent_out.0 as f32 * pixels_per_sec;
-                        let p1_y = p0_y - a_tangent_out.1 * value_scale;
-                        let p2_x = p3_x + b_tangent_in.0 as f32 * pixels_per_sec;
-                        let p2_y = p3_y - b_tangent_in.1 * value_scale;
-                        for si in 0..=num_samples {
-                            let t = si as f32 / num_samples as f32;
-                            let mt = 1.0 - t;
-                            let x = mt*mt*mt*p0_x + 3.0*mt*mt*t*p1_x + 3.0*mt*t*t*p2_x + t*t*t*p3_x;
-                            let y = mt*mt*mt*p0_y + 3.0*mt*mt*t*p1_y + 3.0*mt*t*t*p2_y + t*t*t*p3_y;
-                            pts.push(egui::pos2(x, y));
-                        }
-                        pts
-                    };
-
-                    // Build all polyline segments for the rubber band
-                    // Each segment is a Vec<Pos2> (a polyline to draw)
-                    let mut all_segments: Vec<Vec<egui::Pos2>> = Vec::new();
-
-                    // Segment from clip start to first visible keyframe
-                    let start_val = klipp_core::keyframe::evaluate(kf_keyframes, 0.0, kf_static_val);
-                    if let Some(&(_, first_kf)) = visible_kfs.first() {
-                        all_segments.push(vec![
-                            egui::pos2(clip_rect.left(), value_to_y(start_val)),
-                            egui::pos2(time_to_x(first_kf.time_secs), value_to_y(first_kf.value)),
-                        ]);
-                    } else {
-                        // No visible keyframes: single line across
-                        let end_val = klipp_core::keyframe::evaluate(kf_keyframes, clip_time_range, kf_static_val);
-                        all_segments.push(vec![
-                            egui::pos2(clip_rect.left(), value_to_y(start_val)),
-                            egui::pos2(clip_rect.right(), value_to_y(end_val)),
-                        ]);
+                    // Dense sampling: evaluate the keyframe curve at many points across the clip
+                    let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
+                    let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+                    for si in 0..=num_samples {
+                        let t_frac = si as f64 / num_samples as f64;
+                        let t_secs = t_frac * clip_time_range;
+                        let val = klipp_core::keyframe::evaluate(kf_keyframes, t_secs, kf_static_val);
+                        let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
+                        let y = value_to_y(val);
+                        curve_pts.push(egui::pos2(x, y));
                     }
 
-                    // Segments between consecutive visible keyframes
-                    for w in visible_kfs.windows(2) {
-                        let (_, kf_a) = w[0];
-                        let (_, kf_b) = w[1];
-                        match kf_a.interpolation {
-                            klipp_core::Interpolation::Linear => {
-                                all_segments.push(vec![
-                                    egui::pos2(time_to_x(kf_a.time_secs), value_to_y(kf_a.value)),
-                                    egui::pos2(time_to_x(kf_b.time_secs), value_to_y(kf_b.value)),
-                                ]);
-                            }
-                            klipp_core::Interpolation::Step => {
-                                let ax = time_to_x(kf_a.time_secs);
-                                let bx = time_to_x(kf_b.time_secs);
-                                let ay = value_to_y(kf_a.value);
-                                let by = value_to_y(kf_b.value);
-                                all_segments.push(vec![
-                                    egui::pos2(ax, ay),
-                                    egui::pos2(bx, ay),  // horizontal hold
-                                    egui::pos2(bx, by),  // vertical step
-                                ]);
-                            }
-                            klipp_core::Interpolation::Bezier => {
-                                all_segments.push(sample_bezier(
-                                    kf_a.time_secs, kf_a.value, kf_a.tangent_out,
-                                    kf_b.time_secs, kf_b.value, kf_b.tangent_in,
-                                    24,
-                                ));
-                            }
-                        }
+                    // Draw shadow pass then color pass
+                    for i in 0..curve_pts.len().saturating_sub(1) {
+                        clip_painter.line_segment(
+                            [curve_pts[i], curve_pts[i + 1]],
+                            egui::Stroke::new(rb_shadow_width, shadow_color),
+                        );
                     }
-
-                    // Segment from last visible keyframe to clip end
-                    if let Some(&(_, last_kf)) = visible_kfs.last() {
-                        let end_t = clip_time_range;
-                        let end_val = klipp_core::keyframe::evaluate(kf_keyframes, end_t, kf_static_val);
-                        all_segments.push(vec![
-                            egui::pos2(time_to_x(last_kf.time_secs), value_to_y(last_kf.value)),
-                            egui::pos2(clip_rect.right(), value_to_y(end_val)),
-                        ]);
-                    }
-
-                    // Draw all segments: shadow pass then color pass
-                    for seg in &all_segments {
-                        for i in 0..seg.len().saturating_sub(1) {
-                            clip_painter.line_segment(
-                                [seg[i], seg[i + 1]],
-                                egui::Stroke::new(rb_shadow_width, shadow_color),
-                            );
-                        }
-                    }
-                    for seg in &all_segments {
-                        for i in 0..seg.len().saturating_sub(1) {
-                            clip_painter.line_segment(
-                                [seg[i], seg[i + 1]],
-                                egui::Stroke::new(rb_line_width, active_line_color),
-                            );
-                        }
+                    for i in 0..curve_pts.len().saturating_sub(1) {
+                        clip_painter.line_segment(
+                            [curve_pts[i], curve_pts[i + 1]],
+                            egui::Stroke::new(rb_line_width, active_line_color),
+                        );
                     }
 
                     // Draw diamond markers at each keyframe
@@ -2240,7 +2285,7 @@ impl TimelinePanel {
                             let cy = value_to_y(kf.value);
                             let is_hovered = hovered_kf_idx == Some(ki);
                             let is_kf_selected = state.selected_keyframe.as_ref().is_some_and(|sk| {
-                                sk.clip_id == kf_clip_id && sk.param == rb_param && sk.keyframe_index == ki
+                                sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param) && sk.keyframe_index == ki
                             });
                             let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
                             // Dark outline diamond behind for contrast
@@ -2426,7 +2471,7 @@ impl TimelinePanel {
                                 if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
                                     state.selected_keyframe = Some(crate::state::SelectedKeyframe {
                                         clip_id: kf_clip_id,
-                                        param: rb_param,
+                                        param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
                                         keyframe_index: ki,
                                     });
                                 }
@@ -2437,14 +2482,14 @@ impl TimelinePanel {
                                 let target_ki = nearest_kf_idx.or_else(|| {
                                     // If no diamond nearby, use the selected keyframe if it's on this clip
                                     state.selected_keyframe.as_ref()
-                                        .filter(|sk| sk.clip_id == kf_clip_id && sk.param == rb_param)
+                                        .filter(|sk| sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param))
                                         .map(|sk| sk.keyframe_index)
                                 });
                                 if let Some(ki) = target_ki {
                                     if ki < kf_keyframes.len() {
                                         state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
                                             clip_id: kf_clip_id,
-                                            param: rb_param,
+                                            param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
                                             keyframe_index: ki,
                                             screen_pos: pos,
                                         });
@@ -2937,15 +2982,19 @@ impl TimelinePanel {
                 if has_any_video_kf {
                     let vrb_keyframes = &vrb_keyframes[..];
 
-                    // Param range configuration (min, max, normalized mapping)
-                    let (vrb_param_min, vrb_param_max) = match vrb_param {
-                        klipp_core::VideoParam::Opacity => (0.0_f32, 1.0_f32),
-                        klipp_core::VideoParam::PositionX => (-2000.0_f32, 2000.0_f32),
-                        klipp_core::VideoParam::PositionY => (-2000.0_f32, 2000.0_f32),
-                        klipp_core::VideoParam::Scale => (0.0_f32, 4.0_f32),
-                        klipp_core::VideoParam::Rotation => (-360.0_f32, 360.0_f32),
-                    };
-                    let vrb_param_range = vrb_param_max - vrb_param_min;
+                    // Auto-scale Y axis to actual keyframe values (with padding)
+                    // so small value changes are clearly visible on the timeline
+                    let mut vrb_val_min = vrb_static_val;
+                    let mut vrb_val_max = vrb_static_val;
+                    for kf in vrb_keyframes.iter() {
+                        if kf.value < vrb_val_min { vrb_val_min = kf.value; }
+                        if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+                    }
+                    // Add 20% padding on each side so curves don't touch edges
+                    let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
+                    let vrb_padding = vrb_val_span * 0.2;
+                    let vrb_param_min = vrb_val_min - vrb_padding;
+                    let vrb_param_range = vrb_val_span + vrb_padding * 2.0;
 
                     let vrb_clip_dur_secs = clip.duration().to_secs_f64();
                     let vrb_clip_painter = ui.painter().with_clip_rect(clip_rect);
@@ -3052,114 +3101,34 @@ impl TimelinePanel {
                             egui::Stroke::new(vrb_line_width, vrb_active_line_color),
                         );
                     } else {
-                        // Draw curve segments between keyframes
-                        let vrb_src_in_secs = clip.source_in.to_secs_f64();
-                        let vrb_src_out_secs = clip.source_out.to_secs_f64();
-                        let vrb_clip_time_range = vrb_src_out_secs - vrb_src_in_secs;
+                        // Draw curve by densely sampling evaluate() — this correctly renders
+                        // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
+                        let vrb_clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
 
-                        let vrb_visible_kfs: Vec<(usize, &klipp_core::Keyframe)> = vrb_keyframes.iter().enumerate()
-                            .filter(|(_, kf)| kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range)
-                            .collect();
-
-                        // Helper: sample cubic bezier curve
-                        let vrb_sample_bezier = |a_time: f64, a_val: f32, a_tangent_out: (f64, f32),
-                                                 b_time: f64, b_val: f32, b_tangent_in: (f64, f32),
-                                                 num_samples: usize| -> Vec<egui::Pos2> {
-                            let mut pts = Vec::with_capacity(num_samples + 1);
-                            let p0_x = vrb_time_to_x(a_time);
-                            let p0_y = vrb_value_to_y(a_val);
-                            let p3_x = vrb_time_to_x(b_time);
-                            let p3_y = vrb_value_to_y(b_val);
-                            let pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
-                            let value_scale = clip_rect.height() / vrb_param_range;
-                            let p1_x = p0_x + a_tangent_out.0 as f32 * pixels_per_sec;
-                            let p1_y = p0_y - a_tangent_out.1 * value_scale;
-                            let p2_x = p3_x + b_tangent_in.0 as f32 * pixels_per_sec;
-                            let p2_y = p3_y - b_tangent_in.1 * value_scale;
-                            for si in 0..=num_samples {
-                                let t = si as f32 / num_samples as f32;
-                                let mt = 1.0 - t;
-                                let x = mt*mt*mt*p0_x + 3.0*mt*mt*t*p1_x + 3.0*mt*t*t*p2_x + t*t*t*p3_x;
-                                let y = mt*mt*mt*p0_y + 3.0*mt*mt*t*p1_y + 3.0*mt*t*t*p2_y + t*t*t*p3_y;
-                                pts.push(egui::pos2(x, y));
-                            }
-                            pts
-                        };
-
-                        let mut vrb_all_segments: Vec<Vec<egui::Pos2>> = Vec::new();
-
-                        // Segment from clip start to first visible keyframe
-                        let vrb_start_val = klipp_core::keyframe::evaluate(vrb_keyframes, 0.0, vrb_static_val);
-                        if let Some(&(_, first_kf)) = vrb_visible_kfs.first() {
-                            vrb_all_segments.push(vec![
-                                egui::pos2(clip_rect.left(), vrb_value_to_y(vrb_start_val)),
-                                egui::pos2(vrb_time_to_x(first_kf.time_secs), vrb_value_to_y(first_kf.value)),
-                            ]);
-                        } else {
-                            let vrb_end_val = klipp_core::keyframe::evaluate(vrb_keyframes, vrb_clip_time_range, vrb_static_val);
-                            vrb_all_segments.push(vec![
-                                egui::pos2(clip_rect.left(), vrb_value_to_y(vrb_start_val)),
-                                egui::pos2(clip_rect.right(), vrb_value_to_y(vrb_end_val)),
-                            ]);
+                        // Dense sampling: evaluate the keyframe curve at many points across the clip
+                        let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
+                        let mut vrb_curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+                        for si in 0..=num_samples {
+                            let t_frac = si as f64 / num_samples as f64;
+                            let t_secs = t_frac * vrb_clip_time_range;
+                            let val = klipp_core::keyframe::evaluate(vrb_keyframes, t_secs, vrb_static_val);
+                            let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
+                            let y = vrb_value_to_y(val);
+                            vrb_curve_pts.push(egui::pos2(x, y));
                         }
 
-                        // Segments between consecutive visible keyframes
-                        for w in vrb_visible_kfs.windows(2) {
-                            let (_, kf_a) = w[0];
-                            let (_, kf_b) = w[1];
-                            match kf_a.interpolation {
-                                klipp_core::Interpolation::Linear => {
-                                    vrb_all_segments.push(vec![
-                                        egui::pos2(vrb_time_to_x(kf_a.time_secs), vrb_value_to_y(kf_a.value)),
-                                        egui::pos2(vrb_time_to_x(kf_b.time_secs), vrb_value_to_y(kf_b.value)),
-                                    ]);
-                                }
-                                klipp_core::Interpolation::Step => {
-                                    let ax = vrb_time_to_x(kf_a.time_secs);
-                                    let bx = vrb_time_to_x(kf_b.time_secs);
-                                    let ay = vrb_value_to_y(kf_a.value);
-                                    let by = vrb_value_to_y(kf_b.value);
-                                    vrb_all_segments.push(vec![
-                                        egui::pos2(ax, ay),
-                                        egui::pos2(bx, ay),
-                                        egui::pos2(bx, by),
-                                    ]);
-                                }
-                                klipp_core::Interpolation::Bezier => {
-                                    vrb_all_segments.push(vrb_sample_bezier(
-                                        kf_a.time_secs, kf_a.value, kf_a.tangent_out,
-                                        kf_b.time_secs, kf_b.value, kf_b.tangent_in,
-                                        24,
-                                    ));
-                                }
-                            }
+                        // Draw shadow pass then color pass
+                        for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                            vrb_clip_painter.line_segment(
+                                [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                                egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                            );
                         }
-
-                        // Segment from last visible keyframe to clip end
-                        if let Some(&(_, last_kf)) = vrb_visible_kfs.last() {
-                            let vrb_end_val = klipp_core::keyframe::evaluate(vrb_keyframes, vrb_clip_time_range, vrb_static_val);
-                            vrb_all_segments.push(vec![
-                                egui::pos2(vrb_time_to_x(last_kf.time_secs), vrb_value_to_y(last_kf.value)),
-                                egui::pos2(clip_rect.right(), vrb_value_to_y(vrb_end_val)),
-                            ]);
-                        }
-
-                        // Draw all segments: shadow pass then color pass
-                        for seg in &vrb_all_segments {
-                            for i in 0..seg.len().saturating_sub(1) {
-                                vrb_clip_painter.line_segment(
-                                    [seg[i], seg[i + 1]],
-                                    egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
-                                );
-                            }
-                        }
-                        for seg in &vrb_all_segments {
-                            for i in 0..seg.len().saturating_sub(1) {
-                                vrb_clip_painter.line_segment(
-                                    [seg[i], seg[i + 1]],
-                                    egui::Stroke::new(vrb_line_width, vrb_active_line_color),
-                                );
-                            }
+                        for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                            vrb_clip_painter.line_segment(
+                                [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                                egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                            );
                         }
 
                         // Draw diamond markers at each keyframe
@@ -3235,6 +3204,92 @@ impl TimelinePanel {
                                         egui::FontId::proportional(9.0),
                                         vrb_active_line_color,
                                     );
+                                }
+                            }
+                        }
+
+                        // ── Video keyframe interaction ───────────────────────
+                        if interactive {
+                            if let Some(pos) = pointer_pos {
+                                if clip_rect.contains(pos) {
+                                    let vrb_clip_id = clip.id;
+
+                                    // Cursor feedback
+                                    let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().map_or(false, |d| d.clip_id == vrb_clip_id);
+                                    if is_dragging_vrb_kf {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    } else if vrb_hovered_kf_idx.is_some() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                    }
+
+                                    // Double-click diamond to delete keyframe
+                                    if let Some(ki) = vrb_hovered_kf_idx {
+                                        if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                                            let kf = &vrb_keyframes[ki];
+                                            cmds.push(AppCommand::RemoveVideoKeyframe {
+                                                clip_id: vrb_clip_id,
+                                                param: vrb_param,
+                                                time_secs: kf.time_secs,
+                                            });
+                                        }
+                                    }
+
+                                    // Click diamond to select
+                                    if let Some(ki) = vrb_hovered_kf_idx {
+                                        if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() {
+                                            state.selected_keyframe = Some(crate::state::SelectedKeyframe {
+                                                clip_id: vrb_clip_id,
+                                                param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                                keyframe_index: ki,
+                                            });
+                                        }
+                                    }
+
+                                    // Right-click: open interpolation context menu
+                                    if ui.input(|i| i.pointer.secondary_released()) {
+                                        let target_ki = vrb_hovered_kf_idx.or_else(|| {
+                                            state.selected_keyframe.as_ref()
+                                                .filter(|sk| sk.clip_id == vrb_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Video(vrb_param))
+                                                .map(|sk| sk.keyframe_index)
+                                        });
+                                        if let Some(ki) = target_ki {
+                                            if ki < vrb_keyframes.len() {
+                                                state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                                    clip_id: vrb_clip_id,
+                                                    param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                                    keyframe_index: ki,
+                                                    screen_pos: pos,
+                                                });
+                                                self.suppress_clip_context_menu = true;
+                                            }
+                                        }
+                                    }
+
+                                    // Click empty area to deselect
+                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() {
+                                        if state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
+                                            state.selected_keyframe = None;
+                                        }
+                                    }
+
+                                    // Start drag on keyframe diamond
+                                    let vrb_alt_held = ui.input(|i| i.modifiers.alt);
+                                    if vrb_hovered_kf_idx.is_some()
+                                        && pointer_down && state.dragging_video_keyframe.is_none()
+                                        && state.dragging_audio_keyframe.is_none()
+                                        && state.dragging_fade_handle.is_none()
+                                        && !vrb_alt_held
+                                    {
+                                        if ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                                            if let Some(ki) = vrb_hovered_kf_idx {
+                                                state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
+                                                    clip_id: vrb_clip_id,
+                                                    param: vrb_param,
+                                                    keyframe_index: ki,
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -30,11 +30,26 @@ pub struct BezierHandleDrag {
     pub is_out: bool,
 }
 
+/// State during an active video keyframe drag on the timeline rubber band.
+#[derive(Debug, Clone)]
+pub struct DraggingVideoKeyframe {
+    pub clip_id: ClipId,
+    pub param: VideoParam,
+    pub keyframe_index: usize,
+}
+
+/// Which kind of parameter a keyframe context menu or selection refers to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyframeParamKind {
+    Audio(AudioParam),
+    Video(VideoParam),
+}
+
 /// State for the keyframe interpolation context menu (right-click on diamond).
 #[derive(Debug, Clone)]
 pub struct KeyframeContextMenu {
     pub clip_id: ClipId,
-    pub param: AudioParam,
+    pub param_kind: KeyframeParamKind,
     pub keyframe_index: usize,
     /// Screen position where the menu was opened.
     pub screen_pos: egui::Pos2,
@@ -44,7 +59,7 @@ pub struct KeyframeContextMenu {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedKeyframe {
     pub clip_id: ClipId,
-    pub param: AudioParam,
+    pub param_kind: KeyframeParamKind,
     pub keyframe_index: usize,
 }
 
@@ -373,6 +388,8 @@ pub struct AppState {
 
     // Audio keyframe rubber band drag state
     pub dragging_audio_keyframe: Option<DraggingKeyframe>,
+    // Video keyframe rubber band drag state
+    pub dragging_video_keyframe: Option<DraggingVideoKeyframe>,
     /// Clip whose flat rubber band line is being dragged (no-keyframes volume adjust)
     pub dragging_rubber_band: Option<ClipId>,
     /// Bezier tangent handle drag state
@@ -654,6 +671,7 @@ impl Default for AppState {
             autosave_recovery_path: None,
             autosave_original_path: None,
             dragging_audio_keyframe: None,
+            dragging_video_keyframe: None,
             dragging_rubber_band: None,
             dragging_bezier_handle: None,
             keyframe_context_menu: None,
