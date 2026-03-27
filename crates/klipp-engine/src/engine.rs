@@ -1857,10 +1857,18 @@ impl PlaybackEngine {
     /// Opens/closes the V2 decoder as needed.
     fn maybe_open_v2_decoder(&mut self, playhead: Timecode) {
         let seq = self.sequence.read().unwrap();
-        // Check ALL overlay video tracks (not just track2) for clips at playhead
+        // Check ALL overlay video/text tracks for clips at playhead.
+        // Text tracks are always overlays. Video tracks are overlays if not the primary V1 track.
+        let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
         let overlay_info = seq.tracks.iter()
             .enumerate()
-            .filter(|(i, t)| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && *i > 0 && !t.muted)
+            .filter(|(i, t)| {
+                !t.muted && match t.kind {
+                    klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle => true,
+                    klipp_timeline::TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
+                    _ => false,
+                }
+            })
             .find_map(|(track_idx, track)| {
                 track.clip_at_timecode(playhead).map(|(idx, clip)| {
                     (track_idx, idx, clip.clone())
