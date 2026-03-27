@@ -10,6 +10,7 @@ const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
 const VIDEO_TRACK_HEIGHT: f32 = 50.0; // matches theme::TRACK_VIDEO_H
 const AUDIO_TRACK_HEIGHT: f32 = 48.0; // taller for visible waveforms
+const TEXT_TRACK_HEIGHT: f32 = 32.0;  // compact for title/subtitle tracks
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
@@ -390,6 +391,7 @@ impl TimelinePanel {
                 let tk = state.sequence().tracks[ti].kind;
                 let th = match tk {
                     TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                    TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
                     _ => VIDEO_TRACK_HEIGHT,
                 };
                 let rect = egui::Rect::from_min_size(
@@ -838,13 +840,13 @@ impl TimelinePanel {
                 }
             }
 
-            // Title template drag-and-drop: highlight video track when dragging title over it
+            // Title template drag-and-drop: highlight text/video track when dragging title over it
             if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
                 let hover_pos = ui.input(|i| i.pointer.hover_pos());
                 let any_down = ui.input(|i| i.pointer.any_down());
                 if let Some(pos) = hover_pos {
                     if track_rect.contains(pos) {
-                        let compatible = track_kind == TrackKind::Video;
+                        let compatible = track_kind == TrackKind::Text || track_kind == TrackKind::Video;
                         if compatible {
                             painter.rect_stroke(
                                 track_rect,
@@ -1080,7 +1082,7 @@ impl TimelinePanel {
             }
         }
 
-        // Title template drag released outside any track — auto-create video track
+        // Title template drag released outside any track — auto-create text track
         if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
             && !ui.input(|i| i.pointer.any_down())
         {
@@ -1089,12 +1091,15 @@ impl TimelinePanel {
                 let on_any_track = self.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
                     if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, .. }) = state.drag_drop.end() {
-                        // Create a new video track and place the title there
-                        let name = state.sequence().next_track_name(TrackKind::Video);
-                        state.sequence_mut().add_video_track(name);
-                        let track_idx = state.sequence().tracks.iter()
-                            .rposition(|t| t.kind == TrackKind::Video)
-                            .unwrap_or(0);
+                        // Create a new text track and place the title there
+                        let track_num = state.sequence().tracks.iter()
+                            .filter(|t| t.kind == TrackKind::Text).count() + 1;
+                        let track = klipp_timeline::Track::new(
+                            &format!("Text {track_num}"),
+                            TrackKind::Text,
+                        );
+                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                        let track_idx = 0;
                         let rel_x = cursor_pos.x - content_rect.left();
                         let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
                         let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();

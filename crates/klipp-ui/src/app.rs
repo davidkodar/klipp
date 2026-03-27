@@ -7813,28 +7813,27 @@ impl KlippApp {
             if i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
                 cmds.push(AppCommand::ToggleLoopPlayback);
             }
-            // Ctrl+T — Create title clip at playhead on a free video track (or create new one)
+            // Ctrl+T — Create title clip at playhead on a free text track (or create new one)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
                 let ph = self.state.playhead;
-                // Find a video track that has no clip at the playhead
+                // Find a text track that has no clip at the playhead
                 let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                     .enumerate()
                     .find(|(_, t)| {
-                        t.kind == klipp_timeline::TrackKind::Video
+                        t.kind == klipp_timeline::TrackKind::Text
                             && t.clip_at_timecode(ph).is_none()
                     })
                     .map(|(i, _)| i);
                 let track_index = match track_index {
                     Some(i) => i,
                     None => {
-                        // All video tracks occupied — add a new video track
-                        let _new_idx = self.state.sequences[self.state.active_sequence_idx].tracks.len();
+                        // No free text track — create one
                         let track_num = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
                             .count() + 1;
                         let track = klipp_timeline::Track::new(
-                            &format!("Video {track_num}"),
-                            klipp_timeline::TrackKind::Video,
+                            &format!("Text {track_num}"),
+                            klipp_timeline::TrackKind::Text,
                         );
                         self.state.sequences[self.state.active_sequence_idx].tracks.insert(0, track); // insert at top
                         0
