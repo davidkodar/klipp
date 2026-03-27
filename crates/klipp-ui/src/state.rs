@@ -500,6 +500,9 @@ pub struct AppState {
 
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
+
+    /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
+    pub pending_title_data: Option<klipp_timeline::TitleData>,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -773,6 +776,7 @@ impl Default for AppState {
             viewer_mask_drag: None,
             show_curve_editor: false,
             available_fonts: Vec::new(),
+            pending_title_data: None,
         }
     }
 }

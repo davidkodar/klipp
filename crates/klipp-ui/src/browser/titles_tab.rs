@@ -1,21 +1,164 @@
+use crate::drag_drop::DragPayload;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
+use klipp_timeline::{
+    FontStyle, TextAlignment, TitleBackground, TitleData, TitlePosition, TitleShadow,
+};
 
 struct TitleTemplate {
     name: &'static str,
     preview_text: &'static str,
+    create_data: fn() -> TitleData,
+}
+
+fn lower_third() -> TitleData {
+    TitleData {
+        text: "Name \u{00b7} Title".into(),
+        font_size: 36.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Left,
+        position: TitlePosition { x: 0.15, y: 0.85 },
+        background: TitleBackground::Color {
+            color: [0, 0, 0, 180],
+            padding: 12.0,
+        },
+        shadow: None,
+    }
+}
+
+fn full_title() -> TitleData {
+    TitleData {
+        text: "Chapter One".into(),
+        font_size: 96.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.5 },
+        background: TitleBackground::None,
+        shadow: Some(TitleShadow {
+            color: [0, 0, 0, 160],
+            offset_x: 3.0,
+            offset_y: 3.0,
+            blur: 6.0,
+        }),
+    }
+}
+
+fn subtitle() -> TitleData {
+    TitleData {
+        text: "A Documentary Film".into(),
+        font_size: 28.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.9 },
+        background: TitleBackground::Color {
+            color: [0, 0, 0, 153],
+            padding: 10.0,
+        },
+        shadow: None,
+    }
+}
+
+fn credits() -> TitleData {
+    TitleData {
+        text: "DIRECTED BY".into(),
+        font_size: 48.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.5 },
+        background: TitleBackground::None,
+        shadow: None,
+    }
+}
+
+fn kinetic() -> TitleData {
+    TitleData {
+        text: "BREAKING".into(),
+        font_size: 72.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: [255, 60, 60, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.5 },
+        background: TitleBackground::None,
+        shadow: Some(TitleShadow {
+            color: [0, 0, 0, 180],
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 4.0,
+        }),
+    }
+}
+
+fn outline() -> TitleData {
+    TitleData {
+        text: "OUTLINE".into(),
+        font_size: 72.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.5 },
+        background: TitleBackground::None,
+        shadow: Some(TitleShadow {
+            color: [0, 0, 0, 200],
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 3.0,
+        }),
+    }
+}
+
+fn minimal_bar() -> TitleData {
+    TitleData {
+        text: "Interview".into(),
+        font_size: 24.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Left,
+        position: TitlePosition { x: 0.08, y: 0.88 },
+        background: TitleBackground::Color {
+            color: [200, 160, 40, 200],
+            padding: 8.0,
+        },
+        shadow: None,
+    }
+}
+
+fn chapter_card() -> TitleData {
+    TitleData {
+        text: "PART I".into(),
+        font_size: 64.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: [255, 195, 50, 255],
+        alignment: TextAlignment::Center,
+        position: TitlePosition { x: 0.5, y: 0.5 },
+        background: TitleBackground::FullFrame {
+            color: [20, 20, 25, 240],
+        },
+        shadow: None,
+    }
 }
 
 const TITLES: &[TitleTemplate] = &[
-    TitleTemplate { name: "Lower Third", preview_text: "Name \u{00b7} Title" },
-    TitleTemplate { name: "Full Title", preview_text: "Chapter One" },
-    TitleTemplate { name: "Subtitle", preview_text: "A Documentary Film" },
-    TitleTemplate { name: "Credits", preview_text: "DIRECTED BY" },
-    TitleTemplate { name: "Kinetic", preview_text: "BREAKING" },
-    TitleTemplate { name: "Outline", preview_text: "OUTLINE" },
-    TitleTemplate { name: "Minimal Bar", preview_text: "Interview" },
-    TitleTemplate { name: "Chapter Card", preview_text: "PART I" },
+    TitleTemplate { name: "Lower Third", preview_text: "Name \u{00b7} Title", create_data: lower_third },
+    TitleTemplate { name: "Full Title", preview_text: "Chapter One", create_data: full_title },
+    TitleTemplate { name: "Subtitle", preview_text: "A Documentary Film", create_data: subtitle },
+    TitleTemplate { name: "Credits", preview_text: "DIRECTED BY", create_data: credits },
+    TitleTemplate { name: "Kinetic", preview_text: "BREAKING", create_data: kinetic },
+    TitleTemplate { name: "Outline", preview_text: "OUTLINE", create_data: outline },
+    TitleTemplate { name: "Minimal Bar", preview_text: "Interview", create_data: minimal_bar },
+    TitleTemplate { name: "Chapter Card", preview_text: "PART I", create_data: chapter_card },
 ];
 
 pub fn show(
@@ -24,7 +167,7 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &str,
 ) -> Vec<AppCommand> {
-    let cmds = Vec::new();
+    let mut cmds = Vec::new();
     let search_lower = search_query.to_lowercase();
 
     let filtered: Vec<_> = TITLES
@@ -43,12 +186,56 @@ pub fn show(
             .show(ui, |ui| {
                 for (i, title) in filtered.iter().enumerate() {
                     let resp = title_card(ui, theme, title, card_w);
+
+                    // Double-click: create title clip at playhead
                     if resp.double_clicked() {
+                        let title_data = (title.create_data)();
+                        state.pending_title_data = Some(title_data);
+                        // Find a free video track or create one (same logic as Ctrl+T)
+                        let ph = state.playhead;
+                        let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
+                            .enumerate()
+                            .find(|(_, t)| {
+                                t.kind == klipp_timeline::TrackKind::Video
+                                    && t.clip_at_timecode(ph).is_none()
+                            })
+                            .map(|(idx, _)| idx);
+                        let track_index = match track_index {
+                            Some(idx) => idx,
+                            None => {
+                                let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
+                                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                    .count() + 1;
+                                let track = klipp_timeline::Track::new(
+                                    &format!("Video {track_num}"),
+                                    klipp_timeline::TrackKind::Video,
+                                );
+                                state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                                0
+                            }
+                        };
+                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                        let duration_frames = fps_rate * 5;
+                        cmds.push(AppCommand::CreateTitleClip {
+                            track_index,
+                            timeline_in: ph,
+                            duration_frames,
+                        });
                         state.toast.show(format!(
                             "\"{}\" title added to timeline",
                             title.name
                         ));
                     }
+
+                    // Drag: begin title drag
+                    if resp.drag_started() {
+                        let data = (title.create_data)();
+                        state.drag_drop.begin(DragPayload::Title {
+                            template_name: title.name.to_string(),
+                            title_data: data,
+                        });
+                    }
+
                     if i % 2 == 1 {
                         ui.end_row();
                     }
@@ -62,7 +249,7 @@ pub fn show(
 fn title_card(ui: &mut egui::Ui, theme: &KlippTheme, title: &TitleTemplate, width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, 76.0),
-        egui::Sense::click(),
+        egui::Sense::click_and_drag(),
     );
 
     let hovered = resp.hovered();

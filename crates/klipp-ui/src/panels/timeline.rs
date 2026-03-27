@@ -838,6 +838,48 @@ impl TimelinePanel {
                 }
             }
 
+            // Title template drag-and-drop: highlight video track when dragging title over it
+            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
+                let hover_pos = ui.input(|i| i.pointer.hover_pos());
+                let any_down = ui.input(|i| i.pointer.any_down());
+                if let Some(pos) = hover_pos {
+                    if track_rect.contains(pos) {
+                        let compatible = track_kind == TrackKind::Video;
+                        if compatible {
+                            painter.rect_stroke(
+                                track_rect,
+                                0.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)),
+                            );
+                            if !any_down {
+                                if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, .. }) = state.drag_drop.end() {
+                                    // Calculate timeline position from cursor x
+                                    let rel_x = pos.x - content_rect.left();
+                                    let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
+                                    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                                    let frame = (time_secs * fps_rate as f32) as i64;
+                                    let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                                    let duration_frames = fps_rate * 5;
+                                    state.pending_title_data = Some(title_data);
+                                    cmds.push(AppCommand::CreateTitleClip {
+                                        track_index: track_idx,
+                                        timeline_in,
+                                        duration_frames,
+                                    });
+                                    state.toast.show(format!("\"{}\" title added to track", template_name));
+                                }
+                            }
+                        } else {
+                            painter.rect_stroke(
+                                track_rect,
+                                0.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+                            );
+                        }
+                    }
+                }
+            }
+
             track_y += track_height;
         }
 
@@ -1034,6 +1076,89 @@ impl TimelinePanel {
                 );
 
                 // Request repaint during drag for smooth following
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Title template drag released outside any track — auto-create video track
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
+            && !ui.input(|i| i.pointer.any_down())
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                // Check if cursor is outside all track rects
+                let on_any_track = self.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                if !on_any_track && content_rect.contains(cursor_pos) {
+                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, .. }) = state.drag_drop.end() {
+                        // Create a new video track and place the title there
+                        let name = state.sequence().next_track_name(TrackKind::Video);
+                        state.sequence_mut().add_video_track(name);
+                        let track_idx = state.sequence().tracks.iter()
+                            .rposition(|t| t.kind == TrackKind::Video)
+                            .unwrap_or(0);
+                        let rel_x = cursor_pos.x - content_rect.left();
+                        let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
+                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                        let frame = (time_secs * fps_rate as f32) as i64;
+                        let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                        let duration_frames = fps_rate * 5;
+                        state.pending_title_data = Some(title_data);
+                        cmds.push(AppCommand::CreateTitleClip {
+                            track_index: track_idx,
+                            timeline_in,
+                            duration_frames,
+                        });
+                        state.dirty = true;
+                        cmds.push(AppCommand::SequenceUpdated);
+                        state.toast.show(format!("\"{}\" title added to new track", template_name));
+                    }
+                } else if !on_any_track {
+                    // Released outside content area — cancel drag
+                    state.drag_drop.end();
+                }
+            } else {
+                state.drag_drop.end();
+            }
+        }
+
+        // Draw title drag ghost — a translucent title preview following the cursor
+        if let Some(crate::drag_drop::DragPayload::Title { ref template_name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 140.0;
+                let ghost_h = 32.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("title_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 4.0,
+                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200));
+                ghost_painter.rect_stroke(ghost_rect, 4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220)));
+
+                // "T" icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "T",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Template name
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    template_name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+
                 ui.ctx().request_repaint();
             }
         }

@@ -4578,9 +4578,11 @@ impl KlippApp {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
                     let timeline_out = *timeline_in + duration;
+                    let title_data = self.state.pending_title_data.take()
+                        .unwrap_or_default();
                     let clip = klipp_timeline::Clip {
                         id: klipp_core::ClipId::new(),
-                        kind: klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::default()),
+                        kind: klipp_timeline::ClipKind::Title(title_data),
                         timeline_in: *timeline_in,
                         timeline_out,
                         source_in: klipp_core::RationalTime::from_frames(0, fps_rate),

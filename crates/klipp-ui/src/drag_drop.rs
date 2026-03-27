@@ -1,4 +1,5 @@
 use klipp_core::MediaId;
+use klipp_timeline::TitleData;
 
 /// Payload being dragged across panels.
 #[derive(Debug, Clone)]
@@ -14,6 +15,8 @@ pub enum DragPayload {
     Transition { name: String },
     /// Dragging a media item from the media browser tab.
     MediaClip { media_id: MediaId },
+    /// Dragging a title template from the titles browser tab.
+    Title { template_name: String, title_data: TitleData },
 }
 
 /// Global drag-and-drop state for cross-panel interactions.
