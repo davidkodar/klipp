@@ -57,6 +57,8 @@ pub struct TimelinePanel {
     track_rects: Vec<(usize, TrackKind, egui::Rect)>,
     /// Clip id -> screen rect, populated during clip drawing for connection lines
     clip_screen_rects: HashMap<ClipId, egui::Rect>,
+    /// Suppress clip context menu when keyframe diamond right-click was handled
+    suppress_clip_context_menu: bool,
 }
 
 struct DragState {
@@ -144,8 +146,9 @@ impl TimelinePanel {
         let mut cmds = Vec::new();
         let available = ui.available_size();
 
-        // Reset hovered clip each frame
+        // Reset per-frame state
         state.hovered_clip = None;
+        self.suppress_clip_context_menu = false;
 
         // Handle scroll (horizontal pan) and Ctrl+scroll (cursor-anchored zoom).
         // egui 0.29: Ctrl+scroll → zoom_delta() (smooth_scroll_delta is zero).
@@ -2415,14 +2418,20 @@ impl TimelinePanel {
 
                             // ── Right-click keyframe diamond for interpolation context menu ──
                             if let Some(ki) = nearest_kf_idx {
-                                if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+                                // Use a persistent flag to detect right-click on this keyframe
+                                let secondary_down = ui.input(|i| i.pointer.secondary_down());
+                                let secondary_released = ui.input(|i| i.pointer.secondary_released());
+                                if secondary_released && nearest_kf_dist < 10.0 {
                                     state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
                                         clip_id: kf_clip_id,
                                         param: rb_param,
                                         keyframe_index: ki,
                                         screen_pos: pos,
                                     });
+                                    // Consume the right-click so the clip context menu doesn't also open
+                                    self.suppress_clip_context_menu = true;
                                 }
+                                let _ = secondary_down; // suppress warning
                             }
 
                             // ── Start bezier tangent handle drag ──
@@ -3757,8 +3766,8 @@ impl TimelinePanel {
             }
         }
 
-        // Right-click context menu on clips
-        if track_response.secondary_clicked() {
+        // Right-click context menu on clips (suppressed when keyframe context menu was opened)
+        if track_response.secondary_clicked() && !self.suppress_clip_context_menu {
             if let Some(pos) = pointer_pos {
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     // Store the clip id so the context menu can use it
