@@ -1517,17 +1517,13 @@ impl TimelinePanel {
                                 }
 
                                 // Map Y to param value using auto-scaled range
-                                let mut val_min = 0.0_f32;
-                                let mut val_max = 0.0_f32;
-                                let static_val = match drag_kf.param {
+                                let base_val = match drag_kf.param {
                                     klipp_core::VideoParam::Opacity => {
-                                        let v = clip.builtin_effects.iter()
+                                        clip.builtin_effects.iter()
                                             .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                            .unwrap_or(1.0);
-                                        val_min = v; val_max = v; v
+                                            .unwrap_or(1.0)
                                     }
-                                    klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY |
-                                    klipp_core::VideoParam::Scale | klipp_core::VideoParam::Rotation => {
+                                    _ => {
                                         let t = clip.builtin_effects.iter()
                                             .find_map(|e| match e {
                                                 klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
@@ -1535,16 +1531,17 @@ impl TimelinePanel {
                                                 _ => None,
                                             })
                                             .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                                        let v = match drag_kf.param {
+                                        match drag_kf.param {
                                             klipp_core::VideoParam::PositionX => t.0,
                                             klipp_core::VideoParam::PositionY => t.1,
                                             klipp_core::VideoParam::Scale => t.2,
                                             klipp_core::VideoParam::Rotation => t.3,
                                             _ => unreachable!(),
-                                        };
-                                        val_min = v; val_max = v; v
+                                        }
                                     }
                                 };
+                                let mut val_min = base_val;
+                                let mut val_max = base_val;
                                 for kf in keyframes.iter() {
                                     if kf.value < val_min { val_min = kf.value; }
                                     if kf.value > val_max { val_max = kf.value; }
