@@ -2904,35 +2904,24 @@ impl PlaybackEngine {
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
             let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);
 
-            // Composite V2 overlay (title clips) over V1 if present
+            // Composite V2 overlay (title clips) directly over V1
             let final_result = if let Some(v2_frame) = &self.v2_frame_cache {
-                let v2_opacity = self.sequence.read().unwrap()
-                    .tracks.iter()
-                    .find(|t| matches!(t.kind, klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle) && !t.muted)
-                    .map(|t| t.opacity)
-                    .unwrap_or(1.0);
-                if v2_opacity > 0.001 {
-                    use crate::composite::{composite_layers, CompositeLayer};
-                    let layers = vec![
-                        CompositeLayer {
-                            rgba: v1_result,
-                            width: w,
-                            height: h,
-                            opacity: 1.0,
-                            blend_mode: klipp_core::BlendMode::Normal,
-                        },
-                        CompositeLayer {
-                            rgba: v2_frame.to_rgba(),
-                            width: v2_frame.width,
-                            height: v2_frame.height,
-                            opacity: v2_opacity,
-                            blend_mode: klipp_core::BlendMode::Normal,
-                        },
-                    ];
-                    composite_layers(&layers, w, h)
-                } else {
-                    v1_result
+                let v2_rgba = v2_frame.to_rgba();
+                let mut out = v1_result;
+                // Simple alpha blend: title pixels with alpha > 0 overwrite V1 pixels
+                if v2_rgba.len() == out.len() {
+                    for i in (0..out.len()).step_by(4) {
+                        let sa = v2_rgba[i + 3] as f32 / 255.0;
+                        if sa > 0.001 {
+                            let da = 1.0 - sa;
+                            out[i]     = (v2_rgba[i]     as f32 * sa + out[i]     as f32 * da) as u8;
+                            out[i + 1] = (v2_rgba[i + 1] as f32 * sa + out[i + 1] as f32 * da) as u8;
+                            out[i + 2] = (v2_rgba[i + 2] as f32 * sa + out[i + 2] as f32 * da) as u8;
+                            out[i + 3] = 255; // result is always fully opaque
+                        }
+                    }
                 }
+                out
             } else {
                 v1_result
             };
