@@ -2611,32 +2611,30 @@ impl KlippApp {
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
                             };
                             // Set interpolation on THIS keyframe
-                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                kf.interpolation = *interpolation;
-                                if *interpolation == klipp_core::Interpolation::Bezier {
-                                    let ki = *keyframe_index;
-                                    let kf = &mut keyframes[ki];
-                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
-                                        kf.tangent_out = (0.3, 0.0); // flat horizontal — creates smooth ease-out
-                                    }
-                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
-                                        kf.tangent_in = (-0.3, 0.0); // flat horizontal — creates smooth ease-in
-                                    }
-                                }
+                            // Set interpolation and compute proportional bezier tangents
+                            let ki = *keyframe_index;
+                            let len = keyframes.len();
+                            if ki < len {
+                                keyframes[ki].interpolation = *interpolation;
                             }
-                            // Also set on the PREVIOUS keyframe so the curve arriving here changes too
-                            if *keyframe_index > 0 {
-                                let prev_ki = *keyframe_index - 1;
-                                if let Some(prev_kf) = keyframes.get_mut(prev_ki) {
-                                    prev_kf.interpolation = *interpolation;
-                                    if *interpolation == klipp_core::Interpolation::Bezier {
-                                        let kf = &mut keyframes[prev_ki];
-                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
-                                            kf.tangent_out = (0.3, 0.0); // flat horizontal — creates smooth ease-out
-                                        }
-                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
-                                            kf.tangent_in = (-0.3, 0.0); // flat horizontal — creates smooth ease-in
-                                        }
+                            // Also set on previous keyframe
+                            if ki > 0 {
+                                keyframes[ki - 1].interpolation = *interpolation;
+                            }
+                            // Set bezier tangents proportional to segment duration
+                            if *interpolation == klipp_core::Interpolation::Bezier {
+                                for idx in [ki.saturating_sub(1), ki] {
+                                    if idx >= len { continue; }
+                                    let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+                                    let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+                                    let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+                                    let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+                                    let kf = &mut keyframes[idx];
+                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                                        kf.tangent_out = (span_out, 0.0);
+                                    }
+                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                                        kf.tangent_in = (-span_in, 0.0);
                                     }
                                 }
                             }
@@ -2750,33 +2748,28 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            // Set on THIS keyframe
-                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                kf.interpolation = *interpolation;
-                                if *interpolation == klipp_core::Interpolation::Bezier {
-                                    let ki = *keyframe_index;
-                                    let kf = &mut keyframes[ki];
-                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
-                                        kf.tangent_out = (0.3, 0.0); // flat horizontal — creates smooth ease-out
-                                    }
-                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
-                                        kf.tangent_in = (-0.3, 0.0); // flat horizontal — creates smooth ease-in
-                                    }
-                                }
+                            // Set interpolation and proportional bezier tangents
+                            let ki = *keyframe_index;
+                            let len = keyframes.len();
+                            if ki < len {
+                                keyframes[ki].interpolation = *interpolation;
                             }
-                            // Also set on PREVIOUS keyframe (controls curve arriving at this one)
-                            if *keyframe_index > 0 {
-                                let prev_ki = *keyframe_index - 1;
-                                if let Some(prev_kf) = keyframes.get_mut(prev_ki) {
-                                    prev_kf.interpolation = *interpolation;
-                                    if *interpolation == klipp_core::Interpolation::Bezier {
-                                        let kf = &mut keyframes[prev_ki];
-                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out == (0.3, 0.0) {
-                                            kf.tangent_out = (0.3, 0.0); // flat horizontal — creates smooth ease-out
-                                        }
-                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in == (-0.3, 0.0) {
-                                            kf.tangent_in = (-0.3, 0.0); // flat horizontal — creates smooth ease-in
-                                        }
+                            if ki > 0 {
+                                keyframes[ki - 1].interpolation = *interpolation;
+                            }
+                            if *interpolation == klipp_core::Interpolation::Bezier {
+                                for idx in [ki.saturating_sub(1), ki] {
+                                    if idx >= len { continue; }
+                                    let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+                                    let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+                                    let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+                                    let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+                                    let kf = &mut keyframes[idx];
+                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                                        kf.tangent_out = (span_out, 0.0);
+                                    }
+                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                                        kf.tangent_in = (-span_in, 0.0);
                                     }
                                 }
                             }
