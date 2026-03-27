@@ -7473,10 +7473,10 @@ impl KlippApp {
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        // Only skip single-key shortcuts when a text edit is focused (editing_timecode).
-        // Ctrl+ shortcuts always work. Previously this checked focused().is_some()
-        // which blocked shortcuts whenever ANY widget (including buttons) had focus.
-        let text_editing = self.state.editing_timecode;
+        // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
+        // title text editor, timecode entry, rename fields, etc.).
+        // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
+        let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode;
 
         ctx.input(|i| {
             // Ctrl+S — Save

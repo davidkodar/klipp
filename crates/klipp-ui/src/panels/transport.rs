@@ -332,8 +332,8 @@ impl TransportBar {
             return cmds;
         }
 
-        // Only skip transport shortcuts when actively editing timecode
-        if state.editing_timecode {
+        // Skip transport shortcuts when any text field has focus
+        if state.editing_timecode || ctx.wants_keyboard_input() {
             return cmds;
         }
 
