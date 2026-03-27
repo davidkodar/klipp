@@ -503,6 +503,9 @@ pub struct AppState {
 
     /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
     pub pending_title_data: Option<klipp_timeline::TitleData>,
+
+    /// Duration (in seconds) for title animation fade presets.
+    pub title_fade_duration: f32,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -777,6 +780,7 @@ impl Default for AppState {
             show_curve_editor: false,
             available_fonts: Vec::new(),
             pending_title_data: None,
+            title_fade_duration: 0.5,
         }
     }
 }

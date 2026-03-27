@@ -433,6 +433,8 @@ pub enum AppCommand {
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32 },
+    /// Update the title animation fade duration stored in AppState.
+    SetTitleFadeDuration { duration: f32 },
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },

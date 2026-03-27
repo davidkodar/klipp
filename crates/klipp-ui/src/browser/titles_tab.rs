@@ -8,6 +8,7 @@ use klipp_timeline::{
 
 struct TitleTemplate {
     name: &'static str,
+    category: &'static str,
     preview_text: &'static str,
     create_data: fn() -> TitleData,
 }
@@ -151,15 +152,22 @@ fn chapter_card() -> TitleData {
 }
 
 const TITLES: &[TitleTemplate] = &[
-    TitleTemplate { name: "Lower Third", preview_text: "Name \u{00b7} Title", create_data: lower_third },
-    TitleTemplate { name: "Full Title", preview_text: "Chapter One", create_data: full_title },
-    TitleTemplate { name: "Subtitle", preview_text: "A Documentary Film", create_data: subtitle },
-    TitleTemplate { name: "Credits", preview_text: "DIRECTED BY", create_data: credits },
-    TitleTemplate { name: "Kinetic", preview_text: "BREAKING", create_data: kinetic },
-    TitleTemplate { name: "Outline", preview_text: "OUTLINE", create_data: outline },
-    TitleTemplate { name: "Minimal Bar", preview_text: "Interview", create_data: minimal_bar },
-    TitleTemplate { name: "Chapter Card", preview_text: "PART I", create_data: chapter_card },
+    // Basic
+    TitleTemplate { name: "Full Title", category: "Basic", preview_text: "Chapter One", create_data: full_title },
+    TitleTemplate { name: "Subtitle", category: "Basic", preview_text: "A Documentary Film", create_data: subtitle },
+    TitleTemplate { name: "Credits", category: "Basic", preview_text: "DIRECTED BY", create_data: credits },
+    // Lower Thirds
+    TitleTemplate { name: "Lower Third", category: "Lower Thirds", preview_text: "Name \u{00b7} Title", create_data: lower_third },
+    TitleTemplate { name: "Minimal Bar", category: "Lower Thirds", preview_text: "Interview", create_data: minimal_bar },
+    // Cinematic
+    TitleTemplate { name: "Chapter Card", category: "Cinematic", preview_text: "PART I", create_data: chapter_card },
+    TitleTemplate { name: "Kinetic", category: "Cinematic", preview_text: "BREAKING", create_data: kinetic },
+    // Stylized
+    TitleTemplate { name: "Outline", category: "Stylized", preview_text: "OUTLINE", create_data: outline },
 ];
+
+/// Ordered list of categories for display.
+const CATEGORIES: &[&str] = &["Basic", "Lower Thirds", "Cinematic", "Stylized"];
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -172,75 +180,91 @@ pub fn show(
 
     let filtered: Vec<_> = TITLES
         .iter()
-        .filter(|t| search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower))
+        .filter(|t| search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower) || t.category.to_lowercase().contains(&search_lower))
         .collect();
 
     egui::ScrollArea::vertical().id_salt("browser_titles_scroll").show(ui, |ui| {
         let avail_w = ui.available_width() - 16.0;
         let card_w = (avail_w - 6.0) / 2.0;
 
-        egui::Grid::new("titles_grid")
-            .num_columns(2)
-            .spacing([6.0, 6.0])
-            .min_col_width(card_w)
-            .show(ui, |ui| {
-                for (i, title) in filtered.iter().enumerate() {
-                    let resp = title_card(ui, theme, title, card_w);
+        for category in CATEGORIES {
+            let cat_titles: Vec<_> = filtered.iter().filter(|t| t.category == *category).collect();
+            if cat_titles.is_empty() {
+                continue;
+            }
 
-                    // Double-click: create title clip at playhead
-                    if resp.double_clicked() {
-                        let title_data = (title.create_data)();
-                        state.pending_title_data = Some(title_data);
-                        // Find a free text track or create one
-                        let ph = state.playhead;
-                        let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
-                            .enumerate()
-                            .find(|(_, t)| {
-                                t.kind == klipp_timeline::TrackKind::Text
-                                    && t.clip_at_timecode(ph).is_none()
-                            })
-                            .map(|(idx, _)| idx);
-                        let track_index = match track_index {
-                            Some(idx) => idx,
-                            None => {
-                                let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                    .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
-                                    .count() + 1;
-                                let track = klipp_timeline::Track::new(
-                                    &format!("Text {track_num}"),
-                                    klipp_timeline::TrackKind::Text,
-                                );
-                                state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                                0
-                            }
-                        };
-                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                        let duration_frames = fps_rate * 5;
-                        cmds.push(AppCommand::CreateTitleClip {
-                            track_index,
-                            timeline_in: ph,
-                            duration_frames,
-                        });
-                        state.toast.show(format!(
-                            "\"{}\" title added to timeline",
-                            title.name
-                        ));
+            // Category header
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(*category).strong().size(11.0).color(theme.text_accent));
+            ui.add_space(4.0);
+
+            egui::Grid::new(format!("titles_grid_{category}"))
+                .num_columns(2)
+                .spacing([6.0, 6.0])
+                .min_col_width(card_w)
+                .show(ui, |ui| {
+                    for (i, title) in cat_titles.iter().enumerate() {
+                        let resp = title_card(ui, theme, title, card_w);
+
+                        // Double-click: create title clip at playhead
+                        if resp.double_clicked() {
+                            let title_data = (title.create_data)();
+                            state.pending_title_data = Some(title_data);
+                            // Find a free text track or create one
+                            let ph = state.playhead;
+                            let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
+                                .enumerate()
+                                .find(|(_, t)| {
+                                    t.kind == klipp_timeline::TrackKind::Text
+                                        && t.clip_at_timecode(ph).is_none()
+                                })
+                                .map(|(idx, _)| idx);
+                            let track_index = match track_index {
+                                Some(idx) => idx,
+                                None => {
+                                    let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
+                                        .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
+                                        .count() + 1;
+                                    let track = klipp_timeline::Track::new(
+                                        &format!("Text {track_num}"),
+                                        klipp_timeline::TrackKind::Text,
+                                    );
+                                    state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                                    0
+                                }
+                            };
+                            let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                            let duration_frames = fps_rate * 5;
+                            cmds.push(AppCommand::CreateTitleClip {
+                                track_index,
+                                timeline_in: ph,
+                                duration_frames,
+                            });
+                            state.toast.show(format!(
+                                "\"{}\" title added to timeline",
+                                title.name
+                            ));
+                        }
+
+                        // Drag: begin title drag
+                        if resp.drag_started() {
+                            let data = (title.create_data)();
+                            state.drag_drop.begin(DragPayload::Title {
+                                template_name: title.name.to_string(),
+                                title_data: data,
+                            });
+                        }
+
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
                     }
-
-                    // Drag: begin title drag
-                    if resp.drag_started() {
-                        let data = (title.create_data)();
-                        state.drag_drop.begin(DragPayload::Title {
-                            template_name: title.name.to_string(),
-                            title_data: data,
-                        });
-                    }
-
-                    if i % 2 == 1 {
+                    // End the last row if odd number of items
+                    if cat_titles.len() % 2 == 1 {
                         ui.end_row();
                     }
-                }
-            });
+                });
+        }
     });
 
     cmds

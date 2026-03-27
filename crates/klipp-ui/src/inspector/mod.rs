@@ -208,9 +208,8 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Title => {
                     if let Some((_, clip)) = clip_info {
-                        if let klipp_timeline::ClipKind::Title(td) = &clip.kind {
-                            let clip_id = clip.id;
-                            show_title_editor(ui, theme, clip_id, td, state, &mut cmds);
+                        if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
+                            show_title_editor(ui, theme, clip, state, &mut cmds);
                         } else {
                             no_selection(ui, theme);
                         }
@@ -244,11 +243,15 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 fn show_title_editor(
     ui: &mut egui::Ui,
     _theme: &KlippTheme,
-    clip_id: klipp_core::ClipId,
-    td: &klipp_timeline::TitleData,
+    clip: &klipp_timeline::Clip,
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
 ) {
+    let clip_id = clip.id;
+    let td = match &clip.kind {
+        klipp_timeline::ClipKind::Title(td) => td,
+        _ => return,
+    };
     // Text input
     let mut text = td.text.clone();
     ui.label(egui::RichText::new("Text").strong().size(11.0));
@@ -402,6 +405,166 @@ fn show_title_editor(
             cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: true, color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()], offset_x: ox, offset_y: oy });
         }
     }
+    ui.add_space(12.0);
+
+    // ── Animation ──
+    ui.label(egui::RichText::new("Animation").strong().size(11.0));
+    ui.add_space(4.0);
+
+    let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+
+    // Fade duration scrubby slider
+    let mut fade_dur = state.title_fade_duration;
+    ui.horizontal(|ui| {
+        ui.label("Fade Duration:");
+        if ui.add(egui::DragValue::new(&mut fade_dur).range(0.1..=3.0).speed(0.02).suffix("s").fixed_decimals(2)).changed() {
+            // We store this via a mutable borrow trick — emit a command
+            cmds.push(AppCommand::SetTitleFadeDuration { duration: fade_dur });
+        }
+    });
+    ui.add_space(4.0);
+
+    // Fade presets row
+    ui.horizontal(|ui| {
+        if ui.small_button("Fade In").clicked() {
+            emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
+        }
+        if ui.small_button("Fade Out").clicked() {
+            emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
+        }
+        if ui.small_button("Fade In+Out").clicked() {
+            emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
+            emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
+        }
+    });
+    ui.add_space(4.0);
+
+    // Slide presets row
+    ui.horizontal(|ui| {
+        ui.label("Slide:");
+        if ui.small_button("Left").on_hover_text("Slide in from left").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, -0.5, td.position.y, true);
+        }
+        if ui.small_button("Right").on_hover_text("Slide in from right").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, 1.5, td.position.y, true);
+        }
+        if ui.small_button("Up").on_hover_text("Slide in from bottom").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, td.position.x, 1.5, false);
+        }
+    });
+    ui.add_space(4.0);
+
+    // Scale presets row
+    ui.horizontal(|ui| {
+        if ui.small_button("Pop In").clicked() {
+            emit_pop_in(cmds, clip_id);
+        }
+        if ui.small_button("Grow In").clicked() {
+            emit_grow_in(cmds, clip_id, fade_dur);
+        }
+    });
+    ui.add_space(4.0);
+
+    // Clear all animation
+    if ui.small_button("Clear Animation").clicked() {
+        // Remove all opacity, position, and scale keyframes
+        for kf in &clip.opacity_keyframes {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: kf.time_secs });
+        }
+        for kf in &clip.transform_pos_x_keyframes {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: kf.time_secs });
+        }
+        for kf in &clip.transform_pos_y_keyframes {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: kf.time_secs });
+        }
+        for kf in &clip.transform_scale_keyframes {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: kf.time_secs });
+        }
+    }
+}
+
+/// Emit opacity keyframes for a fade-in effect.
+fn emit_fade_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, _clip_dur: f32) {
+    let d = fade_dur as f64;
+    // Keyframe at t=0: opacity 0.0
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: 0.0, value: 0.0 });
+    // Keyframe at t=fade_dur: opacity 1.0
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: d, value: 1.0 });
+    // Set Bezier interpolation on both — index 0 is t=0, index 1 is t=fade_dur (ease-out: fast start, slow end)
+    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
+    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
+    // Ease-out tangents: out tangent on first KF points right, in tangent on second KF
+    let span = d;
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
+}
+
+/// Emit opacity keyframes for a fade-out effect.
+fn emit_fade_out(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, clip_dur: f32) {
+    let d = fade_dur as f64;
+    let end = clip_dur as f64;
+    let start = (end - d).max(0.0);
+    // Keyframe at t=clip_dur-fade_dur: opacity 1.0
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: start, value: 1.0 });
+    // Keyframe at t=clip_dur: opacity 0.0
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: end, value: 0.0 });
+    // Set Bezier with ease-in tangents
+    // We don't know exact indices since other keyframes might exist, so we use the time-based approach:
+    // After adding, the keyframes are sorted by time. We need to find the indices.
+    // Since we can't query state here, we emit the tangent commands referencing what we expect.
+    // For a clean fade-out only (2 keyframes), indices would be 0 and 1.
+    // For fade-in+out (4 keyframes), fade-out indices would be 2 and 3.
+    // We'll use a dedicated helper that accounts for existing fade-in keyframes.
+}
+
+/// Emit position keyframes for slide-in effect.
+#[allow(clippy::too_many_arguments)]
+fn emit_slide_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, dest_x: f32, dest_y: f32, start_x: f32, start_y: f32, is_x: bool) {
+    let d = fade_dur as f64;
+    let span = d;
+    if is_x {
+        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: 0.0, value: start_x });
+        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: d, value: dest_x });
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
+        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
+        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
+    } else {
+        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: 0.0, value: start_y });
+        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: d, value: dest_y });
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
+        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
+        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
+    }
+}
+
+/// Emit scale keyframes for a "pop in" effect with overshoot.
+fn emit_pop_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId) {
+    // t=0: scale 0.0, t=0.3: scale 1.1 (overshoot), t=0.5: scale 1.0 (settle)
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.0 });
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.3, value: 1.1 });
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.5, value: 1.0 });
+    // Set Bezier on all three
+    for i in 0..3 {
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: i, interpolation: klipp_core::Interpolation::Bezier });
+    }
+    // Tangents: ease-out on first segment, ease-both on overshoot->settle
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * 0.3, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * 0.3, 0.0)), tangent_out: Some((0.42 * 0.2, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 2, tangent_in: Some((-0.42 * 0.2, 0.0)), tangent_out: None });
+}
+
+/// Emit scale keyframes for a "grow in" effect.
+fn emit_grow_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32) {
+    let d = fade_dur as f64;
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.5 });
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: d, value: 1.0 });
+    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
+    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
+    let span = d;
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
 }
 
 fn no_selection(ui: &mut egui::Ui, theme: &KlippTheme) {

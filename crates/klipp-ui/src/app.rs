@@ -4727,6 +4727,10 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitleFadeDuration { duration } => {
+                    self.state.title_fade_duration = *duration;
+                    continue;
+                }
 
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
