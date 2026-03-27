@@ -428,6 +428,19 @@ impl ToolbarPanel {
             }
             ui.separator();
             // Markers
+            // Keyframe shortcuts
+            let has_clip = state.selected_clip.is_some();
+            if ui.add_enabled(has_clip, egui::Button::new("Toggle Keyframe at Playhead").shortcut_text("K")).clicked() {
+                ui.close_menu();
+                // Actual logic handled by global shortcut in app.rs
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Previous Keyframe").shortcut_text("Alt+\u{2190}")).clicked() {
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Next Keyframe").shortcut_text("Alt+\u{2192}")).clicked() {
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.add(egui::Button::new("Add Marker").shortcut_text("M")).clicked() {
                 cmds.push(AppCommand::AddMarker {
                     position: state.playhead,

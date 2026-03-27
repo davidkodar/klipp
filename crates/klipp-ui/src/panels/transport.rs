@@ -345,10 +345,10 @@ impl TransportBar {
                     cmds.push(AppCommand::Play);
                 }
             }
-            if i.key_pressed(egui::Key::ArrowLeft) {
+            if i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
                 cmds.push(AppCommand::SeekRelative(-1));
             }
-            if i.key_pressed(egui::Key::ArrowRight) {
+            if i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
                 cmds.push(AppCommand::SeekRelative(1));
             }
             if i.key_pressed(egui::Key::Home) {

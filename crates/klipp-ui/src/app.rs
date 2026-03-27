@@ -7046,8 +7046,50 @@ impl KlippApp {
                 }
             }
 
+            // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
+            let mut keyframe_deleted = false;
+            if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+                if let Some(sk) = self.state.selected_keyframe.take() {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id);
+                    if let Some(clip) = clip {
+                        let kf_time = match &sk.param_kind {
+                            crate::state::KeyframeParamKind::Audio(param) => {
+                                let kfs = match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                };
+                                kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
+                            }
+                            crate::state::KeyframeParamKind::Video(param) => {
+                                let kfs = match param {
+                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                };
+                                kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
+                            }
+                        };
+                        if let Some(time_secs) = kf_time {
+                            match sk.param_kind {
+                                crate::state::KeyframeParamKind::Audio(param) => {
+                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                }
+                                crate::state::KeyframeParamKind::Video(param) => {
+                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                }
+                            }
+                            keyframe_deleted = true;
+                        }
+                    }
+                }
+            }
+
             // Shift+Delete — Lift (leave gap, no ripple) on magnetic tracks
-            if i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            if !keyframe_deleted && i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
@@ -7064,7 +7106,7 @@ impl KlippApp {
                 }
             }
             // Delete/Backspace — remove selected clip OR extract range (plain, no shift)
-            else if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            else if !keyframe_deleted && !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 } else if self.state.selected_clips.is_empty()
@@ -7375,9 +7417,153 @@ impl KlippApp {
                 self.state.matte_preview_active = !self.state.matte_preview_active;
                 cmds.push(AppCommand::SetMattePreview(self.state.matte_preview_active));
             }
-            // K — Toggle keyframe editor
-            if i.key_pressed(egui::Key::K) && !i.modifiers.ctrl && !i.modifiers.alt {
+            // K — Toggle keyframe at playhead for the active parameter
+            if i.key_pressed(egui::Key::K) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    // Find the clip and its track kind
+                    let clip_and_kind = seq.tracks.iter().find_map(|t| {
+                        t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
+                    });
+                    if let Some((clip, track_kind)) = clip_and_kind {
+                        let playhead_secs = self.state.playhead.to_secs_f64();
+                        let clip_start_secs = clip.timeline_in.to_secs_f64();
+                        let clip_end_secs = clip.timeline_out.to_secs_f64();
+                        if playhead_secs >= clip_start_secs && playhead_secs <= clip_end_secs {
+                            let clip_time_secs = playhead_secs - clip_start_secs;
+                            let tolerance = 0.02;
+                            if track_kind == klipp_timeline::TrackKind::Audio {
+                                let param = self.state.rubber_band_param;
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                };
+                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                if let Some(kf) = existing {
+                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                } else {
+                                    let default_val = match param {
+                                        klipp_core::AudioParam::Volume => clip.volume,
+                                        klipp_core::AudioParam::Pan => clip.pan,
+                                        klipp_core::AudioParam::Gain => clip.gain,
+                                    };
+                                    let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
+                                    cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                }
+                            } else {
+                                let param = self.state.video_rubber_band_param;
+                                let opacity_static = clip.builtin_effects.iter()
+                                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                                    .unwrap_or(1.0);
+                                let transform = clip.builtin_effects.iter()
+                                    .find_map(|e| match e {
+                                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                                            Some((*position_x, *position_y, *scale_x, *rotation)),
+                                        _ => None,
+                                    })
+                                    .unwrap_or((0.0, 0.0, 1.0, 0.0));
+                                let keyframes = match param {
+                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                };
+                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                if let Some(kf) = existing {
+                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                } else {
+                                    let default_val = match param {
+                                        klipp_core::VideoParam::Opacity => opacity_static,
+                                        klipp_core::VideoParam::PositionX => transform.0,
+                                        klipp_core::VideoParam::PositionY => transform.1,
+                                        klipp_core::VideoParam::Scale => transform.2,
+                                        klipp_core::VideoParam::Rotation => transform.3,
+                                    };
+                                    let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
+                                    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Shift+K — Toggle keyframe editor panel
+            if i.key_pressed(egui::Key::K) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
                 self.state.show_keyframe_editor = !self.state.show_keyframe_editor;
+            }
+            // Alt+Left — Navigate to previous keyframe
+            if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let clip_and_kind = seq.tracks.iter().find_map(|t| {
+                        t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
+                    });
+                    if let Some((clip, track_kind)) = clip_and_kind {
+                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match self.state.rubber_band_param {
+                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                            }
+                        } else {
+                            match self.state.video_rubber_band_param {
+                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                            }
+                        };
+                        // Find previous keyframe (strictly before current time with tolerance)
+                        let prev = keyframes.iter().rev()
+                            .find(|kf| kf.time_secs < clip_time_secs - 0.001);
+                        if let Some(kf) = prev {
+                            let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
+                            let rate = self.state.playhead.rate;
+                            self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        }
+                    }
+                }
+            }
+            // Alt+Right — Navigate to next keyframe
+            if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowRight) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let clip_and_kind = seq.tracks.iter().find_map(|t| {
+                        t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
+                    });
+                    if let Some((clip, track_kind)) = clip_and_kind {
+                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match self.state.rubber_band_param {
+                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                            }
+                        } else {
+                            match self.state.video_rubber_band_param {
+                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                            }
+                        };
+                        // Find next keyframe (strictly after current time with tolerance)
+                        let next = keyframes.iter()
+                            .find(|kf| kf.time_secs > clip_time_secs + 0.001);
+                        if let Some(kf) = next {
+                            let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
+                            let rate = self.state.playhead.rate;
+                            self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        }
+                    }
+                }
             }
             // M — Add sequence marker (no modifiers, no shift)
             if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {

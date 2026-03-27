@@ -12,6 +12,27 @@ pub struct BrowserClipSelection {
     pub range_out_secs: f64,
 }
 
+/// Which transform handle is being dragged in the viewer
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransformHandle {
+    Position,
+    ScaleTopLeft,
+    ScaleTopRight,
+    ScaleBottomLeft,
+    ScaleBottomRight,
+    Rotation,
+}
+
+/// State for viewer transform control interaction
+#[derive(Debug, Clone)]
+pub struct ViewerTransformDrag {
+    pub clip_id: klipp_core::ClipId,
+    pub effect_index: usize,
+    pub handle: TransformHandle,
+    pub initial_transform: crate::inspector::video_tab::TransformParams,
+    pub drag_start_pos: egui::Pos2,
+}
+
 /// State during an active audio keyframe drag on the timeline rubber band.
 #[derive(Debug, Clone)]
 pub struct DraggingKeyframe {
@@ -446,6 +467,12 @@ pub struct AppState {
     pub proxy_status_message: Option<(String, std::time::Instant)>,
     /// Whether the proxy toast was dismissed by the user
     pub proxy_toast_dismissed: bool,
+
+    // Viewer transform controls
+    /// Active drag on a viewer transform handle
+    pub viewer_transform_drag: Option<ViewerTransformDrag>,
+    /// Whether on-screen transform handles are shown when a clip is selected
+    pub show_transform_controls: bool,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -714,6 +741,8 @@ impl Default for AppState {
             proxy_start_times: std::collections::HashMap::new(),
             proxy_status_message: None,
             proxy_toast_dismissed: false,
+            viewer_transform_drag: None,
+            show_transform_controls: true,
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::icons::Icon;
-use crate::state::AppState;
+use crate::inspector::video_tab::{find_transform_index, get_transform, TransformParams};
+use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
@@ -210,12 +211,14 @@ impl ViewerPanel {
     ) {
         let _ = cmds;
 
-        let current_media = state.sequence().tracks.iter()
+        // Extract media info up-front so the borrow is short-lived
+        let current_media_info: Option<(u32, u32, bool)> = state.sequence().tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clip_at_timecode(state.playhead))
-            .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)));
+            .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)))
+            .map(|m| (m.resolution.width, m.resolution.height, m.proxy_ready));
 
-        let has_content = state.playback != PlaybackState::Idle || current_media.is_some();
+        let has_content = state.playback != PlaybackState::Idle || current_media_info.is_some();
         let lb_h = viewer_rect.height() * 0.08;
 
         if !has_content {
@@ -246,9 +249,9 @@ impl ViewerPanel {
             return;
         }
 
-        let (video_w, video_h) = current_media
-            .or_else(|| state.media_pool.all().next())
-            .map(|m| (m.resolution.width as f32, m.resolution.height as f32))
+        let (video_w, video_h) = current_media_info
+            .map(|(w, h, _)| (w as f32, h as f32))
+            .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
             .unwrap_or((1920.0, 1080.0));
 
         if video_w == 0.0 || video_h == 0.0 { return; }
@@ -274,6 +277,11 @@ impl ViewerPanel {
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+        }
+
+        // ── On-screen transform controls ──
+        if state.show_transform_controls && state.eyedropper_mode == crate::state::EyedropperMode::None {
+            self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 
         // ── Before/After split divider ──
@@ -423,7 +431,7 @@ impl ViewerPanel {
         // Timecode + zoom now shown in playbar below scrub bar
 
         // Proxy badge
-        if state.use_proxies && current_media.is_some_and(|m| m.proxy_ready) {
+        if state.use_proxies && current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
             let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
             ui.painter().text(
                 badge_pos,
@@ -598,8 +606,8 @@ impl ViewerPanel {
             self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(AppCommand::SeekTo(dur)));
         }
 
-        // ── Right: Mute | Slider | Vol% | Zoom% ──
-        // Layout from right: zoom(44) gap(8) vol%(40) gap(6) slider(60) gap(6) mute(20) gap(8)
+        // ── Right: Transform | Mute | Slider | Vol% | Zoom% ──
+        // Layout from right: zoom(44) gap(8) vol%(40) gap(6) slider(60) gap(6) mute(20) gap(8) transform(20)
         let rx = rect.max.x - 12.0;
 
         // Zoom percentage
@@ -658,6 +666,34 @@ impl ViewerPanel {
             let effective = if state.master_muted { 0.0 } else { state.master_volume };
             cmds.push(AppCommand::SetMasterVolume(effective));
         }
+
+        // Transform controls toggle button
+        let xform_x = mute_x - 26.0;
+        let xform_rect = egui::Rect::from_center_size(
+            egui::pos2(xform_x, cy),
+            egui::vec2(20.0, 20.0),
+        );
+        let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
+        let xform_color = if state.show_transform_controls {
+            theme.accent
+        } else {
+            egui::Color32::from_rgb(100, 100, 110)
+        };
+        // Draw a small bounding-box icon (square with corner handles)
+        let ir = xform_rect.shrink(4.0);
+        ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(1.2, xform_color));
+        let cs = 2.0; // corner square half-size
+        for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(corner, egui::vec2(cs * 2.0, cs * 2.0)),
+                0.0,
+                xform_color,
+            );
+        }
+        if xform_resp.clicked() {
+            state.show_transform_controls = !state.show_transform_controls;
+        }
+        xform_resp.on_hover_text("Toggle transform controls");
     }
 
     /// Helper for playbar navigation buttons. Returns advance width (btn_size + spacing).
@@ -758,6 +794,373 @@ impl ViewerPanel {
                 font.clone(),
                 color,
             );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_transform_controls(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+        frame_w: f32,
+        frame_h: f32,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        // Only show when a video clip is selected
+        let clip_id = match state.selected_clip {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Find the clip in the sequence
+        let clip = match state.sequence().tracks.iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+        {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Only for media clips (not gaps or titles)
+        if matches!(clip.kind, klipp_timeline::ClipKind::Gap) {
+            return;
+        }
+
+        let transform = get_transform(clip);
+        let effect_index = find_transform_index(clip);
+
+        // Coordinate mapping: frame pixels -> screen pixels
+        let scale_to_screen_x = image_rect.width() / frame_w;
+        let scale_to_screen_y = image_rect.height() / frame_h;
+        let center_screen = image_rect.center();
+
+        // Transform position in screen coords (position is in frame pixels from center)
+        let pos_screen = egui::pos2(
+            center_screen.x + transform.position_x * scale_to_screen_x,
+            center_screen.y + transform.position_y * scale_to_screen_y,
+        );
+
+        // Bounding box corners (considering scale)
+        let half_w = frame_w * 0.5 * transform.scale_x * scale_to_screen_x;
+        let half_h = frame_h * 0.5 * transform.scale_y * scale_to_screen_y;
+
+        let rotation_rad = transform.rotation.to_radians();
+
+        // Unrotated corners relative to pos_screen
+        let raw_corners = [
+            egui::pos2(pos_screen.x - half_w, pos_screen.y - half_h), // top-left
+            egui::pos2(pos_screen.x + half_w, pos_screen.y - half_h), // top-right
+            egui::pos2(pos_screen.x + half_w, pos_screen.y + half_h), // bottom-right
+            egui::pos2(pos_screen.x - half_w, pos_screen.y + half_h), // bottom-left
+        ];
+
+        // Rotate corners around pos_screen
+        let corners: [egui::Pos2; 4] = std::array::from_fn(|i| {
+            rotate_point(raw_corners[i], pos_screen, rotation_rad)
+        });
+
+        let painter = ui.painter();
+
+        // Draw bounding box outline
+        let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
+        let outline_stroke = egui::Stroke::new(1.5, outline_color);
+        for i in 0..4 {
+            painter.line_segment([corners[i], corners[(i + 1) % 4]], outline_stroke);
+        }
+
+        // Draw diagonal crosshairs through center (subtle)
+        let cross_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
+        let cross_stroke = egui::Stroke::new(0.5, cross_color);
+        let mid_top = egui::pos2(
+            (corners[0].x + corners[1].x) * 0.5,
+            (corners[0].y + corners[1].y) * 0.5,
+        );
+        let mid_bottom = egui::pos2(
+            (corners[2].x + corners[3].x) * 0.5,
+            (corners[2].y + corners[3].y) * 0.5,
+        );
+        let mid_left = egui::pos2(
+            (corners[0].x + corners[3].x) * 0.5,
+            (corners[0].y + corners[3].y) * 0.5,
+        );
+        let mid_right = egui::pos2(
+            (corners[1].x + corners[2].x) * 0.5,
+            (corners[1].y + corners[2].y) * 0.5,
+        );
+        painter.line_segment([mid_top, mid_bottom], cross_stroke);
+        painter.line_segment([mid_left, mid_right], cross_stroke);
+
+        // Corner handles (scale)
+        let handle_size = 8.0;
+        let handle_half = handle_size / 2.0;
+        for corner in &corners {
+            let handle_rect = egui::Rect::from_center_size(*corner, egui::vec2(handle_size, handle_size));
+            painter.rect_filled(handle_rect, 0.0, egui::Color32::WHITE);
+            painter.rect_stroke(handle_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        }
+
+        // Center handle (position) — circle
+        let center_radius = 6.0;
+        painter.circle_filled(pos_screen, center_radius, egui::Color32::WHITE);
+        painter.circle_stroke(pos_screen, center_radius, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        // Small crosshair inside center handle
+        let ch = 3.0;
+        painter.line_segment(
+            [egui::pos2(pos_screen.x - ch, pos_screen.y), egui::pos2(pos_screen.x + ch, pos_screen.y)],
+            egui::Stroke::new(1.0, egui::Color32::BLACK),
+        );
+        painter.line_segment(
+            [egui::pos2(pos_screen.x, pos_screen.y - ch), egui::pos2(pos_screen.x, pos_screen.y + ch)],
+            egui::Stroke::new(1.0, egui::Color32::BLACK),
+        );
+
+        // Rotation handle — small circle above the top edge
+        let rot_distance = 25.0;
+        let rot_handle_pos = rotate_point(
+            egui::pos2(pos_screen.x, pos_screen.y - half_h - rot_distance),
+            pos_screen,
+            rotation_rad,
+        );
+        let rot_connector_base = mid_top;
+        painter.line_segment(
+            [rot_connector_base, rot_handle_pos],
+            egui::Stroke::new(1.5, outline_color),
+        );
+        let rot_radius = 5.0;
+        painter.circle_filled(rot_handle_pos, rot_radius, egui::Color32::WHITE);
+        painter.circle_stroke(rot_handle_pos, rot_radius, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        // Small arc icon inside rotation handle
+        let arc_r = 2.5;
+        painter.line_segment(
+            [
+                egui::pos2(rot_handle_pos.x - arc_r, rot_handle_pos.y),
+                egui::pos2(rot_handle_pos.x, rot_handle_pos.y - arc_r),
+            ],
+            egui::Stroke::new(0.8, egui::Color32::BLACK),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rot_handle_pos.x, rot_handle_pos.y - arc_r),
+                egui::pos2(rot_handle_pos.x + arc_r, rot_handle_pos.y),
+            ],
+            egui::Stroke::new(0.8, egui::Color32::BLACK),
+        );
+
+        // ── Interaction ──
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        let pointer_down = ui.input(|i| i.pointer.primary_down());
+        let pointer_released = ui.input(|i| i.pointer.primary_released());
+        let hit_radius = 10.0;
+
+        // Handle ongoing drag
+        if let Some(drag) = state.viewer_transform_drag.take() {
+            if pointer_released {
+                // Drag ended — emit EndEffectDrag for undo coalescing
+                let final_transform = self.compute_dragged_transform(
+                    &drag, pointer_pos,
+                    scale_to_screen_x, scale_to_screen_y,
+                    center_screen,
+                );
+                if let Some(idx) = effect_index.or(Some(drag.effect_index)) {
+                    cmds.push(AppCommand::EndEffectDrag {
+                        key: format!("viewer_transform_{}", clip_id.0),
+                        clip_id,
+                        effect_index: idx,
+                        new_effect: final_transform.to_builtin_effect(),
+                    });
+                }
+                // Don't put drag back — it's done
+            } else if pointer_down {
+                // Drag continues — compute new transform and emit update
+                let new_transform = self.compute_dragged_transform(
+                    &drag, pointer_pos,
+                    scale_to_screen_x, scale_to_screen_y,
+                    center_screen,
+                );
+                let idx = effect_index.unwrap_or(drag.effect_index);
+                cmds.push(AppCommand::UpdateBuiltinEffect {
+                    clip_id,
+                    index: idx,
+                    effect: new_transform.to_builtin_effect(),
+                });
+
+                // Set cursor icon based on handle
+                match drag.handle {
+                    TransformHandle::Position => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                    TransformHandle::Rotation => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                    _ => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                    }
+                }
+
+                // Put drag back
+                state.viewer_transform_drag = Some(drag);
+                ui.ctx().request_repaint();
+            }
+            // If pointer is neither down nor released (shouldn't happen), drop drag
+        } else if let Some(pointer) = pointer_pos {
+            // Check for new drag start
+            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) {
+                // Only start a drag if the pointer is within the image_rect (with some margin)
+                let expanded = image_rect.expand(40.0);
+                if expanded.contains(pointer) {
+                    let handle = self.hit_test_handles(
+                        pointer, pos_screen, &corners, rot_handle_pos,
+                        center_radius, handle_half, rot_radius, hit_radius,
+                    );
+
+                    if let Some(handle) = handle {
+                        let eff_idx = effect_index.unwrap_or(0);
+                        // If no transform effect exists, add one first
+                        if effect_index.is_none() {
+                            cmds.push(AppCommand::AddBuiltinEffect {
+                                clip_id,
+                                effect: transform.to_builtin_effect(),
+                            });
+                        }
+
+                        // Begin undo coalescing
+                        cmds.push(AppCommand::BeginEffectDrag {
+                            key: format!("viewer_transform_{}", clip_id.0),
+                            clip_id,
+                            effect_index: eff_idx,
+                            old_effect: transform.to_builtin_effect(),
+                        });
+
+                        state.viewer_transform_drag = Some(ViewerTransformDrag {
+                            clip_id,
+                            effect_index: eff_idx,
+                            handle,
+                            initial_transform: transform,
+                            drag_start_pos: pointer,
+                        });
+                    }
+                }
+            } else {
+                // Hover cursor feedback
+                let handle = self.hit_test_handles(
+                    pointer, pos_screen, &corners, rot_handle_pos,
+                    center_radius, handle_half, rot_radius, hit_radius,
+                );
+                if let Some(h) = handle {
+                    match h {
+                        TransformHandle::Position => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        TransformHandle::Rotation => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        TransformHandle::ScaleTopLeft | TransformHandle::ScaleBottomRight => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                        }
+                        TransformHandle::ScaleTopRight | TransformHandle::ScaleBottomLeft => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hit-test transform handles and return which one the pointer is over, if any.
+    #[allow(clippy::too_many_arguments)]
+    fn hit_test_handles(
+        &self,
+        pointer: egui::Pos2,
+        center: egui::Pos2,
+        corners: &[egui::Pos2; 4],
+        rot_handle: egui::Pos2,
+        center_radius: f32,
+        handle_half: f32,
+        rot_radius: f32,
+        hit_radius: f32,
+    ) -> Option<TransformHandle> {
+        // Check rotation handle first (smallest, on top)
+        if (pointer - rot_handle).length() <= rot_radius + hit_radius {
+            return Some(TransformHandle::Rotation);
+        }
+        // Corner handles (scale)
+        let corner_handles = [
+            TransformHandle::ScaleTopLeft,
+            TransformHandle::ScaleTopRight,
+            TransformHandle::ScaleBottomRight,
+            TransformHandle::ScaleBottomLeft,
+        ];
+        for (i, corner) in corners.iter().enumerate() {
+            if (pointer - *corner).length() <= handle_half + hit_radius {
+                return Some(corner_handles[i]);
+            }
+        }
+        // Center handle (position)
+        if (pointer - center).length() <= center_radius + hit_radius {
+            return Some(TransformHandle::Position);
+        }
+        None
+    }
+
+    /// Compute the new transform parameters based on the current drag state.
+    fn compute_dragged_transform(
+        &self,
+        drag: &ViewerTransformDrag,
+        pointer_pos: Option<egui::Pos2>,
+        scale_to_screen_x: f32,
+        scale_to_screen_y: f32,
+        center_screen: egui::Pos2,
+    ) -> TransformParams {
+        let pointer = match pointer_pos {
+            Some(p) => p,
+            None => return drag.initial_transform,
+        };
+
+        let initial = &drag.initial_transform;
+
+        // The center of the transform in screen space (based on initial transform)
+        let initial_pos_screen = egui::pos2(
+            center_screen.x + initial.position_x * scale_to_screen_x,
+            center_screen.y + initial.position_y * scale_to_screen_y,
+        );
+
+        match drag.handle {
+            TransformHandle::Position => {
+                let delta_screen_x = pointer.x - drag.drag_start_pos.x;
+                let delta_screen_y = pointer.y - drag.drag_start_pos.y;
+                let delta_frame_x = delta_screen_x / scale_to_screen_x;
+                let delta_frame_y = delta_screen_y / scale_to_screen_y;
+                TransformParams {
+                    position_x: initial.position_x + delta_frame_x,
+                    position_y: initial.position_y + delta_frame_y,
+                    ..*initial
+                }
+            }
+            TransformHandle::ScaleTopLeft
+            | TransformHandle::ScaleTopRight
+            | TransformHandle::ScaleBottomLeft
+            | TransformHandle::ScaleBottomRight => {
+                let initial_dist = (drag.drag_start_pos - initial_pos_screen).length().max(1.0);
+                let current_dist = (pointer - initial_pos_screen).length();
+                let scale_factor = current_dist / initial_dist;
+                TransformParams {
+                    scale_x: (initial.scale_x * scale_factor).max(0.01),
+                    scale_y: (initial.scale_y * scale_factor).max(0.01),
+                    ..*initial
+                }
+            }
+            TransformHandle::Rotation => {
+                let initial_angle = (drag.drag_start_pos.y - initial_pos_screen.y)
+                    .atan2(drag.drag_start_pos.x - initial_pos_screen.x);
+                let current_angle = (pointer.y - initial_pos_screen.y)
+                    .atan2(pointer.x - initial_pos_screen.x);
+                let delta_degrees = (current_angle - initial_angle).to_degrees();
+                TransformParams {
+                    rotation: initial.rotation + delta_degrees,
+                    ..*initial
+                }
+            }
         }
     }
 
@@ -1024,6 +1427,18 @@ impl ViewerPanel {
             );
         }
     }
+}
+
+/// Rotate a point around a center by the given angle in radians.
+fn rotate_point(point: egui::Pos2, center: egui::Pos2, angle_rad: f32) -> egui::Pos2 {
+    let dx = point.x - center.x;
+    let dy = point.y - center.y;
+    let cos = angle_rad.cos();
+    let sin = angle_rad.sin();
+    egui::pos2(
+        center.x + dx * cos - dy * sin,
+        center.y + dx * sin + dy * cos,
+    )
 }
 
 fn format_timecode_hmsf(smooth_secs: f64, rate: u32) -> String {
