@@ -1286,12 +1286,22 @@ impl TimelinePanel {
                                 }
 
                                 let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
-                                // Map normalized position to param range
-                                let (p_min, p_range) = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32),
+                                // Auto-scale Y range to match the drawing code
+                                let (static_val, kfs_ref) = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => (clip.volume, &clip.volume_keyframes),
+                                    klipp_core::AudioParam::Pan => (clip.pan, &clip.pan_keyframes),
+                                    klipp_core::AudioParam::Gain => (clip.gain, &clip.gain_keyframes),
                                 };
+                                let mut v_min = static_val;
+                                let mut v_max = static_val;
+                                for kf in kfs_ref.iter() {
+                                    if kf.value < v_min { v_min = kf.value; }
+                                    if kf.value > v_max { v_max = kf.value; }
+                                }
+                                let v_span = (v_max - v_min).max(0.01);
+                                let v_pad = v_span * 0.2;
+                                let p_min = v_min - v_pad;
+                                let p_range = v_span + v_pad * 2.0;
                                 let new_value = p_min + normalized * p_range;
                                 cmds.push(AppCommand::MoveAudioKeyframe {
                                     clip_id: drag_kf.clip_id,
@@ -1300,6 +1310,23 @@ impl TimelinePanel {
                                     new_time_secs: new_time,
                                     new_value,
                                 });
+
+                                // Live value readout tooltip
+                                let value_text = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => format!("{:.2}", new_value),
+                                    klipp_core::AudioParam::Pan => format!("{:.2}", new_value),
+                                    klipp_core::AudioParam::Gain => format!("{:.2}", new_value),
+                                };
+                                let time_text = format!("{:.2}s", new_time);
+                                let tooltip = format!("{} | {}", time_text, value_text);
+                                let painter = ui.painter();
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
                             }
                         }
                         break;
@@ -1412,6 +1439,25 @@ impl TimelinePanel {
                                     new_time_secs: new_time,
                                     new_value,
                                 });
+
+                                // Live value readout tooltip
+                                let value_text = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", new_value * 100.0),
+                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", new_value),
+                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
+                                    klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
+                                    klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
+                                };
+                                let time_text = format!("{:.2}s", new_time);
+                                let tooltip = format!("{} | {}", time_text, value_text);
+                                let painter = ui.painter();
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
                             }
                         }
                         break;
@@ -1451,18 +1497,27 @@ impl TimelinePanel {
                                 )
                             };
                             let clip_dur_secs = clip.duration().to_secs_f64();
-                            let (p_min, p_max) = match drag_bh.param {
-                                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                klipp_core::AudioParam::Pan => (-1.0_f32, 1.0_f32),
-                                klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32),
-                            };
-                            let p_range = p_max - p_min;
-
+                            // Auto-scale Y range to match the drawing code
                             let keyframes = match drag_bh.param {
                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                             };
+                            let bh_static = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => clip.volume,
+                                klipp_core::AudioParam::Pan => clip.pan,
+                                klipp_core::AudioParam::Gain => clip.gain,
+                            };
+                            let mut bh_vmin = bh_static;
+                            let mut bh_vmax = bh_static;
+                            for k in keyframes.iter() {
+                                if k.value < bh_vmin { bh_vmin = k.value; }
+                                if k.value > bh_vmax { bh_vmax = k.value; }
+                            }
+                            let bh_span = (bh_vmax - bh_vmin).max(0.01);
+                            let bh_pad = bh_span * 0.2;
+                            let p_min = bh_vmin - bh_pad;
+                            let p_range = bh_span + bh_pad * 2.0;
                             if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
                                 let kf_x = {
                                     let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
@@ -1495,6 +1550,22 @@ impl TimelinePanel {
                                     tangent_in: ti_arg,
                                     tangent_out: to_arg,
                                 });
+
+                                // Live tangent readout tooltip
+                                let (dt, dv) = if drag_bh.is_out {
+                                    (time_offset.max(0.0), value_offset)
+                                } else {
+                                    (time_offset.min(0.0), value_offset)
+                                };
+                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
+                                let painter = ui.painter();
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
                             }
                         }
                         break;
@@ -1591,6 +1662,22 @@ impl TimelinePanel {
                                     tangent_in: ti_arg,
                                     tangent_out: to_arg,
                                 });
+
+                                // Live tangent readout tooltip
+                                let (dt, dv) = if drag_vbh.is_out {
+                                    (time_offset.max(0.0), value_offset)
+                                } else {
+                                    (time_offset.min(0.0), value_offset)
+                                };
+                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
+                                let painter = ui.painter();
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
                             }
                         }
                         break;
@@ -1637,36 +1724,137 @@ impl TimelinePanel {
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
 
-                            for (label, interp) in [
-                                ("Linear", klipp_core::Interpolation::Linear),
-                                ("Bezier", klipp_core::Interpolation::Bezier),
-                                ("Step (Hold)", klipp_core::Interpolation::Step),
-                            ] {
-                                let is_current = current_interp == Some(interp);
-                                let text = if is_current {
-                                    egui::RichText::new(format!("  {label}")).strong()
-                                } else {
-                                    egui::RichText::new(format!("  {label}"))
-                                };
-                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    match &ctx_menu.param_kind {
-                                        crate::state::KeyframeParamKind::Audio(param) => {
-                                            cmds.push(AppCommand::SetAudioKeyframeInterpolation {
-                                                clip_id: ctx_menu.clip_id,
-                                                param: *param,
-                                                keyframe_index: ctx_menu.keyframe_index,
-                                                interpolation: interp,
-                                            });
+                            // Helper closure: emit interpolation command
+                            let emit_interp = |cmds: &mut Vec<AppCommand>, interp: klipp_core::Interpolation| {
+                                match &ctx_menu.param_kind {
+                                    crate::state::KeyframeParamKind::Audio(param) => {
+                                        cmds.push(AppCommand::SetAudioKeyframeInterpolation {
+                                            clip_id: ctx_menu.clip_id,
+                                            param: *param,
+                                            keyframe_index: ctx_menu.keyframe_index,
+                                            interpolation: interp,
+                                        });
+                                    }
+                                    crate::state::KeyframeParamKind::Video(param) => {
+                                        cmds.push(AppCommand::SetVideoKeyframeInterpolation {
+                                            clip_id: ctx_menu.clip_id,
+                                            param: *param,
+                                            keyframe_index: ctx_menu.keyframe_index,
+                                            interpolation: interp,
+                                        });
+                                    }
+                                }
+                            };
+
+                            // Helper: emit tangent commands for ease presets
+                            let emit_ease = |cmds: &mut Vec<AppCommand>, preset: crate::widgets::scrubby_param::EasePreset| {
+                                let (out_ratio, in_ratio) = preset.tangent_ratios();
+                                let kfs: Option<Vec<klipp_core::Keyframe>> = state.sequence().tracks.iter()
+                                    .flat_map(|t| t.clips.iter())
+                                    .find(|c| c.id == ctx_menu.clip_id)
+                                    .map(|clip| {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(p) => match p {
+                                                klipp_core::AudioParam::Volume => clip.volume_keyframes.clone(),
+                                                klipp_core::AudioParam::Pan => clip.pan_keyframes.clone(),
+                                                klipp_core::AudioParam::Gain => clip.gain_keyframes.clone(),
+                                            },
+                                            crate::state::KeyframeParamKind::Video(p) => match p {
+                                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes.clone(),
+                                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes.clone(),
+                                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes.clone(),
+                                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes.clone(),
+                                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes.clone(),
+                                            },
                                         }
-                                        crate::state::KeyframeParamKind::Video(param) => {
-                                            cmds.push(AppCommand::SetVideoKeyframeInterpolation {
-                                                clip_id: ctx_menu.clip_id,
-                                                param: *param,
-                                                keyframe_index: ctx_menu.keyframe_index,
-                                                interpolation: interp,
-                                            });
+                                    });
+                                if let Some(kfs) = kfs {
+                                    let ki = ctx_menu.keyframe_index;
+                                    let len = kfs.len();
+                                    for idx in [ki.saturating_sub(1), ki] {
+                                        if idx >= len { continue; }
+                                        let prev_t = if idx > 0 { kfs[idx - 1].time_secs } else { kfs[idx].time_secs - 1.0 };
+                                        let next_t = if idx + 1 < len { kfs[idx + 1].time_secs } else { kfs[idx].time_secs + 1.0 };
+                                        let span_out = (next_t - kfs[idx].time_secs).abs();
+                                        let span_in = (kfs[idx].time_secs - prev_t).abs();
+                                        let t_out = Some((span_out * out_ratio, 0.0f32));
+                                        let t_in = Some((-span_in * in_ratio, 0.0f32));
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::SetAudioKeyframeTangent {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                    keyframe_index: idx,
+                                                    tangent_in: t_in,
+                                                    tangent_out: t_out,
+                                                });
+                                            }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::SetVideoKeyframeTangent {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    param: *param,
+                                                    keyframe_index: idx,
+                                                    tangent_in: t_in,
+                                                    tangent_out: t_out,
+                                                });
+                                            }
                                         }
                                     }
+                                }
+                            };
+
+                            // Linear
+                            {
+                                let is_current = current_interp == Some(klipp_core::Interpolation::Linear);
+                                let text = if is_current {
+                                    egui::RichText::new("  Linear").strong()
+                                } else {
+                                    egui::RichText::new("  Linear")
+                                };
+                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                    emit_interp(&mut cmds, klipp_core::Interpolation::Linear);
+                                    close_menu = true;
+                                }
+                            }
+
+                            // Bezier (Custom)
+                            {
+                                let is_current = current_interp == Some(klipp_core::Interpolation::Bezier);
+                                let text = if is_current {
+                                    egui::RichText::new("  Bezier (Custom)").strong()
+                                } else {
+                                    egui::RichText::new("  Bezier (Custom)")
+                                };
+                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                    emit_interp(&mut cmds, klipp_core::Interpolation::Bezier);
+                                    close_menu = true;
+                                }
+                            }
+
+                            // Ease presets
+                            for (label, preset) in [
+                                ("Ease In", crate::widgets::scrubby_param::EasePreset::EaseIn),
+                                ("Ease Out", crate::widgets::scrubby_param::EasePreset::EaseOut),
+                                ("Ease Both", crate::widgets::scrubby_param::EasePreset::EaseBoth),
+                            ] {
+                                let text = egui::RichText::new(format!("  {label}"));
+                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                    emit_interp(&mut cmds, klipp_core::Interpolation::Bezier);
+                                    emit_ease(&mut cmds, preset);
+                                    close_menu = true;
+                                }
+                            }
+
+                            // Step (Hold)
+                            {
+                                let is_current = current_interp == Some(klipp_core::Interpolation::Step);
+                                let text = if is_current {
+                                    egui::RichText::new("  Step (Hold)").strong()
+                                } else {
+                                    egui::RichText::new("  Step (Hold)")
+                                };
+                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                    emit_interp(&mut cmds, klipp_core::Interpolation::Step);
                                     close_menu = true;
                                 }
                             }
@@ -2220,13 +2408,19 @@ impl TimelinePanel {
                 let kf_keyframes = &kf_keyframes[..];
 
 
-                // Param range configuration
-                let (param_min, param_max, _param_default) = match rb_param {
-                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
-                    klipp_core::AudioParam::Pan => (-1.0_f32, 1.0_f32, 0.0_f32),
-                    klipp_core::AudioParam::Gain => (0.0_f32, 4.0_f32, 1.0_f32),
-                };
-                let param_range = param_max - param_min;
+                // Auto-scale Y axis to actual keyframe values (with padding),
+                // matching the video rubber band approach so small changes are visible.
+                let mut val_min = kf_static_val;
+                let mut val_max = kf_static_val;
+                for kf in kf_keyframes.iter() {
+                    if kf.value < val_min { val_min = kf.value; }
+                    if kf.value > val_max { val_max = kf.value; }
+                }
+                // Add 20% padding on each side so curves don't touch edges
+                let val_span = (val_max - val_min).max(0.01);
+                let val_padding = val_span * 0.2;
+                let param_min = val_min - val_padding;
+                let param_range = val_span + val_padding * 2.0;
 
                 let clip_dur_secs = clip.duration().to_secs_f64();
                 let clip_painter = ui.painter().with_clip_rect(clip_rect);

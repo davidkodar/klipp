@@ -252,6 +252,17 @@ pub fn show(
             cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Gain, keyframe_index: ki, interpolation: interp });
         }
     }
+    if let Some(preset) = gain_resp.keyframe_ease_preset {
+        if let Some(ki) = clip.gain_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Gain, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.gain_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetAudioKeyframeTangent { clip_id, param: AudioParam::Gain, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
+        }
+    }
     if gain_resp.keyframe_toggled {
         if clip.gain_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs });
@@ -320,6 +331,17 @@ pub fn show(
             cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Volume, keyframe_index: ki, interpolation: interp });
         }
     }
+    if let Some(preset) = vol_resp.keyframe_ease_preset {
+        if let Some(ki) = clip.volume_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Volume, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.volume_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetAudioKeyframeTangent { clip_id, param: AudioParam::Volume, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
+        }
+    }
     if vol_resp.keyframe_toggled {
         if clip.volume_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs });
@@ -385,6 +407,17 @@ pub fn show(
     if let Some(interp) = pan_resp.keyframe_set_interpolation {
         if let Some(ki) = clip.pan_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Pan, keyframe_index: ki, interpolation: interp });
+        }
+    }
+    if let Some(preset) = pan_resp.keyframe_ease_preset {
+        if let Some(ki) = clip.pan_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Pan, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.pan_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetAudioKeyframeTangent { clip_id, param: AudioParam::Pan, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
         }
     }
     if pan_resp.keyframe_toggled {

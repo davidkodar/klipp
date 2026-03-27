@@ -270,6 +270,17 @@ pub fn show(
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionX, keyframe_index: ki, interpolation: interp });
         }
     }
+    if let Some(preset) = r_px.keyframe_ease_preset {
+        if let Some(ki) = clip.transform_pos_x_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionX, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.transform_pos_x_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionX, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
+        }
+    }
     if r_px.keyframe_toggled {
         if clip.transform_pos_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs });
@@ -293,6 +304,17 @@ pub fn show(
     if let Some(interp) = r_py.keyframe_set_interpolation {
         if let Some(ki) = clip.transform_pos_y_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionY, keyframe_index: ki, interpolation: interp });
+        }
+    }
+    if let Some(preset) = r_py.keyframe_ease_preset {
+        if let Some(ki) = clip.transform_pos_y_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionY, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.transform_pos_y_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionY, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
         }
     }
     if r_py.keyframe_toggled {
@@ -320,6 +342,17 @@ pub fn show(
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Scale, keyframe_index: ki, interpolation: interp });
         }
     }
+    if let Some(preset) = r_sc.keyframe_ease_preset {
+        if let Some(ki) = clip.transform_scale_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Scale, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.transform_scale_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Scale, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
+        }
+    }
     if r_sc.keyframe_toggled {
         if clip.transform_scale_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs });
@@ -343,6 +376,17 @@ pub fn show(
     if let Some(interp) = r_ro.keyframe_set_interpolation {
         if let Some(ki) = clip.transform_rotation_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Rotation, keyframe_index: ki, interpolation: interp });
+        }
+    }
+    if let Some(preset) = r_ro.keyframe_ease_preset {
+        if let Some(ki) = clip.transform_rotation_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Rotation, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.transform_rotation_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Rotation, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
         }
     }
     if r_ro.keyframe_toggled {
@@ -403,6 +447,17 @@ pub fn show(
     if let Some(interp) = r_op.keyframe_set_interpolation {
         if let Some(ki) = clip.opacity_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Opacity, keyframe_index: ki, interpolation: interp });
+        }
+    }
+    if let Some(preset) = r_op.keyframe_ease_preset {
+        if let Some(ki) = clip.opacity_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Opacity, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+            let kfs = &clip.opacity_keyframes;
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= kfs.len() { continue; }
+                let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Opacity, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            }
         }
     }
     if r_op.keyframe_toggled {
