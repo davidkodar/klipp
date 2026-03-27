@@ -2899,62 +2899,344 @@ impl TimelinePanel {
                 }
             }
 
-            // ── Video keyframe markers ──
-            // Draw small diamond ticks at the bottom edge of video clips for keyframed parameters
-            if track_kind != TrackKind::Audio && !clip.kind.is_gap() {
-                // Collect all keyframe times from video-relevant parameters
-                let kf_vecs: [&[klipp_core::Keyframe]; 5] = [
-                    &clip.opacity_keyframes,
-                    &clip.transform_pos_x_keyframes,
-                    &clip.transform_pos_y_keyframes,
-                    &clip.transform_scale_keyframes,
-                    &clip.transform_rotation_keyframes,
-                ];
-                let has_any_video_kf = kf_vecs.iter().any(|v| !v.is_empty());
+            // ── Video parameter rubber band overlay ──────────────────────
+            // Drawn on video track clips that have keyframes for the selected video param.
+            // Mirrors the audio rubber band pattern with cyan/blue color scheme.
+            if track_kind != TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+                let vrb_param = state.video_rubber_band_param;
 
-                if has_any_video_kf && clip_rect.width() > 8.0 {
-                    // Collect and deduplicate all keyframe times
-                    let mut kf_times: Vec<f64> = Vec::new();
-                    for kfs in &kf_vecs {
-                        for kf in *kfs {
-                            kf_times.push(kf.time_secs);
+                // Read static values from builtin effects
+                let vrb_opacity_static = clip.builtin_effects.iter()
+                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                    .unwrap_or(1.0);
+                let vrb_transform = clip.builtin_effects.iter()
+                    .find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                            Some((*position_x, *position_y, *scale_x, *rotation)),
+                        _ => None,
+                    })
+                    .unwrap_or((0.0, 0.0, 1.0, 0.0));
+
+                // Read keyframes for the selected video parameter
+                let (vrb_static_val, vrb_keyframes) = match vrb_param {
+                    klipp_core::VideoParam::Opacity => (vrb_opacity_static, clip.opacity_keyframes.clone()),
+                    klipp_core::VideoParam::PositionX => (vrb_transform.0, clip.transform_pos_x_keyframes.clone()),
+                    klipp_core::VideoParam::PositionY => (vrb_transform.1, clip.transform_pos_y_keyframes.clone()),
+                    klipp_core::VideoParam::Scale => (vrb_transform.2, clip.transform_scale_keyframes.clone()),
+                    klipp_core::VideoParam::Rotation => (vrb_transform.3, clip.transform_rotation_keyframes.clone()),
+                };
+
+                // Check if ANY video param has keyframes (for deciding whether to draw anything)
+                let has_any_video_kf = !clip.opacity_keyframes.is_empty()
+                    || !clip.transform_pos_x_keyframes.is_empty()
+                    || !clip.transform_pos_y_keyframes.is_empty()
+                    || !clip.transform_scale_keyframes.is_empty()
+                    || !clip.transform_rotation_keyframes.is_empty();
+
+                // Only draw when at least one video param has keyframes
+                if has_any_video_kf {
+                    let vrb_keyframes = &vrb_keyframes[..];
+
+                    // Param range configuration (min, max, normalized mapping)
+                    let (vrb_param_min, vrb_param_max) = match vrb_param {
+                        klipp_core::VideoParam::Opacity => (0.0_f32, 1.0_f32),
+                        klipp_core::VideoParam::PositionX => (-2000.0_f32, 2000.0_f32),
+                        klipp_core::VideoParam::PositionY => (-2000.0_f32, 2000.0_f32),
+                        klipp_core::VideoParam::Scale => (0.0_f32, 4.0_f32),
+                        klipp_core::VideoParam::Rotation => (-360.0_f32, 360.0_f32),
+                    };
+                    let vrb_param_range = vrb_param_max - vrb_param_min;
+
+                    let vrb_clip_dur_secs = clip.duration().to_secs_f64();
+                    let vrb_clip_painter = ui.painter().with_clip_rect(clip_rect);
+
+                    // Map param value to Y position within clip rect (min=bottom, max=top)
+                    let vrb_value_to_y = |val: f32| -> f32 {
+                        let normalized = ((val - vrb_param_min) / vrb_param_range).clamp(0.0, 1.0);
+                        clip_rect.bottom() - normalized * clip_rect.height()
+                    };
+
+                    // Map time (relative to clip start) to X position
+                    let vrb_time_to_x = |t: f64| -> f32 {
+                        let frac = if vrb_clip_dur_secs > 0.0 { (t / vrb_clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                        clip_rect.left() + frac as f32 * clip_rect.width()
+                    };
+
+                    // Cyan/blue color scheme for video (distinct from audio amber)
+                    let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) = match vrb_param {
+                        klipp_core::VideoParam::Opacity => (
+                            egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220),
+                            egui::Color32::from_rgba_unmultiplied(70, 160, 230, 140),
+                            egui::Color32::from_rgba_unmultiplied(90, 200, 255, 250),
+                            egui::Color32::from_rgba_unmultiplied(80, 180, 255, 200),
+                        ),
+                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => (
+                            egui::Color32::from_rgba_unmultiplied(100, 220, 200, 220),
+                            egui::Color32::from_rgba_unmultiplied(90, 200, 180, 140),
+                            egui::Color32::from_rgba_unmultiplied(110, 240, 220, 250),
+                            egui::Color32::from_rgba_unmultiplied(100, 220, 200, 200),
+                        ),
+                        klipp_core::VideoParam::Scale => (
+                            egui::Color32::from_rgba_unmultiplied(140, 160, 255, 220),
+                            egui::Color32::from_rgba_unmultiplied(120, 140, 230, 140),
+                            egui::Color32::from_rgba_unmultiplied(160, 180, 255, 250),
+                            egui::Color32::from_rgba_unmultiplied(140, 160, 255, 200),
+                        ),
+                        klipp_core::VideoParam::Rotation => (
+                            egui::Color32::from_rgba_unmultiplied(180, 130, 255, 220),
+                            egui::Color32::from_rgba_unmultiplied(160, 110, 230, 140),
+                            egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
+                            egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
+                        ),
+                    };
+                    let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+                    let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
+                    let vrb_active_line_color = if is_selected || is_multi_selected { vrb_line_color } else { vrb_line_color_dim };
+                    let vrb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
+                    let vrb_shadow_width = vrb_line_width + 1.0;
+
+                    // Draw param pill badge at bottom-left of clip
+                    let vrb_param_label = match vrb_param {
+                        klipp_core::VideoParam::Opacity => "Opa",
+                        klipp_core::VideoParam::PositionX => "PosX",
+                        klipp_core::VideoParam::PositionY => "PosY",
+                        klipp_core::VideoParam::Scale => "Scl",
+                        klipp_core::VideoParam::Rotation => "Rot",
+                    };
+                    let vrb_pill_font = egui::FontId::proportional(9.0);
+                    let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
+                    let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
+                    let vrb_pill_h = 14.0;
+                    let vrb_pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - vrb_pill_h - 4.0);
+                    let vrb_pill_rect = egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
+                    if clip_rect.width() > 30.0 {
+                        let vrb_pill_bg = match vrb_param {
+                            klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
+                            klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
+                            klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
+                            klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
+                        };
+                        vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
+                        vrb_clip_painter.text(
+                            vrb_pill_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            vrb_param_label,
+                            vrb_pill_font,
+                            egui::Color32::WHITE,
+                        );
+                        // Click pill to cycle video param
+                        if interactive {
+                            if let Some(pos) = pointer_pos {
+                                if vrb_pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
+                                    state.video_rubber_band_param = match vrb_param {
+                                        klipp_core::VideoParam::Opacity => klipp_core::VideoParam::PositionX,
+                                        klipp_core::VideoParam::PositionX => klipp_core::VideoParam::PositionY,
+                                        klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
+                                        klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
+                                        klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
+                                    };
+                                }
+                            }
                         }
                     }
-                    kf_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    kf_times.dedup_by(|a, b| (*a - *b).abs() < 0.0001);
 
-                    let clip_dur = clip.duration().to_secs_f64();
-                    if clip_dur > 0.0 {
-                        let kf_painter = painter.with_clip_rect(clip_rect);
-                        let amber_color = egui::Color32::from_rgba_premultiplied(240, 180, 40, 200);
-                        let dark_outline = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+                    if vrb_keyframes.is_empty() {
+                        // Selected param has no keyframes — draw flat line at static value
+                        let vy = vrb_value_to_y(vrb_static_val);
+                        vrb_clip_painter.line_segment(
+                            [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
+                            egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                        );
+                        vrb_clip_painter.line_segment(
+                            [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
+                            egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                        );
+                    } else {
+                        // Draw curve segments between keyframes
+                        let vrb_src_in_secs = clip.source_in.to_secs_f64();
+                        let vrb_src_out_secs = clip.source_out.to_secs_f64();
+                        let vrb_clip_time_range = vrb_src_out_secs - vrb_src_in_secs;
 
-                        // Draw thin connecting line at the bottom edge
-                        if kf_times.len() >= 2 {
-                            let first_frac = (kf_times[0] / clip_dur) as f32;
-                            let last_frac = (*kf_times.last().unwrap() / clip_dur) as f32;
-                            let x_first = clip_rect.left() + first_frac * clip_rect.width();
-                            let x_last = clip_rect.left() + last_frac * clip_rect.width();
-                            let line_y = clip_rect.bottom() - 5.0;
-                            kf_painter.line_segment(
-                                [egui::pos2(x_first, line_y), egui::pos2(x_last, line_y)],
-                                egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(240, 180, 40, 100)),
-                            );
+                        let vrb_visible_kfs: Vec<(usize, &klipp_core::Keyframe)> = vrb_keyframes.iter().enumerate()
+                            .filter(|(_, kf)| kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range)
+                            .collect();
+
+                        // Helper: sample cubic bezier curve
+                        let vrb_sample_bezier = |a_time: f64, a_val: f32, a_tangent_out: (f64, f32),
+                                                 b_time: f64, b_val: f32, b_tangent_in: (f64, f32),
+                                                 num_samples: usize| -> Vec<egui::Pos2> {
+                            let mut pts = Vec::with_capacity(num_samples + 1);
+                            let p0_x = vrb_time_to_x(a_time);
+                            let p0_y = vrb_value_to_y(a_val);
+                            let p3_x = vrb_time_to_x(b_time);
+                            let p3_y = vrb_value_to_y(b_val);
+                            let pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
+                            let value_scale = clip_rect.height() / vrb_param_range;
+                            let p1_x = p0_x + a_tangent_out.0 as f32 * pixels_per_sec;
+                            let p1_y = p0_y - a_tangent_out.1 * value_scale;
+                            let p2_x = p3_x + b_tangent_in.0 as f32 * pixels_per_sec;
+                            let p2_y = p3_y - b_tangent_in.1 * value_scale;
+                            for si in 0..=num_samples {
+                                let t = si as f32 / num_samples as f32;
+                                let mt = 1.0 - t;
+                                let x = mt*mt*mt*p0_x + 3.0*mt*mt*t*p1_x + 3.0*mt*t*t*p2_x + t*t*t*p3_x;
+                                let y = mt*mt*mt*p0_y + 3.0*mt*mt*t*p1_y + 3.0*mt*t*t*p2_y + t*t*t*p3_y;
+                                pts.push(egui::pos2(x, y));
+                            }
+                            pts
+                        };
+
+                        let mut vrb_all_segments: Vec<Vec<egui::Pos2>> = Vec::new();
+
+                        // Segment from clip start to first visible keyframe
+                        let vrb_start_val = klipp_core::keyframe::evaluate(vrb_keyframes, 0.0, vrb_static_val);
+                        if let Some(&(_, first_kf)) = vrb_visible_kfs.first() {
+                            vrb_all_segments.push(vec![
+                                egui::pos2(clip_rect.left(), vrb_value_to_y(vrb_start_val)),
+                                egui::pos2(vrb_time_to_x(first_kf.time_secs), vrb_value_to_y(first_kf.value)),
+                            ]);
+                        } else {
+                            let vrb_end_val = klipp_core::keyframe::evaluate(vrb_keyframes, vrb_clip_time_range, vrb_static_val);
+                            vrb_all_segments.push(vec![
+                                egui::pos2(clip_rect.left(), vrb_value_to_y(vrb_start_val)),
+                                egui::pos2(clip_rect.right(), vrb_value_to_y(vrb_end_val)),
+                            ]);
                         }
 
-                        // Draw diamond at each keyframe position
-                        for &kf_time in &kf_times {
-                            let frac = (kf_time / clip_dur) as f32;
-                            let x = clip_rect.left() + frac * clip_rect.width();
-                            let d = 3.0; // half-size
-                            let cy = clip_rect.bottom() - 5.0;
-                            let diamond = vec![
-                                egui::pos2(x, cy - d),
-                                egui::pos2(x + d, cy),
-                                egui::pos2(x, cy + d),
-                                egui::pos2(x - d, cy),
-                            ];
-                            kf_painter.add(egui::Shape::convex_polygon(diamond, amber_color, egui::Stroke::new(0.5, dark_outline)));
+                        // Segments between consecutive visible keyframes
+                        for w in vrb_visible_kfs.windows(2) {
+                            let (_, kf_a) = w[0];
+                            let (_, kf_b) = w[1];
+                            match kf_a.interpolation {
+                                klipp_core::Interpolation::Linear => {
+                                    vrb_all_segments.push(vec![
+                                        egui::pos2(vrb_time_to_x(kf_a.time_secs), vrb_value_to_y(kf_a.value)),
+                                        egui::pos2(vrb_time_to_x(kf_b.time_secs), vrb_value_to_y(kf_b.value)),
+                                    ]);
+                                }
+                                klipp_core::Interpolation::Step => {
+                                    let ax = vrb_time_to_x(kf_a.time_secs);
+                                    let bx = vrb_time_to_x(kf_b.time_secs);
+                                    let ay = vrb_value_to_y(kf_a.value);
+                                    let by = vrb_value_to_y(kf_b.value);
+                                    vrb_all_segments.push(vec![
+                                        egui::pos2(ax, ay),
+                                        egui::pos2(bx, ay),
+                                        egui::pos2(bx, by),
+                                    ]);
+                                }
+                                klipp_core::Interpolation::Bezier => {
+                                    vrb_all_segments.push(vrb_sample_bezier(
+                                        kf_a.time_secs, kf_a.value, kf_a.tangent_out,
+                                        kf_b.time_secs, kf_b.value, kf_b.tangent_in,
+                                        24,
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Segment from last visible keyframe to clip end
+                        if let Some(&(_, last_kf)) = vrb_visible_kfs.last() {
+                            let vrb_end_val = klipp_core::keyframe::evaluate(vrb_keyframes, vrb_clip_time_range, vrb_static_val);
+                            vrb_all_segments.push(vec![
+                                egui::pos2(vrb_time_to_x(last_kf.time_secs), vrb_value_to_y(last_kf.value)),
+                                egui::pos2(clip_rect.right(), vrb_value_to_y(vrb_end_val)),
+                            ]);
+                        }
+
+                        // Draw all segments: shadow pass then color pass
+                        for seg in &vrb_all_segments {
+                            for i in 0..seg.len().saturating_sub(1) {
+                                vrb_clip_painter.line_segment(
+                                    [seg[i], seg[i + 1]],
+                                    egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                                );
+                            }
+                        }
+                        for seg in &vrb_all_segments {
+                            for i in 0..seg.len().saturating_sub(1) {
+                                vrb_clip_painter.line_segment(
+                                    [seg[i], seg[i + 1]],
+                                    egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                                );
+                            }
+                        }
+
+                        // Draw diamond markers at each keyframe
+                        let vrb_hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
+                            if !clip_rect.contains(pos) { return None; }
+                            let mut best: Option<(usize, f32)> = None;
+                            for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                                if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                                    let kx = vrb_time_to_x(kf.time_secs);
+                                    let ky = vrb_value_to_y(kf.value);
+                                    let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                                    if dist < 10.0 {
+                                        if best.map_or(true, |(_, bd)| dist < bd) {
+                                            best = Some((ki, dist));
+                                        }
+                                    }
+                                }
+                            }
+                            best.map(|(i, _)| i)
+                        });
+
+                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                                let cx = vrb_time_to_x(kf.time_secs);
+                                let cy = vrb_value_to_y(kf.value);
+                                let is_hovered = vrb_hovered_kf_idx == Some(ki);
+                                let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
+                                // Dark outline diamond behind for contrast
+                                let outline_d = d + 1.5;
+                                let outline_diamond = vec![
+                                    egui::pos2(cx, cy - outline_d),
+                                    egui::pos2(cx + outline_d, cy),
+                                    egui::pos2(cx, cy + outline_d),
+                                    egui::pos2(cx - outline_d, cy),
+                                ];
+                                vrb_clip_painter.add(egui::Shape::convex_polygon(
+                                    outline_diamond,
+                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                                    egui::Stroke::NONE,
+                                ));
+                                let fill = if is_hovered {
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        vrb_diamond_fill.r().saturating_add(30),
+                                        vrb_diamond_fill.g().saturating_add(30),
+                                        vrb_diamond_fill.b().saturating_add(30),
+                                        255,
+                                    )
+                                } else {
+                                    vrb_diamond_fill
+                                };
+                                let diamond = vec![
+                                    egui::pos2(cx, cy - d),
+                                    egui::pos2(cx + d, cy),
+                                    egui::pos2(cx, cy + d),
+                                    egui::pos2(cx - d, cy),
+                                ];
+                                let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
+                                vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
+
+                                // Show value tooltip on hover
+                                if is_hovered {
+                                    let tooltip_text = match vrb_param {
+                                        klipp_core::VideoParam::Opacity => format!("{:.0}%", kf.value * 100.0),
+                                        klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
+                                        klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
+                                        klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
+                                        klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
+                                    };
+                                    vrb_clip_painter.text(
+                                        egui::pos2(cx, cy - 14.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        tooltip_text,
+                                        egui::FontId::proportional(9.0),
+                                        vrb_active_line_color,
+                                    );
+                                }
+                            }
                         }
                     }
                 }

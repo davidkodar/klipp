@@ -214,6 +214,11 @@ pub fn show(
                 old_effect: transform.to_builtin_effect(),
             });
         }
+        // Auto-switch video rubber band to the param being dragged
+        if r_px.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionX)); }
+        else if r_py.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionY)); }
+        else if r_sc.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Scale)); }
+        else if r_ro.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Rotation)); }
     }
 
     // Emit command for any changed transform value
@@ -271,6 +276,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs, value: pos_x });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionX));
     }
     if r_px.keyframe_nav_prev {
         if let Some(t) = pos_x_ks.prev_keyframe_time {
@@ -295,6 +301,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs, value: pos_y });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionY));
     }
     if r_py.keyframe_nav_prev {
         if let Some(t) = pos_y_ks.prev_keyframe_time {
@@ -319,6 +326,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs, value: scale_val });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Scale));
     }
     if r_sc.keyframe_nav_prev {
         if let Some(t) = scale_ks.prev_keyframe_time {
@@ -343,6 +351,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs, value: rotation });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Rotation));
     }
     if r_ro.keyframe_nav_prev {
         if let Some(t) = rot_ks.prev_keyframe_time {
@@ -370,6 +379,7 @@ pub fn show(
                 old_effect: BuiltinEffect::Opacity { value: get_opacity(clip) },
             });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Opacity));
     }
     if r_op.changed {
         emit_opacity(cmds, clip, clip_id, opacity);
@@ -401,6 +411,7 @@ pub fn show(
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
         }
+        cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Opacity));
     }
     if r_op.keyframe_nav_prev {
         if let Some(t) = opacity_ks.prev_keyframe_time {

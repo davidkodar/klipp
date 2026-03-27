@@ -1,5 +1,5 @@
 use crate::history::CommandHistory;
-use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, ViewerMode};
+use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
@@ -383,6 +383,8 @@ pub struct AppState {
     pub selected_keyframe: Option<SelectedKeyframe>,
     /// Which audio parameter the timeline rubber band displays.
     pub rubber_band_param: AudioParam,
+    /// Which video parameter the timeline rubber band displays.
+    pub video_rubber_band_param: VideoParam,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
     pub audio_fade_overlay_mode: crate::prefs::FadeOverlayMode,
     pub audio_show_rubber_band: bool,
@@ -657,6 +659,7 @@ impl Default for AppState {
             keyframe_context_menu: None,
             selected_keyframe: None,
             rubber_band_param: AudioParam::Volume,
+            video_rubber_band_param: VideoParam::Opacity,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
             audio_show_waveform: true,

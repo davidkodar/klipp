@@ -1842,6 +1842,10 @@ impl KlippApp {
                     self.state.rubber_band_param = *param;
                     continue;
                 }
+                AppCommand::SetVideoRubberBandParam(param) => {
+                    self.state.video_rubber_band_param = *param;
+                    continue;
+                }
                 AppCommand::SequenceUpdated => {
                     self.sync_sequence_to_engine();
                     continue;
