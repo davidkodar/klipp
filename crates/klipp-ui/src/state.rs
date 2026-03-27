@@ -40,6 +40,14 @@ pub struct KeyframeContextMenu {
     pub screen_pos: egui::Pos2,
 }
 
+/// A selected keyframe on the timeline rubber band.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedKeyframe {
+    pub clip_id: ClipId,
+    pub param: AudioParam,
+    pub keyframe_index: usize,
+}
+
 /// State during an active range handle drag or ruler range drag.
 #[derive(Debug, Clone)]
 pub struct RangeDragState {
@@ -371,6 +379,8 @@ pub struct AppState {
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
+    /// Currently selected keyframe on timeline (click to select, right-click for menu)
+    pub selected_keyframe: Option<SelectedKeyframe>,
     /// Which audio parameter the timeline rubber band displays.
     pub rubber_band_param: AudioParam,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
@@ -645,6 +655,7 @@ impl Default for AppState {
             dragging_rubber_band: None,
             dragging_bezier_handle: None,
             keyframe_context_menu: None,
+            selected_keyframe: None,
             rubber_band_param: AudioParam::Volume,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,

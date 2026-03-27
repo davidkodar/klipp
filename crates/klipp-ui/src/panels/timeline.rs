@@ -2238,7 +2238,10 @@ impl TimelinePanel {
                             let cx = time_to_x(kf.time_secs);
                             let cy = value_to_y(kf.value);
                             let is_hovered = hovered_kf_idx == Some(ki);
-                            let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
+                            let is_kf_selected = state.selected_keyframe.as_ref().is_some_and(|sk| {
+                                sk.clip_id == kf_clip_id && sk.param == rb_param && sk.keyframe_index == ki
+                            });
+                            let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
                             // Dark outline diamond behind for contrast
                             let outline_d = d + 1.5;
                             let outline_diamond = vec![
@@ -2269,11 +2272,12 @@ impl TimelinePanel {
                                 egui::pos2(cx, cy + d),
                                 egui::pos2(cx - d, cy),
                             ];
-                            clip_painter.add(egui::Shape::convex_polygon(
-                                diamond,
-                                fill,
-                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
-                            ));
+                            let stroke = if is_kf_selected {
+                                egui::Stroke::new(2.0, egui::Color32::WHITE)
+                            } else {
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+                            };
+                            clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
 
                             // ── Bezier tangent handles (only when clip is selected) ──
                             if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
@@ -2416,22 +2420,43 @@ impl TimelinePanel {
                                 }
                             }
 
-                            // ── Right-click keyframe diamond for interpolation context menu ──
+                            // ── Click keyframe diamond to SELECT it ──
                             if let Some(ki) = nearest_kf_idx {
-                                // Use a persistent flag to detect right-click on this keyframe
-                                let secondary_down = ui.input(|i| i.pointer.secondary_down());
-                                let secondary_released = ui.input(|i| i.pointer.secondary_released());
-                                if secondary_released && nearest_kf_dist < 10.0 {
-                                    state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
+                                    state.selected_keyframe = Some(crate::state::SelectedKeyframe {
                                         clip_id: kf_clip_id,
                                         param: rb_param,
                                         keyframe_index: ki,
-                                        screen_pos: pos,
                                     });
-                                    // Consume the right-click so the clip context menu doesn't also open
-                                    self.suppress_clip_context_menu = true;
                                 }
-                                let _ = secondary_down; // suppress warning
+                            }
+
+                            // ── Right-click: open context menu for selected keyframe or nearest diamond ──
+                            if ui.input(|i| i.pointer.secondary_released()) {
+                                let target_ki = nearest_kf_idx.or_else(|| {
+                                    // If no diamond nearby, use the selected keyframe if it's on this clip
+                                    state.selected_keyframe.as_ref()
+                                        .filter(|sk| sk.clip_id == kf_clip_id && sk.param == rb_param)
+                                        .map(|sk| sk.keyframe_index)
+                                });
+                                if let Some(ki) = target_ki {
+                                    if ki < kf_keyframes.len() {
+                                        state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                            clip_id: kf_clip_id,
+                                            param: rb_param,
+                                            keyframe_index: ki,
+                                            screen_pos: pos,
+                                        });
+                                        self.suppress_clip_context_menu = true;
+                                    }
+                                }
+                            }
+
+                            // ── Click empty area to deselect keyframe ──
+                            if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none() {
+                                if state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
+                                    state.selected_keyframe = None;
+                                }
                             }
 
                             // ── Start bezier tangent handle drag ──
