@@ -680,7 +680,7 @@ impl PlaybackEngine {
         {
             let seq = self.sequence.read().unwrap();
             let has_media_clip = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .any(|track| {
                     track.clip_at_timecode(self.playhead)
                         .map(|(_, c)| c.media_id().is_some())
@@ -688,7 +688,7 @@ impl PlaybackEngine {
                 });
             let title_info = if !has_media_clip {
                 seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                     .find_map(|track| {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             let td = clip.title_data()?.clone();
@@ -1236,7 +1236,7 @@ impl PlaybackEngine {
         if self.v1_decoder.is_none() && self.current_file.is_none() {
             let seq = self.sequence.read().unwrap();
             let title_clip = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .find_map(|track| {
                     track.clips.get(self.current_clip_index).and_then(|clip| {
                         clip.title_data().map(|td| (clip.clone(), td.clone()))
@@ -1860,7 +1860,7 @@ impl PlaybackEngine {
         // Check ALL overlay video tracks (not just track2) for clips at playhead
         let overlay_info = seq.tracks.iter()
             .enumerate()
-            .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && *i > 0 && !t.muted)
+            .filter(|(i, t)| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && *i > 0 && !t.muted)
             .find_map(|(track_idx, track)| {
                 track.clip_at_timecode(playhead).map(|(idx, clip)| {
                     (track_idx, idx, clip.clone())
