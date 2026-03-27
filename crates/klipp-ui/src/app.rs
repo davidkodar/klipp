@@ -2493,25 +2493,42 @@ impl KlippApp {
                 }
                 // Undo coalescing — drag gesture signals for builtin effects
                 AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
+                    let mut linked_partner_id = None;
+                    let kf = klipp_core::Keyframe {
+                        time_secs: *time_secs,
+                        value: *value,
+                        interpolation: klipp_core::Interpolation::Linear,
+                        tangent_out: (0.0, 0.0),
+                        tangent_in: (0.0, 0.0),
+                    };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: klipp_core::Interpolation::Linear,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
+                            linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            // Remove existing keyframe at same time (within tolerance)
                             keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                            keyframes.push(kf);
+                            keyframes.push(kf.clone());
                             keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                             break;
+                        }
+                    }
+                    // Also add to linked partner clip
+                    if let Some(partner_id) = linked_partner_id {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(partner) = track.find_clip_mut(partner_id) {
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
+                                };
+                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                keyframes.push(kf);
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                break;
+                            }
                         }
                     }
                     self.sync_sequence_to_engine();
@@ -2520,8 +2537,10 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs } => {
+                    let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
@@ -2529,6 +2548,19 @@ impl KlippApp {
                             };
                             keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
                             break;
+                        }
+                    }
+                    if let Some(partner_id) = linked_partner_id {
+                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(partner) = track.find_clip_mut(partner_id) {
+                                let keyframes = match param {
+                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
+                                };
+                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                break;
+                            }
                         }
                     }
                     self.sync_sequence_to_engine();
@@ -2645,8 +2677,22 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetAudioKeyframeInterpolation { clip_id, param, keyframe_index, interpolation } => {
+                    // Apply to target clip AND linked partner
+                    let target_ids: Vec<klipp_core::ClipId> = {
+                        let mut ids = vec![*clip_id];
+                        for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(c) = track.find_clip(*clip_id) {
+                                if let Some(lid) = c.linked_clip_id {
+                                    ids.push(lid);
+                                }
+                                break;
+                            }
+                        }
+                        ids
+                    };
+                    for target_id in &target_ids {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(clip) = track.find_clip_mut(*target_id) {
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
@@ -2678,6 +2724,7 @@ impl KlippApp {
                             break;
                         }
                     }
+                    } // end for target_id
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;

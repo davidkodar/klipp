@@ -107,6 +107,9 @@ fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64) -> Ke
         next_keyframe_time: keyframes.iter()
             .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
             .map(|k| k.time_secs),
+        current_interpolation: keyframes.iter()
+            .find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance)
+            .map(|k| k.interpolation),
     }
 }
 

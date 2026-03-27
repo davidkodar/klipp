@@ -500,6 +500,9 @@ fn effect_keyframe_state(clip: &Clip, effect_index: usize, param_name: &str, cli
         next_keyframe_time: kfs.iter()
             .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
             .map(|k| k.time_secs),
+        current_interpolation: kfs.iter()
+            .find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance)
+            .map(|k| k.interpolation),
     }
 }
 

@@ -172,6 +172,7 @@ pub fn show(
         has_any_keyframes: !clip.gain_keyframes.is_empty(),
         prev_keyframe_time: gain_prev_kf,
         next_keyframe_time: gain_next_kf,
+        current_interpolation: clip.gain_keyframes.iter().find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance).map(|k| k.interpolation),
     });
     let vol_prev_kf = clip.volume_keyframes.iter()
         .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
@@ -185,6 +186,7 @@ pub fn show(
         has_any_keyframes: !clip.volume_keyframes.is_empty(),
         prev_keyframe_time: vol_prev_kf,
         next_keyframe_time: vol_next_kf,
+        current_interpolation: clip.volume_keyframes.iter().find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance).map(|k| k.interpolation),
     });
     let pan_prev_kf = clip.pan_keyframes.iter()
         .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
@@ -198,6 +200,7 @@ pub fn show(
         has_any_keyframes: !clip.pan_keyframes.is_empty(),
         prev_keyframe_time: pan_prev_kf,
         next_keyframe_time: pan_next_kf,
+        current_interpolation: clip.pan_keyframes.iter().find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance).map(|k| k.interpolation),
     });
 
     // ── Gain (pre-fader) ──

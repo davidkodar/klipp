@@ -1986,6 +1986,7 @@ impl TimelinePanel {
                 };
                 let kf_keyframes = &kf_keyframes[..];
 
+
                 // Param range configuration
                 let (param_min, param_max, _param_default) = match rb_param {
                     klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),

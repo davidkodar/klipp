@@ -16,6 +16,8 @@ pub struct KeyframeState {
     pub prev_keyframe_time: Option<f64>,
     /// Time of the next keyframe (relative to clip), if any.
     pub next_keyframe_time: Option<f64>,
+    /// Interpolation type of the keyframe at the playhead (if any).
+    pub current_interpolation: Option<klipp_core::Interpolation>,
 }
 
 /// Returned by scrubby_param_row() so callers can check what happened.
@@ -271,17 +273,19 @@ pub fn scrubby_param_row(
 
         // Right-click context menu on diamond for interpolation type
         if is_keyframeable && keyframe_state.as_ref().is_some_and(|ks| ks.has_keyframe_at_playhead) {
+            let cur_interp = keyframe_state.as_ref().and_then(|ks| ks.current_interpolation);
             diamond_btn_resp.clone().context_menu(|ui| {
-                ui.set_min_width(120.0);
-                if ui.button("Linear").clicked() {
+                ui.set_min_width(140.0);
+                let check = |active: bool| if active { "  * " } else { "    " };
+                if ui.button(format!("{}Linear", check(cur_interp == Some(klipp_core::Interpolation::Linear)))).clicked() {
                     interp_changed = Some(klipp_core::Interpolation::Linear);
                     ui.close_menu();
                 }
-                if ui.button("Bezier").clicked() {
+                if ui.button(format!("{}Bezier", check(cur_interp == Some(klipp_core::Interpolation::Bezier)))).clicked() {
                     interp_changed = Some(klipp_core::Interpolation::Bezier);
                     ui.close_menu();
                 }
-                if ui.button("Step (Hold)").clicked() {
+                if ui.button(format!("{}Step (Hold)", check(cur_interp == Some(klipp_core::Interpolation::Step)))).clicked() {
                     interp_changed = Some(klipp_core::Interpolation::Step);
                     ui.close_menu();
                 }
