@@ -34,6 +34,10 @@ pub struct KlippTheme {
     pub role_sfx: Color32,
     pub role_title: Color32,
     pub role_broll: Color32,
+    pub role_ambience: Color32,
+    pub role_foley: Color32,
+    pub role_voiceover: Color32,
+    pub role_graphics: Color32,
 }
 
 impl Default for KlippTheme {
@@ -61,15 +65,34 @@ impl Default for KlippTheme {
 
             role_video: Color32::from_rgb(0x2d, 0x6f, 0xa8),
             role_dialogue: Color32::from_rgb(0x3a, 0x8c, 0x6e),
-            role_music: Color32::from_rgb(0x7a, 0x4f, 0xa8),
+            role_music: Color32::from_rgb(0x42, 0x85, 0xf4),
             role_sfx: Color32::from_rgb(0xa8, 0x5c, 0x2d),
             role_title: Color32::from_rgb(0xc0, 0x39, 0x2b),
             role_broll: Color32::from_rgb(0x4a, 0x6e, 0xa8),
+            role_ambience: Color32::from_rgb(0x9c, 0x27, 0xb0),
+            role_foley: Color32::from_rgb(0xe9, 0x1e, 0x63),
+            role_voiceover: Color32::from_rgb(0x00, 0xbc, 0xd4),
+            role_graphics: Color32::from_rgb(0xff, 0xeb, 0x3b),
         }
     }
 }
 
 impl KlippTheme {
+    /// Return the theme color for a clip role.
+    pub fn clip_role_color(&self, role: klipp_timeline::ClipRole) -> Color32 {
+        use klipp_timeline::ClipRole;
+        match role {
+            ClipRole::Dialogue => self.role_dialogue,
+            ClipRole::Music => self.role_music,
+            ClipRole::SFX => self.role_sfx,
+            ClipRole::Ambience => self.role_ambience,
+            ClipRole::Foley => self.role_foley,
+            ClipRole::Voiceover => self.role_voiceover,
+            ClipRole::BRoll => self.role_broll,
+            ClipRole::Graphics => self.role_graphics,
+        }
+    }
+
     /// Apply theme colours to egui's global visuals.
     pub fn apply_to_egui(&self, ctx: &egui::Context) {
         let mut visuals = egui::Visuals::dark();

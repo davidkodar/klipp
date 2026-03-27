@@ -53,6 +53,39 @@ pub fn show(
     let mut fade_out_curve = clip.fade_out_curve;
     let mut channel_config = clip.channel_config;
 
+    // ── Role selector ──
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Role:")
+                .size(11.0)
+                .color(theme.text_secondary),
+        );
+
+        let current_role = clip.role;
+        let role_color = theme.clip_role_color(current_role);
+
+        // Colored dot before the combo box
+        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot_rect.center(), 4.0, role_color);
+
+        let mut new_role = current_role;
+        egui::ComboBox::from_id_salt("clip_role")
+            .selected_text(current_role.label())
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                for &role in klipp_core::ClipRole::all() {
+                    let rc = theme.clip_role_color(role);
+                    let text = egui::RichText::new(role.label()).color(rc);
+                    ui.selectable_value(&mut new_role, role, text);
+                }
+            });
+        if new_role != current_role {
+            cmds.push(AppCommand::SetClipRole { clip_id, role: new_role });
+        }
+    });
+
+    ui.add_space(4.0);
+
     // ── Audio section header with global reset ──
     ui.horizontal(|ui| {
         ui.label(

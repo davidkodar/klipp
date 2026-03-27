@@ -94,3 +94,47 @@ pub enum FadeCurve {
     Logarithmic,
     SCurve,
 }
+
+/// Content role of a clip — determines timeline color coding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ClipRole {
+    #[default]
+    Dialogue,
+    Music,
+    SFX,
+    Ambience,
+    Foley,
+    Voiceover,
+    BRoll,
+    Graphics,
+}
+
+impl ClipRole {
+    /// All variants for iteration in UI dropdowns.
+    pub fn all() -> &'static [ClipRole] {
+        &[
+            ClipRole::Dialogue,
+            ClipRole::Music,
+            ClipRole::SFX,
+            ClipRole::Ambience,
+            ClipRole::Foley,
+            ClipRole::Voiceover,
+            ClipRole::BRoll,
+            ClipRole::Graphics,
+        ]
+    }
+
+    /// Human-readable label.
+    pub fn label(self) -> &'static str {
+        match self {
+            ClipRole::Dialogue => "Dialogue",
+            ClipRole::Music => "Music",
+            ClipRole::SFX => "SFX",
+            ClipRole::Ambience => "Ambience",
+            ClipRole::Foley => "Foley",
+            ClipRole::Voiceover => "Voiceover",
+            ClipRole::BRoll => "B-Roll",
+            ClipRole::Graphics => "Graphics",
+        }
+    }
+}

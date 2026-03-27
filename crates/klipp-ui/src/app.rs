@@ -1906,7 +1906,7 @@ impl KlippApp {
                         &self.state.sequences[self.state.active_sequence_idx],
                         &self.state.media_pool,
                         &settings,
-                        None, // TODO: pass global_lut_path from engine
+                        self.state.global_lut_path.clone(),
                         self.export_dialog.marked_range,
                     );
                     let label = settings.output_path.file_name()
@@ -2319,6 +2319,16 @@ impl KlippApp {
                         }
                     }
                     self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::SetClipRole { clip_id, role } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.role = *role;
+                            break;
+                        }
+                    }
+                    self.state.dirty = true;
                     continue;
                 }
                 AppCommand::SetClipLogFormat { clip_id, log_format } => {
@@ -4104,6 +4114,7 @@ impl KlippApp {
                         transform_rotation_keyframes: Vec::new(),
                         clip_markers: Vec::new(),
                         effect_keyframes: std::collections::HashMap::new(),
+                        role: klipp_core::ClipRole::default(),
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -4391,6 +4402,7 @@ impl KlippApp {
                                     transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                                     clip_markers: clip.clip_markers.clone(),
                                     effect_keyframes: clip.effect_keyframes.clone(),
+                                    role: clip.role,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -4512,6 +4524,7 @@ impl KlippApp {
                                     transform_rotation_keyframes: Vec::new(),
                                     clip_markers: Vec::new(),
                                     effect_keyframes: std::collections::HashMap::new(),
+                                    role: klipp_core::ClipRole::default(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -4588,6 +4601,7 @@ impl KlippApp {
                                     transform_rotation_keyframes: Vec::new(),
                                     clip_markers: Vec::new(),
                                     effect_keyframes: std::collections::HashMap::new(),
+                                    role: klipp_core::ClipRole::default(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -6382,6 +6396,7 @@ impl KlippApp {
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
                 effect_keyframes: clip.effect_keyframes.clone(),
+                role: clip.role,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -6483,6 +6498,7 @@ impl KlippApp {
                 transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
                 effect_keyframes: clip.effect_keyframes.clone(),
+                role: clip.role,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -9381,7 +9397,7 @@ impl KlippApp {
                             &self.state.sequences[self.state.active_sequence_idx],
                             &self.state.media_pool,
                             &settings,
-                            None, // TODO: pass global_lut_path from engine
+                            self.state.global_lut_path.clone(),
                             self.export_dialog.marked_range,
                         );
                         let label = path.file_name()

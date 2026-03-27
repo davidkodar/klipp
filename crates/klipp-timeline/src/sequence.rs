@@ -23,6 +23,8 @@ pub enum TrackRole {
     ConnectedStoryline,
 }
 
+pub use klipp_core::ClipRole;
+
 /// Anchor alignment mode for connected clips.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnchorAlignment {
@@ -355,6 +357,7 @@ impl Track {
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
+            role: ClipRole::default(),
         });
         clip_id
     }
@@ -531,6 +534,7 @@ impl Track {
             transform_rotation_keyframes: rot_a,
             clip_markers: markers_a,
             effect_keyframes: effect_kfs_a,
+            role: clip.role,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -563,6 +567,7 @@ impl Track {
             transform_rotation_keyframes: rot_b,
             clip_markers: markers_b,
             effect_keyframes: effect_kfs_b,
+            role: clip.role,
         };
 
         self.clips.remove(pos);
@@ -671,6 +676,9 @@ pub struct Clip {
     /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
     #[serde(default)]
     pub effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    /// Content role — determines timeline color coding.
+    #[serde(default)]
+    pub role: ClipRole,
 }
 
 impl Clip {
@@ -735,6 +743,7 @@ impl Clip {
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
+            role: ClipRole::default(),
         }
     }
 
@@ -777,6 +786,7 @@ impl Clip {
             transform_rotation_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
+            role: ClipRole::default(),
         }
     }
 }

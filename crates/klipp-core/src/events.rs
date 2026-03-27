@@ -560,6 +560,9 @@ pub enum AppCommand {
     MoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
     SetEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 
+    // Clip role
+    SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+
     // Clip audio
     UpdateClipAudio {
         clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,

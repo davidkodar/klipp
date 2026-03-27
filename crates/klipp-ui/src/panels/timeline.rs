@@ -2289,37 +2289,38 @@ impl TimelinePanel {
             let is_being_dragged = self.dragging_clip.as_ref()
                 .is_some_and(|d| d.clip_id == clip.id);
 
-            // Future: when Clip has a role field, use theme.role_xxx for the fill color.
-            // For now, audio clips use the track's role color (dialogue green from theme).
+            // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
             let theme_colors = crate::theme::KlippTheme::default();
-            let audio_role_color = theme_colors.role_dialogue;
+            let role_color = theme_colors.clip_role_color(clip.role);
+            let use_role_color = match track_kind {
+                TrackKind::Audio => true,
+                _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
+            };
             let base_color = if is_title {
                 egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
             } else if is_offline {
                 egui::Color32::from_rgb(58, 32, 32)
+            } else if use_role_color {
+                egui::Color32::from_rgb(
+                    role_color.r().saturating_sub(10),
+                    role_color.g().saturating_sub(10),
+                    role_color.b().saturating_sub(10),
+                )
             } else {
-                match track_kind {
-                    TrackKind::Audio => egui::Color32::from_rgb(
-                        audio_role_color.r().saturating_sub(10),
-                        audio_role_color.g().saturating_sub(10),
-                        audio_role_color.b().saturating_sub(10),
-                    ),
-                    _ => clip_color(clip_index),
-                }
+                clip_color(clip_index)
             };
             let bright_color = if is_title {
                 egui::Color32::from_rgb(90, 65, 130)
             } else if is_offline {
                 egui::Color32::from_rgb(80, 45, 45)
+            } else if use_role_color {
+                egui::Color32::from_rgb(
+                    role_color.r().saturating_add(20),
+                    role_color.g().saturating_add(20),
+                    role_color.b().saturating_add(20),
+                )
             } else {
-                match track_kind {
-                    TrackKind::Audio => egui::Color32::from_rgb(
-                        audio_role_color.r().saturating_add(20),
-                        audio_role_color.g().saturating_add(20),
-                        audio_role_color.b().saturating_add(20),
-                    ),
-                    _ => clip_color_bright(clip_index),
-                }
+                clip_color_bright(clip_index)
             };
 
             let (fill, border_color, border_width) = if is_being_dragged {
@@ -4141,13 +4142,23 @@ impl TimelinePanel {
                     } else {
                         media.filename.clone()
                     };
+                    let is_audio_clip = matches!(track_kind, TrackKind::Audio);
                     let label_color = if is_offline {
                         egui::Color32::from_rgb(255, 180, 80)
+                    } else if is_audio_clip {
+                        // Semi-transparent white so it doesn't overwhelm the waveform
+                        egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
                     } else {
                         egui::Color32::WHITE
                     };
+                    // Audio clips: position label near top so it sits above the waveform
+                    let text_y = if is_audio_clip {
+                        clip_rect.top() + 7.0
+                    } else {
+                        clip_rect.center().y
+                    };
                     let text_pos =
-                        egui::pos2(clip_rect.left() + 4.0, clip_rect.center().y);
+                        egui::pos2(clip_rect.left() + 4.0, text_y);
                     let truncated = truncate_text(&label, max_text_width, font_size);
                     let font = egui::FontId::proportional(font_size);
                     // Draw dark outline/shadow for readability on any background

@@ -16,4 +16,4 @@ pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResol
 pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
 pub use time::{Fps, RationalTime, TimeRange, Timecode};
 pub use ofx_value::OfxValue;
-pub use types::{BlendMode, ChannelConfig, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};
+pub use types::{BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};
