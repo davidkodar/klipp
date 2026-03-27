@@ -665,6 +665,8 @@ impl PlaybackEngine {
                 // Re-grade cached frame when paused — instant parameter feedback
                 if self.state != PlaybackState::Playing {
                     self.regrade_cached_frame();
+                    // Also refresh V2 overlay (title clips on Text tracks)
+                    self.refresh_v2_title_overlay();
                 }
             }
 
@@ -2864,6 +2866,39 @@ impl PlaybackEngine {
 
     /// Re-grade the cached pre-grade frame without re-decoding.
     /// Called when color parameters change while paused.
+    /// Re-render title overlay (V2) from current sequence data.
+    /// Called on SequenceUpdated when paused so title text/font/color changes show instantly.
+    fn refresh_v2_title_overlay(&mut self) {
+        let seq = self.sequence.read().unwrap();
+        let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
+        let title_clip = seq.tracks.iter()
+            .enumerate()
+            .filter(|(i, t)| {
+                !t.muted && match t.kind {
+                    klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle => true,
+                    klipp_timeline::TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
+                    _ => false,
+                }
+            })
+            .find_map(|(_ti, track)| {
+                track.clip_at_timecode(self.playhead).and_then(|(_, clip)| {
+                    clip.title_data().map(|td| (td.clone(), seq.resolution))
+                })
+            });
+        drop(seq);
+
+        if let Some((title_data, res)) = title_clip {
+            let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+            self.v2_frame_cache = Some(crate::types::DecodedFrame {
+                data: crate::types::FrameData::Rgba(rgba),
+                width: res.width,
+                height: res.height,
+                pts: RationalTime::from_frames(0, 24),
+                is_eof: false,
+            });
+        }
+    }
+
     fn regrade_cached_frame(&mut self) {
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
             let result = self.post_process_rgba_inner(rgba.clone(), w, h);
