@@ -193,6 +193,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         } else {
                             Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
                         },
+                        speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                     }
                 }).collect(),
             }

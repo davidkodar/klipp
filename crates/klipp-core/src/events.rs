@@ -570,6 +570,9 @@ pub enum AppCommand {
     // Clip role
     SetClipRole { clip_id: ClipId, role: crate::ClipRole },
 
+    // Clip speed
+    SetClipSpeed { clip_id: ClipId, speed: f64 },
+
     // Clip audio
     UpdateClipAudio {
         clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,

@@ -247,6 +247,15 @@ pub enum EditCommand {
         new_effect: klipp_effects::BuiltinEffect,
     },
 
+    // === CLIP SPEED ===
+    SetClipSpeed {
+        clip_id: ClipId,
+        old_speed: f64,
+        new_speed: f64,
+        old_timeline_out: RationalTime,
+        new_timeline_out: RationalTime,
+    },
+
 }
 
 impl EditCommand {
@@ -275,6 +284,7 @@ impl EditCommand {
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
+            EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
         }
     }
 }

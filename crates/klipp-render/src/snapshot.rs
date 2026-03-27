@@ -56,6 +56,8 @@ pub struct ClipSnapshot {
     pub source_start_secs: f64,
     /// Where the clip ends in the source file (seconds).
     pub source_end_secs: f64,
+    /// Playback speed multiplier (1.0 = normal).
+    pub speed: f64,
     /// Node-based color processing graph.
     pub node_graph: NodeGraph,
     /// OFX effects chain.
@@ -263,6 +265,7 @@ fn snapshot_clip(
         timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
         source_start_secs: clip.source_in.to_secs_f64(),
         source_end_secs: clip.source_out.to_secs_f64(),
+        speed: clip.speed,
         node_graph: clip.node_graph.clone(),
         effects: clip.effects.clone(),
         builtin_effects: clip.builtin_effects.clone(),
@@ -392,6 +395,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let mut seq = make_sequence();
@@ -453,6 +469,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let mut seq = make_sequence();
@@ -498,6 +527,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let mut seq = make_sequence();
@@ -536,6 +578,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let pool = MediaPool::new();
@@ -577,6 +632,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let pool = MediaPool::new();
@@ -619,6 +687,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let clip_b = Clip {
@@ -642,6 +723,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let mut seq = make_sequence();
@@ -689,6 +783,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
         let clip_b = Clip {
             id: clip_b_id,
@@ -711,6 +818,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let transition = Transition {
@@ -764,6 +884,19 @@ mod tests {
             fade_in_curve: klipp_timeline::FadeCurve::default(),
             fade_out_curve: klipp_timeline::FadeCurve::default(),
             channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
         };
 
         let mut seq = make_sequence();

@@ -1099,8 +1099,7 @@ impl KlippApp {
                 let temp = -(r - b) * 200.0;
                 let tint = -(g - (r + b) / 2.0) * 200.0;
                 if let Some(clip_id) = self.state.selected_clip {
-                    // TODO(Session 4+): find the appropriate node_id for WB adjustments
-                    let node_id = uuid::Uuid::nil();
+                    let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::ColorBalance);
                     self.cmd_tx.send(AppCommand::SetNodeParam {
                         clip_id, node_id, param: "temperature".into(),
                         value: temp.clamp(-100.0, 100.0),
@@ -1145,7 +1144,7 @@ impl KlippApp {
 
                 if let Some(clip_id) = self.state.selected_clip {
                     // Build qualifier with sampled values + sensible defaults
-                    // TODO(Session 4+): find the appropriate qualifier node_id
+                    let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::Qualifier);
                     let mut qual = klipp_core::QualifierSettings::default();
                     qual.enabled = true;
                     qual.hue_center = hue_degrees;
@@ -1153,7 +1152,7 @@ impl KlippApp {
                     qual.sat_low = (s - 0.2).max(0.0);
                     qual.sat_high = (s + 0.2).min(1.0);
                     self.cmd_tx.send(AppCommand::SetNodeQualifier {
-                        clip_id, node_id: uuid::Uuid::nil(), qualifier: qual,
+                        clip_id, node_id, qualifier: qual,
                     }).ok();
                 }
             }
@@ -1270,6 +1269,62 @@ impl KlippApp {
                 "PERF upload_frame: {w}x{h} total={total_ms:.1}ms (convert={convert_ms:.1}ms texture={texture_ms:.1}ms)"
             );
         }
+    }
+
+    /// Find an existing node of the given kind in the selected clip's node graph,
+    /// or create one if it doesn't exist. Returns the node's UUID.
+    fn find_or_create_node(
+        state: &mut crate::state::AppState,
+        clip_id: klipp_core::ClipId,
+        kind: klipp_nodes::NodeKind,
+    ) -> uuid::Uuid {
+        let seq = &mut state.sequences[state.active_sequence_idx];
+        for track in &mut seq.tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                // Look for an existing node of this kind
+                if let Some(node) = clip.node_graph.nodes.iter().find(|n| n.kind == kind) {
+                    return node.id;
+                }
+                // None found — create a new node and wire it before the Output node
+                let new_id = uuid::Uuid::new_v4();
+                let label = kind.display_name().to_string();
+                let new_node = klipp_nodes::Node {
+                    id: new_id,
+                    kind,
+                    label,
+                    enabled: true,
+                    params: klipp_nodes::NodeParams::default(),
+                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                };
+                clip.node_graph.nodes.push(new_node);
+                // Insert the new node just before the output node:
+                // find the edge going into the output node's port 0, reroute it
+                // through the new node.
+                let output_id = clip.node_graph.output_node_id;
+                if let Some(edge_idx) = clip.node_graph.edges.iter().position(
+                    |e| e.to_node == output_id && e.to_port == 0,
+                ) {
+                    let prev_node = clip.node_graph.edges[edge_idx].from_node;
+                    let prev_port = clip.node_graph.edges[edge_idx].from_port;
+                    // prev_node -> new_node -> output
+                    clip.node_graph.edges[edge_idx] = klipp_nodes::Edge {
+                        from_node: new_id,
+                        from_port: 0,
+                        to_node: output_id,
+                        to_port: 0,
+                    };
+                    clip.node_graph.edges.push(klipp_nodes::Edge {
+                        from_node: prev_node,
+                        from_port: prev_port,
+                        to_node: new_id,
+                        to_port: 0,
+                    });
+                }
+                return new_id;
+            }
+        }
+        // Fallback: clip not found — return nil (command handler will no-op)
+        uuid::Uuid::nil()
     }
 
     fn sync_sequence_to_engine(&self) {
@@ -2331,6 +2386,37 @@ impl KlippApp {
                             break;
                         }
                     }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetClipSpeed { clip_id, speed } => {
+                    let speed = speed.clamp(0.1, 16.0);
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(* clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        let old_speed = clip.speed;
+                        clip.speed = speed;
+                        // Adjust timeline duration: new_duration = source_duration / speed
+                        let source_dur_secs = clip.source_duration().to_secs_f64();
+                        let new_dur_secs = source_dur_secs / speed;
+                        let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
+                        let old_timeline_out = clip.timeline_out;
+                        clip.timeline_out = clip.timeline_in + new_duration;
+                        // Push undo
+                        let cid = *clip_id;
+                        let new_timeline_out = clip.timeline_out;
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetClipSpeed {
+                                clip_id: cid,
+                                old_speed,
+                                new_speed: speed,
+                                old_timeline_out,
+                                new_timeline_out,
+                            },
+                        });
+                    }
+                    self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     continue;
                 }
@@ -4421,6 +4507,7 @@ impl KlippApp {
                         effect_keyframes: std::collections::HashMap::new(),
                         role: klipp_core::ClipRole::default(),
                         param_modifiers: std::collections::HashMap::new(),
+                        speed: 1.0,
                     };
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip);
@@ -4710,6 +4797,7 @@ impl KlippApp {
                                     effect_keyframes: clip.effect_keyframes.clone(),
                                     role: clip.role,
                                     param_modifiers: clip.param_modifiers.clone(),
+                                    speed: clip.speed,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -4833,6 +4921,7 @@ impl KlippApp {
                                     effect_keyframes: std::collections::HashMap::new(),
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
+                                    speed: 1.0,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -4911,6 +5000,7 @@ impl KlippApp {
                                     effect_keyframes: std::collections::HashMap::new(),
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
+                                    speed: 1.0,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -6413,6 +6503,15 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::SetClipSpeed { clip_id, old_speed, old_timeline_out, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.speed = *old_speed;
+                        clip.timeline_out = *old_timeline_out;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -6687,6 +6786,15 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::SetClipSpeed { clip_id, new_speed, new_timeline_out, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.speed = *new_speed;
+                        clip.timeline_out = *new_timeline_out;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -6773,6 +6881,7 @@ impl KlippApp {
                 effect_keyframes: clip.effect_keyframes.clone(),
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
+                speed: clip.speed,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -6876,6 +6985,7 @@ impl KlippApp {
                 effect_keyframes: clip.effect_keyframes.clone(),
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
+                speed: clip.speed,
             };
             track.clips.insert(i + 1, right_clip);
         }

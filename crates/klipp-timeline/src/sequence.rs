@@ -292,6 +292,7 @@ fn default_opacity() -> f32 { 1.0 }
 fn default_volume() -> f32 { 1.0 }
 fn default_true() -> bool { true }
 fn default_clip_volume() -> f32 { 1.0 }
+fn default_speed() -> f64 { 1.0 }
 
 impl Track {
     pub fn new(name: &str, kind: TrackKind) -> Self {
@@ -360,6 +361,7 @@ impl Track {
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
+            speed: 1.0,
         });
         clip_id
     }
@@ -538,6 +540,7 @@ impl Track {
             effect_keyframes: effect_kfs_a,
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
+            speed: clip.speed,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -572,6 +575,7 @@ impl Track {
             effect_keyframes: effect_kfs_b,
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
+            speed: clip.speed,
         };
 
         self.clips.remove(pos);
@@ -686,6 +690,9 @@ pub struct Clip {
     /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub param_modifiers: HashMap<ParamId, ModifierStack>,
+    /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
+    #[serde(default = "default_speed")]
+    pub speed: f64,
 }
 
 impl Clip {
@@ -752,6 +759,7 @@ impl Clip {
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
+            speed: 1.0,
         }
     }
 
@@ -796,6 +804,7 @@ impl Clip {
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
+            speed: 1.0,
         }
     }
 }

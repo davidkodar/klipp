@@ -183,6 +183,8 @@ pub struct ClipJson {
     pub role: Option<klipp_core::ClipRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_modifiers: Option<HashMap<String, klipp_core::ModifierStack>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

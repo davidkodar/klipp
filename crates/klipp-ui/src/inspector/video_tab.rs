@@ -556,9 +556,28 @@ pub fn show(
     // ── Speed section ──
     section_header(ui, theme, "Speed");
 
-    // Rate is a placeholder for now -- no speed field on Clip yet
-    let mut rate = 100.0f32;
-    let _r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=400.0, 100.0, 0.5, 0, " %", None);
+    let mut rate = (clip.speed * 100.0) as f32;
+    let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
+    if r_rate.changed {
+        let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0);
+        cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
+    }
+
+    // Speed preset buttons
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+        let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+        for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
+            let is_active = (clip.speed - speed_val).abs() < 0.001;
+            let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
+            if ui.add(egui::Button::new(btn_text(label))
+                .fill(fill).stroke(egui::Stroke::new(0.5, theme.border))
+                .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+            ).clicked() {
+                cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val });
+            }
+        }
+    });
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Direction")

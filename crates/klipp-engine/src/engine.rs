@@ -141,6 +141,7 @@ pub struct PlaybackEngine {
     // Timeline offset: maps source PTS to sequence timeline.
     clip_source_start: f64, // source seconds at which playback started for current clip
     clip_timeline_start: Timecode, // timeline position of clip_source_start
+    clip_speed: f64, // per-clip speed multiplier (1.0 = normal)
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -265,6 +266,7 @@ impl PlaybackEngine {
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
+            clip_speed: 1.0,
             expected_audio_generation: 0,
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
@@ -393,11 +395,11 @@ impl PlaybackEngine {
                 {
                     // Compute current source position from playhead
                     let source_secs = self.clip_source_start
-                        + (self.playhead - self.clip_timeline_start).to_secs_f64();
+                        + (self.playhead - self.clip_timeline_start).to_secs_f64() * self.clip_speed;
                     debug!(
-                        "Play resume: playhead={:.3}s clip_source_start={:.3}s clip_timeline_start={:.3}s → source={:.3}s",
+                        "Play resume: playhead={:.3}s clip_source_start={:.3}s clip_timeline_start={:.3}s speed={:.2}x → source={:.3}s",
                         self.playhead.to_secs_f64(), self.clip_source_start,
-                        self.clip_timeline_start.to_secs_f64(), source_secs
+                        self.clip_timeline_start.to_secs_f64(), self.clip_speed, source_secs
                     );
 
                     // Seek video decoders to current position and flush stale frames
@@ -749,9 +751,9 @@ impl PlaybackEngine {
                 if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
                     if let Some(media_id) = clip.media_id() {
                         let source_secs = clip.source_in.to_secs_f64()
-                            + (self.playhead - clip.timeline_in).to_secs_f64();
+                            + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed;
                         let clip_source_in = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in));
+                        return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed));
                     }
                     // Playhead is on a gap clip — fall through to find next real clip
                 }
@@ -760,7 +762,7 @@ impl PlaybackEngine {
                     if clip.timeline_in >= self.playhead {
                         if let Some(media_id) = clip.media_id() {
                             let si = clip.source_in.to_secs_f64();
-                            return Some((idx, media_id, si, clip.timeline_in, si));
+                            return Some((idx, media_id, si, clip.timeline_in, si, clip.speed));
                         }
                         // Gap clip — continue searching
                     }
@@ -769,14 +771,14 @@ impl PlaybackEngine {
                 for (idx, clip) in track.clips.iter().enumerate() {
                     if let Some(media_id) = clip.media_id() {
                         let si = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, si, clip.timeline_in, si));
+                        return Some((idx, media_id, si, clip.timeline_in, si, clip.speed));
                     }
                 }
                 None
             });
         drop(seq);
 
-        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in, clip_speed)) = clip_info {
             if let Some(path) = self.path_for_media(media_id) {
                 info!("handle_play: clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
 
@@ -826,6 +828,7 @@ impl PlaybackEngine {
 
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = clip_speed;
                 self.current_clip_index = clip_idx;
                 self.current_file = Some(path);
                 self.state = PlaybackState::Playing;
@@ -890,6 +893,7 @@ impl PlaybackEngine {
 
         self.clip_source_start = self.playhead.to_secs_f64();
         self.clip_timeline_start = self.playhead;
+        self.clip_speed = 1.0; // audio-only: no per-clip speed for now
         self.state = PlaybackState::Playing;
         self.dropped_frames = 0;
         self.frames_consumed = 0;
@@ -932,7 +936,7 @@ impl PlaybackEngine {
                         }
                     }
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64();
+                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     let decode_path = if self.use_proxies && item.proxy_ready {
                         item.proxy_path.as_ref()
                             .filter(|p| p.exists())
@@ -1181,7 +1185,7 @@ impl PlaybackEngine {
                     let track = seq.tracks.get(active.track_index)?;
                     let (_idx, clip) = track.clip_at_timecode(tc)?;
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64();
+                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     Some((active.track_index, source_secs))
                 })
                 .collect()
@@ -1241,9 +1245,10 @@ impl PlaybackEngine {
             drop(seq);
 
             if let Some((clip, title_data)) = title_clip {
-                // Update playhead from clock
+                // Update playhead from clock (divide by speed for timeline time)
                 let elapsed_secs = current_source_secs - self.clip_source_start;
-                let elapsed_tc = RationalTime::from_secs_f64(elapsed_secs.max(0.0), self.fps.rate());
+                let speed = self.clip_speed.max(0.001);
+                let elapsed_tc = RationalTime::from_secs_f64((elapsed_secs / speed).max(0.0), self.fps.rate());
                 self.playhead = clip.timeline_in + elapsed_tc;
 
                 // Check if past end of title clip
@@ -1390,8 +1395,11 @@ impl PlaybackEngine {
         }
         if let Some(clip) = found_clip {
             let source_elapsed_secs = frame.pts_secs() - clip.source_in.to_secs_f64();
+            // Convert source elapsed time to timeline elapsed time (divide by speed)
+            let speed = clip.speed.max(0.001);
+            let timeline_elapsed_secs = source_elapsed_secs / speed;
             let elapsed_tc = RationalTime::from_secs_f64(
-                source_elapsed_secs.max(0.0),
+                timeline_elapsed_secs.max(0.0),
                 self.fps.rate(),
             );
             self.playhead = clip.timeline_in + elapsed_tc;
@@ -1574,7 +1582,7 @@ impl PlaybackEngine {
                         for idx in next_idx..track.clips.len() {
                             let clip = &track.clips[idx];
                             if let Some(media_id) = clip.media_id() {
-                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in));
+                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in, clip.speed));
                                 break;
                             }
                         }
@@ -1586,7 +1594,7 @@ impl PlaybackEngine {
         };
         drop(seq);
 
-        if let Some((actual_idx, media_id, source_in_secs, timeline_in)) = next_clip_info {
+        if let Some((actual_idx, media_id, source_in_secs, timeline_in, next_clip_speed)) = next_clip_info {
             // Contiguous clip optimization: if the next clip uses the same media file
             // and its source_in matches the current clip's source_out (e.g. after a blade cut),
             // keep the decoder running — no seek, no flush, no stall.
@@ -1609,6 +1617,7 @@ impl PlaybackEngine {
                 self.playhead = timeline_in;
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = next_clip_speed;
                 self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed); // suppress fade-in on next sync
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -1678,6 +1687,7 @@ impl PlaybackEngine {
 
                     self.clip_source_start = source_in_secs;
                     self.clip_timeline_start = timeline_in;
+                    self.clip_speed = next_clip_speed;
                     self.last_frame_time = std::time::Instant::now();
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     self.maybe_open_v2_decoder(self.playhead);
@@ -1716,6 +1726,7 @@ impl PlaybackEngine {
 
                     self.clip_source_start = source_in_secs;
                     self.clip_timeline_start = timeline_in;
+                    self.clip_speed = next_clip_speed;
                     self.last_frame_time = std::time::Instant::now();
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     self.maybe_open_v2_decoder(self.playhead);
@@ -1776,6 +1787,7 @@ impl PlaybackEngine {
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = next_clip_speed;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
 
@@ -1883,7 +1895,7 @@ impl PlaybackEngine {
                 // Media clip on overlay track
                 if let Some(media_id) = clip.media_id() {
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (playhead - clip.timeline_in).to_secs_f64();
+                        + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
                     // Already have the right decoder open?
                     if self.current_clip_v2 == Some(idx) {
                         return;
@@ -2013,7 +2025,7 @@ impl PlaybackEngine {
                         }
                     }
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64();
+                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
 
                     // Resolve path (proxy or original)
                     let decode_path = if use_proxies && item.proxy_ready {
@@ -2138,14 +2150,14 @@ impl PlaybackEngine {
                         track.clip_at_timecode(target).and_then(|(idx, clip)| {
                             let media_id = clip.media_id()?;
                             let source_secs = clip.source_in.to_secs_f64()
-                                + (target - clip.timeline_in).to_secs_f64();
+                                + (target - clip.timeline_in).to_secs_f64() * clip.speed;
                             let clip_source_in = clip.source_in.to_secs_f64();
-                            Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
+                            Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
                         })
                     });
                 drop(seq);
 
-                let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+                let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
                     let need_new = self.current_clip_index != idx || self.v1_decoder.is_none();
                     if need_new {
                         if let Some(path) = self.path_for_media(media_id) {
@@ -2158,6 +2170,7 @@ impl PlaybackEngine {
                                 self.current_file = Some(path);
                                 self.clip_source_start = clip_source_in;
                                 self.clip_timeline_start = timeline_in;
+                                self.clip_speed = spd;
                             }
                         }
                     } else if let Some(dec) = &self.v1_decoder {
@@ -2165,6 +2178,7 @@ impl PlaybackEngine {
                         dec.frame_queue().lock().unwrap().clear();
                         self.clip_source_start = clip_source_in;
                         self.clip_timeline_start = timeline_in;
+                        self.clip_speed = spd;
                     }
                     source_secs
                 } else {
@@ -2210,9 +2224,9 @@ impl PlaybackEngine {
                 track.clip_at_timecode(target).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (target - clip.timeline_in).to_secs_f64();
+                        + (target - clip.timeline_in).to_secs_f64() * clip.speed;
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
                 })
             });
         // Also check for title clip
@@ -2268,7 +2282,7 @@ impl PlaybackEngine {
         }
 
         // Handle media clip at loop target
-        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
@@ -2284,6 +2298,7 @@ impl PlaybackEngine {
                             self.current_file = Some(path);
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
+                            self.clip_speed = spd;
                         }
                         Err(e) => {
                             error!("[Loop] Failed to open decoder: {e}");
@@ -2299,6 +2314,7 @@ impl PlaybackEngine {
                 }
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = spd;
             }
 
             // 1. Pause clock + cpal
@@ -2416,14 +2432,14 @@ impl PlaybackEngine {
                 track.clip_at_timecode(tc).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
                     let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64();
+                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in))
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
                 })
             });
         drop(seq);
 
-        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in)) = clip_info {
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
@@ -2439,6 +2455,7 @@ impl PlaybackEngine {
                             self.current_file = Some(path.clone());
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
+                            self.clip_speed = spd;
                         }
                         Err(e) => {
                             error!("Failed to open decoder for seek: {e}");
@@ -2454,6 +2471,7 @@ impl PlaybackEngine {
                 }
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = spd;
             }
 
             let was_playing = self.state == PlaybackState::Playing;
@@ -2548,7 +2566,7 @@ impl PlaybackEngine {
                             seq.tracks.iter().find_map(|track| {
                                 let (_, clip) = track.clip_at_timecode(tc)?;
                                 Some(clip.source_in.to_secs_f64()
-                                    + (tc - clip.timeline_in).to_secs_f64())
+                                    + (tc - clip.timeline_in).to_secs_f64() * clip.speed)
                             }).unwrap_or(0.0)
                         };
                         active.source.chirp(source_secs, 0.04);
@@ -2590,8 +2608,9 @@ impl PlaybackEngine {
                 {
                     let source_elapsed =
                         frame.pts_secs() - clip.source_in.to_secs_f64();
+                    let spd = clip.speed.max(0.001);
                     let elapsed_tc = RationalTime::from_secs_f64(
-                        source_elapsed.max(0.0),
+                        (source_elapsed / spd).max(0.0),
                         self.fps.rate(),
                     );
                     self.playhead = clip.timeline_in + elapsed_tc;
@@ -2639,8 +2658,9 @@ impl PlaybackEngine {
                     {
                         let source_elapsed =
                             frame.pts_secs() - clip.source_in.to_secs_f64();
+                        let spd = clip.speed.max(0.001);
                         let elapsed_tc = RationalTime::from_secs_f64(
-                            source_elapsed.max(0.0),
+                            (source_elapsed / spd).max(0.0),
                             self.fps.rate(),
                         );
                         self.playhead = clip.timeline_in + elapsed_tc;
@@ -2761,7 +2781,7 @@ impl PlaybackEngine {
                     match VideoDecoder::open(&path) {
                         Ok(dec) => {
                             let source_secs = active.partner_clip.source_in.to_secs_f64()
-                                + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0);
+                                + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0) * active.partner_clip.speed;
                             if source_secs > 0.01 {
                                 dec.seek(source_secs);
                             }
@@ -2853,7 +2873,7 @@ impl PlaybackEngine {
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let node_graph = clip.map(|c| c.node_graph.clone());
         let clip_time_secs = clip.map(|_c| {
-            (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64())
+            (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64()) * self.clip_speed
                 + self.clip_source_start
         }).unwrap_or(0.0);
 

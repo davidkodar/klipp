@@ -268,6 +268,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                             klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
                         }).collect()
                     }).unwrap_or_default(),
+                    speed: c.speed.unwrap_or(1.0),
                 }
             }).collect();
             track

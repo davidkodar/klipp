@@ -33,6 +33,25 @@ pub struct ViewerTransformDrag {
     pub drag_start_pos: egui::Pos2,
 }
 
+/// Which part of a mask shape is being dragged in the viewer
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaskHandle {
+    Center,
+    EdgeRight,
+    EdgeBottom,
+}
+
+/// State for viewer mask handle interaction
+#[derive(Debug, Clone)]
+pub struct ViewerMaskDrag {
+    pub clip_id: klipp_core::ClipId,
+    pub node_id: klipp_nodes::NodeId,
+    pub mask_index: usize,
+    pub handle: MaskHandle,
+    pub initial_shape: klipp_core::MaskShape,
+    pub drag_start_pos: egui::Pos2,
+}
+
 /// State during an active audio keyframe drag on the timeline rubber band.
 #[derive(Debug, Clone)]
 pub struct DraggingKeyframe {
@@ -473,6 +492,8 @@ pub struct AppState {
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
+    /// Active drag on a viewer mask handle
+    pub viewer_mask_drag: Option<ViewerMaskDrag>,
 
     /// Whether the curve editor panel is visible
     pub show_curve_editor: bool,
@@ -746,6 +767,7 @@ impl Default for AppState {
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
             show_transform_controls: true,
+            viewer_mask_drag: None,
             show_curve_editor: false,
         }
     }

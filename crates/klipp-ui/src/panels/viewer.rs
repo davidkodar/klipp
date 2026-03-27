@@ -394,8 +394,8 @@ impl ViewerPanel {
         }
 
         // ── Interactive mask handles on viewer ──
-        // TODO(Session 4+): Re-implement mask handles using node_graph + SetNodeMasks
-        // Masks now live per-node in the NodeGraph; viewer handle interaction disabled for Session 1.
+        // Draw and interact with masks from the selected node in the clip's node graph.
+        self.draw_mask_handles(ui, state, image_rect, cmds);
 
         // ── Overlay mode badge (top-right of video) ──
         {
@@ -794,6 +794,287 @@ impl ViewerPanel {
                 font.clone(),
                 color,
             );
+        }
+    }
+
+    /// Draw interactive mask shape outlines and drag handles in the viewer.
+    fn draw_mask_handles(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        use crate::state::{MaskHandle, ViewerMaskDrag};
+
+        // Only show masks when a clip and node are selected
+        let clip_id = match state.selected_clip {
+            Some(id) => id,
+            None => {
+                state.viewer_mask_drag = None;
+                return;
+            }
+        };
+        let node_id = match state.selected_node_id {
+            Some(id) => id,
+            None => {
+                state.viewer_mask_drag = None;
+                return;
+            }
+        };
+
+        // Find the selected node's masks in the clip's node graph
+        let masks_opt: Option<klipp_core::MaskStack> = state.sequence().tracks.iter()
+            .find_map(|t| t.find_clip(clip_id))
+            .and_then(|clip| clip.node_graph.nodes.iter().find(|n| n.id == node_id))
+            .and_then(|node| node.params.masks.clone());
+
+        let masks = match masks_opt {
+            Some(ms) if !ms.masks.is_empty() => ms,
+            _ => {
+                state.viewer_mask_drag = None;
+                return;
+            }
+        };
+
+        let iw = image_rect.width();
+        let ih = image_rect.height();
+        let handle_radius = 5.0_f32;
+        let outline_color = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+        let handle_color = egui::Color32::WHITE;
+
+        // Helper: convert normalized coords to screen coords
+        let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
+            egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih)
+        };
+
+        for (mask_idx, mask) in masks.masks.iter().enumerate() {
+            if !mask.enabled { continue; }
+
+            match &mask.shape {
+                klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
+                    let center = to_screen(*center_x, *center_y);
+                    let r_px = radius * iw;
+
+                    // Draw outline ellipse (approximate with circle)
+                    ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5, outline_color));
+
+                    // Center handle
+                    let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(center, handle_radius, handle_color);
+
+                    // Right edge handle (radius control)
+                    let right = egui::pos2(center.x + r_px, center.y);
+                    let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(right, handle_radius, handle_color);
+
+                    // Bottom edge handle (radius control)
+                    let bottom = egui::pos2(center.x, center.y + r_px);
+                    let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(bottom, handle_radius, handle_color);
+
+                    // Interaction — start drags
+                    if state.viewer_mask_drag.is_none() {
+                        for (handle_rect, handle_kind) in [
+                            (right_handle, MaskHandle::EdgeRight),
+                            (bottom_handle, MaskHandle::EdgeBottom),
+                            (center_handle, MaskHandle::Center),
+                        ] {
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            if resp.drag_started() {
+                                if let Some(pos) = resp.interact_pointer_pos() {
+                                    state.viewer_mask_drag = Some(ViewerMaskDrag {
+                                        clip_id,
+                                        node_id,
+                                        mask_index: mask_idx,
+                                        handle: handle_kind,
+                                        initial_shape: mask.shape.clone(),
+                                        drag_start_pos: pos,
+                                    });
+                                }
+                            }
+                            if resp.hovered() || resp.dragged() {
+                                ui.ctx().set_cursor_icon(match handle_kind {
+                                    MaskHandle::Center => egui::CursorIcon::Move,
+                                    MaskHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
+                                    MaskHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                                });
+                            }
+                        }
+                    }
+                }
+                klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation: _ } => {
+                    let center = to_screen(*center_x, *center_y);
+                    let hw = width * iw * 0.5;
+                    let hh = height * ih * 0.5;
+
+                    // Draw outline rectangle (ignoring rotation for simplicity in handles)
+                    let rect = egui::Rect::from_center_size(center, egui::vec2(hw * 2.0, hh * 2.0));
+                    ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5, outline_color));
+
+                    // Center handle
+                    let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(center, handle_radius, handle_color);
+
+                    // Right edge handle (width control)
+                    let right = egui::pos2(center.x + hw, center.y);
+                    let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(right, handle_radius, handle_color);
+
+                    // Bottom edge handle (height control)
+                    let bottom = egui::pos2(center.x, center.y + hh);
+                    let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(bottom, handle_radius, handle_color);
+
+                    if state.viewer_mask_drag.is_none() {
+                        for (handle_rect, handle_kind) in [
+                            (right_handle, MaskHandle::EdgeRight),
+                            (bottom_handle, MaskHandle::EdgeBottom),
+                            (center_handle, MaskHandle::Center),
+                        ] {
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            if resp.drag_started() {
+                                if let Some(pos) = resp.interact_pointer_pos() {
+                                    state.viewer_mask_drag = Some(ViewerMaskDrag {
+                                        clip_id,
+                                        node_id,
+                                        mask_index: mask_idx,
+                                        handle: handle_kind,
+                                        initial_shape: mask.shape.clone(),
+                                        drag_start_pos: pos,
+                                    });
+                                }
+                            }
+                            if resp.hovered() || resp.dragged() {
+                                ui.ctx().set_cursor_icon(match handle_kind {
+                                    MaskHandle::Center => egui::CursorIcon::Move,
+                                    MaskHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
+                                    MaskHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                                });
+                            }
+                        }
+                    }
+                }
+                klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                    // Draw a line from start to end
+                    let start = to_screen(*start_x, *start_y);
+                    let end = to_screen(*end_x, *end_y);
+                    ui.painter().line_segment([start, end], egui::Stroke::new(1.5, outline_color));
+                    ui.painter().circle_filled(start, handle_radius, handle_color);
+                    ui.painter().circle_filled(end, handle_radius, handle_color);
+                    // Linear gradient handles: use Center for start, EdgeRight for end
+                    if state.viewer_mask_drag.is_none() {
+                        let start_rect = egui::Rect::from_center_size(start, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                        let end_rect = egui::Rect::from_center_size(end, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                        for (handle_rect, handle_kind) in [
+                            (end_rect, MaskHandle::EdgeRight),
+                            (start_rect, MaskHandle::Center),
+                        ] {
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            if resp.drag_started() {
+                                if let Some(pos) = resp.interact_pointer_pos() {
+                                    state.viewer_mask_drag = Some(ViewerMaskDrag {
+                                        clip_id,
+                                        node_id,
+                                        mask_index: mask_idx,
+                                        handle: handle_kind,
+                                        initial_shape: mask.shape.clone(),
+                                        drag_start_pos: pos,
+                                    });
+                                }
+                            }
+                            if resp.hovered() || resp.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process ongoing drag
+        if let Some(drag) = &state.viewer_mask_drag {
+            let drag_clip_id = drag.clip_id;
+            let drag_node_id = drag.node_id;
+            let drag_mask_idx = drag.mask_index;
+            let drag_handle = drag.handle;
+            let drag_start = drag.drag_start_pos;
+            let initial_shape = drag.initial_shape.clone();
+
+            // Check if pointer is still down
+            let pointer_down = ui.input(|i| i.pointer.any_down());
+            let current_pos = ui.input(|i| i.pointer.interact_pos()).unwrap_or(drag_start);
+
+            if pointer_down {
+                let dx_norm = (current_pos.x - drag_start.x) / iw;
+                let dy_norm = (current_pos.y - drag_start.y) / ih;
+
+                let new_shape = match (&initial_shape, drag_handle) {
+                    (klipp_core::MaskShape::Circle { center_x, center_y, radius }, MaskHandle::Center) => {
+                        klipp_core::MaskShape::Circle {
+                            center_x: (center_x + dx_norm).clamp(0.0, 1.0),
+                            center_y: (center_y + dy_norm).clamp(0.0, 1.0),
+                            radius: *radius,
+                        }
+                    }
+                    (klipp_core::MaskShape::Circle { center_x, center_y, radius: _ }, MaskHandle::EdgeRight) => {
+                        let new_r = ((current_pos.x - (image_rect.min.x + center_x * iw)) / iw).abs().max(0.01);
+                        klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
+                    }
+                    (klipp_core::MaskShape::Circle { center_x, center_y, radius: _ }, MaskHandle::EdgeBottom) => {
+                        let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw).abs().max(0.01);
+                        klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
+                    }
+                    (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation }, MaskHandle::Center) => {
+                        klipp_core::MaskShape::Rectangle {
+                            center_x: (center_x + dx_norm).clamp(0.0, 1.0),
+                            center_y: (center_y + dy_norm).clamp(0.0, 1.0),
+                            width: *width,
+                            height: *height,
+                            rotation: *rotation,
+                        }
+                    }
+                    (klipp_core::MaskShape::Rectangle { center_x, center_y, width: _, height, rotation }, MaskHandle::EdgeRight) => {
+                        let new_w = ((current_pos.x - (image_rect.min.x + center_x * iw)) / iw * 2.0).abs().max(0.01);
+                        klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: new_w, height: *height, rotation: *rotation }
+                    }
+                    (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height: _, rotation }, MaskHandle::EdgeBottom) => {
+                        let new_h = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih * 2.0).abs().max(0.01);
+                        klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: *width, height: new_h, rotation: *rotation }
+                    }
+                    (klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y }, MaskHandle::Center) => {
+                        klipp_core::MaskShape::LinearGradient {
+                            start_x: (start_x + dx_norm).clamp(0.0, 1.0),
+                            start_y: (start_y + dy_norm).clamp(0.0, 1.0),
+                            end_x: (end_x + dx_norm).clamp(0.0, 1.0),
+                            end_y: (end_y + dy_norm).clamp(0.0, 1.0),
+                        }
+                    }
+                    (klipp_core::MaskShape::LinearGradient { start_x, start_y, .. }, MaskHandle::EdgeRight) => {
+                        klipp_core::MaskShape::LinearGradient {
+                            start_x: *start_x,
+                            start_y: *start_y,
+                            end_x: ((current_pos.x - image_rect.min.x) / iw).clamp(0.0, 1.0),
+                            end_y: ((current_pos.y - image_rect.min.y) / ih).clamp(0.0, 1.0),
+                        }
+                    }
+                    _ => initial_shape.clone(),
+                };
+
+                // Build updated mask stack and emit command
+                let mut updated_masks = masks.clone();
+                if drag_mask_idx < updated_masks.masks.len() {
+                    updated_masks.masks[drag_mask_idx].shape = new_shape;
+                }
+                cmds.push(AppCommand::SetNodeMasks {
+                    clip_id: drag_clip_id,
+                    node_id: drag_node_id,
+                    masks: updated_masks,
+                });
+            } else {
+                // Pointer released — end drag
+                state.viewer_mask_drag = None;
+            }
         }
     }
 
