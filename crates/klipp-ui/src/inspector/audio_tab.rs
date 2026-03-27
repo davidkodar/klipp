@@ -244,6 +244,11 @@ pub fn show(
             new_fade_out: fade_out,
         });
     }
+    if let Some(interp) = gain_resp.keyframe_set_interpolation {
+        if let Some(ki) = clip.gain_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Gain, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if gain_resp.keyframe_toggled {
         if clip.gain_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Gain, time_secs: clip_time_secs });
@@ -307,6 +312,11 @@ pub fn show(
             new_fade_out: fade_out,
         });
     }
+    if let Some(interp) = vol_resp.keyframe_set_interpolation {
+        if let Some(ki) = clip.volume_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Volume, keyframe_index: ki, interpolation: interp });
+        }
+    }
     if vol_resp.keyframe_toggled {
         if clip.volume_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param: AudioParam::Volume, time_secs: clip_time_secs });
@@ -368,6 +378,11 @@ pub fn show(
             new_fade_in: fade_in,
             new_fade_out: fade_out,
         });
+    }
+    if let Some(interp) = pan_resp.keyframe_set_interpolation {
+        if let Some(ki) = clip.pan_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param: AudioParam::Pan, keyframe_index: ki, interpolation: interp });
+        }
     }
     if pan_resp.keyframe_toggled {
         if clip.pan_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {

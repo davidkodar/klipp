@@ -2474,14 +2474,24 @@ impl TimelinePanel {
                                 }
                             }
 
-                            // Start keyframe drag on primary click near a diamond (blocked during fade drag / bezier handle)
-                            if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none() && pointer_down && state.dragging_audio_keyframe.is_none() && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none() && !alt_held {
-                                if let Some(ki) = nearest_kf_idx {
-                                    state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
-                                        clip_id: kf_clip_id,
-                                        param: rb_param,
-                                        keyframe_index: ki,
-                                    });
+                            // Start keyframe drag only after mouse moves beyond threshold (3px)
+                            // This allows click-to-select without immediately starting a drag
+                            if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none()
+                                && pointer_down && state.dragging_audio_keyframe.is_none()
+                                && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none()
+                                && !alt_held
+                            {
+                                let dragged_far_enough = ui.input(|i| {
+                                    i.pointer.is_decidedly_dragging()
+                                });
+                                if dragged_far_enough {
+                                    if let Some(ki) = nearest_kf_idx {
+                                        state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                                            clip_id: kf_clip_id,
+                                            param: rb_param,
+                                            keyframe_index: ki,
+                                        });
+                                    }
                                 }
                             }
 

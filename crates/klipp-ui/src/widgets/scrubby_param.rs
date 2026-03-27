@@ -28,6 +28,7 @@ pub struct ScrubbyParamResponse {
     pub keyframe_toggled: bool, // user clicked the diamond to add/remove keyframe
     pub keyframe_nav_prev: bool, // user clicked previous keyframe button
     pub keyframe_nav_next: bool, // user clicked next keyframe button
+    pub keyframe_set_interpolation: Option<klipp_core::Interpolation>, // right-click menu selected interpolation
 }
 
 /// Renders a single inspector parameter row with FCP-style scrubby interaction.
@@ -66,6 +67,7 @@ pub fn scrubby_param_row(
     };
 
     let mut dv_response = None;
+    let mut interp_changed: Option<klipp_core::Interpolation> = None;
     let mut label_drag_started = false;
     let mut label_drag_stopped = false;
     let mut reset_clicked = false;
@@ -267,6 +269,25 @@ pub fn scrubby_param_row(
             keyframe_toggled = true;
         }
 
+        // Right-click context menu on diamond for interpolation type
+        if is_keyframeable && keyframe_state.as_ref().is_some_and(|ks| ks.has_keyframe_at_playhead) {
+            diamond_btn_resp.clone().context_menu(|ui| {
+                ui.set_min_width(120.0);
+                if ui.button("Linear").clicked() {
+                    interp_changed = Some(klipp_core::Interpolation::Linear);
+                    ui.close_menu();
+                }
+                if ui.button("Bezier").clicked() {
+                    interp_changed = Some(klipp_core::Interpolation::Bezier);
+                    ui.close_menu();
+                }
+                if ui.button("Step (Hold)").clicked() {
+                    interp_changed = Some(klipp_core::Interpolation::Step);
+                    ui.close_menu();
+                }
+            });
+        }
+
         // Next keyframe arrow (only when keyframes exist and next is available)
         if let Some(ref ks) = keyframe_state {
             if ks.has_any_keyframes {
@@ -319,5 +340,6 @@ pub fn scrubby_param_row(
         keyframe_toggled,
         keyframe_nav_prev: nav_prev,
         keyframe_nav_next: nav_next,
+        keyframe_set_interpolation: interp_changed,
     }
 }
