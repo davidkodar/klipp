@@ -542,10 +542,13 @@ pub enum AppCommand {
     RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
     MoveVideoKeyframe { clip_id: ClipId, param: VideoParam, index: usize, new_time_secs: f64, new_value: f32 },
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
 
     // Effect keyframes
     AddEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
     RemoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
+    MoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
+    SetEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 
     // Clip audio
     UpdateClipAudio {
@@ -555,6 +558,10 @@ pub enum AppCommand {
     },
     BeginAudioDrag { key: String, clip_id: ClipId, old_gain: f32, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
     EndAudioDrag { key: String, clip_id: ClipId, new_gain: f32, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },
+
+    // Undo coalescing — drag gesture signals for keyframe moves/tangents
+    BeginKeyframeDrag { key: String, clip_id: ClipId },
+    EndKeyframeDrag { key: String, clip_id: ClipId },
 
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {

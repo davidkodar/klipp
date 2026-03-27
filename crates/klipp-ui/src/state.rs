@@ -30,6 +30,16 @@ pub struct BezierHandleDrag {
     pub is_out: bool,
 }
 
+/// State during an active Bezier tangent handle drag on the video timeline rubber band.
+#[derive(Debug, Clone)]
+pub struct BezierVideoHandleDrag {
+    pub clip_id: ClipId,
+    pub param: VideoParam,
+    pub keyframe_index: usize,
+    /// true = tangent_out (right handle), false = tangent_in (left handle)
+    pub is_out: bool,
+}
+
 /// State during an active video keyframe drag on the timeline rubber band.
 #[derive(Debug, Clone)]
 pub struct DraggingVideoKeyframe {
@@ -392,8 +402,10 @@ pub struct AppState {
     pub dragging_video_keyframe: Option<DraggingVideoKeyframe>,
     /// Clip whose flat rubber band line is being dragged (no-keyframes volume adjust)
     pub dragging_rubber_band: Option<ClipId>,
-    /// Bezier tangent handle drag state
+    /// Bezier tangent handle drag state (audio)
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
+    /// Bezier tangent handle drag state (video)
+    pub dragging_video_bezier_handle: Option<BezierVideoHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
@@ -674,6 +686,7 @@ impl Default for AppState {
             dragging_video_keyframe: None,
             dragging_rubber_band: None,
             dragging_bezier_handle: None,
+            dragging_video_bezier_handle: None,
             keyframe_context_menu: None,
             selected_keyframe: None,
             rubber_band_param: AudioParam::Volume,

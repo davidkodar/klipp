@@ -1,5 +1,65 @@
-use klipp_core::{ClipId, MediaId, RationalTime};
+use std::collections::HashMap;
+use klipp_core::{ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
+
+/// Snapshot of all keyframe data for a clip (used for undo/redo).
+#[derive(Debug, Clone)]
+pub struct KeyframeSnapshot {
+    pub volume_keyframes: Vec<Keyframe>,
+    pub pan_keyframes: Vec<Keyframe>,
+    pub gain_keyframes: Vec<Keyframe>,
+    pub opacity_keyframes: Vec<Keyframe>,
+    pub transform_pos_x_keyframes: Vec<Keyframe>,
+    pub transform_pos_y_keyframes: Vec<Keyframe>,
+    pub transform_scale_keyframes: Vec<Keyframe>,
+    pub transform_rotation_keyframes: Vec<Keyframe>,
+    pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
+}
+
+impl KeyframeSnapshot {
+    /// Create an empty keyframe snapshot (no keyframes).
+    pub fn empty() -> Self {
+        Self {
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            effect_keyframes: HashMap::new(),
+        }
+    }
+
+    /// Capture a snapshot of all keyframe data from a clip.
+    pub fn from_clip(clip: &Clip) -> Self {
+        Self {
+            volume_keyframes: clip.volume_keyframes.clone(),
+            pan_keyframes: clip.pan_keyframes.clone(),
+            gain_keyframes: clip.gain_keyframes.clone(),
+            opacity_keyframes: clip.opacity_keyframes.clone(),
+            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+            effect_keyframes: clip.effect_keyframes.clone(),
+        }
+    }
+
+    /// Apply this snapshot's keyframe data to a clip.
+    pub fn apply_to_clip(&self, clip: &mut Clip) {
+        clip.volume_keyframes = self.volume_keyframes.clone();
+        clip.pan_keyframes = self.pan_keyframes.clone();
+        clip.gain_keyframes = self.gain_keyframes.clone();
+        clip.opacity_keyframes = self.opacity_keyframes.clone();
+        clip.transform_pos_x_keyframes = self.transform_pos_x_keyframes.clone();
+        clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
+        clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
+        clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
+        clip.effect_keyframes = self.effect_keyframes.clone();
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum EditCommand {
@@ -165,6 +225,20 @@ pub enum EditCommand {
         new_channel_config: klipp_timeline::ChannelConfig,
     },
 
+    // === KEYFRAMES ===
+    EditKeyframes {
+        clip_id: ClipId,
+        /// Optional linked partner clip (audio keyframes are mirrored to linked clip)
+        linked_clip_id: Option<ClipId>,
+        description: &'static str,
+        old_state: KeyframeSnapshot,
+        new_state: KeyframeSnapshot,
+        /// Old state for linked partner clip (if any)
+        old_linked_state: Option<KeyframeSnapshot>,
+        /// New state for linked partner clip (if any)
+        new_linked_state: Option<KeyframeSnapshot>,
+    },
+
     // === BUILTIN EFFECTS ===
     EditBuiltinEffect {
         clip_id: ClipId,
@@ -198,6 +272,7 @@ impl EditCommand {
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
+            EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
         }
@@ -347,6 +422,18 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             new_fade_in: *new_fade_in,
             new_fade_out: *new_fade_out,
             new_channel_config: *new_channel_config,
+        },
+        (
+            EditCommand::EditKeyframes { clip_id, linked_clip_id, description, old_state, old_linked_state, .. },
+            EditCommand::EditKeyframes { new_state, new_linked_state, .. },
+        ) => EditCommand::EditKeyframes {
+            clip_id: *clip_id,
+            linked_clip_id: *linked_clip_id,
+            description,
+            old_state: old_state.clone(),
+            new_state: new_state.clone(),
+            old_linked_state: old_linked_state.clone(),
+            new_linked_state: new_linked_state.clone(),
         },
         // For any other type, just use the new entry as-is
         _ => new_entry.command.clone(),

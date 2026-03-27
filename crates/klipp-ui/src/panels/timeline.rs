@@ -1218,7 +1218,9 @@ impl TimelinePanel {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         if let Some(ref drag_kf) = state.dragging_audio_keyframe.clone() {
             if pointer_released || !pointer_down {
-                // Release: clear drag state
+                // Release: send end-drag for undo coalescing, then clear drag state
+                let drag_key = format!("kf:audio:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
                 state.dragging_audio_keyframe = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 // Find the clip's screen rect to map position back to time/value
@@ -1309,6 +1311,8 @@ impl TimelinePanel {
         // ── Video keyframe rubber band drag update ─────────────────────
         if let Some(ref drag_kf) = state.dragging_video_keyframe.clone() {
             if pointer_released || !pointer_down {
+                let drag_key = format!("kf:video:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
                 state.dragging_video_keyframe = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let zoom = state.timeline_zoom;
@@ -1424,6 +1428,8 @@ impl TimelinePanel {
         // ── Bezier tangent handle drag update ──────────────────────────────
         if let Some(ref drag_bh) = state.dragging_bezier_handle.clone() {
             if pointer_released || !pointer_down {
+                let drag_key = format!("kf:tangent:{}:{:?}:{}", drag_bh.clip_id.0, drag_bh.param, drag_bh.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_bh.clip_id });
                 state.dragging_bezier_handle = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let zoom = state.timeline_zoom;
@@ -1486,6 +1492,102 @@ impl TimelinePanel {
                                     clip_id: drag_bh.clip_id,
                                     param: drag_bh.param,
                                     keyframe_index: drag_bh.keyframe_index,
+                                    tangent_in: ti_arg,
+                                    tangent_out: to_arg,
+                                });
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Video Bezier tangent handle drag update ─────────────────────────
+        if let Some(ref drag_vbh) = state.dragging_video_bezier_handle.clone() {
+            if pointer_released || !pointer_down {
+                let drag_key = format!("kf:vtangent:{}:{:?}:{}", drag_vbh.clip_id.0, drag_vbh.param, drag_vbh.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_vbh.clip_id });
+                state.dragging_video_bezier_handle = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
+                        let track_height = match track.kind {
+                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+                            _ => VIDEO_TRACK_HEIGHT,
+                        };
+                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+
+                            // Read keyframes for the dragged video parameter
+                            let vrb_opacity_static = clip.builtin_effects.iter()
+                                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                                .unwrap_or(1.0);
+                            let vrb_transform = clip.builtin_effects.iter()
+                                .find_map(|e| match e {
+                                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                                        Some((*position_x, *position_y, *scale_x, *rotation)),
+                                    _ => None,
+                                })
+                                .unwrap_or((0.0, 0.0, 1.0, 0.0));
+                            let (vrb_static_val, vrb_keyframes) = match drag_vbh.param {
+                                klipp_core::VideoParam::Opacity => (vrb_opacity_static, &clip.opacity_keyframes),
+                                klipp_core::VideoParam::PositionX => (vrb_transform.0, &clip.transform_pos_x_keyframes),
+                                klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
+                                klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
+                                klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
+                            };
+
+                            // Compute auto-scale Y axis (same as rendering)
+                            let mut vrb_val_min = vrb_static_val;
+                            let mut vrb_val_max = vrb_static_val;
+                            for kf in vrb_keyframes.iter() {
+                                if kf.value < vrb_val_min { vrb_val_min = kf.value; }
+                                if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+                            }
+                            let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
+                            let vrb_padding = vrb_val_span * 0.2;
+                            let p_min = vrb_val_min - vrb_padding;
+                            let p_range = vrb_val_span + vrb_padding * 2.0;
+
+                            if let Some(kf) = vrb_keyframes.get(drag_vbh.keyframe_index) {
+                                let kf_x = {
+                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
+                                };
+                                let kf_y = {
+                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
+                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
+                                };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale = clip_rect_approx.height() / p_range;
+
+                                // Convert mouse position to tangent offset
+                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
+                                let value_offset = -(pos.y - kf_y) / value_scale;
+
+                                let (ti_arg, to_arg) = if drag_vbh.is_out {
+                                    let clamped_time = time_offset.max(0.0) as f64;
+                                    (None, Some((clamped_time, value_offset)))
+                                } else {
+                                    let clamped_time = time_offset.min(0.0) as f64;
+                                    (Some((clamped_time, value_offset)), None)
+                                };
+                                cmds.push(AppCommand::SetVideoKeyframeTangent {
+                                    clip_id: drag_vbh.clip_id,
+                                    param: drag_vbh.param,
+                                    keyframe_index: drag_vbh.keyframe_index,
                                     tangent_in: ti_arg,
                                     tangent_out: to_arg,
                                 });
@@ -2511,6 +2613,8 @@ impl TimelinePanel {
                                     && state.dragging_audio_keyframe.is_none()
                                     && state.dragging_fade_handle.is_none()
                                 {
+                                    let drag_key = format!("kf:tangent:{}:{:?}:{}", kf_clip_id.0, rb_param, bh_ki);
+                                    cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
                                     state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
                                         clip_id: kf_clip_id,
                                         param: rb_param,
@@ -2532,6 +2636,8 @@ impl TimelinePanel {
                                 });
                                 if dragged_far_enough {
                                     if let Some(ki) = nearest_kf_idx {
+                                        let drag_key = format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
+                                        cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
                                         state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
                                             clip_id: kf_clip_id,
                                             param: rb_param,
@@ -3205,6 +3311,44 @@ impl TimelinePanel {
                                         vrb_active_line_color,
                                     );
                                 }
+
+                                // ── Bezier tangent handles (only when clip is selected) ──
+                                if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+                                    let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
+                                    let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
+                                    let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                        vrb_active_line_color.r(), vrb_active_line_color.g(), vrb_active_line_color.b(), 120,
+                                    );
+                                    let vrb_handle_radius = 4.0_f32;
+
+                                    // Tangent out handle (right)
+                                    let vrb_tout_x = cx + kf.tangent_out.0 as f32 * vrb_pixels_per_sec;
+                                    let vrb_tout_y = cy - kf.tangent_out.1 * vrb_bz_value_scale;
+                                    vrb_clip_painter.line_segment(
+                                        [egui::pos2(cx, cy), egui::pos2(vrb_tout_x, vrb_tout_y)],
+                                        egui::Stroke::new(1.0, vrb_tangent_line_color),
+                                    );
+                                    vrb_clip_painter.circle(
+                                        egui::pos2(vrb_tout_x, vrb_tout_y),
+                                        vrb_handle_radius,
+                                        vrb_active_line_color,
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                    );
+
+                                    // Tangent in handle (left)
+                                    let vrb_tin_x = cx + kf.tangent_in.0 as f32 * vrb_pixels_per_sec;
+                                    let vrb_tin_y = cy - kf.tangent_in.1 * vrb_bz_value_scale;
+                                    vrb_clip_painter.line_segment(
+                                        [egui::pos2(cx, cy), egui::pos2(vrb_tin_x, vrb_tin_y)],
+                                        egui::Stroke::new(1.0, vrb_tangent_line_color),
+                                    );
+                                    vrb_clip_painter.circle(
+                                        egui::pos2(vrb_tin_x, vrb_tin_y),
+                                        vrb_handle_radius,
+                                        vrb_active_line_color,
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                    );
+                                }
                             }
                         }
 
@@ -3213,11 +3357,46 @@ impl TimelinePanel {
                             if let Some(pos) = pointer_pos {
                                 if clip_rect.contains(pos) {
                                     let vrb_clip_id = clip.id;
+                                    let vrb_clip_time_range_i = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+
+                                    // Check if hovering near a video bezier tangent handle
+                                    let mut vrb_nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                                    if (is_selected || is_multi_selected) && state.dragging_video_bezier_handle.is_none() {
+                                        let vrb_pps_h = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
+                                        let vrb_vs_h = clip_rect.height() / vrb_param_range;
+                                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                                            if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                                            if kf.time_secs < 0.0 || kf.time_secs > vrb_clip_time_range_i { continue; }
+                                            let cx_h = vrb_time_to_x(kf.time_secs);
+                                            let cy_h = vrb_value_to_y(kf.value);
+                                            // Tangent out handle
+                                            let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
+                                            let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
+                                            let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                                            if dist_out < 8.0 {
+                                                if vrb_nearest_bezier_handle.map_or(true, |(_, _, d)| dist_out < d) {
+                                                    vrb_nearest_bezier_handle = Some((ki, true, dist_out));
+                                                }
+                                            }
+                                            // Tangent in handle
+                                            let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
+                                            let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
+                                            let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                                            if dist_in < 8.0 {
+                                                if vrb_nearest_bezier_handle.map_or(true, |(_, _, d)| dist_in < d) {
+                                                    vrb_nearest_bezier_handle = Some((ki, false, dist_in));
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     // Cursor feedback
                                     let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().map_or(false, |d| d.clip_id == vrb_clip_id);
-                                    if is_dragging_vrb_kf {
+                                    let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().map_or(false, |d| d.clip_id == vrb_clip_id);
+                                    if is_dragging_vrb_kf || is_dragging_vrb_bezier {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    } else if vrb_nearest_bezier_handle.is_some() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                     } else if vrb_hovered_kf_idx.is_some() {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                     }
@@ -3266,28 +3445,70 @@ impl TimelinePanel {
                                     }
 
                                     // Click empty area to deselect
-                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() {
+                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none() {
                                         if state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
                                             state.selected_keyframe = None;
                                         }
                                     }
 
+                                    // ── Start video bezier tangent handle drag ──
+                                    if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
+                                        if pointer_down && state.dragging_video_bezier_handle.is_none()
+                                            && state.dragging_video_keyframe.is_none()
+                                            && state.dragging_fade_handle.is_none()
+                                        {
+                                            let drag_key = format!("kf:vtangent:{}:{:?}:{}", vrb_clip_id.0, vrb_param, vbh_ki);
+                                            cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
+                                            state.dragging_video_bezier_handle = Some(crate::state::BezierVideoHandleDrag {
+                                                clip_id: vrb_clip_id,
+                                                param: vrb_param,
+                                                keyframe_index: vbh_ki,
+                                                is_out: vbh_is_out,
+                                            });
+                                        }
+                                    }
+
                                     // Start drag on keyframe diamond
                                     let vrb_alt_held = ui.input(|i| i.modifiers.alt);
-                                    if vrb_hovered_kf_idx.is_some()
+                                    if vrb_hovered_kf_idx.is_some() && vrb_nearest_bezier_handle.is_none()
                                         && pointer_down && state.dragging_video_keyframe.is_none()
                                         && state.dragging_audio_keyframe.is_none()
+                                        && state.dragging_video_bezier_handle.is_none()
                                         && state.dragging_fade_handle.is_none()
                                         && !vrb_alt_held
                                     {
                                         if ui.input(|i| i.pointer.is_decidedly_dragging()) {
                                             if let Some(ki) = vrb_hovered_kf_idx {
+                                                let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
+                                                cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
                                                 state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
                                                     clip_id: vrb_clip_id,
                                                     param: vrb_param,
                                                     keyframe_index: ki,
                                                 });
                                             }
+                                        }
+                                    }
+
+                                    // Alt+click on rubber band line to add video keyframe
+                                    if vrb_alt_held && vrb_hovered_kf_idx.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
+                                        // Compute Y of curve at pointer X
+                                        let vrb_x_frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                                        let vrb_hover_t = vrb_x_frac * vrb_clip_time_range;
+                                        let vrb_curve_y_at_ptr = vrb_value_to_y(
+                                            klipp_core::keyframe::evaluate(vrb_keyframes, vrb_hover_t, vrb_static_val),
+                                        );
+                                        let vrb_near_line = (pos.y - vrb_curve_y_at_ptr).abs() < 6.0;
+                                        if vrb_near_line {
+                                            // Inverse Y-to-value: normalized = (clip_rect.bottom() - y) / clip_rect.height()
+                                            let vrb_normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+                                            let vrb_click_val = vrb_param_min + vrb_normalized * vrb_param_range;
+                                            cmds.push(AppCommand::AddVideoKeyframe {
+                                                clip_id: vrb_clip_id,
+                                                param: vrb_param,
+                                                time_secs: vrb_hover_t,
+                                                value: vrb_click_val,
+                                            });
                                         }
                                     }
                                 }
