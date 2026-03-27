@@ -137,7 +137,12 @@ pub fn show(
                     "Echo / Delay" => Some("delay"),
                     "Gate" => Some("gate"),
                     "De-esser" => Some("deesser"),
-                    _ => None, // Noise Reduction, De-click, Normalize, Pitch Shift, Chorus
+                    "Noise Reduction" => Some("noise_reduction"),
+                    "De-click" => Some("declick"),
+                    "Normalize" => Some("normalize"),
+                    "Pitch Shift" => Some("pitch_shift"),
+                    "Chorus" => Some("chorus"),
+                    _ => None,
                 };
 
                 if let Some(type_id) = effect_type_id {

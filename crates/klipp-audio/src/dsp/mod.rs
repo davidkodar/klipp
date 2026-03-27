@@ -1,9 +1,14 @@
+pub mod chorus;
 pub mod compressor;
+pub mod declick;
 pub mod deesser;
 pub mod delay;
 pub mod eq;
 pub mod gate;
 pub mod limiter;
+pub mod noise_reduction;
+pub mod normalize;
+pub mod pitch_shift;
 pub mod reverb;
 
 pub use klipp_core::AudioEffectInstance;
@@ -162,6 +167,11 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         "reverb" => Some(Box::new(reverb::Reverb::new(sample_rate))),
         "delay" => Some(Box::new(delay::Delay::new(sample_rate))),
         "deesser" => Some(Box::new(deesser::DeEsser::new(sample_rate))),
+        "noise_reduction" => Some(Box::new(noise_reduction::NoiseReduction::new(sample_rate))),
+        "declick" => Some(Box::new(declick::DeClick::new(sample_rate))),
+        "normalize" => Some(Box::new(normalize::Normalize::new(sample_rate))),
+        "pitch_shift" => Some(Box::new(pitch_shift::PitchShift::new(sample_rate))),
+        "chorus" => Some(Box::new(chorus::Chorus::new(sample_rate))),
         _ => None,
     }
 }
@@ -176,5 +186,10 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("reverb", "Reverb"),
         ("delay", "Delay"),
         ("deesser", "De-Esser"),
+        ("noise_reduction", "Noise Reduction"),
+        ("declick", "De-click"),
+        ("normalize", "Normalize"),
+        ("pitch_shift", "Pitch Shift"),
+        ("chorus", "Chorus"),
     ]
 }
