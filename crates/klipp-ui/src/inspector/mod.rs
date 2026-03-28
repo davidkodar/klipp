@@ -490,6 +490,158 @@ fn show_title_editor(
             });
         }
     }
+    ui.add_space(8.0);
+
+    // ── Multiple Outlines ──
+    ui.separator();
+    ui.label(egui::RichText::new("Outline Layers").strong().size(11.0));
+    {
+        let outlines = &td.outlines;
+        let mut new_outlines = outlines.clone();
+        let mut outlines_changed = false;
+
+        for (i, ol) in outlines.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("#{}", i + 1));
+                let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    new_outlines[i].color = [col.r(), col.g(), col.b(), col.a()];
+                    outlines_changed = true;
+                }
+                let mut w_val = ol.width;
+                if ui.add(egui::DragValue::new(&mut w_val).range(0.5..=20.0).speed(0.5).suffix(" px")).changed() {
+                    new_outlines[i].width = w_val;
+                    outlines_changed = true;
+                }
+                if ui.small_button("\u{2715}").clicked() {
+                    new_outlines.remove(i);
+                    outlines_changed = true;
+                }
+            });
+        }
+        if ui.small_button("+ Add Outline Layer").clicked() {
+            new_outlines.push(klipp_timeline::TextOutline {
+                color: [0, 0, 0, 255],
+                width: 4.0,
+            });
+            outlines_changed = true;
+        }
+        if outlines_changed {
+            let outline_tuples: Vec<([u8; 4], f32)> = new_outlines.iter().map(|o| (o.color, o.width)).collect();
+            cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
+        }
+    }
+    ui.add_space(8.0);
+
+    // ── Inner Shadow ──
+    ui.separator();
+    ui.label(egui::RichText::new("Inner Shadow").strong().size(11.0));
+    let has_inner = td.inner_shadow.is_some();
+    let inner = td.inner_shadow.unwrap_or(klipp_timeline::InnerShadow { color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0 });
+    let mut inner_enabled = has_inner;
+    if ui.checkbox(&mut inner_enabled, "Enable").changed() {
+        cmds.push(AppCommand::SetTitleInnerShadow { clip_id, enabled: inner_enabled, color: inner.color, offset_x: inner.offset_x, offset_y: inner.offset_y, blur: inner.blur });
+    }
+    if has_inner {
+        let mut ix = inner.offset_x;
+        let mut iy = inner.offset_y;
+        let mut ib = inner.blur;
+        let mut i_changed = false;
+        let mut i_col = egui::Color32::from_rgba_premultiplied(inner.color[0], inner.color[1], inner.color[2], inner.color[3]);
+        i_changed |= ui.color_edit_button_srgba(&mut i_col).changed();
+        i_changed |= ui.add(egui::Slider::new(&mut ix, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
+        i_changed |= ui.add(egui::Slider::new(&mut iy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
+        i_changed |= ui.add(egui::Slider::new(&mut ib, 0.0..=20.0).text("Blur").step_by(0.5)).changed();
+        if i_changed {
+            cmds.push(AppCommand::SetTitleInnerShadow {
+                clip_id, enabled: true,
+                color: [i_col.r(), i_col.g(), i_col.b(), i_col.a()],
+                offset_x: ix, offset_y: iy, blur: ib,
+            });
+        }
+    }
+    ui.add_space(8.0);
+
+    // ── Pattern Fill ──
+    ui.separator();
+    ui.label(egui::RichText::new("Pattern Fill").strong().size(11.0));
+    {
+        let pattern_idx: usize = match &td.pattern_fill {
+            None => 0,
+            Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
+            Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
+            Some(klipp_timeline::TextPattern::Checkerboard { .. }) => 3,
+            Some(klipp_timeline::TextPattern::DiagonalStripes { .. }) => 4,
+        };
+        let labels = ["None", "H-Stripes", "V-Stripes", "Checker", "Diagonal"];
+        let mut new_idx = pattern_idx;
+        egui::ComboBox::from_id_salt("title_pattern_type")
+            .selected_text(labels[pattern_idx])
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for (i, label) in labels.iter().enumerate() {
+                    if ui.selectable_label(pattern_idx == i, *label).clicked() {
+                        new_idx = i;
+                    }
+                }
+            });
+        if new_idx != pattern_idx {
+            cmds.push(AppCommand::SetTitlePattern {
+                clip_id,
+                pattern_kind: new_idx as u8,
+                color_a: [255, 255, 255, 255],
+                color_b: [0, 0, 0, 255],
+                size: 10.0,
+            });
+        }
+        // Show pattern params if active
+        if let Some(pf) = &td.pattern_fill {
+            let (mut ca, mut cb, mut size) = match pf {
+                klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
+                klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+            };
+            let mut pf_changed = false;
+            let mut col_a = egui::Color32::from_rgba_premultiplied(ca[0], ca[1], ca[2], ca[3]);
+            let mut col_b = egui::Color32::from_rgba_premultiplied(cb[0], cb[1], cb[2], cb[3]);
+            ui.horizontal(|ui| {
+                ui.label("A:");
+                pf_changed |= ui.color_edit_button_srgba(&mut col_a).changed();
+                ui.label("B:");
+                pf_changed |= ui.color_edit_button_srgba(&mut col_b).changed();
+            });
+            pf_changed |= ui.add(egui::Slider::new(&mut size, 2.0..=50.0).text("Size").step_by(1.0).suffix(" px")).changed();
+            if pf_changed {
+                ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
+                cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
+                cmds.push(AppCommand::SetTitlePattern {
+                    clip_id,
+                    pattern_kind: pattern_idx as u8,
+                    color_a: ca,
+                    color_b: cb,
+                    size,
+                });
+            }
+        }
+    }
+    ui.add_space(8.0);
+
+    // ── Typography ──
+    ui.separator();
+    ui.label(egui::RichText::new("Typography").strong().size(11.0));
+    let mut tracking = td.tracking;
+    if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
+        cmds.push(AppCommand::SetTitleTracking { clip_id, tracking });
+    }
+    let mut line_sp = td.line_spacing;
+    if ui.add(egui::DragValue::new(&mut line_sp).range(0.5..=4.0).speed(0.05).suffix("x").prefix("Line Spacing: ").fixed_decimals(2)).changed() {
+        cmds.push(AppCommand::SetTitleLineSpacing { clip_id, line_spacing: line_sp });
+    }
+    let mut write_on = td.write_on;
+    if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
+        cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
+    }
     ui.add_space(12.0);
 
     // ── Animation ──

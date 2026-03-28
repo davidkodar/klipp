@@ -45,16 +45,36 @@ pub struct TitleData {
     pub position: TitlePosition,
     pub background: TitleBackground,
     pub shadow: Option<TitleShadow>,
-    /// Outline/stroke around text
+    /// Outline/stroke around text (single legacy, kept for backward compat)
     #[serde(default)]
     pub outline: Option<TextOutline>,
+    /// Multiple outline layers (rendered widest-first, back-to-front)
+    #[serde(default)]
+    pub outlines: Vec<TextOutline>,
     /// Outer glow effect
     #[serde(default)]
     pub glow: Option<TextGlow>,
     /// Gradient fill (overrides solid color when set)
     #[serde(default)]
     pub gradient: Option<TextGradient>,
+    /// Inner shadow (engraved/inset look)
+    #[serde(default)]
+    pub inner_shadow: Option<InnerShadow>,
+    /// Pattern fill (overrides solid color and gradient when set)
+    #[serde(default)]
+    pub pattern_fill: Option<TextPattern>,
+    /// Additional pixels between characters (tracking), default 0.0
+    #[serde(default)]
+    pub tracking: f32,
+    /// Line spacing multiplier, default 1.0 (normal)
+    #[serde(default = "default_one")]
+    pub line_spacing: f32,
+    /// Write-on reveal: 0.0 = no text, 1.0 = all text visible
+    #[serde(default = "default_one")]
+    pub write_on: f32,
 }
+
+fn default_one() -> f32 { 1.0 }
 
 impl Default for TitleData {
     fn default() -> Self {
@@ -69,8 +89,14 @@ impl Default for TitleData {
             background: TitleBackground::None,
             shadow: None,
             outline: None,
+            outlines: Vec::new(),
             glow: None,
             gradient: None,
+            inner_shadow: None,
+            pattern_fill: None,
+            tracking: 0.0,
+            line_spacing: 1.0,
+            write_on: 1.0,
         }
     }
 }
@@ -140,4 +166,20 @@ pub struct TextGlow {
 pub struct TextGradient {
     pub top_color: [u8; 4],
     pub bottom_color: [u8; 4],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct InnerShadow {
+    pub color: [u8; 4],
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum TextPattern {
+    HorizontalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
+    VerticalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
+    Checkerboard { color_a: [u8; 4], color_b: [u8; 4], cell_size: f32 },
+    DiagonalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
 }

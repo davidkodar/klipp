@@ -226,13 +226,26 @@ pub enum ClipKindJson {
         #[serde(default)]
         outline: serde_json::Value,
         #[serde(default)]
+        outlines: serde_json::Value,
+        #[serde(default)]
         glow: serde_json::Value,
         #[serde(default)]
         gradient: serde_json::Value,
+        #[serde(default)]
+        inner_shadow: serde_json::Value,
+        #[serde(default)]
+        pattern_fill: serde_json::Value,
+        #[serde(default)]
+        tracking: f32,
+        #[serde(default = "default_one_f32")]
+        line_spacing: f32,
+        #[serde(default = "default_one_f32")]
+        write_on: f32,
     },
     Gap,
 }
 
+fn default_one_f32() -> f32 { 1.0 }
 fn default_font_size() -> f32 { 72.0 }
 fn default_font_name() -> String { "sans-serif".to_string() }
 fn default_font_style() -> String { "Regular".to_string() }

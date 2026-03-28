@@ -439,6 +439,19 @@ pub enum AppCommand {
     SetTitleGlow { clip_id: ClipId, enabled: bool, color: [u8; 4], radius: f32, intensity: f32 },
     /// Set gradient fill. `enabled=false` = disable, uses solid color instead.
     SetTitleGradient { clip_id: ClipId, enabled: bool, top_color: [u8; 4], bottom_color: [u8; 4] },
+    /// Set multiple outline layers (replaces single outline).
+    /// Each tuple is (color_rgba, width_px).
+    SetTitleOutlines { clip_id: ClipId, outlines: Vec<([u8; 4], f32)> },
+    /// Set inner shadow. `enabled=false` = disable.
+    SetTitleInnerShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    /// Set pattern fill. pattern_kind: 0=None, 1=HStripes, 2=VStripes, 3=Checker, 4=Diagonal
+    SetTitlePattern { clip_id: ClipId, pattern_kind: u8, color_a: [u8; 4], color_b: [u8; 4], size: f32 },
+    /// Set per-character tracking (extra spacing in px).
+    SetTitleTracking { clip_id: ClipId, tracking: f32 },
+    /// Set write-on reveal progress (0.0-1.0).
+    SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
+    /// Set line spacing multiplier.
+    SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,

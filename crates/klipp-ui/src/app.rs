@@ -4857,6 +4857,107 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitleOutlines { clip_id, outlines } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.outlines = outlines.iter().map(|(color, width)| {
+                                    klipp_timeline::TextOutline { color: *color, width: *width }
+                                }).collect();
+                                if !outlines.is_empty() {
+                                    td.outline = None;
+                                }
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.inner_shadow = if *enabled {
+                                    Some(klipp_timeline::InnerShadow {
+                                        color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
+                                    })
+                                } else {
+                                    None
+                                };
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.pattern_fill = match pattern_kind {
+                                    1 => Some(klipp_timeline::TextPattern::HorizontalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                    2 => Some(klipp_timeline::TextPattern::VerticalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                    3 => Some(klipp_timeline::TextPattern::Checkerboard { color_a: *color_a, color_b: *color_b, cell_size: *size }),
+                                    4 => Some(klipp_timeline::TextPattern::DiagonalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                    _ => None,
+                                };
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleTracking { clip_id, tracking } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.tracking = *tracking;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleWriteOn { clip_id, write_on } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.write_on = *write_on;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleLineSpacing { clip_id, line_spacing } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.line_spacing = *line_spacing;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetTitleFadeDuration { duration } => {
                     self.state.title_fade_duration = *duration;
                     continue;

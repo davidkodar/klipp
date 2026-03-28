@@ -3,7 +3,7 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::{FontStyle, TextAlignment, TitleBackground, TitleData};
+use klipp_timeline::{FontStyle, TextAlignment, TextPattern, TitleBackground, TitleData};
 use std::collections::{BTreeMap, HashMap};
 
 pub mod font_discovery;
@@ -151,6 +151,54 @@ impl TitleRenderer {
             return buf;
         }
 
+        // ── Post-process glyph positions for tracking and line spacing ──
+        let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
+
+        // Apply line spacing multiplier (shift lines after the first)
+        if title.line_spacing != 1.0 {
+            // Detect line breaks by y-position change
+            let line_height_scale = height as f32 / 1080.0;
+            let mut line_starts: Vec<(usize, f32)> = Vec::new(); // (first_glyph_idx, original_y)
+            let mut last_y: Option<f32> = None;
+            for (i, g) in glyphs_owned.iter().enumerate() {
+                let gy = g.y;
+                if last_y.is_none() || (gy - last_y.unwrap()).abs() > 1.0 {
+                    line_starts.push((i, gy));
+                    last_y = Some(gy);
+                }
+            }
+            if line_starts.len() > 1 {
+                let base_line_height = if line_starts.len() >= 2 {
+                    line_starts[1].1 - line_starts[0].1
+                } else {
+                    font_px
+                };
+                let _ = line_height_scale; // used indirectly via font_px
+                for line_idx in 1..line_starts.len() {
+                    let y_shift = base_line_height * (title.line_spacing - 1.0) * line_idx as f32;
+                    let start = line_starts[line_idx].0;
+                    let end = if line_idx + 1 < line_starts.len() {
+                        line_starts[line_idx + 1].0
+                    } else {
+                        glyphs_owned.len()
+                    };
+                    for g in &mut glyphs_owned[start..end] {
+                        g.y += y_shift;
+                    }
+                }
+            }
+        }
+
+        // Apply tracking (extra pixel spacing per character)
+        if title.tracking != 0.0 {
+            let tracking_px = title.tracking * scale;
+            for (i, g) in glyphs_owned.iter_mut().enumerate() {
+                g.x += tracking_px * i as f32;
+            }
+        }
+
+        let glyphs = &glyphs_owned;
+
         // Compute text bounding box
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
@@ -203,6 +251,20 @@ impl TitleRenderer {
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
 
+        // ── Apply write-on reveal ──
+        if title.write_on < 1.0 {
+            // Clip alpha mask horizontally: write_on=0.5 means only left half visible
+            let cutoff_x = ((text_min_x + offset_x) + text_w * title.write_on.clamp(0.0, 1.0)) as i32;
+            for my in 0..mask_h {
+                for mx in 0..mask_w {
+                    let global_x = (mask_x0 + mx) as i32;
+                    if global_x >= cutoff_x {
+                        alpha_mask[my * mask_w + mx] = 0;
+                    }
+                }
+            }
+        }
+
         // ── Render effects back-to-front ──
 
         // 1. Outer glow
@@ -217,30 +279,44 @@ impl TitleRenderer {
             let soy = (shadow.offset_y * scale).round() as i32;
 
             if shadow.blur > 0.0 {
-                // Create offset mask, then blur it
                 let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
                 let blurred = blur_alpha(&offset_mask, mask_w, mask_h, shadow.blur * scale);
                 draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
             } else {
-                // No blur — draw shadow at offset directly
                 let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
                 draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
             }
         }
 
-        // 3. Outline/stroke
-        if let Some(outline) = &title.outline {
-            let dilated = dilate_alpha(&alpha_mask, mask_w, mask_h, outline.width * scale);
-            // Draw dilated minus original = outline ring
-            let mut outline_mask = vec![0u8; mask_w * mask_h];
-            for i in 0..outline_mask.len() {
-                outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
+        // 3. Outline/stroke — multiple layers (widest first) then legacy single
+        {
+            // Collect all outlines: multi-layer first, then legacy single
+            let mut all_outlines: Vec<&klipp_timeline::TextOutline> = Vec::new();
+            for ol in &title.outlines {
+                all_outlines.push(ol);
             }
-            draw_mask_to_buf(&mut buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
+            if title.outlines.is_empty() {
+                if let Some(ref ol) = title.outline {
+                    all_outlines.push(ol);
+                }
+            }
+            // Sort widest first (back-to-front rendering)
+            all_outlines.sort_by(|a, b| b.width.partial_cmp(&a.width).unwrap_or(std::cmp::Ordering::Equal));
+
+            for outline in &all_outlines {
+                let dilated = dilate_alpha(&alpha_mask, mask_w, mask_h, outline.width * scale);
+                let mut outline_mask = vec![0u8; mask_w * mask_h];
+                for i in 0..outline_mask.len() {
+                    outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
+                }
+                draw_mask_to_buf(&mut buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
+            }
         }
 
-        // 4. Text fill (solid color or gradient)
-        if let Some(gradient) = &title.gradient {
+        // 4. Text fill (pattern > gradient > solid)
+        if let Some(pattern) = &title.pattern_fill {
+            draw_pattern_fill(&mut buf, &alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
+        } else if let Some(gradient) = &title.gradient {
             // Gradient fill based on Y position within text bounding box
             let text_top = (text_min_y + offset_y) as i32;
             let text_bot = (text_max_y + offset_y) as i32;
@@ -269,6 +345,31 @@ impl TitleRenderer {
             draw_mask_to_buf(&mut buf, &alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &title.color, 1.0);
         }
 
+        // 5. Inner shadow (rendered inside the text shape)
+        if let Some(inner) = &title.inner_shadow {
+            let sox = (inner.offset_x * scale).round() as i32;
+            let soy = (inner.offset_y * scale).round() as i32;
+            // Invert the alpha mask: shadow appears where text is NOT, offset
+            let mut inverted = vec![0u8; mask_w * mask_h];
+            for i in 0..inverted.len() {
+                inverted[i] = 255u8.saturating_sub(alpha_mask[i]);
+            }
+            // Offset the inverted mask
+            let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
+            // Blur if requested
+            let shadow_mask = if inner.blur > 0.0 {
+                blur_alpha(&offset_inv, mask_w, mask_h, inner.blur * scale)
+            } else {
+                offset_inv
+            };
+            // AND with original mask: only show shadow where text exists
+            let mut inner_mask = vec![0u8; mask_w * mask_h];
+            for i in 0..inner_mask.len() {
+                inner_mask[i] = ((shadow_mask[i] as u16 * alpha_mask[i] as u16) / 255) as u8;
+            }
+            draw_mask_to_buf(&mut buf, &inner_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &inner.color, 1.0);
+        }
+
         buf
     }
 }
@@ -277,6 +378,9 @@ impl TitleRenderer {
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let mut pad = 0i32;
     if let Some(outline) = &title.outline {
+        pad = pad.max((outline.width * scale).ceil() as i32 + 1);
+    }
+    for outline in &title.outlines {
         pad = pad.max((outline.width * scale).ceil() as i32 + 1);
     }
     if let Some(glow) = &title.glow {
@@ -288,6 +392,17 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         let sb = (shadow.blur * scale * 2.0).ceil() as i32;
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
+    }
+    if let Some(inner) = &title.inner_shadow {
+        let sx = (inner.offset_x.abs() * scale).ceil() as i32;
+        let sy = (inner.offset_y.abs() * scale).ceil() as i32;
+        let sb = (inner.blur * scale * 2.0).ceil() as i32;
+        pad = pad.max(sx + sb + 1);
+        pad = pad.max(sy + sb + 1);
+    }
+    // Extra padding for tracking (text extends further right)
+    if title.tracking > 0.0 {
+        pad = pad.max((title.tracking * scale * 200.0).ceil() as i32); // generous for long text
     }
     pad
 }
@@ -444,6 +559,67 @@ fn blur_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
         }
     }
     src
+}
+
+/// Draw a pattern fill through an alpha mask.
+#[allow(clippy::too_many_arguments)]
+fn draw_pattern_fill(
+    buf: &mut [u8],
+    mask: &[u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    buf_w: usize,
+    buf_h: usize,
+    pattern: &TextPattern,
+    scale: f32,
+) {
+    for my in 0..mask_h {
+        let py = mask_y0 + my;
+        if py >= buf_h { continue; }
+        for mx in 0..mask_w {
+            let cov = mask[my * mask_w + mx];
+            if cov == 0 { continue; }
+            let px = mask_x0 + mx;
+            if px >= buf_w { continue; }
+
+            let color = pattern_color_at(pattern, px as f32, py as f32, scale);
+            let alpha = (cov as u16 * color[3] as u16 / 255) as u8;
+            if alpha == 0 { continue; }
+            let tinted = [color[0], color[1], color[2], alpha];
+            let idx = (py * buf_w + px) * 4;
+            blend_pixel(buf, idx, &tinted);
+        }
+    }
+}
+
+/// Compute the fill color at a given pixel position for a pattern.
+fn pattern_color_at(pattern: &TextPattern, x: f32, y: f32, scale: f32) -> [u8; 4] {
+    match pattern {
+        TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => {
+            let sw = (stripe_width * scale).max(1.0);
+            let band = (y / sw) as i32;
+            if band % 2 == 0 { *color_a } else { *color_b }
+        }
+        TextPattern::VerticalStripes { color_a, color_b, stripe_width } => {
+            let sw = (stripe_width * scale).max(1.0);
+            let band = (x / sw) as i32;
+            if band % 2 == 0 { *color_a } else { *color_b }
+        }
+        TextPattern::Checkerboard { color_a, color_b, cell_size } => {
+            let cs = (cell_size * scale).max(1.0);
+            let cx = (x / cs) as i32;
+            let cy = (y / cs) as i32;
+            if (cx + cy) % 2 == 0 { *color_a } else { *color_b }
+        }
+        TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => {
+            let sw = (stripe_width * scale).max(1.0);
+            let diag = (x + y) / sw;
+            let band = diag.floor() as i32;
+            if band % 2 == 0 { *color_a } else { *color_b }
+        }
+    }
 }
 
 #[inline]

@@ -320,8 +320,14 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 background,
                 shadow,
                 outline,
+                outlines,
                 glow,
                 gradient,
+                inner_shadow,
+                pattern_fill,
+                tracking,
+                line_spacing,
+                write_on,
             } => {
                 let align = match alignment.as_str() {
                     "Left" => TextAlignment::Left,
@@ -338,8 +344,11 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     .unwrap_or(TitleBackground::None);
                 let sh: Option<TitleShadow> = serde_json::from_value(shadow.clone()).ok().flatten();
                 let ol: Option<klipp_timeline::TextOutline> = serde_json::from_value(outline.clone()).ok().flatten();
+                let ols: Vec<klipp_timeline::TextOutline> = serde_json::from_value(outlines.clone()).unwrap_or_default();
                 let gl: Option<klipp_timeline::TextGlow> = serde_json::from_value(glow.clone()).ok().flatten();
                 let gr: Option<klipp_timeline::TextGradient> = serde_json::from_value(gradient.clone()).ok().flatten();
+                let is: Option<klipp_timeline::InnerShadow> = serde_json::from_value(inner_shadow.clone()).ok().flatten();
+                let pf: Option<klipp_timeline::TextPattern> = serde_json::from_value(pattern_fill.clone()).ok().flatten();
                 ClipKind::Title(TitleData {
                     text: text.clone(),
                     font_size: *font_size,
@@ -354,8 +363,14 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     background: bg,
                     shadow: sh,
                     outline: ol,
+                    outlines: ols,
                     glow: gl,
                     gradient: gr,
+                    inner_shadow: is,
+                    pattern_fill: pf,
+                    tracking: *tracking,
+                    line_spacing: *line_spacing,
+                    write_on: *write_on,
                 })
             }
             ClipKindJson::Gap => ClipKind::Gap,
