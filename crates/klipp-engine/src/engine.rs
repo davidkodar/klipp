@@ -1911,12 +1911,23 @@ impl PlaybackEngine {
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                     let mut rgba = self.title_renderer.render_with_gpu(title_data, res.width, res.height, gpu);
 
-                    // Apply opacity + transform keyframes to title overlay
+                    // Apply opacity + transform keyframes + modifiers to title overlay
                     let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                    let eval_ctx = klipp_core::EvalContext {
+                        clip_time_secs: clip_relative_secs,
+                        clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+                        timeline_time_secs: playhead.to_secs_f64(),
+                        fps: self.fps.as_f64(),
+                        seed: clip.id.0.as_u64_pair().0,
+                    };
                     let opacity_default = clip.builtin_effects.iter()
                         .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
                         .unwrap_or(1.0);
-                    let opacity = klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default);
+                    let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
+                        Some(stack) if !stack.modifiers.is_empty() =>
+                            klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
+                        _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
+                    };
                     if (opacity - 1.0).abs() > 0.001 {
                         let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
                         for pixel in rgba.chunks_exact_mut(4) {
@@ -1924,12 +1935,17 @@ impl PlaybackEngine {
                         }
                     }
 
-                    // Apply transform keyframes (position, scale, rotation)
-                    if !clip.transform_pos_x_keyframes.is_empty()
+                    // Apply transform keyframes + modifiers (position, scale, rotation)
+                    let has_transform = !clip.transform_pos_x_keyframes.is_empty()
                         || !clip.transform_pos_y_keyframes.is_empty()
                         || !clip.transform_scale_keyframes.is_empty()
                         || !clip.transform_rotation_keyframes.is_empty()
-                    {
+                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
+                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
+                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
+                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
+
+                    if has_transform {
                         let td = clip.builtin_effects.iter()
                             .find_map(|e| match e {
                                 klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
@@ -1937,10 +1953,38 @@ impl PlaybackEngine {
                                 _ => None,
                             })
                             .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-                        let px = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0);
-                        let py = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1);
-                        let sc = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2);
-                        let ro = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4);
+
+                        // Build eval context for modifier evaluation
+                        let eval_ctx = klipp_core::EvalContext {
+                            clip_time_secs: clip_relative_secs,
+                            clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+                            timeline_time_secs: playhead.to_secs_f64(),
+                            fps: self.fps.as_f64(),
+                            seed: clip.id.0.as_u64_pair().0,
+                        };
+
+                        // Evaluate with modifiers (Throw for scrolling, Oscillate for pulsing, etc.)
+                        let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, td.0, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0),
+                        };
+                        let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, td.1, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1),
+                        };
+                        let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, td.2, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2),
+                        };
+                        let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, td.4, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4),
+                        };
+
                         rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
                     }
 
@@ -2978,12 +3022,17 @@ impl PlaybackEngine {
                 }
             }
 
-            // Apply transform keyframes (position, scale, rotation)
-            if !clip.transform_pos_x_keyframes.is_empty()
+            // Apply transform keyframes + modifiers (position, scale, rotation)
+            let has_transform = !clip.transform_pos_x_keyframes.is_empty()
                 || !clip.transform_pos_y_keyframes.is_empty()
                 || !clip.transform_scale_keyframes.is_empty()
                 || !clip.transform_rotation_keyframes.is_empty()
-            {
+                || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
+                || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
+                || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
+                || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
+
+            if has_transform {
                 let td = clip.builtin_effects.iter()
                     .find_map(|e| match e {
                         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
@@ -2991,10 +3040,28 @@ impl PlaybackEngine {
                         _ => None,
                     })
                     .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-                let px = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0);
-                let py = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1);
-                let sc = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2);
-                let ro = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4);
+
+                let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, td.0, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0),
+                };
+                let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, td.1, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1),
+                };
+                let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, td.2, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2),
+                };
+                let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, td.4, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4),
+                };
+
                 rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
             }
 
