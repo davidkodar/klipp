@@ -542,6 +542,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetPlayhead(tc) => {
+                // Always update the engine's playhead (even when Idle) so title overlay lookups work
+                self.playhead = tc;
                 if self.state != PlaybackState::Idle {
                     self.seek_in_sequence(tc);
                 }

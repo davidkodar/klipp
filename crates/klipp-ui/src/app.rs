@@ -3404,6 +3404,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
@@ -4654,6 +4655,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
@@ -4671,6 +4673,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
@@ -4684,6 +4687,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
@@ -4701,6 +4705,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
