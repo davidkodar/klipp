@@ -337,29 +337,30 @@ impl TransportBar {
             return cmds;
         }
 
+        let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
         ctx.input(|i| {
-            if i.key_pressed(egui::Key::Space) {
+            if !text_editing && i.key_pressed(egui::Key::Space) {
                 if state.playback == PlaybackState::Playing {
                     cmds.push(AppCommand::Pause);
                 } else {
                     cmds.push(AppCommand::Play);
                 }
             }
-            if i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
+            if !text_editing && i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
                 cmds.push(AppCommand::SeekRelative(-1));
             }
-            if i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
+            if !text_editing && i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
                 cmds.push(AppCommand::SeekRelative(1));
             }
-            if i.key_pressed(egui::Key::Home) {
+            if !text_editing && i.key_pressed(egui::Key::Home) {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero()));
             }
-            if i.key_pressed(egui::Key::End) {
+            if !text_editing && i.key_pressed(egui::Key::End) {
                 let dur = state.sequence_duration();
                 cmds.push(AppCommand::SeekTo(dur));
             }
             // J — reverse/faster reverse
-            if i.key_pressed(egui::Key::J) {
+            if !text_editing && i.key_pressed(egui::Key::J) {
                 let s = state.playback_speed;
                 let new_speed = if s > 0.0 { -2.0 }
                     else if s == -2.0 { -4.0 }
@@ -371,12 +372,12 @@ impl TransportBar {
                 }
             }
             // K — pause, reset speed
-            if i.key_pressed(egui::Key::K) {
+            if !text_editing && i.key_pressed(egui::Key::K) {
                 cmds.push(AppCommand::SetSpeed(1.0));
                 cmds.push(AppCommand::Pause);
             }
             // L — forward/faster forward
-            if i.key_pressed(egui::Key::L) {
+            if !text_editing && i.key_pressed(egui::Key::L) {
                 let s = state.playback_speed;
                 let new_speed = if s < 0.0 { 2.0 }
                     else if s == 2.0 { 4.0 }

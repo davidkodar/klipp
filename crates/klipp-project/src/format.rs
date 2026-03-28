@@ -251,6 +251,9 @@ pub enum ClipKindJson {
         texture_fill_path: Option<String>,
         #[serde(default)]
         motion_blur: serde_json::Value,
+        /// Per-character style runs for rich text.
+        #[serde(default)]
+        style_runs: serde_json::Value,
     },
     Gap,
 }

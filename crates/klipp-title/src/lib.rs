@@ -3,7 +3,7 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::{FontStyle, TextAlignment, TextPath, TextPattern, TitleBackground, TitleData};
+use klipp_timeline::{FontStyle, StyleRun, TextAlignment, TextPath, TextPattern, TitleBackground, TitleData};
 use std::collections::{BTreeMap, HashMap};
 
 pub mod font_discovery;
@@ -42,6 +42,44 @@ pub struct TitleLayout {
     pub glyph_count: usize,
     /// Scale factor (height / 1080.0).
     pub scale: f32,
+    /// Per-glyph color data for rich text (style runs). Empty = uniform fill.
+    /// Each entry: (mask_local_x, mask_local_y, glyph_w, glyph_h, color_rgba).
+    /// The coverage data for each glyph is stored in `glyph_coverages`.
+    pub glyph_colors: Vec<GlyphColorInfo>,
+    /// Per-glyph coverage bitmaps for rich text fill. Empty = use alpha_mask with uniform color.
+    pub glyph_coverages: Vec<Vec<u8>>,
+}
+
+/// Color and position info for a single glyph in rich text mode.
+#[derive(Debug, Clone)]
+pub struct GlyphColorInfo {
+    /// X position in mask-local coordinates.
+    pub mask_x: i32,
+    /// Y position in mask-local coordinates.
+    pub mask_y: i32,
+    /// Glyph bitmap width.
+    pub width: usize,
+    /// Glyph bitmap height.
+    pub height: usize,
+    /// RGBA fill color for this glyph.
+    pub color: [u8; 4],
+}
+
+/// Position info for a single character, used for cursor placement and click hit-testing.
+#[derive(Debug, Clone)]
+pub struct CharPosition {
+    /// Character index in the string (0-based, counting chars not bytes).
+    pub char_index: usize,
+    /// Byte offset in the source string.
+    pub byte_offset: usize,
+    /// Left edge x position in frame pixels.
+    pub x: f32,
+    /// Top edge y position in frame pixels.
+    pub y: f32,
+    /// Advance width of the character cell in frame pixels.
+    pub advance: f32,
+    /// Line height in frame pixels.
+    pub height: f32,
 }
 
 /// Renders title clips to RGBA pixel buffers.
@@ -172,7 +210,41 @@ impl TitleRenderer {
             ..LayoutSettings::default()
         });
 
-        layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
+        // Append text with per-run font sizes when style runs exist
+        if title.style_runs.is_empty() {
+            layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
+        } else {
+            // Build segments from style runs, each with its own font size
+            let mut pos = 0usize;
+            for run in &title.style_runs {
+                // Gap before this run (use base style)
+                if run.start > pos && run.start <= title.text.len() {
+                    let segment = &title.text[pos..run.start];
+                    if !segment.is_empty() {
+                        layout.append(&[font], &TextStyle::new(segment, font_px, 0));
+                    }
+                    pos = run.start;
+                }
+                // This run's text with its own font size
+                let run_end = run.end.min(title.text.len());
+                if run_end > pos {
+                    let segment = &title.text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(title.font_size) * scale;
+                    if !segment.is_empty() {
+                        // TODO: per-run font loading (different font families per run)
+                        layout.append(&[font], &TextStyle::new(segment, run_size, 0));
+                    }
+                    pos = run_end;
+                }
+            }
+            // Remaining text after last run (use base style)
+            if pos < title.text.len() {
+                let segment = &title.text[pos..];
+                if !segment.is_empty() {
+                    layout.append(&[font], &TextStyle::new(segment, font_px, 0));
+                }
+            }
+        }
 
         let glyphs = layout.glyphs();
         if glyphs.is_empty() {
@@ -184,6 +256,8 @@ impl TitleRenderer {
                 text_left: 0.0, text_right: 0.0,
                 glyph_count: 0,
                 scale,
+                glyph_colors: Vec::new(),
+                glyph_coverages: Vec::new(),
             };
         }
 
@@ -279,12 +353,22 @@ impl TitleRenderer {
                 text_right: text_max_x + offset_x,
                 glyph_count: glyphs.len(),
                 scale,
+                glyph_colors: Vec::new(),
+                glyph_coverages: Vec::new(),
             };
         }
 
         // Rasterize glyphs into alpha mask
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
+
+        // ── Rich text: resolve per-glyph styles ──
+        let has_rich_text = !title.style_runs.is_empty();
+        let resolved_colors: Vec<[u8; 4]> = if has_rich_text {
+            resolve_glyph_colors(title, glyphs, &title.style_runs)
+        } else {
+            Vec::new()
+        };
 
         // Apply write-on reveal
         if title.write_on < 1.0 {
@@ -299,6 +383,13 @@ impl TitleRenderer {
             }
         }
 
+        // Build per-glyph color info for rich text fill
+        let (glyph_colors, glyph_coverages) = if has_rich_text {
+            build_glyph_color_info(font, glyphs, offset_x, offset_y, mask_x0, mask_y0, &resolved_colors)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
         TitleLayout {
             alpha_mask,
             mask_w: mask_w as u32,
@@ -311,6 +402,8 @@ impl TitleRenderer {
             text_right: text_max_x + offset_x,
             glyph_count: glyphs.len(),
             scale,
+            glyph_colors,
+            glyph_coverages,
         }
     }
 
@@ -429,6 +522,8 @@ impl TitleRenderer {
                 text_left: text_min_x, text_right: text_max_x,
                 glyph_count: glyphs.len(),
                 scale,
+                glyph_colors: Vec::new(),
+                glyph_coverages: Vec::new(),
             };
         }
 
@@ -455,6 +550,8 @@ impl TitleRenderer {
             text_right: text_max_x,
             glyph_count: glyphs.len(),
             scale,
+            glyph_colors: Vec::new(),
+            glyph_coverages: Vec::new(),
         }
     }
 
@@ -617,6 +714,12 @@ impl TitleRenderer {
                         blend_pixel(&mut buf, idx, &tinted);
                     }
                 }
+            } else if !layout.glyph_colors.is_empty() {
+                // Rich text: draw each glyph individually with its own color
+                draw_rich_text_fill(
+                    &mut buf, w, h, mask_x0, mask_y0, mask_w, mask_h,
+                    &layout.glyph_colors, &layout.glyph_coverages,
+                );
             } else {
                 draw_mask_to_buf(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &face_color, 1.0);
             }
@@ -666,6 +769,252 @@ impl TitleRenderer {
         let mut buf = Self::compose(&layout, title, width, height, gpu);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
         buf
+    }
+
+    /// Compute character positions for the given title text, using the same layout
+    /// algorithm as `render_layout`. Returns positions in frame pixel coordinates.
+    /// Used by the viewer for cursor placement and click hit-testing.
+    pub fn compute_char_positions(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<CharPosition> {
+        if title.text.is_empty() {
+            return Vec::new();
+        }
+
+        // Same font + layout as render_layout
+        let cache_key = self.ensure_font_loaded(&title.font_name, title.font_style);
+        let font = self.font_cache.get(&cache_key).unwrap_or(&self.fallback_font);
+
+        let scale = height as f32 / 1080.0;
+        let font_px = title.font_size * scale;
+
+        let h_align = match title.alignment {
+            TextAlignment::Left => HorizontalAlign::Left,
+            TextAlignment::Center => HorizontalAlign::Center,
+            TextAlignment::Right => HorizontalAlign::Right,
+        };
+
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings {
+            x: 0.0,
+            y: 0.0,
+            max_width: Some(width as f32 * 0.9),
+            max_height: Some(height as f32 * 0.9),
+            horizontal_align: h_align,
+            vertical_align: VerticalAlign::Top,
+            wrap_style: WrapStyle::Word,
+            ..LayoutSettings::default()
+        });
+
+        // Track (glyph_count_before_append, segment_byte_start_in_full_text)
+        // so we can fix up fontdue's per-segment byte_offset → absolute byte_offset.
+        let mut segment_info: Vec<(usize, usize)> = Vec::new();
+
+        if title.style_runs.is_empty() {
+            segment_info.push((0, 0));
+            layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
+        } else {
+            let mut pos = 0usize;
+            for run in &title.style_runs {
+                if run.start > pos && run.start <= title.text.len() {
+                    let segment = &title.text[pos..run.start];
+                    if !segment.is_empty() {
+                        segment_info.push((layout.glyphs().len(), pos));
+                        layout.append(&[font], &TextStyle::new(segment, font_px, 0));
+                    }
+                    pos = run.start;
+                }
+                let run_end = run.end.min(title.text.len());
+                if run_end > pos {
+                    let segment = &title.text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(title.font_size) * scale;
+                    if !segment.is_empty() {
+                        segment_info.push((layout.glyphs().len(), pos));
+                        layout.append(&[font], &TextStyle::new(segment, run_size, 0));
+                    }
+                    pos = run_end;
+                }
+            }
+            if pos < title.text.len() {
+                let segment = &title.text[pos..];
+                if !segment.is_empty() {
+                    segment_info.push((layout.glyphs().len(), pos));
+                    layout.append(&[font], &TextStyle::new(segment, font_px, 0));
+                }
+            }
+        }
+
+        let glyphs = layout.glyphs();
+        if glyphs.is_empty() {
+            // No glyphs but text exists (e.g. whitespace only) — return a single position
+            return vec![CharPosition {
+                char_index: 0,
+                byte_offset: 0,
+                x: title.position.x * width as f32,
+                y: title.position.y * height as f32,
+                advance: font_px * 0.5,
+                height: font_px,
+            }];
+        }
+
+        let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
+
+        // Fix up byte_offset: fontdue's byte_offset is relative to each append() call's string,
+        // but we need it relative to the full title.text.
+        for (seg_idx, &(glyph_start, byte_start)) in segment_info.iter().enumerate() {
+            let glyph_end = if seg_idx + 1 < segment_info.len() {
+                segment_info[seg_idx + 1].0
+            } else {
+                glyphs_owned.len()
+            };
+            for g in &mut glyphs_owned[glyph_start..glyph_end] {
+                g.byte_offset += byte_start;
+            }
+        }
+
+        // Apply line spacing (same as render_layout)
+        if title.line_spacing != 1.0 {
+            let mut line_starts: Vec<(usize, f32)> = Vec::new();
+            let mut last_y: Option<f32> = None;
+            for (i, g) in glyphs_owned.iter().enumerate() {
+                let gy = g.y;
+                if last_y.is_none() || (gy - last_y.unwrap()).abs() > 1.0 {
+                    line_starts.push((i, gy));
+                    last_y = Some(gy);
+                }
+            }
+            if line_starts.len() > 1 {
+                let base_line_height = line_starts[1].1 - line_starts[0].1;
+                for line_idx in 1..line_starts.len() {
+                    let y_shift = base_line_height * (title.line_spacing - 1.0) * line_idx as f32;
+                    let start = line_starts[line_idx].0;
+                    let end = if line_idx + 1 < line_starts.len() {
+                        line_starts[line_idx + 1].0
+                    } else {
+                        glyphs_owned.len()
+                    };
+                    for g in &mut glyphs_owned[start..end] {
+                        g.y += y_shift;
+                    }
+                }
+            }
+        }
+
+        // Apply tracking (same as render_layout)
+        if title.tracking != 0.0 {
+            let tracking_px = title.tracking * scale;
+            for (i, g) in glyphs_owned.iter_mut().enumerate() {
+                g.x += tracking_px * i as f32;
+            }
+        }
+
+        // Compute text bounding box and offset (same as render_layout)
+        let mut text_min_x = f32::MAX;
+        let mut text_min_y = f32::MAX;
+        let mut text_max_x = f32::MIN;
+        let mut text_max_y = f32::MIN;
+        for g in &glyphs_owned {
+            text_min_x = text_min_x.min(g.x);
+            text_min_y = text_min_y.min(g.y);
+            text_max_x = text_max_x.max(g.x + g.width as f32);
+            text_max_y = text_max_y.max(g.y + g.height as f32);
+        }
+        let text_w = text_max_x - text_min_x;
+        let text_h = text_max_y - text_min_y;
+
+        let offset_x = title.position.x * width as f32 - text_w * 0.5 - text_min_x;
+        let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
+
+        // Build character positions from glyph data.
+        // fontdue gives us one glyph per visible character (spaces may have width=0).
+        // We need to map byte_offset → char_index for correct cursor positioning.
+        let mut positions: Vec<CharPosition> = Vec::with_capacity(glyphs_owned.len() + 1);
+
+        // Build a byte_offset → char_index lookup
+        let byte_to_char: Vec<(usize, usize)> = title.text
+            .char_indices()
+            .enumerate()
+            .map(|(ci, (bi, _))| (bi, ci))
+            .collect();
+
+        let char_count = title.text.chars().count();
+
+        for g in &glyphs_owned {
+            let char_index = byte_to_char.iter()
+                .find(|(bi, _)| *bi == g.byte_offset)
+                .map(|(_, ci)| *ci)
+                .unwrap_or(0);
+
+            // For zero-width glyphs (spaces), use the font_px as a reasonable advance
+            let advance = if g.width > 0 {
+                g.width as f32
+            } else {
+                font_px * 0.3 // approximate space width
+            };
+
+            let glyph_height = if g.height > 0 {
+                g.height as f32
+            } else {
+                font_px
+            };
+
+            positions.push(CharPosition {
+                char_index,
+                byte_offset: g.byte_offset,
+                x: g.x + offset_x,
+                y: g.y + offset_y,
+                advance,
+                height: glyph_height,
+            });
+        }
+
+        // Sort by char_index for consistent ordering
+        positions.sort_by_key(|p| p.char_index);
+
+        // Fill in positions for characters that didn't produce glyphs (e.g. newlines).
+        // Use interpolated positions from neighbors.
+        let mut filled = Vec::with_capacity(char_count + 1);
+        let mut pos_idx = 0;
+        for ci in 0..char_count {
+            if pos_idx < positions.len() && positions[pos_idx].char_index == ci {
+                filled.push(positions[pos_idx].clone());
+                pos_idx += 1;
+            } else {
+                // Invisible char (newline, etc.) — place at the end of previous line or start of next
+                if let Some(prev) = filled.last() {
+                    filled.push(CharPosition {
+                        char_index: ci,
+                        byte_offset: title.text.char_indices().nth(ci).map(|(bi, _)| bi).unwrap_or(0),
+                        x: prev.x + prev.advance,
+                        y: prev.y,
+                        advance: 0.0,
+                        height: prev.height,
+                    });
+                } else if !positions.is_empty() {
+                    let next = &positions[0];
+                    filled.push(CharPosition {
+                        char_index: ci,
+                        byte_offset: 0,
+                        x: next.x,
+                        y: next.y,
+                        advance: 0.0,
+                        height: next.height,
+                    });
+                }
+            }
+        }
+
+        // Add end-of-text position for cursor-at-end
+        if let Some(last) = filled.last() {
+            filled.push(CharPosition {
+                char_index: char_count,
+                byte_offset: title.text.len(),
+                x: last.x + last.advance,
+                y: last.y,
+                advance: 0.0,
+                height: last.height,
+            });
+        }
+
+        filled
     }
 
     /// Load a texture fill image, caching it across frames.
@@ -869,6 +1218,73 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     pad
 }
 
+// ─── Rich text (style runs) helpers ─────────────────────────────────────────
+
+/// Resolve per-glyph fill colors from style runs.
+/// Returns a Vec<[u8; 4]> with one color per glyph.
+/// Uses a simple approach: each glyph's byte offset in the source text
+/// determines which style run (if any) applies.
+fn resolve_glyph_colors(
+    title: &TitleData,
+    glyphs: &[fontdue::layout::GlyphPosition],
+    style_runs: &[StyleRun],
+) -> Vec<[u8; 4]> {
+    let base_color = title.color;
+    glyphs
+        .iter()
+        .map(|g| {
+            // GlyphPosition.byte_offset gives the byte offset into the source text
+            let byte_off = g.byte_offset;
+            // Find the style run containing this byte offset
+            for run in style_runs {
+                if byte_off >= run.start && byte_off < run.end {
+                    return run.color.unwrap_or(base_color);
+                }
+            }
+            base_color
+        })
+        .collect()
+}
+
+/// Build per-glyph color info and coverage bitmaps for rich text fill rendering.
+/// This is used in the compose phase to draw each glyph with its own color.
+fn build_glyph_color_info(
+    font: &Font,
+    glyphs: &[fontdue::layout::GlyphPosition],
+    offset_x: f32,
+    offset_y: f32,
+    mask_x0: usize,
+    mask_y0: usize,
+    resolved_colors: &[[u8; 4]],
+) -> (Vec<GlyphColorInfo>, Vec<Vec<u8>>) {
+    let mut colors = Vec::with_capacity(glyphs.len());
+    let mut coverages = Vec::with_capacity(glyphs.len());
+
+    for (i, glyph) in glyphs.iter().enumerate() {
+        if glyph.width == 0 || glyph.height == 0 {
+            continue;
+        }
+        let (_, coverage) = font.rasterize_config(glyph.key);
+        let gx = (glyph.x + offset_x) as i32 - mask_x0 as i32;
+        let gy = (glyph.y + offset_y) as i32 - mask_y0 as i32;
+        let color = if i < resolved_colors.len() {
+            resolved_colors[i]
+        } else {
+            [255, 255, 255, 255]
+        };
+        colors.push(GlyphColorInfo {
+            mask_x: gx,
+            mask_y: gy,
+            width: glyph.width,
+            height: glyph.height,
+            color,
+        });
+        coverages.push(coverage);
+    }
+
+    (colors, coverages)
+}
+
 // ─── Rasterization helpers ──────────────────────────────────────────────────
 
 /// Rasterize fontdue glyphs into a single-channel alpha mask.
@@ -938,6 +1354,43 @@ fn draw_mask_to_buf(
             let tinted = [color[0], color[1], color[2], alpha];
             let idx = (py * buf_w + px) * 4;
             blend_pixel(buf, idx, &tinted);
+        }
+    }
+}
+
+/// Draw rich text fill: each glyph is drawn with its own color.
+#[allow(clippy::too_many_arguments)]
+fn draw_rich_text_fill(
+    buf: &mut [u8],
+    buf_w: usize,
+    buf_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    _mask_w: usize,
+    _mask_h: usize,
+    glyph_colors: &[GlyphColorInfo],
+    glyph_coverages: &[Vec<u8>],
+) {
+    for (gi, info) in glyph_colors.iter().enumerate() {
+        let coverage = match glyph_coverages.get(gi) {
+            Some(c) => c,
+            None => continue,
+        };
+        let color = info.color;
+        for row in 0..info.height {
+            let py = mask_y0 as i32 + info.mask_y + row as i32;
+            if py < 0 || py >= buf_h as i32 { continue; }
+            for col in 0..info.width {
+                let px = mask_x0 as i32 + info.mask_x + col as i32;
+                if px < 0 || px >= buf_w as i32 { continue; }
+                let cov = coverage[row * info.width + col];
+                if cov == 0 { continue; }
+                let alpha = (cov as u16 * color[3] as u16 / 255) as u8;
+                if alpha == 0 { continue; }
+                let tinted = [color[0], color[1], color[2], alpha];
+                let idx = (py as usize * buf_w + px as usize) * 4;
+                blend_pixel(buf, idx, &tinted);
+            }
         }
     }
 }
@@ -1362,5 +1815,136 @@ mod tests {
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
         let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(count2 > count1, "Extrusion should add more non-transparent pixels");
+    }
+
+    #[test]
+    fn test_char_positions_simple() {
+        let mut renderer = TitleRenderer::new();
+        let td = TitleData {
+            text: "Hello".to_string(),
+            font_size: 72.0,
+            ..TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+        // Should have 6 entries: 5 chars + 1 end-of-text cursor position
+        assert_eq!(positions.len(), 6, "Expected 6 positions (5 chars + end), got {}", positions.len());
+        // char_indices should be sequential 0..=5
+        for (i, cp) in positions.iter().enumerate() {
+            assert_eq!(cp.char_index, i, "Position {} has wrong char_index: {}", i, cp.char_index);
+        }
+        // x positions should be monotonically increasing
+        for i in 1..positions.len() {
+            assert!(positions[i].x >= positions[i-1].x,
+                "x not increasing: pos[{}].x={} < pos[{}].x={}", i, positions[i].x, i-1, positions[i-1].x);
+        }
+    }
+
+    #[test]
+    fn test_char_positions_multiline() {
+        let mut renderer = TitleRenderer::new();
+        let td = TitleData {
+            text: "Line1\nLine2".to_string(),
+            font_size: 72.0,
+            ..TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+        let char_count = "Line1\nLine2".chars().count(); // 11
+        assert_eq!(positions.len(), char_count + 1, "Expected {} positions, got {}", char_count + 1, positions.len());
+        // Sequential char_indices
+        for (i, cp) in positions.iter().enumerate() {
+            assert_eq!(cp.char_index, i, "Position {} has wrong char_index: {} (byte_offset={})", i, cp.char_index, cp.byte_offset);
+        }
+        // Line2 chars should have higher y than Line1 chars
+        let line1_y = positions[0].y;
+        let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
+        assert!(line2_first.y > line1_y + 5.0,
+            "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    #[test]
+    fn test_char_positions_with_style_runs() {
+        let mut renderer = TitleRenderer::new();
+        let td = TitleData {
+            text: "Hello World".to_string(),
+            font_size: 72.0,
+            style_runs: vec![
+                StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
+                StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
+            ],
+            ..TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+        let char_count = "Hello World".chars().count(); // 11
+        assert_eq!(positions.len(), char_count + 1, "Expected {} positions, got {}", char_count + 1, positions.len());
+        // Sequential char_indices — this is the critical test
+        for (i, cp) in positions.iter().enumerate() {
+            assert_eq!(cp.char_index, i, "Position {} has wrong char_index: {} (byte_offset={})", i, cp.char_index, cp.byte_offset);
+        }
+    }
+
+    #[test]
+    fn test_char_positions_byte_offsets_match_text() {
+        let mut renderer = TitleRenderer::new();
+        let text = "Hi there!";
+        let td = TitleData {
+            text: text.to_string(),
+            font_size: 72.0,
+            ..TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+        // Every non-end position should have a byte_offset that points to the right character
+        for cp in &positions {
+            if cp.char_index < text.chars().count() {
+                let expected_byte = text.char_indices().nth(cp.char_index).map(|(b, _)| b).unwrap();
+                assert_eq!(cp.byte_offset, expected_byte,
+                    "char_index {} should have byte_offset {} but has {}", cp.char_index, expected_byte, cp.byte_offset);
+            }
+        }
+    }
+
+    #[test]
+    fn test_char_positions_style_runs_byte_offsets() {
+        let mut renderer = TitleRenderer::new();
+        let text = "ABCDEFGHIJ";
+        let td = TitleData {
+            text: text.to_string(),
+            font_size: 72.0,
+            style_runs: vec![
+                StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // ABC
+                StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
+                StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
+            ],
+            ..TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+        // All ASCII so byte_offset == char_index
+        for cp in &positions {
+            if cp.char_index < 10 {
+                assert_eq!(cp.byte_offset, cp.char_index,
+                    "ASCII text: char_index {} should equal byte_offset, but byte_offset={}", cp.char_index, cp.byte_offset);
+            }
+        }
+        // Sequential char_indices
+        for (i, cp) in positions.iter().enumerate() {
+            assert_eq!(cp.char_index, i, "Position {} has wrong char_index: {}", i, cp.char_index);
+        }
+    }
+
+    #[test]
+    fn test_char_to_byte_and_insert() {
+        // Simulate what the editor does: navigate to a position, insert text
+        let text = "Hello World";
+        let char_count = text.chars().count(); // 11
+
+        // char_to_byte for each position
+        for ci in 0..=char_count {
+            let byte_pos = text.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(text.len());
+            let mut modified = text.to_string();
+            modified.insert_str(byte_pos, "X");
+
+            // Verify insertion at position ci puts X after the ci-th character
+            let chars: Vec<char> = modified.chars().collect();
+            assert_eq!(chars[ci], 'X', "Insert at char {} should place X there, got '{}' in '{}'", ci, chars[ci], modified);
+        }
     }
 }

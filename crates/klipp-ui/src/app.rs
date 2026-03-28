@@ -1375,7 +1375,39 @@ impl KlippApp {
                 egui::TextureOptions::LINEAR,
             ));
             self.viewer.title_overlay_size = (w, h);
+
+            // Compute character positions for WYSIWYG text editing
+            if self.state.viewer_text_edit {
+                self.state.viewer_char_positions =
+                    self.title_renderer.compute_char_positions(&td, w, h);
+            }
+
             ctx.request_repaint();
+        }
+    }
+
+    /// Recompute cached character positions when entering text edit mode
+    /// or when positions are empty but edit mode is active.
+    fn recompute_char_positions_if_needed(&mut self) {
+        if !self.state.viewer_text_edit {
+            return;
+        }
+        // Recompute if we have no positions cached (just entered edit mode)
+        // or if request_focus was just set (initial entry)
+        if !self.state.viewer_char_positions.is_empty() {
+            return;
+        }
+        if let Some(clip_id) = self.state.viewer_text_edit_clip {
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let td = seq.tracks.iter()
+                .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+                .and_then(|c| c.title_data());
+            if let Some(td) = td {
+                let td = td.clone();
+                let (w, h) = (seq.resolution.width, seq.resolution.height);
+                self.state.viewer_char_positions =
+                    self.title_renderer.compute_char_positions(&td, w, h);
+            }
         }
     }
 
@@ -2111,6 +2143,21 @@ impl KlippApp {
                 }
                 AppCommand::SelectClip(id) => {
                     self.state.selected_clip = *id;
+                    // Show title overlay immediately when selecting a title clip
+                    if let Some(clip_id) = *id {
+                        let is_title = self.state.sequences[self.state.active_sequence_idx]
+                            .tracks.iter()
+                            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+                            .map_or(false, |c| c.title_data().is_some());
+                        if is_title {
+                            self.render_title_to_viewer(clip_id);
+                        }
+                    } else {
+                        // Deselecting — clear title overlay if not in edit mode
+                        if !self.state.viewer_text_edit {
+                            self.viewer.title_overlay_texture = None;
+                        }
+                    }
                     continue;
                 }
                 // Phase 4: Track properties
@@ -4748,6 +4795,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                let old_len = td.text.len();
                                 td.text = text.clone();
                                 td.font_size = *font_size;
                                 td.font_name = font_name.clone();
@@ -4758,6 +4806,13 @@ impl KlippApp {
                                     _ => klipp_timeline::FontStyle::Regular,
                                 };
                                 td.color = *color;
+                                // Adjust style runs if text length changed
+                                if td.text.len() != old_len {
+                                    klipp_timeline::adjust_style_runs_for_text_change(
+                                        &mut td.style_runs,
+                                        td.text.len(),
+                                    );
+                                }
                             }
                         }
                     }
@@ -5098,6 +5153,72 @@ impl KlippApp {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                                 td.motion_blur = mb;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ApplyTitleStyle { clip_id, range_start, range_end, property, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                let text_len = td.text.len();
+                                let prop = property.as_str();
+                                let val = value.as_str();
+                                klipp_timeline::apply_style_to_range(
+                                    &mut td.style_runs,
+                                    text_len,
+                                    *range_start,
+                                    *range_end,
+                                    |run| {
+                                        match prop {
+                                            "color" => {
+                                                if let Ok(c) = serde_json::from_str::<[u8; 4]>(val) {
+                                                    run.color = Some(c);
+                                                }
+                                            }
+                                            "font_size" => {
+                                                if let Ok(s) = val.parse::<f32>() {
+                                                    run.font_size = Some(s);
+                                                }
+                                            }
+                                            "font_style" => {
+                                                if let Ok(fs) = serde_json::from_str::<klipp_timeline::FontStyle>(val) {
+                                                    run.font_style = Some(fs);
+                                                }
+                                            }
+                                            "tracking" => {
+                                                if let Ok(t) = val.parse::<f32>() {
+                                                    run.tracking = Some(t);
+                                                }
+                                            }
+                                            "baseline_offset" => {
+                                                if let Ok(b) = val.parse::<f32>() {
+                                                    run.baseline_offset = Some(b);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ClearTitleStyleRuns { clip_id } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.style_runs.clear();
                             }
                         }
                     }
@@ -7873,7 +7994,7 @@ impl KlippApp {
         // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
         // title text editor, timecode entry, rename fields, etc.).
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
-        let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode;
+        let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
 
         ctx.input(|i| {
             // Ctrl+S — Save
@@ -8783,6 +8904,7 @@ impl eframe::App for KlippApp {
         self.poll_render_queue();
         self.upload_frame_to_egui(ctx);
         self.upload_title_overlay(ctx);
+        self.recompute_char_positions_if_needed();
         self.poll_effect_thumbnails(ctx);
 
         // Rebuild media usage cache if dirty (O(clips) once per edit, then O(1) per render)
@@ -9461,7 +9583,7 @@ impl eframe::App for KlippApp {
                         } else {
                             // Edit workspace: standard clip inspector
                             let cmds = self.new_inspector.show(
-                                ui, &mut self.state, &self.theme,
+                                ui, &self.state, &self.theme,
                                 &mut self.layout.active_inspector_tab,
                             );
                             all_cmds.extend(cmds);

@@ -3,8 +3,8 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::{
-    CharAnimation, CharEntrance, FontStyle, TextAlignment, TextExtrusion, TextGlow, TextGradient,
-    TextOutline, TextPath, TitleBackground, TitleData, TitlePosition, TitleShadow,
+    CharAnimation, CharEntrance, FontStyle, StyleRun, TextAlignment, TextExtrusion, TextGlow,
+    TextGradient, TextOutline, TextPath, TitleBackground, TitleData, TitlePosition, TitleShadow,
 };
 
 struct TitleTemplate {
@@ -868,6 +868,98 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Breathing Text", category: "Scrolling", preview_text: "~ Breathe ~", create_data: || centered("breathe", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("breathing_1.0") },
     TitleTemplate { name: "Floating Text", category: "Scrolling", preview_text: "\u{2601} Float", create_data: || centered("drifting...", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("floating_1.0") },
     TitleTemplate { name: "Side Scroll + Fade", category: "Scrolling", preview_text: "\u{2190} Scroll", create_data: || { let mut t = centered("Latest headlines streaming across your screen", 28.0, FontStyle::Regular, [255,255,255,255], true); t.position = TitlePosition { x: 0.5, y: 0.9 }; t }, animation: Some("fade_in_0.5+ticker_left_1.0") },
+    // ---- Rich Text (8) — pre-styled multi-color/size templates ----
+    TitleTemplate { name: "Name & Title", category: "Rich Text", preview_text: "Name + Title", create_data: || {
+        let text = "John Smith\nCreative Director"; // 28 bytes
+        let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], true);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 10, font_size: Some(48.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 10) },
+            StyleRun { start: 11, end: 28, font_size: Some(28.0), font_style: Some(FontStyle::Regular), color: Some([180, 180, 190, 255]), ..StyleRun::default_for_range(11, 28) },
+        ];
+        t
+    }, animation: Some("fade_in_0.5") },
+    TitleTemplate { name: "Highlight Word", category: "Rich Text", preview_text: "BOLD color", create_data: || {
+        let text = "This is IMPORTANT text";
+        let mut t = centered(text, 48.0, FontStyle::Regular, [255, 255, 255, 255], true);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 8, color: Some([200, 200, 210, 255]), ..StyleRun::default_for_range(0, 8) },
+            StyleRun { start: 8, end: 17, font_style: Some(FontStyle::Bold), color: Some([255, 195, 50, 255]), font_size: Some(56.0), ..StyleRun::default_for_range(8, 17) },
+            StyleRun { start: 17, end: 22, color: Some([200, 200, 210, 255]), ..StyleRun::default_for_range(17, 22) },
+        ];
+        t
+    }, animation: None },
+    TitleTemplate { name: "Duo Tone", category: "Rich Text", preview_text: "Two Colors", create_data: || {
+        let text = "HELLO WORLD";
+        let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], true);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 5, color: Some([80, 180, 255, 255]), ..StyleRun::default_for_range(0, 5) },
+            StyleRun { start: 5, end: 11, color: Some([255, 100, 150, 255]), ..StyleRun::default_for_range(5, 11) },
+        ];
+        t
+    }, animation: Some("fade_in_0.5") },
+    TitleTemplate { name: "Quote + Author", category: "Rich Text", preview_text: "\"Quote\" — Author", create_data: || {
+        let text = "\"The best way to predict\nthe future is to create it.\"\n\n— Abraham Lincoln"; // 72 bytes
+        let author_start = text.find('\u{2014}').unwrap_or(55); // em dash
+        let mut t = centered(text, 36.0, FontStyle::Italic, [255, 255, 255, 255], true);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: author_start, font_size: Some(36.0), font_style: Some(FontStyle::Italic), color: Some([230, 230, 240, 255]), ..StyleRun::default_for_range(0, author_start) },
+            StyleRun { start: author_start, end: text.len(), font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([180, 160, 120, 255]), ..StyleRun::default_for_range(author_start, text.len()) },
+        ];
+        t
+    }, animation: Some("fade_in_1.0") },
+    TitleTemplate { name: "Big + Small", category: "Rich Text", preview_text: "BIG small", create_data: || {
+        let text = "MEGA tiny";
+        let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], false);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 4, font_size: Some(96.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 4) },
+            StyleRun { start: 5, end: 9, font_size: Some(28.0), font_style: Some(FontStyle::Regular), color: Some([160, 160, 170, 255]), ..StyleRun::default_for_range(5, 9) },
+        ];
+        t
+    }, animation: None },
+    TitleTemplate { name: "Rainbow Text", category: "Rich Text", preview_text: "Rainbow!", create_data: || {
+        let text = "RAINBOW";
+        let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], true);
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 1, color: Some([255, 50, 50, 255]), ..StyleRun::default_for_range(0, 1) },
+            StyleRun { start: 1, end: 2, color: Some([255, 150, 0, 255]), ..StyleRun::default_for_range(1, 2) },
+            StyleRun { start: 2, end: 3, color: Some([255, 255, 0, 255]), ..StyleRun::default_for_range(2, 3) },
+            StyleRun { start: 3, end: 4, color: Some([50, 200, 50, 255]), ..StyleRun::default_for_range(3, 4) },
+            StyleRun { start: 4, end: 5, color: Some([50, 150, 255, 255]), ..StyleRun::default_for_range(4, 5) },
+            StyleRun { start: 5, end: 6, color: Some([100, 50, 255, 255]), ..StyleRun::default_for_range(5, 6) },
+            StyleRun { start: 6, end: 7, color: Some([200, 50, 200, 255]), ..StyleRun::default_for_range(6, 7) },
+        ];
+        t
+    }, animation: Some("pop_in_0.5") },
+    TitleTemplate { name: "Price Tag", category: "Rich Text", preview_text: "$9.99/mo", create_data: || {
+        let text = "$9.99/month";
+        let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], false);
+        t.background = TitleBackground::Color { color: [30, 30, 40, 220], padding: 20.0 };
+        t.style_runs = vec![
+            StyleRun { start: 0, end: 1, font_size: Some(36.0), color: Some([180, 180, 190, 255]), ..StyleRun::default_for_range(0, 1) },
+            StyleRun { start: 1, end: 5, font_size: Some(72.0), font_style: Some(FontStyle::Bold), color: Some([255, 220, 50, 255]), ..StyleRun::default_for_range(1, 5) },
+            StyleRun { start: 5, end: 11, font_size: Some(24.0), color: Some([140, 140, 150, 255]), ..StyleRun::default_for_range(5, 11) },
+        ];
+        t
+    }, animation: Some("fade_in_0.3") },
+    TitleTemplate { name: "Breaking + Detail", category: "Rich Text", preview_text: "BREAKING + info", create_data: || {
+        let text = "BREAKING NEWS\nExplosion reported downtown, emergency services responding";
+        let tlen = text.len();
+        TitleData {
+            text: text.into(),
+            font_size: 36.0,
+            font_name: "sans-serif".into(),
+            font_style: FontStyle::Bold,
+            color: [255, 255, 255, 255],
+            alignment: TextAlignment::Left,
+            position: TitlePosition { x: 0.15, y: 0.85 },
+            background: TitleBackground::Color { color: [180, 20, 20, 220], padding: 12.0 },
+            style_runs: vec![
+                StyleRun { start: 0, end: 13, font_size: Some(42.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 13) },
+                StyleRun { start: 14, end: tlen, font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([240, 220, 200, 255]), ..StyleRun::default_for_range(14, tlen) },
+            ],
+            ..TitleData::default()
+        }
+    }, animation: Some("slide_left_0.5") },
 ];
 
 /// Ordered list of categories for display.
@@ -888,6 +980,7 @@ const CATEGORIES: &[&str] = &[
     "3D Text",
     "Text on Path",
     "Per-Character",
+    "Rich Text",
     "Wedding / Event",
 ];
 

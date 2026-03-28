@@ -168,7 +168,7 @@ impl NewInspectorPanel {
             ui.add_space(10.0);
             match active_tab {
                 InspectorTab::Video => {
-                    if let Some((_, clip)) = clip_info {
+                    if let Some((_, ref clip)) = clip_info {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         video_tab::show(ui, theme, clip, &mut cmds, clip_time_secs);
                     } else {
@@ -176,7 +176,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Audio => {
-                    if let Some((track_idx, clip)) = clip_info {
+                    if let Some((track_idx, ref clip)) = clip_info {
                         let peak = audio_tab::find_clip_peak_levels(clip, track_idx, state);
                         let media_peaks: Option<Vec<f32>> = clip.media_id()
                             .and_then(|mid| state.media_pool.get(&mid))
@@ -199,7 +199,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Effects => {
-                    if let Some((_, clip)) = clip_info {
+                    if let Some((_, ref clip)) = clip_info {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
                     } else {
@@ -207,7 +207,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Title => {
-                    if let Some((_, clip)) = clip_info {
+                    if let Some((_, ref clip)) = clip_info {
                         if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
                             show_title_editor(ui, theme, clip, state, &mut cmds);
                         } else {
@@ -252,20 +252,23 @@ fn show_title_editor(
         klipp_timeline::ClipKind::Title(td) => td,
         _ => return,
     };
-    // Text input
-    let mut text = td.text.clone();
+    // Text preview (read-only) — editing happens in the viewer (double-click)
     ui.label(egui::RichText::new("Text").strong().size(11.0));
-    let response = ui.add(
-        egui::TextEdit::multiline(&mut text)
-            .desired_width(f32::INFINITY)
-            .desired_rows(3)
-            .font(egui::TextStyle::Monospace),
-    );
-    if response.changed() {
-        cmds.push(AppCommand::UpdateTitleData {
-            clip_id, text: text.clone(), font_size: td.font_size,
-            font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: td.color,
-        });
+    let preview = if td.text.len() > 80 {
+        format!("{}...", &td.text[..77])
+    } else {
+        td.text.clone()
+    };
+    ui.label(egui::RichText::new(&preview).size(11.0).color(egui::Color32::from_rgb(180, 180, 190)));
+    if state.viewer_text_edit {
+        if let Some((s, e)) = state.viewer_text_selection.or(state.viewer_text_selection_locked) {
+            let selected_text = if e <= td.text.len() { &td.text[s..e] } else { "" };
+            if !selected_text.is_empty() {
+                ui.label(egui::RichText::new(format!("Selected: \"{}\"", selected_text)).size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+            }
+        }
+    } else {
+        ui.label(egui::RichText::new("Double-click in viewer to edit").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
     }
     ui.add_space(8.0);
 
@@ -320,19 +323,228 @@ fn show_title_editor(
     });
     ui.add_space(8.0);
 
-    // Font size
-    let mut font_size = td.font_size;
-    ui.label(egui::RichText::new("Size").strong().size(11.0));
+    // Font size — selection-aware
+    // Selection comes from the viewer's text edit mode (double-click to edit, select text).
+    // The locked selection persists when the user clicks inspector controls.
+    let effective_selection = state.viewer_text_selection
+        .or(state.viewer_text_selection_locked);
+    let has_selection = state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
+    let sel_range = effective_selection.unwrap_or((0, 0));
+
+    // Determine effective font size for display
+    let (display_size, size_is_mixed) = if has_selection && !td.style_runs.is_empty() {
+        let mut sizes: Vec<f32> = Vec::new();
+        for run in &td.style_runs {
+            if run.start < sel_range.1 && run.end > sel_range.0 {
+                sizes.push(run.font_size.unwrap_or(td.font_size));
+            }
+        }
+        if sizes.is_empty() {
+            (td.font_size, false)
+        } else if sizes.iter().all(|s| (*s - sizes[0]).abs() < 0.5) {
+            (sizes[0], false)
+        } else {
+            (sizes[0], true)
+        }
+    } else if state.viewer_text_edit {
+        // No selection — show font size at cursor position
+        (state.viewer_text_cursor_font_size.unwrap_or(td.font_size), false)
+    } else {
+        (td.font_size, false)
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Size").strong().size(11.0));
+        if size_is_mixed {
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+        }
+    });
+    let mut font_size = display_size;
     if ui.add(egui::Slider::new(&mut font_size, 12.0..=300.0).step_by(1.0).suffix(" pt")).changed() {
-        cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: td.color });
+        if has_selection && sel_range.0 < sel_range.1 {
+            // Apply to selection only
+            cmds.push(AppCommand::ApplyTitleStyle {
+                clip_id, range_start: sel_range.0, range_end: sel_range.1,
+                property: "font_size".into(), value: format!("{font_size}"),
+            });
+        } else {
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: td.color });
+        }
     }
     ui.add_space(8.0);
 
-    // Text color
-    ui.label(egui::RichText::new("Color").strong().size(11.0));
-    let mut color = egui::Color32::from_rgba_premultiplied(td.color[0], td.color[1], td.color[2], td.color[3]);
+    // Text color — selection-aware
+    let (display_color, color_is_mixed) = if has_selection && !td.style_runs.is_empty() {
+        let mut colors: Vec<[u8; 4]> = Vec::new();
+        for run in &td.style_runs {
+            if run.start < sel_range.1 && run.end > sel_range.0 {
+                colors.push(run.color.unwrap_or(td.color));
+            }
+        }
+        if colors.is_empty() {
+            (td.color, false)
+        } else if colors.iter().all(|c| *c == colors[0]) {
+            (colors[0], false)
+        } else {
+            (colors[0], true)
+        }
+    } else if state.viewer_text_edit {
+        // No selection — show color at cursor position
+        (state.viewer_text_cursor_color.unwrap_or(td.color), false)
+    } else {
+        (td.color, false)
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Color").strong().size(11.0));
+        if color_is_mixed {
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+        }
+    });
+    let mut color = egui::Color32::from_rgba_premultiplied(display_color[0], display_color[1], display_color[2], display_color[3]);
     if ui.color_edit_button_srgba(&mut color).changed() {
-        cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: [color.r(), color.g(), color.b(), color.a()] });
+        if has_selection && sel_range.0 < sel_range.1 {
+            let c = [color.r(), color.g(), color.b(), color.a()];
+            cmds.push(AppCommand::ApplyTitleStyle {
+                clip_id, range_start: sel_range.0, range_end: sel_range.1,
+                property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+            });
+        } else {
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: [color.r(), color.g(), color.b(), color.a()] });
+        }
+    }
+
+    // Quick color presets
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        let preset_colors: &[(&str, [u8; 4])] = &[
+            ("W", [255, 255, 255, 255]),
+            ("R", [255, 60, 60, 255]),
+            ("O", [255, 160, 0, 255]),
+            ("Y", [255, 220, 50, 255]),
+            ("G", [50, 200, 80, 255]),
+            ("B", [60, 140, 255, 255]),
+            ("P", [180, 80, 220, 255]),
+        ];
+        for (label, c) in preset_colors {
+            let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let resp = ui.add(egui::Button::new(
+                egui::RichText::new(*label).size(9.0).color(
+                    if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 { egui::Color32::BLACK } else { egui::Color32::WHITE }
+                )
+            ).fill(btn_color).min_size(egui::vec2(18.0, 16.0)));
+            if resp.clicked() {
+                if has_selection && sel_range.0 < sel_range.1 {
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: sel_range.0, range_end: sel_range.1,
+                        property: "color".into(), value: serde_json::to_string(c).unwrap_or_default(),
+                    });
+                } else {
+                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: *c });
+                }
+            }
+        }
+    });
+
+    // Per-character color effects (apply to selection or whole text)
+    if has_selection && sel_range.1 > sel_range.0 {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Effects:").size(9.0).color(egui::Color32::from_rgb(140, 140, 150)));
+            // Rainbow — each character gets a different color
+            if ui.small_button("Rainbow").clicked() {
+                let rainbow: &[[u8; 4]] = &[
+                    [255, 50, 50, 255],   // red
+                    [255, 150, 0, 255],   // orange
+                    [255, 230, 0, 255],   // yellow
+                    [50, 200, 50, 255],   // green
+                    [50, 150, 255, 255],  // blue
+                    [100, 50, 255, 255],  // indigo
+                    [200, 50, 200, 255],  // violet
+                ];
+                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let color_idx = ci % rainbow.len();
+                    let c = rainbow[color_idx];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: byte_pos, range_end: char_end,
+                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            // Fire — red to yellow gradient per character
+            if ui.small_button("Fire").clicked() {
+                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let r = 255u8;
+                    let g = (50.0 + t * 200.0) as u8;
+                    let b = (0.0 + t * 30.0) as u8;
+                    let c = [r, g, b, 255];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: byte_pos, range_end: char_end,
+                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            // Ocean — blue to cyan gradient
+            if ui.small_button("Ocean").clicked() {
+                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let r = (20.0 + t * 30.0) as u8;
+                    let g = (80.0 + t * 140.0) as u8;
+                    let b = (200.0 + t * 55.0) as u8;
+                    let c = [r, g, b, 255];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: byte_pos, range_end: char_end,
+                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            // Sunset — purple to orange
+            if ui.small_button("Sunset").clicked() {
+                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let r = (150.0 + t * 105.0) as u8;
+                    let g = (30.0 + t * 100.0) as u8;
+                    let b = (200.0 - t * 170.0) as u8;
+                    let c = [r, g, b, 255];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: byte_pos, range_end: char_end,
+                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+        });
+    }
+    ui.add_space(4.0);
+
+    // Show style runs indicator
+    if !td.style_runs.is_empty() {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs.len())).size(9.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            if ui.small_button("Clear All").clicked() {
+                cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
+            }
+        });
     }
     ui.add_space(8.0);
 

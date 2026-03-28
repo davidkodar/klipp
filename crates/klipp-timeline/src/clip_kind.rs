@@ -1,6 +1,70 @@
 use klipp_core::MediaId;
 use serde::{Deserialize, Serialize};
 
+/// A style run — a contiguous range of characters sharing the same visual style.
+/// Fields are all `Option<T>`: `None` means "inherit from the base TitleData style".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StyleRun {
+    /// Byte offset start in the text string (inclusive).
+    pub start: usize,
+    /// Byte offset end in the text string (exclusive).
+    pub end: usize,
+    /// Font family name override (if None, inherits from TitleData.font_name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_name: Option<String>,
+    /// Font size override (if None, inherits from TitleData.font_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
+    /// Color override RGBA (if None, inherits from TitleData.color).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 4]>,
+    /// Font style override (if None, inherits from TitleData.font_style).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_style: Option<FontStyle>,
+    /// Extra tracking (letter spacing) in pixels (if None, inherits from TitleData.tracking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<f32>,
+    /// Vertical baseline offset in pixels — positive = up (if None, defaults to 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_offset: Option<f32>,
+}
+
+impl StyleRun {
+    /// Create a default (all-inherit) style run for a byte range.
+    pub fn default_for_range(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            font_name: None,
+            font_size: None,
+            color: None,
+            font_style: None,
+            tracking: None,
+            baseline_offset: None,
+        }
+    }
+
+    /// Returns true if all fields are None (fully inheriting from base style).
+    pub fn is_all_inherited(&self) -> bool {
+        self.font_name.is_none()
+            && self.font_size.is_none()
+            && self.color.is_none()
+            && self.font_style.is_none()
+            && self.tracking.is_none()
+            && self.baseline_offset.is_none()
+    }
+
+    /// Returns true if two runs have identical style fields (ignoring range).
+    pub fn same_style(&self, other: &StyleRun) -> bool {
+        self.font_name == other.font_name
+            && self.font_size == other.font_size
+            && self.color == other.color
+            && self.font_style == other.font_style
+            && self.tracking == other.tracking
+            && self.baseline_offset == other.baseline_offset
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipKind {
@@ -87,6 +151,9 @@ pub struct TitleData {
     /// Motion blur settings (None = disabled)
     #[serde(default)]
     pub motion_blur: Option<MotionBlur>,
+    /// Per-character style runs. Empty = uniform style from base properties.
+    #[serde(default)]
+    pub style_runs: Vec<StyleRun>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -181,6 +248,7 @@ impl Default for TitleData {
             char_animation: None,
             texture_fill_path: None,
             motion_blur: None,
+            style_runs: Vec::new(),
         }
     }
 }
@@ -266,4 +334,118 @@ pub enum TextPattern {
     VerticalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
     Checkerboard { color_a: [u8; 4], color_b: [u8; 4], cell_size: f32 },
     DiagonalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
+}
+
+// ─── Style Run Manipulation Helpers ─────────────────────────────────────────
+
+/// Apply a style mutation to a byte range within style runs.
+/// Ensures full coverage of the text, splits runs at range boundaries,
+/// applies the update, then merges adjacent runs with identical styles.
+pub fn apply_style_to_range(
+    style_runs: &mut Vec<StyleRun>,
+    text_len: usize,
+    range_start: usize,
+    range_end: usize,
+    update: impl Fn(&mut StyleRun),
+) {
+    if text_len == 0 || range_start >= range_end || range_start >= text_len {
+        return;
+    }
+    let range_end = range_end.min(text_len);
+
+    // Step 1: Ensure runs cover the full text (fill gaps with default runs)
+    if style_runs.is_empty() {
+        style_runs.push(StyleRun::default_for_range(0, text_len));
+    } else {
+        ensure_full_coverage(style_runs, text_len);
+    }
+
+    // Step 2: Split any run that straddles the range boundaries
+    split_at(style_runs, range_start);
+    split_at(style_runs, range_end);
+
+    // Step 3: Apply the update to all runs that overlap the range
+    for run in style_runs.iter_mut() {
+        if run.start >= range_start && run.end <= range_end {
+            update(run);
+        }
+    }
+
+    // Step 4: Merge adjacent runs with identical styles
+    merge_adjacent(style_runs);
+
+    // Step 5: If all runs are fully inherited, clear the vec (clean state)
+    if style_runs.iter().all(|r| r.is_all_inherited()) {
+        style_runs.clear();
+    }
+}
+
+/// Ensure style runs cover [0, text_len) with no gaps or overlaps.
+fn ensure_full_coverage(runs: &mut Vec<StyleRun>, text_len: usize) {
+    runs.sort_by_key(|r| r.start);
+
+    // Clamp all runs to text_len
+    for r in runs.iter_mut() {
+        r.end = r.end.min(text_len);
+    }
+    runs.retain(|r| r.start < r.end);
+
+    // Fill gaps
+    let mut filled = Vec::new();
+    let mut cursor = 0usize;
+    for r in runs.iter() {
+        if r.start > cursor {
+            filled.push(StyleRun::default_for_range(cursor, r.start));
+        }
+        cursor = cursor.max(r.end);
+        filled.push(r.clone());
+    }
+    if cursor < text_len {
+        filled.push(StyleRun::default_for_range(cursor, text_len));
+    }
+    *runs = filled;
+}
+
+/// Split the run containing `pos` into two runs at that byte offset.
+fn split_at(runs: &mut Vec<StyleRun>, pos: usize) {
+    if let Some(idx) = runs.iter().position(|r| r.start < pos && pos < r.end) {
+        let mut second = runs[idx].clone();
+        second.start = pos;
+        runs[idx].end = pos;
+        runs.insert(idx + 1, second);
+    }
+}
+
+/// Merge adjacent runs that have identical style fields.
+fn merge_adjacent(runs: &mut Vec<StyleRun>) {
+    let mut i = 0;
+    while i + 1 < runs.len() {
+        if runs[i].end == runs[i + 1].start && runs[i].same_style(&runs[i + 1]) {
+            runs[i].end = runs[i + 1].end;
+            runs.remove(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// After text editing changes the length, adjust style runs to match new text_len.
+/// Truncates runs that extend past text_len, removes empty runs.
+pub fn adjust_style_runs_for_text_change(style_runs: &mut Vec<StyleRun>, new_text_len: usize) {
+    if style_runs.is_empty() {
+        return;
+    }
+    for r in style_runs.iter_mut() {
+        if r.start >= new_text_len {
+            r.start = new_text_len;
+            r.end = new_text_len;
+        } else if r.end > new_text_len {
+            r.end = new_text_len;
+        }
+    }
+    style_runs.retain(|r| r.start < r.end);
+    merge_adjacent(style_runs);
+    if style_runs.iter().all(|r| r.is_all_inherited()) {
+        style_runs.clear();
+    }
 }

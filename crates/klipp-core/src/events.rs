@@ -466,6 +466,18 @@ pub enum AppCommand {
     SetTitleTextureFill { clip_id: ClipId, path: Option<String> },
     /// Set motion blur. `enabled=false` = disable.
     SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
+    /// Apply a style property to a character range (rich text style runs).
+    /// `property`: "font_size", "color", "font_style", "tracking", "baseline_offset"
+    /// `value`: JSON-encoded value for the property.
+    ApplyTitleStyle {
+        clip_id: ClipId,
+        range_start: usize,
+        range_end: usize,
+        property: String,
+        value: String,
+    },
+    /// Clear all style runs — reset to uniform base style.
+    ClearTitleStyleRuns { clip_id: ClipId },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,

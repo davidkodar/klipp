@@ -599,38 +599,87 @@ impl InspectorPanel {
         });
         ui.add_space(8.0);
 
-        // Font size
-        let mut font_size = td.font_size;
+        // Font size — when in text edit mode with a selection, applies to selection only
+        let sel_for_size = if state.viewer_text_edit { state.viewer_text_selection.or(state.viewer_text_selection_locked) } else { None };
+        let display_font_size = if let Some((sel_start, sel_end)) = sel_for_size {
+            selection_font_size(td, sel_start, sel_end)
+        } else {
+            td.font_size
+        };
+        let mut font_size = display_font_size;
         ui.label("Font Size");
         if ui.add(egui::Slider::new(&mut font_size, 12.0..=300.0)
             .step_by(1.0)
             .suffix(" pt")
         ).changed() {
-            cmds.push(AppCommand::UpdateTitleData {
-                clip_id,
-                text: td.text.clone(),
-                font_size,
-                font_name: td.font_name.clone(),
-                font_style: Self::font_style_to_u8(td.font_style),
-                color: td.color,
-            });
+            if let Some((sel_start, sel_end)) = sel_for_size {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_start,
+                    range_end: sel_end,
+                    property: "font_size".to_string(),
+                    value: font_size.to_string(),
+                });
+            } else {
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: td.text.clone(),
+                    font_size,
+                    font_name: td.font_name.clone(),
+                    font_style: Self::font_style_to_u8(td.font_style),
+                    color: td.color,
+                });
+            }
         }
         ui.add_space(8.0);
 
-        // Text color
+        // Text color — when in text edit mode with a selection, applies to selection only
         ui.label("Text Color");
-        let mut color = egui::Color32::from_rgba_premultiplied(td.color[0], td.color[1], td.color[2], td.color[3]);
+        let selection = if state.viewer_text_edit { state.viewer_text_selection.or(state.viewer_text_selection_locked) } else { None };
+        // Resolve displayed color: if selection exists, check style runs for selection range
+        let display_color = if let Some((sel_start, sel_end)) = selection {
+            selection_color(td, sel_start, sel_end)
+        } else {
+            td.color
+        };
+        let mut color = egui::Color32::from_rgba_premultiplied(display_color[0], display_color[1], display_color[2], display_color[3]);
         if ui.color_edit_button_srgba(&mut color).changed() {
-            cmds.push(AppCommand::UpdateTitleData {
-                clip_id,
-                text: td.text.clone(),
-                font_size: td.font_size,
-                font_name: td.font_name.clone(),
-                font_style: Self::font_style_to_u8(td.font_style),
-                color: [color.r(), color.g(), color.b(), color.a()],
-            });
+            let new_color = [color.r(), color.g(), color.b(), color.a()];
+            if let Some((sel_start, sel_end)) = selection {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_start,
+                    range_end: sel_end,
+                    property: "color".to_string(),
+                    value: serde_json::to_string(&new_color).unwrap_or_default(),
+                });
+            } else {
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: td.text.clone(),
+                    font_size: td.font_size,
+                    font_name: td.font_name.clone(),
+                    font_style: Self::font_style_to_u8(td.font_style),
+                    color: new_color,
+                });
+            }
         }
         ui.add_space(8.0);
+
+        // Style runs info (show count if any exist)
+        if !td.style_runs.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} style run(s)", td.style_runs.len()))
+                        .small()
+                        .color(egui::Color32::from_rgb(140, 140, 160)),
+                );
+                if ui.small_button("Clear All").clicked() {
+                    cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
+                }
+            });
+            ui.add_space(4.0);
+        }
 
         // Alignment
         ui.label("Alignment");
@@ -1301,4 +1350,54 @@ fn show_builtin_effect_params(
     }
 
     if changed { Some(updated) } else { None }
+}
+
+// ─── Rich text selection helpers ────────────────────────────────────────────
+
+/// Get the effective color for a selection range. If all characters in the range
+/// share the same color, return that color; otherwise return the base title color.
+fn selection_color(td: &klipp_timeline::TitleData, sel_start: usize, sel_end: usize) -> [u8; 4] {
+    if td.style_runs.is_empty() {
+        return td.color;
+    }
+    let mut found_color: Option<[u8; 4]> = None;
+    for run in &td.style_runs {
+        // Check overlap with selection
+        if run.end <= sel_start || run.start >= sel_end {
+            continue;
+        }
+        let c = run.color.unwrap_or(td.color);
+        match found_color {
+            None => found_color = Some(c),
+            Some(prev) => {
+                if prev != c {
+                    return td.color; // Mixed — return base
+                }
+            }
+        }
+    }
+    found_color.unwrap_or(td.color)
+}
+
+/// Get the effective font size for a selection range.
+fn selection_font_size(td: &klipp_timeline::TitleData, sel_start: usize, sel_end: usize) -> f32 {
+    if td.style_runs.is_empty() {
+        return td.font_size;
+    }
+    let mut found_size: Option<f32> = None;
+    for run in &td.style_runs {
+        if run.end <= sel_start || run.start >= sel_end {
+            continue;
+        }
+        let s = run.font_size.unwrap_or(td.font_size);
+        match found_size {
+            None => found_size = Some(s),
+            Some(prev) => {
+                if (prev - s).abs() > 0.1 {
+                    return td.font_size; // Mixed
+                }
+            }
+        }
+    }
+    found_size.unwrap_or(td.font_size)
 }

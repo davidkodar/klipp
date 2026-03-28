@@ -525,6 +525,27 @@ pub struct AppState {
     pub viewer_text_edit_clip: Option<ClipId>,
     /// Whether to request focus on the text edit widget (first frame only).
     pub viewer_text_edit_request_focus: bool,
+    /// Character selection range in viewer text edit mode (character indices, start..end).
+    /// This is updated ONLY when the TextEdit has focus and reports a selection.
+    /// It persists when focus moves to the inspector so style changes apply to it.
+    pub viewer_text_selection: Option<(usize, usize)>,
+    /// Locked copy of the selection that survives focus changes.
+    /// Set whenever a real selection is made, cleared only on explicit deselect or exit.
+    pub viewer_text_selection_locked: Option<(usize, usize)>,
+    /// Cursor position (character index) in viewer WYSIWYG text editor.
+    pub viewer_text_cursor: usize,
+    /// Cached character positions from title renderer (frame pixel coords).
+    /// Recomputed when title text/style changes.
+    pub viewer_char_positions: Vec<klipp_title::CharPosition>,
+    /// Anchor position for shift-click / shift-arrow selection extension.
+    pub viewer_text_select_anchor: Option<usize>,
+    /// Wall-clock time of last cursor movement (for blink reset).
+    pub viewer_text_cursor_blink_time: f64,
+    /// Font size at current cursor position (resolved from style runs).
+    /// Updated when cursor moves. Inspector shows this value.
+    pub viewer_text_cursor_font_size: Option<f32>,
+    /// Color at current cursor position (resolved from style runs).
+    pub viewer_text_cursor_color: Option<[u8; 4]>,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -809,6 +830,14 @@ impl Default for AppState {
             viewer_text_edit_buffer: String::new(),
             viewer_text_edit_clip: None,
             viewer_text_edit_request_focus: false,
+            viewer_text_selection: None,
+            viewer_text_selection_locked: None,
+            viewer_text_cursor: 0,
+            viewer_char_positions: Vec::new(),
+            viewer_text_select_anchor: None,
+            viewer_text_cursor_blink_time: 0.0,
+            viewer_text_cursor_font_size: None,
+            viewer_text_cursor_color: None,
         }
     }
 }

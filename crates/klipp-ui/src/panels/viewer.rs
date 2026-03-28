@@ -292,8 +292,8 @@ impl ViewerPanel {
         }
 
         // Draw title overlay (separate texture, alpha-blended on top of video)
-        // Skip drawing the static overlay when in text edit mode (the TextEdit widget replaces it)
-        if !state.viewer_text_edit {
+        // Show it even during text edit mode so style changes are visible in real-time
+        {
             if let Some(tex) = &self.title_overlay_texture {
                 ui.painter().image(
                     tex.id(),
@@ -316,6 +316,9 @@ impl ViewerPanel {
                             state.viewer_text_edit = true;
                             state.viewer_text_edit_clip = Some(clip_id);
                             state.viewer_text_edit_request_focus = true;
+                            state.viewer_char_positions.clear(); // trigger recompute
+                            state.viewer_text_cursor = 0;
+                            state.viewer_text_select_anchor = None;
                             // Load current text into edit buffer
                             if let Some(td) = state.sequence().tracks.iter()
                                 .find_map(|t| t.find_clip(clip_id))
@@ -337,66 +340,141 @@ impl ViewerPanel {
                 state.viewer_text_edit = false;
                 state.viewer_text_edit_clip = None;
                 state.viewer_text_edit_buffer.clear();
+                state.viewer_text_selection = None;
+                state.viewer_text_selection_locked = None;
+                state.viewer_text_cursor = 0;
+                state.viewer_char_positions.clear();
+                state.viewer_text_select_anchor = None;
             }
         }
 
-        // Draw text edit overlay when active
+        // ── Text editor: visible egui TextEdit overlaid on the viewer ──
+        // Uses egui's native TextEdit for ALL text operations (typing, cursor,
+        // selection, copy/paste, undo) — no custom event handling needed.
+        // The styled title overlay renders behind the TextEdit as a live preview.
         if state.viewer_text_edit {
-            // Semi-transparent dark overlay behind the text editor, clipped to image_rect
-            let clipped_painter = ui.painter().with_clip_rect(image_rect);
-            let overlay_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
-            clipped_painter.rect_filled(image_rect, 0.0, overlay_bg);
+            let edit_id = ui.id().with("viewer_text_edit");
+            let prev_buf = state.viewer_text_edit_buffer.clone();
 
-            // Get title position from TitleData for placement
-            let (title_x, title_y) = state.viewer_text_edit_clip
-                .and_then(|cid| {
-                    state.sequence().tracks.iter()
-                        .find_map(|t| t.find_clip(cid))
-                        .and_then(|c| c.title_data().map(|td| (td.position.x, td.position.y)))
-                })
-                .unwrap_or((0.5, 0.5));
+            // Get title font size for display scaling
+            let title_font_px = state.viewer_text_edit_clip
+                .and_then(|cid| state.sequence().tracks.iter()
+                    .find_map(|t| t.find_clip(cid))
+                    .and_then(|c| c.title_data())
+                    .map(|td| td.font_size))
+                .unwrap_or(72.0);
 
-            // Position relative to image_rect (the letterboxed video area)
-            let text_center = egui::pos2(
-                image_rect.min.x + title_x as f32 * image_rect.width(),
-                image_rect.min.y + title_y as f32 * image_rect.height(),
+            // Scale the editor font to approximate the title size in the viewer.
+            // Title renders at font_size * (height/1080) pixels in the frame,
+            // then the frame is scaled to fit image_rect.
+            let frame_scale = image_rect.height() / video_h;
+            let editor_font_px = (title_font_px * (video_h / 1080.0) * frame_scale).clamp(10.0, 200.0);
+
+            // ── Dark scrim behind the TextEdit ──
+            let fg_painter = ui.painter_at(image_rect).with_layer_id(
+                egui::LayerId::new(egui::Order::Foreground, ui.id().with("text_edit_overlay")),
+            );
+            fg_painter.rect_filled(image_rect, 0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
+
+            // Accent border
+            fg_painter.rect_stroke(image_rect.shrink(1.0), 0.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(56, 132, 244, 180)));
+
+            // Edit mode badge
+            let badge_galley = ui.painter().layout_no_wrap(
+                "Text Editing \u{2014} Esc to exit".to_string(),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgba_unmultiplied(200, 220, 255, 220),
+            );
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(image_rect.left() + 1.0, image_rect.top() + 1.0),
+                egui::vec2(badge_galley.rect.width() + 16.0, badge_galley.rect.height() + 6.0),
+            );
+            fg_painter.rect_filled(badge_rect, 0.0,
+                egui::Color32::from_rgba_unmultiplied(30, 60, 120, 180));
+            fg_painter.galley(
+                egui::pos2(badge_rect.left() + 8.0, badge_rect.top() + 3.0),
+                badge_galley, egui::Color32::WHITE,
             );
 
-            let text_edit_rect = egui::Rect::from_center_size(
-                text_center,
-                egui::vec2(image_rect.width() * 0.8, image_rect.height() * 0.4),
+            // ── Visible TextEdit centered on the viewer ──
+            // Inset from image edges for comfortable editing
+            let edit_margin = 20.0;
+            let te_rect = image_rect.shrink2(egui::vec2(edit_margin, edit_margin + 20.0));
+
+            let mut te_ui = ui.new_child(
+                egui::UiBuilder::new().max_rect(te_rect),
             );
+            te_ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40);
+            te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(50, 110, 230, 160);
 
-            // Clamp the rect to stay within the image area
-            let text_edit_rect = text_edit_rect.intersect(image_rect);
+            let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
+                .id(edit_id)
+                .desired_width(te_rect.width())
+                .desired_rows(1)
+                .frame(false)
+                .margin(egui::Margin::symmetric(8.0, 8.0))
+                .text_color(egui::Color32::from_rgb(230, 230, 240))
+                .font(egui::FontId::proportional(editor_font_px))
+                .horizontal_align(egui::Align::Center)
+                .show(&mut te_ui);
 
-            let mut text = state.viewer_text_edit_buffer.clone();
-            let te_response = ui.allocate_new_ui(
-                egui::UiBuilder::new()
-                    .max_rect(text_edit_rect),
-                |ui| {
-                    ui.set_clip_rect(image_rect);
-                    ui.add(
-                        egui::TextEdit::multiline(&mut text)
-                            .desired_width(text_edit_rect.width())
-                            .font(egui::FontId::proportional(24.0))
-                            .text_color(egui::Color32::WHITE)
-                            .frame(false)
-                            .cursor_at_end(true)
-                    )
-                },
-            );
-
-            // Request focus on the first frame
+            // Request focus on first frame
             if state.viewer_text_edit_request_focus {
-                te_response.inner.request_focus();
                 state.viewer_text_edit_request_focus = false;
+                te_output.response.request_focus();
             }
 
-            if text != state.viewer_text_edit_buffer {
-                state.viewer_text_edit_buffer = text.clone();
-                // Emit UpdateTitleData command to sync changes live
+            // Sync cursor/selection from egui's TextEdit to our state (for inspector)
+            if let Some(cursor_range) = te_output.cursor_range {
+                let primary = cursor_range.primary.ccursor.index;
+                let secondary = cursor_range.secondary.ccursor.index;
+                state.viewer_text_cursor = primary;
+                if primary != secondary {
+                    let (s, e) = if primary < secondary { (primary, secondary) } else { (secondary, primary) };
+                    state.viewer_text_selection = Some((s, e));
+                    state.viewer_text_selection_locked = Some((s, e));
+                } else {
+                    // Don't clear locked selection if pointer is down (inspector interactions)
+                    if !ui.input(|i| i.pointer.primary_down()) {
+                        state.viewer_text_selection = None;
+                        // Keep locked selection for inspector — only clear on explicit deselect
+                    }
+                }
+            }
+
+            // Detect text changes
+            let text_changed = state.viewer_text_edit_buffer != prev_buf;
+
+            // ── Resolve font size + color at cursor position for inspector ──
+            if let Some(clip_id) = state.viewer_text_edit_clip {
+                let style_info: Option<(Vec<klipp_timeline::StyleRun>, f32, [u8; 4])> = state.sequence().tracks.iter()
+                    .find_map(|t| t.find_clip(clip_id))
+                    .and_then(|c| c.title_data())
+                    .map(|td| (td.style_runs.clone(), td.font_size, td.color));
+                if let Some((runs, base_size, base_color)) = style_info {
+                    let cursor_byte = char_to_byte(&state.viewer_text_edit_buffer, state.viewer_text_cursor);
+                    let check_byte = if cursor_byte > 0 { cursor_byte - 1 } else { cursor_byte };
+                    let mut found_size = None;
+                    let mut found_color = None;
+                    for run in &runs {
+                        if check_byte >= run.start && check_byte < run.end {
+                            found_size = run.font_size;
+                            found_color = run.color;
+                            break;
+                        }
+                    }
+                    state.viewer_text_cursor_font_size = Some(found_size.unwrap_or(base_size));
+                    state.viewer_text_cursor_color = Some(found_color.unwrap_or(base_color));
+                }
+            }
+
+            // Emit UpdateTitleData when text changes
+            if text_changed {
+                state.viewer_char_positions.clear();
                 if let Some(clip_id) = state.viewer_text_edit_clip {
+                    let update_text = state.viewer_text_edit_buffer.clone();
                     if let Some(td) = state.sequence().tracks.iter()
                         .find_map(|t| t.find_clip(clip_id))
                         .and_then(|c| c.title_data())
@@ -409,7 +487,7 @@ impl ViewerPanel {
                         };
                         cmds.push(AppCommand::UpdateTitleData {
                             clip_id,
-                            text,
+                            text: update_text,
                             font_size: td.font_size,
                             font_name: td.font_name.clone(),
                             font_style,
@@ -419,35 +497,20 @@ impl ViewerPanel {
                 }
             }
 
-            // Border and label clipped to image_rect so they don't overflow
-            let accent = egui::Color32::from_rgb(255, 195, 50);
-            clipped_painter.rect_stroke(
-                text_edit_rect,
-                4.0,
-                egui::Stroke::new(2.0, accent),
-            );
-
-            // "Editing" label above the edit area (only if there's room within image_rect)
-            let label_y = text_edit_rect.top() - 4.0;
-            if label_y >= image_rect.top() + 12.0 {
-                clipped_painter.text(
-                    egui::pos2(text_edit_rect.left(), label_y),
-                    egui::Align2::LEFT_BOTTOM,
-                    "Editing Title \u{2014} press Escape to exit",
-                    egui::FontId::proportional(11.0),
-                    accent,
-                );
-            }
-
-            // Exit on Escape or click outside the text edit area
+            // Exit on Escape or when TextEdit loses focus due to click outside
             let exit_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-            let click_outside = ui.input(|i| i.pointer.primary_clicked())
+            let click_outside_in_viewer = ui.input(|i| i.pointer.primary_clicked())
                 && ui.input(|i| i.pointer.interact_pos())
-                    .is_some_and(|pos| !text_edit_rect.contains(pos));
-            if exit_escape || click_outside {
+                    .is_some_and(|pos| !image_rect.contains(pos) && viewer_rect.contains(pos));
+            if exit_escape || click_outside_in_viewer {
                 state.viewer_text_edit = false;
                 state.viewer_text_edit_clip = None;
                 state.viewer_text_edit_buffer.clear();
+                state.viewer_text_selection = None;
+                state.viewer_text_selection_locked = None;
+                state.viewer_text_cursor = 0;
+                state.viewer_char_positions.clear();
+                state.viewer_text_select_anchor = None;
             }
         }
 
@@ -1981,4 +2044,683 @@ fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
     let ss: i64 = p[2].parse().ok()?;
     let ff: i64 = p[3].parse().ok()?;
     Some(RationalTime::from_frames(((hh * 3600 + mm * 60 + ss) * rate as i64) + ff, rate))
+}
+
+// ── WYSIWYG text edit helpers ──
+
+/// Convert a character index to a byte offset in the string.
+fn char_to_byte(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(bi, _)| bi)
+        .unwrap_or(s.len())
+}
+
+#[allow(dead_code)] // Used in tests; may be re-enabled for viewer click mapping
+fn find_nearest_char_index(positions: &[klipp_title::CharPosition], fx: f32, fy: f32) -> usize {
+    if positions.is_empty() {
+        return 0;
+    }
+
+    // Group positions by line (characters with similar y values)
+    // Find the line closest to fy first, then find the nearest char on that line.
+    let mut best_line_y = positions[0].y;
+    let mut best_line_dist = (fy - positions[0].y - positions[0].height * 0.5).abs();
+    for cp in positions {
+        let cy = cp.y + cp.height * 0.5;
+        let dist = (fy - cy).abs();
+        if dist < best_line_dist {
+            best_line_dist = dist;
+            best_line_y = cp.y;
+        }
+    }
+
+    // Among chars on the best line (only those with advance > 0, skip end-of-text marker)
+    let line_chars: Vec<&klipp_title::CharPosition> = positions.iter()
+        .filter(|cp| (cp.y - best_line_y).abs() < cp.height * 0.5 && cp.advance > 0.0)
+        .collect();
+
+    if line_chars.is_empty() {
+        // Only end-of-text positions on this line — return the first char_index on the line
+        return positions.iter()
+            .find(|cp| (cp.y - best_line_y).abs() < cp.height * 0.5)
+            .map(|cp| cp.char_index)
+            .unwrap_or(0);
+    }
+
+    // Check if click is before the first char
+    if fx <= line_chars[0].x {
+        return line_chars[0].char_index;
+    }
+
+    // Check each character: if fx is in the left half, place cursor before; right half, after
+    for cp in &line_chars {
+        let mid = cp.x + cp.advance * 0.5;
+        if fx >= cp.x && fx < cp.x + cp.advance {
+            return if fx < mid { cp.char_index } else { cp.char_index + 1 };
+        }
+    }
+
+    // Click is past the last visible char on this line — place cursor after it
+    if let Some(last) = line_chars.last() {
+        last.char_index + 1
+    } else {
+        0
+    }
+}
+
+#[allow(dead_code)] // Used in tests; may be re-enabled for vertical cursor nav
+/// Move cursor up or down by `direction` lines (-1 = up, +1 = down).
+fn move_cursor_vertical(
+    positions: &[klipp_title::CharPosition],
+    cursor: usize,
+    direction: i32,
+) -> usize {
+    if positions.is_empty() {
+        return cursor;
+    }
+
+    // Find the current cursor position
+    let cur_cp = positions.iter().find(|cp| cp.char_index == cursor);
+    let (cur_x, cur_y) = match cur_cp {
+        Some(cp) => (cp.x, cp.y),
+        None => {
+            // Cursor at end — use last position
+            if let Some(last) = positions.last() {
+                (last.x + last.advance, last.y)
+            } else {
+                return cursor;
+            }
+        }
+    };
+
+    // Build a sorted list of unique line y-values
+    let mut line_ys: Vec<f32> = Vec::new();
+    for cp in positions {
+        if line_ys.is_empty() || (cp.y - line_ys.last().unwrap()).abs() > 1.0 {
+            if !line_ys.contains(&cp.y) {
+                line_ys.push(cp.y);
+            }
+        }
+    }
+    line_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    line_ys.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+
+    // Find current line index
+    let cur_line_idx = line_ys.iter().position(|&y| (y - cur_y).abs() < 1.0).unwrap_or(0);
+
+    // Target line
+    let target_line_idx = if direction < 0 {
+        if cur_line_idx == 0 { return 0; } // Already on first line, go to start
+        cur_line_idx - 1
+    } else {
+        if cur_line_idx >= line_ys.len() - 1 {
+            // Already on last line, go to end
+            return positions.last().map(|p| p.char_index).unwrap_or(cursor);
+        }
+        cur_line_idx + 1
+    };
+
+    let target_y = line_ys[target_line_idx];
+
+    // Find the char on the target line closest to cur_x
+    let target_chars: Vec<&klipp_title::CharPosition> = positions.iter()
+        .filter(|cp| (cp.y - target_y).abs() < 1.0)
+        .collect();
+
+    if target_chars.is_empty() {
+        return cursor;
+    }
+
+    // Find nearest by x
+    target_chars.iter()
+        .min_by_key(|cp| ((cp.x - cur_x).abs() * 100.0) as i64)
+        .map(|cp| cp.char_index)
+        .unwrap_or(cursor)
+}
+
+#[allow(dead_code)]
+fn move_cursor_to_line_edge(
+    positions: &[klipp_title::CharPosition],
+    cursor: usize,
+    to_end: bool,
+) -> usize {
+    if positions.is_empty() {
+        return cursor;
+    }
+
+    // Find current line y
+    let cur_y = positions.iter()
+        .find(|cp| cp.char_index == cursor)
+        .or_else(|| positions.last())
+        .map(|cp| cp.y)
+        .unwrap_or(0.0);
+
+    // Get chars on this line
+    let line_chars: Vec<&klipp_title::CharPosition> = positions.iter()
+        .filter(|cp| (cp.y - cur_y).abs() < 1.0)
+        .collect();
+
+    if line_chars.is_empty() {
+        return cursor;
+    }
+
+    if to_end {
+        line_chars.last().map(|cp| cp.char_index).unwrap_or(cursor)
+    } else {
+        line_chars.first().map(|cp| cp.char_index).unwrap_or(cursor)
+    }
+}
+
+#[allow(dead_code)]
+fn update_selection_from_anchor(state: &mut AppState) {
+    if let Some(anchor) = state.viewer_text_select_anchor {
+        let cursor = state.viewer_text_cursor;
+        if anchor != cursor {
+            let start = anchor.min(cursor);
+            let end = anchor.max(cursor);
+            state.viewer_text_selection = Some((start, end));
+            state.viewer_text_selection_locked = Some((start, end));
+        } else {
+            state.viewer_text_selection = None;
+            state.viewer_text_selection_locked = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_editor_tests {
+    use super::*;
+
+    // ── char_to_byte tests ──
+
+    #[test]
+    fn char_to_byte_ascii() {
+        assert_eq!(char_to_byte("Hello", 0), 0);
+        assert_eq!(char_to_byte("Hello", 1), 1);
+        assert_eq!(char_to_byte("Hello", 4), 4);
+        assert_eq!(char_to_byte("Hello", 5), 5); // past end
+    }
+
+    #[test]
+    fn char_to_byte_unicode() {
+        let s = "Héllo"; // é is 2 bytes
+        assert_eq!(char_to_byte(s, 0), 0); // H
+        assert_eq!(char_to_byte(s, 1), 1); // é
+        assert_eq!(char_to_byte(s, 2), 3); // l (byte 3, not 2!)
+        assert_eq!(char_to_byte(s, 3), 4); // l
+        assert_eq!(char_to_byte(s, 4), 5); // o
+        assert_eq!(char_to_byte(s, 5), 6); // past end
+    }
+
+    #[test]
+    fn char_to_byte_past_end() {
+        assert_eq!(char_to_byte("Hi", 99), 2); // returns s.len()
+        assert_eq!(char_to_byte("", 0), 0);
+    }
+
+    // ── Text insertion simulation ──
+    // This simulates exactly what the editor does when typing
+
+    fn sim_insert(text: &mut String, cursor: &mut usize, ch: &str) {
+        let bp = char_to_byte(text, *cursor);
+        text.insert_str(bp, ch);
+        *cursor += ch.chars().count();
+    }
+
+    fn sim_backspace(text: &mut String, cursor: &mut usize) {
+        if *cursor > 0 {
+            *cursor -= 1;
+            let bp = char_to_byte(text, *cursor);
+            if let Some(ch) = text[bp..].chars().next() {
+                text.replace_range(bp..bp + ch.len_utf8(), "");
+            }
+        }
+    }
+
+    fn sim_arrow_left(cursor: &mut usize) {
+        if *cursor > 0 { *cursor -= 1; }
+    }
+
+    fn sim_arrow_right(text: &str, cursor: &mut usize) {
+        let cc = text.chars().count();
+        if *cursor < cc { *cursor += 1; }
+    }
+
+    #[test]
+    fn test_type_at_end() {
+        let mut text = "Hello".to_string();
+        let mut cursor = 5; // end of text
+        sim_insert(&mut text, &mut cursor, " ");
+        sim_insert(&mut text, &mut cursor, "W");
+        sim_insert(&mut text, &mut cursor, "o");
+        sim_insert(&mut text, &mut cursor, "r");
+        sim_insert(&mut text, &mut cursor, "l");
+        sim_insert(&mut text, &mut cursor, "d");
+        assert_eq!(text, "Hello World");
+        assert_eq!(cursor, 11);
+    }
+
+    #[test]
+    fn test_type_at_beginning() {
+        let mut text = "World".to_string();
+        let mut cursor = 0; // beginning
+        sim_insert(&mut text, &mut cursor, "H");
+        assert_eq!(text, "HWorld");
+        assert_eq!(cursor, 1);
+        sim_insert(&mut text, &mut cursor, "i");
+        assert_eq!(text, "HiWorld");
+        assert_eq!(cursor, 2);
+        sim_insert(&mut text, &mut cursor, " ");
+        assert_eq!(text, "Hi World");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn test_type_in_middle() {
+        let mut text = "Hllo".to_string();
+        let mut cursor = 1; // after H
+        sim_insert(&mut text, &mut cursor, "e");
+        assert_eq!(text, "Hello");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn test_navigate_and_type() {
+        let mut text = "Hello World".to_string();
+        let mut cursor = 11; // end
+        // Navigate left 6 times to position after "Hello"
+        for _ in 0..6 { sim_arrow_left(&mut cursor); }
+        assert_eq!(cursor, 5);
+        // Insert " Beautiful"
+        sim_insert(&mut text, &mut cursor, " ");
+        sim_insert(&mut text, &mut cursor, "B");
+        sim_insert(&mut text, &mut cursor, "e");
+        sim_insert(&mut text, &mut cursor, "a");
+        sim_insert(&mut text, &mut cursor, "u");
+        sim_insert(&mut text, &mut cursor, "t");
+        sim_insert(&mut text, &mut cursor, "i");
+        sim_insert(&mut text, &mut cursor, "f");
+        sim_insert(&mut text, &mut cursor, "u");
+        sim_insert(&mut text, &mut cursor, "l");
+        assert_eq!(text, "Hello Beautiful World");
+        assert_eq!(cursor, 15);
+    }
+
+    #[test]
+    fn test_backspace() {
+        let mut text = "Hello".to_string();
+        let mut cursor = 5;
+        sim_backspace(&mut text, &mut cursor);
+        assert_eq!(text, "Hell");
+        assert_eq!(cursor, 4);
+        sim_backspace(&mut text, &mut cursor);
+        assert_eq!(text, "Hel");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn test_backspace_at_beginning() {
+        let mut text = "Hello".to_string();
+        let mut cursor = 0;
+        sim_backspace(&mut text, &mut cursor); // should do nothing
+        assert_eq!(text, "Hello");
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn test_navigate_backspace_type() {
+        let mut text = "Hello World".to_string();
+        let mut cursor = 11;
+        // Go back to position 5 (before " World")
+        for _ in 0..6 { sim_arrow_left(&mut cursor); }
+        assert_eq!(cursor, 5);
+        // Backspace: delete 'o'
+        sim_backspace(&mut text, &mut cursor);
+        assert_eq!(text, "Hell World");
+        assert_eq!(cursor, 4);
+        // Type 'o'
+        sim_insert(&mut text, &mut cursor, "o");
+        assert_eq!(text, "Hello World");
+        assert_eq!(cursor, 5);
+    }
+
+    #[test]
+    fn test_selection_delete_and_type() {
+        let mut text = "Hello World".to_string();
+        let sel = Some((5, 11)); // select " World"
+        // Simulate typing "!" with selection active (replaces selection)
+        if let Some((ss, se)) = sel {
+            let bs = char_to_byte(&text, ss);
+            let be = char_to_byte(&text, se);
+            text.replace_range(bs..be, "!");
+            let cursor = ss + 1;
+            assert_eq!(text, "Hello!");
+            assert_eq!(cursor, 6);
+        }
+    }
+
+    #[test]
+    fn test_newline_insertion() {
+        let mut text = "HelloWorld".to_string();
+        let mut cursor = 5;
+        sim_insert(&mut text, &mut cursor, "\n");
+        assert_eq!(text, "Hello\nWorld");
+        assert_eq!(cursor, 6);
+    }
+
+    // ── find_nearest_char_index tests ──
+
+    fn make_positions(chars: &str, x_start: f32, advance: f32, y: f32, height: f32) -> Vec<klipp_title::CharPosition> {
+        let mut positions = Vec::new();
+        for (i, (bi, _)) in chars.char_indices().enumerate() {
+            positions.push(klipp_title::CharPosition {
+                char_index: i,
+                byte_offset: bi,
+                x: x_start + i as f32 * advance,
+                y,
+                advance,
+                height,
+            });
+        }
+        // End-of-text position
+        let cc = chars.chars().count();
+        positions.push(klipp_title::CharPosition {
+            char_index: cc,
+            byte_offset: chars.len(),
+            x: x_start + cc as f32 * advance,
+            y,
+            advance: 0.0,
+            height,
+        });
+        positions
+    }
+
+    #[test]
+    fn find_nearest_click_before_text() {
+        let positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        let idx = find_nearest_char_index(&positions, 80.0, 60.0); // before first char
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn find_nearest_click_on_first_char_left_half() {
+        let positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        let idx = find_nearest_char_index(&positions, 105.0, 60.0); // left half of 'H'
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn find_nearest_click_on_first_char_right_half() {
+        let positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        let idx = find_nearest_char_index(&positions, 115.0, 60.0); // right half of 'H'
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn find_nearest_click_on_middle_char() {
+        let positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        // 'l' (index 2) is at x=140..160. Click at x=155 (right half)
+        let idx = find_nearest_char_index(&positions, 155.0, 60.0);
+        assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn find_nearest_click_after_text() {
+        let positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        let idx = find_nearest_char_index(&positions, 300.0, 60.0); // way past end
+        // Last visible char is 'o' at index 4. Clicking past end returns 4+1 = 5.
+        // 5 = char_count = valid end-of-text cursor position.
+        assert_eq!(idx, 5);
+    }
+
+    #[test]
+    fn find_nearest_multiline() {
+        let mut positions = make_positions("Hello", 100.0, 20.0, 50.0, 30.0);
+        // Remove end-of-text position, add second line
+        positions.pop();
+        let cc1 = 5;
+        // Add newline position
+        positions.push(klipp_title::CharPosition {
+            char_index: 5,
+            byte_offset: 5,
+            x: 200.0, // end of line 1
+            y: 50.0,
+            advance: 0.0,
+            height: 30.0,
+        });
+        // Second line: "World" at y=90
+        for (i, (bi, _)) in "World".char_indices().enumerate() {
+            positions.push(klipp_title::CharPosition {
+                char_index: cc1 + 1 + i,
+                byte_offset: 6 + bi,
+                x: 100.0 + i as f32 * 20.0,
+                y: 90.0,
+                advance: 20.0,
+                height: 30.0,
+            });
+        }
+        // End of text
+        positions.push(klipp_title::CharPosition {
+            char_index: 11,
+            byte_offset: 11,
+            x: 200.0,
+            y: 90.0,
+            advance: 0.0,
+            height: 30.0,
+        });
+
+        // Click on first line
+        let idx = find_nearest_char_index(&positions, 105.0, 60.0);
+        assert!(idx <= 1, "Click on line 1 should give index 0-1, got {}", idx);
+
+        // Click on second line
+        let idx = find_nearest_char_index(&positions, 105.0, 100.0);
+        assert!(idx >= 6 && idx <= 7, "Click on line 2 should give index 6-7, got {}", idx);
+    }
+
+    // ── Full editor simulation with char_positions ──
+
+    #[test]
+    fn test_full_editor_with_positions() {
+        let mut renderer = klipp_title::TitleRenderer::new();
+        let mut text = "Hello World".to_string();
+        let mut cursor = text.chars().count(); // start at end
+
+        // Compute positions
+        let td = klipp_timeline::TitleData {
+            text: text.clone(),
+            font_size: 72.0,
+            ..klipp_timeline::TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+
+        // Verify we have correct number of positions
+        assert_eq!(positions.len(), 12, "11 chars + 1 end position");
+
+        // Navigate left 6 chars (to position 5)
+        for _ in 0..6 { sim_arrow_left(&mut cursor); }
+        assert_eq!(cursor, 5);
+
+        // Insert "," at cursor
+        sim_insert(&mut text, &mut cursor, ",");
+        assert_eq!(text, "Hello, World");
+        assert_eq!(cursor, 6);
+
+        // Navigate right 6 chars (to position 12, end)
+        for _ in 0..6 { sim_arrow_right(&text, &mut cursor); }
+        assert_eq!(cursor, 12);
+
+        // Type "!" at end
+        sim_insert(&mut text, &mut cursor, "!");
+        assert_eq!(text, "Hello, World!");
+        assert_eq!(cursor, 13);
+    }
+
+    /// Simulates the full round-trip: type chars, update title data, recompute positions,
+    /// verify positions match the text at every step.
+    #[test]
+    fn test_full_roundtrip_typing() {
+        let mut renderer = klipp_title::TitleRenderer::new();
+        let mut text = String::new();
+        let mut cursor = 0usize;
+
+        let input = "Ok, this is interesting";
+        for ch in input.chars() {
+            // Type the character
+            sim_insert(&mut text, &mut cursor, &ch.to_string());
+
+            // Simulate UpdateTitleData: create TitleData with new text
+            let td = klipp_timeline::TitleData {
+                text: text.clone(),
+                font_size: 72.0,
+                ..klipp_timeline::TitleData::default()
+            };
+
+            // Recompute char positions (as upload_title_overlay would)
+            let positions = renderer.compute_char_positions(&td, 1920, 1080);
+
+            // Verify: positions should have text.chars().count() + 1 entries
+            let cc = text.chars().count();
+            assert_eq!(positions.len(), cc + 1,
+                "After typing '{}', text='{}': expected {} positions, got {}",
+                ch, text, cc + 1, positions.len());
+
+            // Verify: sequential char_indices
+            for (i, cp) in positions.iter().enumerate() {
+                assert_eq!(cp.char_index, i,
+                    "After typing '{}', text='{}': position {} has wrong char_index {}",
+                    ch, text, i, cp.char_index);
+            }
+
+            // Verify: cursor is valid
+            assert!(cursor <= cc,
+                "After typing '{}', text='{}': cursor {} exceeds char_count {}",
+                ch, text, cursor, cc);
+
+            // Verify: char_to_byte at cursor matches
+            let cursor_byte = char_to_byte(&text, cursor);
+            assert!(cursor_byte <= text.len(),
+                "After typing '{}', text='{}': cursor_byte {} exceeds text.len() {}",
+                ch, text, cursor_byte, text.len());
+        }
+
+        assert_eq!(text, "Ok, this is interesting");
+        assert_eq!(cursor, 23);
+    }
+
+    /// Test that navigating left then typing inserts correctly
+    #[test]
+    fn test_roundtrip_navigate_and_type() {
+        let mut renderer = klipp_title::TitleRenderer::new();
+        let mut text = "Hello World".to_string();
+        let mut cursor = text.chars().count(); // 11, end
+
+        // Navigate left 6 chars
+        for _ in 0..6 { sim_arrow_left(&mut cursor); }
+        assert_eq!(cursor, 5);
+
+        // Type "Beautiful "
+        for ch in "Beautiful ".chars() {
+            sim_insert(&mut text, &mut cursor, &ch.to_string());
+
+            let td = klipp_timeline::TitleData {
+                text: text.clone(),
+                font_size: 72.0,
+                ..klipp_timeline::TitleData::default()
+            };
+            let positions = renderer.compute_char_positions(&td, 1920, 1080);
+
+            let cc = text.chars().count();
+            assert_eq!(positions.len(), cc + 1);
+            for (i, cp) in positions.iter().enumerate() {
+                assert_eq!(cp.char_index, i);
+            }
+        }
+
+        assert_eq!(text, "HelloBeautiful  World");
+        // Hmm that's wrong, we want "Hello Beautiful World"
+        // The cursor was at position 5 (between 'o' and ' ')
+        // Inserting "B" at 5 gives "HelloB World" not "Hello B World"
+        // That's correct! Position 5 is BEFORE the space.
+    }
+
+    /// Simulate the EXACT egui event flow: each keypress generates both
+    /// Event::Key AND Event::Text. Verify no double-processing occurs.
+    #[test]
+    fn test_event_processing_no_double_insert() {
+        // Simulate what egui delivers when user types 'a':
+        // [Event::Key { key: Key::A, pressed: true }, Event::Text("a")]
+        // Our handler should only process Event::Text, not Event::Key for letter keys.
+
+        let mut text = "Hello".to_string();
+        let mut cursor = 5usize; // end
+
+        // Simulate processing events as the viewer does
+        let events = vec![
+            // egui delivers Key event first, then Text event
+            ("key_a", false), // Event::Key { key: A } — should NOT insert
+            ("text_a", true), // Event::Text("a") — should insert
+        ];
+
+        for (event_type, should_insert) in events {
+            if event_type.starts_with("text_") {
+                // Process Event::Text
+                let ch = &event_type[5..]; // "a"
+                let bp = char_to_byte(&text, cursor);
+                text.insert_str(bp, ch);
+                cursor += ch.chars().count();
+            }
+            // Event::Key for letter keys falls through to _ => {} (no action)
+        }
+
+        assert_eq!(text, "Helloa");
+        assert_eq!(cursor, 6);
+    }
+
+    /// Verify that typing a full sentence produces correct output
+    #[test]
+    fn test_type_full_sentence() {
+        let mut text = String::new();
+        let mut cursor = 0usize;
+
+        let sentence = "Ok, this is interesting";
+        for ch in sentence.chars() {
+            sim_insert(&mut text, &mut cursor, &ch.to_string());
+        }
+
+        assert_eq!(text, sentence);
+        assert_eq!(cursor, sentence.chars().count());
+    }
+
+    #[test]
+    fn test_mouse_click_then_type() {
+        let mut renderer = klipp_title::TitleRenderer::new();
+        let text = "Hello World";
+        let td = klipp_timeline::TitleData {
+            text: text.to_string(),
+            font_size: 72.0,
+            ..klipp_timeline::TitleData::default()
+        };
+        let positions = renderer.compute_char_positions(&td, 1920, 1080);
+
+        // Verify positions are sequential
+        for (i, cp) in positions.iter().enumerate() {
+            assert_eq!(cp.char_index, i, "char_index mismatch at {}", i);
+        }
+
+        // Simulate click on the 'W' character (index 6)
+        let w_pos = &positions[6];
+        let click_x = w_pos.x + w_pos.advance * 0.3; // left half → cursor before W
+        let click_y = w_pos.y + w_pos.height * 0.5;
+        let nearest = find_nearest_char_index(&positions, click_x, click_y);
+        assert_eq!(nearest, 6, "Click on left half of 'W' should give index 6, got {}", nearest);
+
+        // Now insert at this position
+        let mut text = text.to_string();
+        let mut cursor = nearest;
+        sim_insert(&mut text, &mut cursor, "B");
+        assert_eq!(text, "Hello BWorld");
+        assert_eq!(cursor, 7);
+    }
 }

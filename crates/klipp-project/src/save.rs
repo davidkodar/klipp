@@ -256,6 +256,7 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             char_animation: serde_json::to_value(&data.char_animation).unwrap_or_default(),
             texture_fill_path: data.texture_fill_path.clone(),
             motion_blur: serde_json::to_value(&data.motion_blur).unwrap_or_default(),
+            style_runs: serde_json::to_value(&data.style_runs).unwrap_or_default(),
         },
         ClipKind::Gap => ClipKindJson::Gap,
     }
