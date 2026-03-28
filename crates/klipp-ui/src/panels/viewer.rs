@@ -253,10 +253,16 @@ impl ViewerPanel {
             return;
         }
 
-        let (video_w, video_h) = current_media_info
-            .map(|(w, h, _)| (w as f32, h as f32))
-            .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
-            .unwrap_or((1920.0, 1080.0));
+        // Always use the sequence resolution for aspect ratio calculation — ensures consistent
+        // letterboxing whether playing, paused, or skimming (WYSIWYG).
+        let seq_res = &state.sequence().resolution;
+        let (video_w, video_h) = if seq_res.width > 0 && seq_res.height > 0 {
+            (seq_res.width as f32, seq_res.height as f32)
+        } else {
+            current_media_info
+                .map(|(w, h, _)| (w as f32, h as f32))
+                .unwrap_or((1920.0, 1080.0))
+        };
 
         if video_w == 0.0 || video_h == 0.0 { return; }
 
