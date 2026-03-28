@@ -11248,46 +11248,47 @@ fn apply_title_animation(clip: &mut klipp_timeline::Clip, anim_str: &str, clip_d
                 clip.transform_pos_y_keyframes.push(bezier_kf(0.0, 50.0, (0.0, 0.0), (0.33 * clip_dur, 0.0)));
                 clip.transform_pos_y_keyframes.push(bezier_kf(clip_dur, -50.0, (-0.33 * clip_dur, 0.0), (0.0, 0.0)));
             }
-            // ── Continuous motion via modifiers ──
+            // ── Continuous motion via keyframes (speed = distance / clip_duration) ──
             "scroll_up" => {
-                use klipp_core::modifier::*;
+                // Text scrolls from below frame to above frame over clip duration
                 clip.transform_pos_y_keyframes.push(Keyframe {
                     time_secs: 0.0, value: 600.0, interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
                 });
-                clip.param_modifiers.entry(ParamId::PositionY).or_default().modifiers.push(
-                    Modifier::Throw { velocity: -100.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
-                );
+                clip.transform_pos_y_keyframes.push(Keyframe {
+                    time_secs: clip_dur, value: -600.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
             }
             "scroll_down" => {
-                use klipp_core::modifier::*;
                 clip.transform_pos_y_keyframes.push(Keyframe {
                     time_secs: 0.0, value: -600.0, interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
                 });
-                clip.param_modifiers.entry(ParamId::PositionY).or_default().modifiers.push(
-                    Modifier::Throw { velocity: 100.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
-                );
+                clip.transform_pos_y_keyframes.push(Keyframe {
+                    time_secs: clip_dur, value: 600.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
             }
             "ticker_left" => {
-                use klipp_core::modifier::*;
                 clip.transform_pos_x_keyframes.push(Keyframe {
                     time_secs: 0.0, value: 1000.0, interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
                 });
-                clip.param_modifiers.entry(ParamId::PositionX).or_default().modifiers.push(
-                    Modifier::Throw { velocity: -200.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
-                );
+                clip.transform_pos_x_keyframes.push(Keyframe {
+                    time_secs: clip_dur, value: -1000.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
             }
             "ticker_right" => {
-                use klipp_core::modifier::*;
                 clip.transform_pos_x_keyframes.push(Keyframe {
                     time_secs: 0.0, value: -1000.0, interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
                 });
-                clip.param_modifiers.entry(ParamId::PositionX).or_default().modifiers.push(
-                    Modifier::Throw { velocity: 200.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
-                );
+                clip.transform_pos_x_keyframes.push(Keyframe {
+                    time_secs: clip_dur, value: 1000.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
             }
             "spinning" => {
                 use klipp_core::modifier::*;
