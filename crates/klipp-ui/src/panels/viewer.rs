@@ -260,22 +260,31 @@ impl ViewerPanel {
 
         if video_w == 0.0 || video_h == 0.0 { return; }
 
-        // Small margin so the video frame never touches the panel edges.
-        // This ensures transform handles at the frame corners are always fully visible.
-        // The black background still fills the full panel — only the video fit area is inset.
-        let fit_margin = 12.0;
-        let fit_rect = viewer_rect.shrink(fit_margin);
-
         let video_aspect = video_w / video_h;
-        let panel_aspect = fit_rect.width() / fit_rect.height();
-        let (display_w, display_h) = if video_aspect > panel_aspect {
-            (fit_rect.width(), fit_rect.width() / video_aspect)
+        let panel_aspect = viewer_rect.width() / viewer_rect.height();
+
+        // First compute the natural fit (no margin)
+        let (natural_w, natural_h) = if video_aspect > panel_aspect {
+            (viewer_rect.width(), viewer_rect.width() / video_aspect)
         } else {
-            (fit_rect.height() * video_aspect, fit_rect.height())
+            (viewer_rect.height() * video_aspect, viewer_rect.height())
+        };
+
+        // Add margin only on the axis where the video fills edge-to-edge.
+        // This ensures transform handles at the frame corners are always visible.
+        let handle_margin = 10.0;
+        let (display_w, display_h) = if video_aspect > panel_aspect {
+            // Video fills width — add horizontal margin, vertical already has letterbox space
+            let w = (viewer_rect.width() - handle_margin * 2.0).max(1.0);
+            (w, w / video_aspect)
+        } else {
+            // Video fills height — add vertical margin, horizontal already has letterbox space
+            let h = (viewer_rect.height() - handle_margin * 2.0).max(1.0);
+            (h * video_aspect, h)
         };
 
         let image_rect = egui::Rect::from_center_size(
-            fit_rect.center(),
+            viewer_rect.center(),
             egui::vec2(display_w, display_h),
         );
 
