@@ -260,16 +260,22 @@ impl ViewerPanel {
 
         if video_w == 0.0 || video_h == 0.0 { return; }
 
+        // Small margin so the video frame never touches the panel edges.
+        // This ensures transform handles at the frame corners are always fully visible.
+        // The black background still fills the full panel — only the video fit area is inset.
+        let fit_margin = 6.0;
+        let fit_rect = viewer_rect.shrink(fit_margin);
+
         let video_aspect = video_w / video_h;
-        let panel_aspect = viewer_rect.width() / viewer_rect.height();
+        let panel_aspect = fit_rect.width() / fit_rect.height();
         let (display_w, display_h) = if video_aspect > panel_aspect {
-            (viewer_rect.width(), viewer_rect.width() / video_aspect)
+            (fit_rect.width(), fit_rect.width() / video_aspect)
         } else {
-            (viewer_rect.height() * video_aspect, viewer_rect.height())
+            (fit_rect.height() * video_aspect, fit_rect.height())
         };
 
         let image_rect = egui::Rect::from_center_size(
-            viewer_rect.center(),
+            fit_rect.center(),
             egui::vec2(display_w, display_h),
         );
 
@@ -1326,8 +1332,9 @@ impl ViewerPanel {
         // remain visible even when the bounding box extends outside the video frame).
         // Use an expanded clip rect so transform handles at the frame edges are fully visible.
         // The handles are 8px squares and the rotation handle extends 30px above the frame.
-        let expanded_clip = ui.max_rect();
-        let painter = ui.painter().with_clip_rect(expanded_clip);
+        // Use screen rect to ensure handles can be drawn anywhere visible
+        let screen_rect = ui.ctx().screen_rect();
+        let painter = ui.painter().with_clip_rect(screen_rect);
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
