@@ -1892,7 +1892,7 @@ impl PlaybackEngine {
                     }
                     let mut rgba = self.title_renderer.render(title_data, res.width, res.height);
 
-                    // Apply opacity keyframes to title overlay
+                    // Apply opacity + transform keyframes to title overlay
                     let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
                     let opacity_default = clip.builtin_effects.iter()
                         .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
@@ -1903,6 +1903,26 @@ impl PlaybackEngine {
                         for pixel in rgba.chunks_exact_mut(4) {
                             pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
                         }
+                    }
+
+                    // Apply transform keyframes (position, scale, rotation)
+                    if !clip.transform_pos_x_keyframes.is_empty()
+                        || !clip.transform_pos_y_keyframes.is_empty()
+                        || !clip.transform_scale_keyframes.is_empty()
+                        || !clip.transform_rotation_keyframes.is_empty()
+                    {
+                        let td = clip.builtin_effects.iter()
+                            .find_map(|e| match e {
+                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
+                                    Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+                                _ => None,
+                            })
+                            .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+                        let px = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0);
+                        let py = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1);
+                        let sc = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2);
+                        let ro = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4);
+                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
                     }
 
                     self.v2_frame_cache = Some(crate::types::DecodedFrame {
@@ -2931,6 +2951,26 @@ impl PlaybackEngine {
                 for pixel in rgba.chunks_exact_mut(4) {
                     pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
                 }
+            }
+
+            // Apply transform keyframes (position, scale, rotation)
+            if !clip.transform_pos_x_keyframes.is_empty()
+                || !clip.transform_pos_y_keyframes.is_empty()
+                || !clip.transform_scale_keyframes.is_empty()
+                || !clip.transform_rotation_keyframes.is_empty()
+            {
+                let td = clip.builtin_effects.iter()
+                    .find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
+                            Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+                        _ => None,
+                    })
+                    .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+                let px = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0);
+                let py = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1);
+                let sc = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2);
+                let ro = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4);
+                rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
             }
 
             self.v2_frame_cache = Some(crate::types::DecodedFrame {

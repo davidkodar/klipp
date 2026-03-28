@@ -439,6 +439,32 @@ fn show_title_editor(
     });
     ui.add_space(4.0);
 
+    // Slide presets row
+    ui.horizontal(|ui| {
+        ui.label("Slide:");
+        if ui.small_button("Left").on_hover_text("Slide in from left").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, -960.0, 0.0, true);
+        }
+        if ui.small_button("Right").on_hover_text("Slide in from right").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 960.0, 0.0, true);
+        }
+        if ui.small_button("Up").on_hover_text("Slide in from bottom").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 0.0, 540.0, false);
+        }
+    });
+    ui.add_space(4.0);
+
+    // Scale presets row
+    ui.horizontal(|ui| {
+        if ui.small_button("Pop In").clicked() {
+            emit_pop_in(cmds, clip_id);
+        }
+        if ui.small_button("Grow In").clicked() {
+            emit_grow_in(cmds, clip_id, fade_dur);
+        }
+    });
+    ui.add_space(4.0);
+
     ui.add_space(4.0);
 
     // Clear all animation

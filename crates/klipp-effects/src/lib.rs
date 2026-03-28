@@ -4,7 +4,7 @@ mod crop;
 pub mod gpu;
 mod opacity;
 mod sharpen;
-mod transform;
+pub mod transform;
 
 use serde::{Deserialize, Serialize};
 
