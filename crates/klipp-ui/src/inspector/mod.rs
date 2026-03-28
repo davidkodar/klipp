@@ -627,6 +627,55 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+    // ── 3D Extrusion ──
+    ui.separator();
+    ui.label(egui::RichText::new("3D Extrusion").strong().size(11.0));
+    let has_ext = td.extrusion.is_some();
+    let ext = td.extrusion.unwrap_or(klipp_timeline::TextExtrusion {
+        depth: 10.0,
+        angle: 135.0,
+        face_color: [0, 0, 0, 0],
+        side_color: [80, 60, 40, 255],
+        lighting: 0.5,
+    });
+    let mut ext_enabled = has_ext;
+    if ui.checkbox(&mut ext_enabled, "Enable").changed() {
+        cmds.push(AppCommand::SetTitleExtrusion {
+            clip_id, enabled: ext_enabled,
+            depth: ext.depth, angle: ext.angle,
+            face_color: ext.face_color, side_color: ext.side_color, lighting: ext.lighting,
+        });
+    }
+    if has_ext {
+        let mut depth = ext.depth;
+        let mut angle = ext.angle;
+        let mut lighting = ext.lighting;
+        let mut ext_changed = false;
+        ext_changed |= ui.add(egui::Slider::new(&mut depth, 1.0..=50.0).text("Depth").step_by(0.5).suffix(" px")).changed();
+        ext_changed |= ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").step_by(1.0).suffix("\u{00b0}")).changed();
+        let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
+        let mut side_col = egui::Color32::from_rgba_premultiplied(ext.side_color[0], ext.side_color[1], ext.side_color[2], ext.side_color[3]);
+        ui.horizontal(|ui| {
+            ui.label("Face:");
+            ext_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Side:");
+            ext_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
+        });
+        ext_changed |= ui.add(egui::Slider::new(&mut lighting, 0.0..=1.0).text("Lighting").step_by(0.05)).changed();
+        if ext_changed {
+            cmds.push(AppCommand::SetTitleExtrusion {
+                clip_id, enabled: true,
+                depth, angle,
+                face_color: [face_col.r(), face_col.g(), face_col.b(), face_col.a()],
+                side_color: [side_col.r(), side_col.g(), side_col.b(), side_col.a()],
+                lighting,
+            });
+        }
+    }
+    ui.add_space(8.0);
+
     // ── Typography ──
     ui.separator();
     ui.label(egui::RichText::new("Typography").strong().size(11.0));
@@ -641,6 +690,127 @@ fn show_title_editor(
     let mut write_on = td.write_on;
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
         cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
+    }
+    ui.add_space(8.0);
+
+    // ── Text Path ──
+    ui.separator();
+    ui.label(egui::RichText::new("Text Path").strong().size(11.0));
+    {
+        let path_idx: usize = match &td.text_path {
+            None => 0,
+            Some(klipp_timeline::TextPath::Arc { .. }) => 1,
+            Some(klipp_timeline::TextPath::Circle { .. }) => 2,
+            Some(klipp_timeline::TextPath::Wave { .. }) => 3,
+        };
+        let path_labels = ["None", "Arc", "Circle", "Wave"];
+        let mut new_idx = path_idx;
+        egui::ComboBox::from_label("Type")
+            .selected_text(path_labels[path_idx])
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for (i, label) in path_labels.iter().enumerate() {
+                    if ui.selectable_label(path_idx == i, *label).clicked() {
+                        new_idx = i;
+                    }
+                }
+            });
+        if new_idx != path_idx {
+            let (pk, p1, p2, p3) = match new_idx {
+                1 => (1u8, 200.0f32, 0.0f32, 180.0f32),
+                2 => (2, 200.0, 0.0, 0.0),
+                3 => (3, 30.0, 2.0, 0.0),
+                _ => (0, 0.0, 0.0, 0.0),
+            };
+            cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
+        }
+        // Show path params if active
+        if let Some(path) = &td.text_path {
+            let mut path_changed = false;
+            match path {
+                klipp_timeline::TextPath::Arc { radius, start_angle, sweep } => {
+                    let (mut r, mut sa, mut sw) = (*radius, *start_angle, *sweep);
+                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut sa).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Start: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut sw).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Sweep: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 1, p1: r, p2: sa, p3: sw });
+                    }
+                }
+                klipp_timeline::TextPath::Circle { radius } => {
+                    let mut r = *radius;
+                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 2, p1: r, p2: 0.0, p3: 0.0 });
+                    }
+                }
+                klipp_timeline::TextPath::Wave { amplitude, frequency, phase } => {
+                    let (mut a, mut f, mut p) = (*amplitude, *frequency, *phase);
+                    path_changed |= ui.add(egui::DragValue::new(&mut a).range(5.0..=200.0).speed(0.5).suffix(" px").prefix("Amplitude: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut f).range(0.1..=10.0).speed(0.05).prefix("Frequency: ").fixed_decimals(1)).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 3, p1: a, p2: f, p3: p });
+                    }
+                }
+            }
+        }
+    }
+    ui.add_space(8.0);
+
+    // ── Character Animation ──
+    ui.separator();
+    ui.label(egui::RichText::new("Character Animation").strong().size(11.0));
+    {
+        let mut enabled = td.char_animation.is_some();
+        if ui.checkbox(&mut enabled, "Enable").changed() {
+            cmds.push(AppCommand::SetTitleCharAnimation {
+                clip_id,
+                enabled,
+                stagger: 0.05,
+                entrance: 1, // FadeIn
+                wave_amplitude: 0.0,
+                wave_speed: 1.0,
+            });
+        }
+        if let Some(anim) = &td.char_animation {
+            let mut stagger = anim.stagger;
+            let mut wave_amp = anim.wave_amplitude;
+            let mut wave_spd = anim.wave_speed;
+            let entrance_idx: usize = match anim.entrance {
+                klipp_timeline::CharEntrance::None => 0,
+                klipp_timeline::CharEntrance::FadeIn => 1,
+                klipp_timeline::CharEntrance::SlideUp => 2,
+                klipp_timeline::CharEntrance::SlideDown => 3,
+                klipp_timeline::CharEntrance::ScaleUp => 4,
+            };
+            let entrance_labels = ["None", "Fade In", "Slide Up", "Slide Down", "Scale Up"];
+            let mut new_entrance_idx = entrance_idx;
+            egui::ComboBox::from_label("Entrance")
+                .selected_text(entrance_labels[entrance_idx])
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in entrance_labels.iter().enumerate() {
+                        if ui.selectable_label(entrance_idx == i, *label).clicked() {
+                            new_entrance_idx = i;
+                        }
+                    }
+                });
+            let mut anim_changed = new_entrance_idx != entrance_idx;
+            anim_changed |= ui.add(egui::DragValue::new(&mut stagger).range(0.0..=0.5).speed(0.005).suffix(" s").prefix("Stagger: ").fixed_decimals(3)).changed();
+            anim_changed |= ui.add(egui::DragValue::new(&mut wave_amp).range(0.0..=100.0).speed(0.5).suffix(" px").prefix("Wave Amp: ").fixed_decimals(1)).changed();
+            anim_changed |= ui.add(egui::DragValue::new(&mut wave_spd).range(0.1..=10.0).speed(0.05).suffix(" Hz").prefix("Wave Speed: ").fixed_decimals(1)).changed();
+            if anim_changed {
+                cmds.push(AppCommand::SetTitleCharAnimation {
+                    clip_id,
+                    enabled: true,
+                    stagger,
+                    entrance: new_entrance_idx as u8,
+                    wave_amplitude: wave_amp,
+                    wave_speed: wave_spd,
+                });
+            }
+        }
     }
     ui.add_space(12.0);
 

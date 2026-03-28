@@ -241,6 +241,12 @@ pub enum ClipKindJson {
         line_spacing: f32,
         #[serde(default = "default_one_f32")]
         write_on: f32,
+        #[serde(default)]
+        extrusion: serde_json::Value,
+        #[serde(default)]
+        text_path: serde_json::Value,
+        #[serde(default)]
+        char_animation: serde_json::Value,
     },
     Gap,
 }

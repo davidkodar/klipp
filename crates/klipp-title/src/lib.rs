@@ -3,13 +3,46 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::{FontStyle, TextAlignment, TextPattern, TitleBackground, TitleData};
+use klipp_timeline::{FontStyle, TextAlignment, TextPath, TextPattern, TitleBackground, TitleData};
 use std::collections::{BTreeMap, HashMap};
 
 pub mod font_discovery;
 
 /// Embedded fallback font — Noto Sans Regular (OFL license).
 static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
+
+/// Trait for GPU-accelerated alpha mask operations.
+/// Implemented in klipp-engine to avoid circular dependencies.
+pub trait AlphaMaskProcessor {
+    fn blur(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8>;
+    fn dilate(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8>;
+}
+
+/// Result of the layout phase — alpha mask + bounding box info.
+pub struct TitleLayout {
+    /// Single-channel alpha mask of rasterized text.
+    pub alpha_mask: Vec<u8>,
+    /// Mask width (may be smaller than output width — covers text + effect padding).
+    pub mask_w: u32,
+    /// Mask height.
+    pub mask_h: u32,
+    /// Mask origin X in the output frame.
+    pub mask_x0: u32,
+    /// Mask origin Y in the output frame.
+    pub mask_y0: u32,
+    /// Text bounding box top (global frame coords, for gradient/pattern).
+    pub text_top: f32,
+    /// Text bounding box bottom.
+    pub text_bottom: f32,
+    /// Text bounding box left.
+    pub text_left: f32,
+    /// Text bounding box right.
+    pub text_right: f32,
+    /// Number of glyphs rendered.
+    pub glyph_count: usize,
+    /// Scale factor (height / 1080.0).
+    pub scale: f32,
+}
 
 /// Renders title clips to RGBA pixel buffers.
 pub struct TitleRenderer {
@@ -101,18 +134,10 @@ impl TitleRenderer {
         key
     }
 
-    /// Render a `TitleData` to an RGBA buffer of `width × height` pixels.
-    pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+    /// Phase 1: Font loading, glyph rasterization into alpha mask, returns layout info.
+    pub fn render_layout(&mut self, title: &TitleData, width: u32, height: u32) -> TitleLayout {
         let w = width as usize;
         let h = height as usize;
-        let mut buf = vec![0u8; w * h * 4];
-
-        // Fill background if requested
-        if let TitleBackground::FullFrame { color } = &title.background {
-            for pixel in buf.chunks_exact_mut(4) {
-                pixel.copy_from_slice(color);
-            }
-        }
 
         // Resolve the font: load into cache if needed, then get reference
         let cache_key = self.ensure_font_loaded(&title.font_name, title.font_style);
@@ -148,7 +173,15 @@ impl TitleRenderer {
 
         let glyphs = layout.glyphs();
         if glyphs.is_empty() {
-            return buf;
+            return TitleLayout {
+                alpha_mask: Vec::new(),
+                mask_w: 0, mask_h: 0,
+                mask_x0: 0, mask_y0: 0,
+                text_top: 0.0, text_bottom: 0.0,
+                text_left: 0.0, text_right: 0.0,
+                glyph_count: 0,
+                scale,
+            };
         }
 
         // ── Post-process glyph positions for tracking and line spacing ──
@@ -156,9 +189,8 @@ impl TitleRenderer {
 
         // Apply line spacing multiplier (shift lines after the first)
         if title.line_spacing != 1.0 {
-            // Detect line breaks by y-position change
             let line_height_scale = height as f32 / 1080.0;
-            let mut line_starts: Vec<(usize, f32)> = Vec::new(); // (first_glyph_idx, original_y)
+            let mut line_starts: Vec<(usize, f32)> = Vec::new();
             let mut last_y: Option<f32> = None;
             for (i, g) in glyphs_owned.iter().enumerate() {
                 let gy = g.y;
@@ -173,7 +205,7 @@ impl TitleRenderer {
                 } else {
                     font_px
                 };
-                let _ = line_height_scale; // used indirectly via font_px
+                let _ = line_height_scale;
                 for line_idx in 1..line_starts.len() {
                     let y_shift = base_line_height * (title.line_spacing - 1.0) * line_idx as f32;
                     let start = line_starts[line_idx].0;
@@ -199,6 +231,13 @@ impl TitleRenderer {
 
         let glyphs = &glyphs_owned;
 
+        // ── Text on path: rasterize per-glyph with rotation ──
+        if let Some(text_path) = &title.text_path {
+            return self.render_layout_on_path(
+                font, glyphs, title, text_path, width, height, w, h, scale,
+            );
+        }
+
         // Compute text bounding box
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
@@ -213,27 +252,10 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        // Position offset: title.position is normalized (0.0-1.0)
-        // 0.5, 0.5 = center of frame, text centered on that point
+        // Position offset
         let offset_x = title.position.x * width as f32 - text_w * 0.5 - text_min_x;
         let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
 
-        // Draw background box if Color variant
-        if let TitleBackground::Color { color, padding } = &title.background {
-            let pad = padding * scale;
-            let bx0 = ((text_min_x + offset_x - pad) as i32).max(0) as usize;
-            let by0 = ((text_min_y + offset_y - pad) as i32).max(0) as usize;
-            let bx1 = ((text_max_x + offset_x + pad) as i32).min(width as i32) as usize;
-            let by1 = ((text_max_y + offset_y + pad) as i32).min(height as i32) as usize;
-            for row in by0..by1 {
-                for col in bx0..bx1 {
-                    let idx = (row * w + col) * 4;
-                    blend_pixel(&mut buf, idx, color);
-                }
-            }
-        }
-
-        // ── Rasterize glyphs into a temporary alpha mask ──
         // Compute the mask bounding box (padded for effects)
         let max_pad = effect_padding(title, scale);
         let mask_x0 = ((text_min_x + offset_x).floor() as i32 - max_pad).max(0) as usize;
@@ -244,16 +266,25 @@ impl TitleRenderer {
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
         if mask_w == 0 || mask_h == 0 {
-            return buf;
+            return TitleLayout {
+                alpha_mask: Vec::new(),
+                mask_w: 0, mask_h: 0,
+                mask_x0: 0, mask_y0: 0,
+                text_top: text_min_y + offset_y,
+                text_bottom: text_max_y + offset_y,
+                text_left: text_min_x + offset_x,
+                text_right: text_max_x + offset_x,
+                glyph_count: glyphs.len(),
+                scale,
+            };
         }
 
         // Rasterize glyphs into alpha mask
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
 
-        // ── Apply write-on reveal ──
+        // Apply write-on reveal
         if title.write_on < 1.0 {
-            // Clip alpha mask horizontally: write_on=0.5 means only left half visible
             let cutoff_x = ((text_min_x + offset_x) + text_w * title.write_on.clamp(0.0, 1.0)) as i32;
             for my in 0..mask_h {
                 for mx in 0..mask_w {
@@ -265,11 +296,240 @@ impl TitleRenderer {
             }
         }
 
+        TitleLayout {
+            alpha_mask,
+            mask_w: mask_w as u32,
+            mask_h: mask_h as u32,
+            mask_x0: mask_x0 as u32,
+            mask_y0: mask_y0 as u32,
+            text_top: text_min_y + offset_y,
+            text_bottom: text_max_y + offset_y,
+            text_left: text_min_x + offset_x,
+            text_right: text_max_x + offset_x,
+            glyph_count: glyphs.len(),
+            scale,
+        }
+    }
+
+    /// Render glyphs placed along a geometric path (arc, circle, wave).
+    /// Each glyph is rasterized individually and rotated to follow the path tangent.
+    #[allow(clippy::too_many_arguments)]
+    fn render_layout_on_path(
+        &self,
+        font: &Font,
+        glyphs: &[fontdue::layout::GlyphPosition],
+        title: &TitleData,
+        text_path: &TextPath,
+        width: u32,
+        height: u32,
+        w: usize,
+        h: usize,
+        scale: f32,
+    ) -> TitleLayout {
+        // Compute cumulative advance widths to map each glyph to an arc-length parameter
+        let mut advances: Vec<f32> = Vec::with_capacity(glyphs.len());
+        let mut cumulative = 0.0f32;
+        for g in glyphs {
+            advances.push(cumulative);
+            // Use glyph width + x_advance as the advance for this character
+            cumulative += g.width as f32;
+            // Add small gap between characters
+            if g.width > 0 {
+                cumulative += 2.0;
+            }
+        }
+        let total_advance = cumulative.max(1.0);
+
+        // Center of the path is at the title position
+        let center_x = title.position.x * width as f32;
+        let center_y = title.position.y * height as f32;
+
+        // For each glyph, compute its position and rotation on the path
+        // Then rasterize into a small buffer and blit rotated onto the full-frame mask
+        let max_pad = effect_padding(title, scale);
+        // Use the full frame as the mask (path text can go anywhere)
+        let mask_x0 = 0usize;
+        let _mask_y0 = 0usize;
+        let mask_w = w;
+        let mask_h = h;
+        let mut alpha_mask = vec![0u8; mask_w * mask_h];
+
+        let mut text_min_x = f32::MAX;
+        let mut text_min_y = f32::MAX;
+        let mut text_max_x = f32::MIN;
+        let mut text_max_y = f32::MIN;
+
+        for (i, glyph) in glyphs.iter().enumerate() {
+            if glyph.width == 0 || glyph.height == 0 {
+                continue;
+            }
+
+            // Normalized position along path (0..1)
+            let t = (advances[i] + glyph.width as f32 * 0.5) / total_advance;
+            let (px, py, angle) = path_point(text_path, t, total_advance, center_x, center_y);
+
+            // Rasterize this glyph into a small buffer
+            let (_, coverage) = font.rasterize_config(glyph.key);
+            let gw = glyph.width;
+            let gh = glyph.height;
+
+            // Blit rotated glyph onto the main mask
+            blit_rotated(
+                &mut alpha_mask, mask_w, mask_h,
+                &coverage, gw, gh,
+                px, py, angle,
+            );
+
+            // Update bounding box
+            let radius = ((gw as f32 / 2.0).powi(2) + (gh as f32 / 2.0).powi(2)).sqrt();
+            text_min_x = text_min_x.min(px - radius);
+            text_min_y = text_min_y.min(py - radius);
+            text_max_x = text_max_x.max(px + radius);
+            text_max_y = text_max_y.max(py + radius);
+        }
+
+        // Clamp bounding box
+        if text_min_x == f32::MAX {
+            text_min_x = center_x;
+            text_min_y = center_y;
+            text_max_x = center_x;
+            text_max_y = center_y;
+        }
+
+        // Apply write-on reveal
+        if title.write_on < 1.0 {
+            let cutoff_x = (text_min_x + (text_max_x - text_min_x) * title.write_on.clamp(0.0, 1.0)) as i32;
+            for my in 0..mask_h {
+                for mx in 0..mask_w {
+                    let global_x = (mask_x0 + mx) as i32;
+                    if global_x >= cutoff_x {
+                        alpha_mask[my * mask_w + mx] = 0;
+                    }
+                }
+            }
+        }
+
+        // Crop the mask to a tight bounding box with padding
+        let crop_x0 = ((text_min_x.floor() as i32) - max_pad).max(0) as usize;
+        let crop_y0 = ((text_min_y.floor() as i32) - max_pad).max(0) as usize;
+        let crop_x1 = ((text_max_x.ceil() as i32) + max_pad + 1).min(w as i32) as usize;
+        let crop_y1 = ((text_max_y.ceil() as i32) + max_pad + 1).min(h as i32) as usize;
+        let crop_w = crop_x1.saturating_sub(crop_x0);
+        let crop_h = crop_y1.saturating_sub(crop_y0);
+
+        if crop_w == 0 || crop_h == 0 {
+            return TitleLayout {
+                alpha_mask: Vec::new(),
+                mask_w: 0, mask_h: 0,
+                mask_x0: 0, mask_y0: 0,
+                text_top: text_min_y, text_bottom: text_max_y,
+                text_left: text_min_x, text_right: text_max_x,
+                glyph_count: glyphs.len(),
+                scale,
+            };
+        }
+
+        let mut cropped = vec![0u8; crop_w * crop_h];
+        for cy in 0..crop_h {
+            let src_y = crop_y0 + cy;
+            if src_y >= mask_h { continue; }
+            for cx in 0..crop_w {
+                let src_x = crop_x0 + cx;
+                if src_x >= mask_w { continue; }
+                cropped[cy * crop_w + cx] = alpha_mask[src_y * mask_w + src_x];
+            }
+        }
+
+        TitleLayout {
+            alpha_mask: cropped,
+            mask_w: crop_w as u32,
+            mask_h: crop_h as u32,
+            mask_x0: crop_x0 as u32,
+            mask_y0: crop_y0 as u32,
+            text_top: text_min_y,
+            text_bottom: text_max_y,
+            text_left: text_min_x,
+            text_right: text_max_x,
+            glyph_count: glyphs.len(),
+            scale,
+        }
+    }
+
+    /// Phase 2: Compose layout + effects into final RGBA buffer.
+    /// If `gpu` is Some and the mask is large enough, GPU-accelerated blur/dilate will be used.
+    pub fn compose(
+        layout: &TitleLayout,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+    ) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let mut buf = vec![0u8; w * h * 4];
+
+        // Fill background if requested
+        if let TitleBackground::FullFrame { color } = &title.background {
+            for pixel in buf.chunks_exact_mut(4) {
+                pixel.copy_from_slice(color);
+            }
+        }
+
+        if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
+            return buf;
+        }
+
+        let scale = layout.scale;
+        let mask_w = layout.mask_w as usize;
+        let mask_h = layout.mask_h as usize;
+        let mask_x0 = layout.mask_x0 as usize;
+        let mask_y0 = layout.mask_y0 as usize;
+        let alpha_mask = &layout.alpha_mask;
+
+        // Draw background box if Color variant
+        if let TitleBackground::Color { color, padding } = &title.background {
+            let pad = padding * scale;
+            let bx0 = ((layout.text_left - pad) as i32).max(0) as usize;
+            let by0 = ((layout.text_top - pad) as i32).max(0) as usize;
+            let bx1 = ((layout.text_right + pad) as i32).min(width as i32) as usize;
+            let by1 = ((layout.text_bottom + pad) as i32).min(height as i32) as usize;
+            for row in by0..by1 {
+                for col in bx0..bx1 {
+                    let idx = (row * w + col) * 4;
+                    blend_pixel(&mut buf, idx, color);
+                }
+            }
+        }
+
+        // Determine if GPU acceleration should be used (> 250K pixels in mask)
+        let use_gpu = gpu.is_some() && (mask_w * mask_h > 250_000);
+        // We need to use a mutable ref conditionally — wrap in Option
+        let mut gpu = gpu;
+
+        // Helper closures that dispatch to GPU or CPU
+        let do_blur = |mask: &[u8], mw: usize, mh: usize, radius: f32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>| -> Vec<u8> {
+            if use_gpu {
+                if let Some(ref mut g) = gpu {
+                    return g.blur(mask, mw as u32, mh as u32, radius);
+                }
+            }
+            blur_alpha(mask, mw, mh, radius)
+        };
+
+        let do_dilate = |mask: &[u8], mw: usize, mh: usize, radius: f32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>| -> Vec<u8> {
+            if use_gpu {
+                if let Some(ref mut g) = gpu {
+                    return g.dilate(mask, mw as u32, mh as u32, radius);
+                }
+            }
+            dilate_alpha(mask, mw, mh, radius)
+        };
+
         // ── Render effects back-to-front ──
 
         // 1. Outer glow
         if let Some(glow) = &title.glow {
-            let blurred = blur_alpha(&alpha_mask, mask_w, mask_h, glow.radius * scale);
+            let blurred = do_blur(alpha_mask, mask_w, mask_h, glow.radius * scale, &mut gpu);
             draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, glow.intensity);
         }
 
@@ -279,18 +539,17 @@ impl TitleRenderer {
             let soy = (shadow.offset_y * scale).round() as i32;
 
             if shadow.blur > 0.0 {
-                let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
-                let blurred = blur_alpha(&offset_mask, mask_w, mask_h, shadow.blur * scale);
+                let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
+                let blurred = do_blur(&offset_mask, mask_w, mask_h, shadow.blur * scale, &mut gpu);
                 draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
             } else {
-                let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
+                let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
                 draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
             }
         }
 
         // 3. Outline/stroke — multiple layers (widest first) then legacy single
         {
-            // Collect all outlines: multi-layer first, then legacy single
             let mut all_outlines: Vec<&klipp_timeline::TextOutline> = Vec::new();
             for ol in &title.outlines {
                 all_outlines.push(ol);
@@ -300,11 +559,10 @@ impl TitleRenderer {
                     all_outlines.push(ol);
                 }
             }
-            // Sort widest first (back-to-front rendering)
             all_outlines.sort_by(|a, b| b.width.partial_cmp(&a.width).unwrap_or(std::cmp::Ordering::Equal));
 
             for outline in &all_outlines {
-                let dilated = dilate_alpha(&alpha_mask, mask_w, mask_h, outline.width * scale);
+                let dilated = do_dilate(alpha_mask, mask_w, mask_h, outline.width * scale, &mut gpu);
                 let mut outline_mask = vec![0u8; mask_w * mask_h];
                 for i in 0..outline_mask.len() {
                     outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
@@ -313,56 +571,68 @@ impl TitleRenderer {
             }
         }
 
-        // 4. Text fill (pattern > gradient > solid)
-        if let Some(pattern) = &title.pattern_fill {
-            draw_pattern_fill(&mut buf, &alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
-        } else if let Some(gradient) = &title.gradient {
-            // Gradient fill based on Y position within text bounding box
-            let text_top = (text_min_y + offset_y) as i32;
-            let text_bot = (text_max_y + offset_y) as i32;
-            let text_height = (text_bot - text_top).max(1) as f32;
-            for my in 0..mask_h {
-                let global_y = (mask_y0 + my) as i32;
-                let t = ((global_y - text_top) as f32 / text_height).clamp(0.0, 1.0);
-                let r = lerp_u8(gradient.top_color[0], gradient.bottom_color[0], t);
-                let g = lerp_u8(gradient.top_color[1], gradient.bottom_color[1], t);
-                let b = lerp_u8(gradient.top_color[2], gradient.bottom_color[2], t);
-                let a = lerp_u8(gradient.top_color[3], gradient.bottom_color[3], t);
-                for mx in 0..mask_w {
-                    let cov = alpha_mask[my * mask_w + mx];
-                    if cov == 0 { continue; }
-                    let px = mask_x0 + mx;
-                    let py = mask_y0 + my;
-                    if px >= w || py >= h { continue; }
-                    let alpha = (cov as u16 * a as u16 / 255) as u8;
-                    let tinted = [r, g, b, alpha];
-                    let idx = (py * w + px) * 4;
-                    blend_pixel(&mut buf, idx, &tinted);
-                }
-            }
-        } else {
-            // Solid color fill
-            draw_mask_to_buf(&mut buf, &alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &title.color, 1.0);
+        // 4. 3D Text Extrusion (rendered before face text, after outlines)
+        if let Some(ref ext) = title.extrusion {
+            render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title);
         }
 
-        // 5. Inner shadow (rendered inside the text shape)
+        // 5. Text fill (pattern > gradient > solid) — this is the face text
+        {
+            // If extrusion is active and has a non-transparent face_color, use that
+            let face_color = if let Some(ref ext) = title.extrusion {
+                if ext.face_color[3] > 0 {
+                    ext.face_color
+                } else {
+                    title.color
+                }
+            } else {
+                title.color
+            };
+
+            if let Some(pattern) = &title.pattern_fill {
+                draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
+            } else if let Some(gradient) = &title.gradient {
+                let text_top = layout.text_top as i32;
+                let text_bot = layout.text_bottom as i32;
+                let text_height = (text_bot - text_top).max(1) as f32;
+                for my in 0..mask_h {
+                    let global_y = (mask_y0 + my) as i32;
+                    let t = ((global_y - text_top) as f32 / text_height).clamp(0.0, 1.0);
+                    let r = lerp_u8(gradient.top_color[0], gradient.bottom_color[0], t);
+                    let g = lerp_u8(gradient.top_color[1], gradient.bottom_color[1], t);
+                    let b = lerp_u8(gradient.top_color[2], gradient.bottom_color[2], t);
+                    let a = lerp_u8(gradient.top_color[3], gradient.bottom_color[3], t);
+                    for mx in 0..mask_w {
+                        let cov = alpha_mask[my * mask_w + mx];
+                        if cov == 0 { continue; }
+                        let px = mask_x0 + mx;
+                        let py = mask_y0 + my;
+                        if px >= w || py >= h { continue; }
+                        let alpha = (cov as u16 * a as u16 / 255) as u8;
+                        let tinted = [r, g, b, alpha];
+                        let idx = (py * w + px) * 4;
+                        blend_pixel(&mut buf, idx, &tinted);
+                    }
+                }
+            } else {
+                draw_mask_to_buf(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &face_color, 1.0);
+            }
+        }
+
+        // 6. Inner shadow (rendered inside the text shape)
         if let Some(inner) = &title.inner_shadow {
             let sox = (inner.offset_x * scale).round() as i32;
             let soy = (inner.offset_y * scale).round() as i32;
-            // Invert the alpha mask: shadow appears where text is NOT, offset
             let mut inverted = vec![0u8; mask_w * mask_h];
             for i in 0..inverted.len() {
                 inverted[i] = 255u8.saturating_sub(alpha_mask[i]);
             }
-            // Offset the inverted mask
             let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
-            // Blur if requested
             let shadow_mask = if inner.blur > 0.0 {
-                blur_alpha(&offset_inv, mask_w, mask_h, inner.blur * scale)
+                do_blur(&offset_inv, mask_w, mask_h, inner.blur * scale, &mut gpu)
             } else {
                 offset_inv
             };
-            // AND with original mask: only show shadow where text exists
             let mut inner_mask = vec![0u8; mask_w * mask_h];
             for i in 0..inner_mask.len() {
                 inner_mask[i] = ((shadow_mask[i] as u16 * alpha_mask[i] as u16) / 255) as u8;
@@ -372,7 +642,84 @@ impl TitleRenderer {
 
         buf
     }
+
+    /// Render a `TitleData` to an RGBA buffer of `width x height` pixels (backward compat).
+    pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+        let layout = self.render_layout(title, width, height);
+        Self::compose(&layout, title, width, height, None)
+    }
+
+    /// Render with optional GPU-accelerated alpha mask processing.
+    pub fn render_with_gpu(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+    ) -> Vec<u8> {
+        let layout = self.render_layout(title, width, height);
+        Self::compose(&layout, title, width, height, gpu)
+    }
 }
+
+// ─── 3D Text Extrusion ──────────────────────────────────────────────────────
+
+/// Render pseudo-3D text extrusion by drawing offset layers of the alpha mask.
+#[allow(clippy::too_many_arguments)]
+fn render_extrusion(
+    buf: &mut [u8],
+    alpha_mask: &[u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    buf_w: usize,
+    buf_h: usize,
+    ext: &klipp_timeline::TextExtrusion,
+    title: &TitleData,
+) {
+    let depth = ext.depth.clamp(1.0, 50.0) as i32;
+    let angle_rad = ext.angle.to_radians();
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+
+    // Determine face color (for exclusion — we don't draw the face here)
+    let _face_color = if ext.face_color[3] > 0 { ext.face_color } else { title.color };
+
+    // Draw layers from back (farthest) to front (closest to face)
+    for i in (1..=depth).rev() {
+        let t = i as f32 / depth as f32; // 1.0 = farthest, approaching 0.0 = nearest
+        let dx = (cos_a * i as f32).round() as i32;
+        let dy = (sin_a * i as f32).round() as i32;
+
+        // Lighting: darken back layers, lighten front layers
+        let light_factor = 1.0 - ext.lighting * 0.5 * t; // back is darker
+        let side_r = (ext.side_color[0] as f32 * light_factor).clamp(0.0, 255.0) as u8;
+        let side_g = (ext.side_color[1] as f32 * light_factor).clamp(0.0, 255.0) as u8;
+        let side_b = (ext.side_color[2] as f32 * light_factor).clamp(0.0, 255.0) as u8;
+        let side_a = ext.side_color[3];
+        let layer_color = [side_r, side_g, side_b, side_a];
+
+        // Draw the offset mask
+        for my in 0..mask_h {
+            let dst_y = mask_y0 as i32 + my as i32 + dy;
+            if dst_y < 0 || dst_y >= buf_h as i32 { continue; }
+            for mx in 0..mask_w {
+                let cov = alpha_mask[my * mask_w + mx];
+                if cov == 0 { continue; }
+                let dst_x = mask_x0 as i32 + mx as i32 + dx;
+                if dst_x < 0 || dst_x >= buf_w as i32 { continue; }
+                let alpha = (cov as u16 * side_a as u16 / 255) as u8;
+                if alpha == 0 { continue; }
+                let tinted = [layer_color[0], layer_color[1], layer_color[2], alpha];
+                let idx = (dst_y as usize * buf_w + dst_x as usize) * 4;
+                blend_pixel(buf, idx, &tinted);
+            }
+        }
+    }
+}
+
+// ─── Effect padding ─────────────────────────────────────────────────────────
 
 /// Compute the maximum padding needed around the text bounding box for effects.
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
@@ -404,8 +751,18 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     if title.tracking > 0.0 {
         pad = pad.max((title.tracking * scale * 200.0).ceil() as i32); // generous for long text
     }
+    // Extra padding for extrusion depth
+    if let Some(ext) = &title.extrusion {
+        let depth = ext.depth.clamp(1.0, 50.0);
+        let ex = (depth * ext.angle.to_radians().cos().abs()).ceil() as i32 + 1;
+        let ey = (depth * ext.angle.to_radians().sin().abs()).ceil() as i32 + 1;
+        pad = pad.max(ex);
+        pad = pad.max(ey);
+    }
     pad
 }
+
+// ─── Rasterization helpers ──────────────────────────────────────────────────
 
 /// Rasterize fontdue glyphs into a single-channel alpha mask.
 #[allow(clippy::too_many_arguments)]
@@ -590,6 +947,77 @@ fn draw_pattern_fill(
             let tinted = [color[0], color[1], color[2], alpha];
             let idx = (py * buf_w + px) * 4;
             blend_pixel(buf, idx, &tinted);
+        }
+    }
+}
+
+// ─── Text-on-path helpers ───────────────────────────────────────────────────
+
+/// Evaluate a point on the path at parameter t (0.0-1.0 normalized arc-length).
+/// Returns (x, y, angle_radians) where angle is the tangent direction.
+fn path_point(path: &TextPath, t: f32, total_advance: f32, center_x: f32, center_y: f32) -> (f32, f32, f32) {
+    match path {
+        TextPath::Arc { radius, start_angle, sweep } => {
+            let angle = start_angle.to_radians() + sweep.to_radians() * t;
+            let x = center_x + radius * angle.cos();
+            let y = center_y + radius * angle.sin();
+            let tangent_angle = angle + std::f32::consts::FRAC_PI_2;
+            (x, y, tangent_angle)
+        }
+        TextPath::Circle { radius } => {
+            let angle = 2.0 * std::f32::consts::PI * t;
+            let x = center_x + radius * angle.cos();
+            let y = center_y + radius * angle.sin();
+            (x, y, angle + std::f32::consts::FRAC_PI_2)
+        }
+        TextPath::Wave { amplitude, frequency, phase } => {
+            let linear_x = center_x - total_advance * 0.5 + total_advance * t;
+            let wave_arg = frequency * 2.0 * std::f32::consts::PI * t + phase.to_radians();
+            let y = center_y + amplitude * wave_arg.sin();
+            let dy_dx = amplitude * frequency * 2.0 * std::f32::consts::PI * wave_arg.cos() / total_advance;
+            let angle = dy_dx.atan();
+            (linear_x, y, angle)
+        }
+    }
+}
+
+/// Blit a small source alpha buffer into a destination mask with rotation.
+/// The glyph is centered at (cx, cy) in the destination and rotated by angle_rad.
+#[allow(clippy::too_many_arguments)]
+fn blit_rotated(
+    dst: &mut [u8], dst_w: usize, dst_h: usize,
+    src: &[u8], src_w: usize, src_h: usize,
+    cx: f32, cy: f32,
+    angle_rad: f32,
+) {
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+    let half_w = src_w as f32 / 2.0;
+    let half_h = src_h as f32 / 2.0;
+
+    // Bounding radius of the rotated glyph
+    let radius = (half_w * half_w + half_h * half_h).sqrt().ceil() as i32;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let dst_x = cx as i32 + dx;
+            let dst_y = cy as i32 + dy;
+            if dst_x < 0 || dst_x >= dst_w as i32 || dst_y < 0 || dst_y >= dst_h as i32 {
+                continue;
+            }
+
+            // Inverse-rotate to find source pixel
+            let rx = dx as f32 * cos_a + dy as f32 * sin_a + half_w;
+            let ry = -dx as f32 * sin_a + dy as f32 * cos_a + half_h;
+
+            let sx = rx.round() as i32;
+            let sy = ry.round() as i32;
+            if sx >= 0 && sx < src_w as i32 && sy >= 0 && sy < src_h as i32 {
+                let src_alpha = src[sy as usize * src_w + sx as usize];
+                if src_alpha > 0 {
+                    let dst_idx = dst_y as usize * dst_w + dst_x as usize;
+                    dst[dst_idx] = dst[dst_idx].max(src_alpha);
+                }
+            }
         }
     }
 }
@@ -790,5 +1218,42 @@ mod tests {
         let has_blue = buf.chunks_exact(4).any(|p| p[3] > 0 && p[2] > 100 && p[0] < 50);
         assert!(has_red, "Gradient should produce red-ish pixels at top");
         assert!(has_blue, "Gradient should produce blue-ish pixels at bottom");
+    }
+
+    #[test]
+    fn layout_phase_produces_alpha_mask() {
+        let mut renderer = TitleRenderer::new();
+        let title = TitleData::default();
+        let layout = renderer.render_layout(&title, 1920, 1080);
+        assert!(layout.glyph_count > 0, "Should have glyphs");
+        assert!(!layout.alpha_mask.is_empty(), "Should have alpha mask");
+        assert!(layout.mask_w > 0 && layout.mask_h > 0, "Mask dimensions should be nonzero");
+        let has_coverage = layout.alpha_mask.iter().any(|&a| a > 0);
+        assert!(has_coverage, "Alpha mask should have nonzero coverage");
+    }
+
+    #[test]
+    fn extrusion_adds_extra_pixels() {
+        let mut renderer = TitleRenderer::new();
+        let no_ext = TitleData {
+            text: "3D".to_string(),
+            font_size: 100.0,
+            ..TitleData::default()
+        };
+        let with_ext = TitleData {
+            extrusion: Some(klipp_timeline::TextExtrusion {
+                depth: 10.0,
+                angle: 135.0,
+                face_color: [0, 0, 0, 0],
+                side_color: [100, 50, 50, 255],
+                lighting: 0.5,
+            }),
+            ..no_ext.clone()
+        };
+        let buf1 = renderer.render(&no_ext, 640, 480);
+        let buf2 = renderer.render(&with_ext, 640, 480);
+        let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(count2 > count1, "Extrusion should add more non-transparent pixels");
     }
 }

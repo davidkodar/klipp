@@ -72,6 +72,71 @@ pub struct TitleData {
     /// Write-on reveal: 0.0 = no text, 1.0 = all text visible
     #[serde(default = "default_one")]
     pub write_on: f32,
+    /// 3D text extrusion (pseudo-depth effect)
+    #[serde(default)]
+    pub extrusion: Option<TextExtrusion>,
+    /// Text follows a geometric path (arc, circle, wave)
+    #[serde(default)]
+    pub text_path: Option<TextPath>,
+    /// Per-character animation (staggered entrance, wave)
+    #[serde(default)]
+    pub char_animation: Option<CharAnimation>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct TextExtrusion {
+    /// Extrusion distance in pixels (1-50)
+    pub depth: f32,
+    /// Direction in degrees (default 135 = down-right shadow direction)
+    pub angle: f32,
+    /// Front face color (if [0,0,0,0] uses title.color)
+    pub face_color: [u8; 4],
+    /// Extruded side color
+    pub side_color: [u8; 4],
+    /// 0.0-1.0, simulated directional lighting
+    pub lighting: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TextPath {
+    /// Text follows a circular arc
+    Arc {
+        radius: f32,      // radius in pixels (100-500)
+        start_angle: f32,  // degrees, where text starts (0 = right, 90 = bottom)
+        sweep: f32,        // degrees of arc the text spans (positive = clockwise)
+    },
+    /// Text follows a full circle
+    Circle {
+        radius: f32,      // radius in pixels
+    },
+    /// Text follows a sine wave
+    Wave {
+        amplitude: f32,   // vertical amplitude in pixels (10-100)
+        frequency: f32,   // number of wave cycles across the text (0.5-5)
+        phase: f32,       // phase offset in degrees (0-360)
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct CharAnimation {
+    /// Seconds between each character's animation start
+    pub stagger: f32,
+    /// Type of per-character entrance
+    pub entrance: CharEntrance,
+    /// Vertical wave oscillation amplitude (0 = no wave)
+    pub wave_amplitude: f32,
+    /// Wave speed in cycles per second
+    pub wave_speed: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum CharEntrance {
+    #[default]
+    None,
+    FadeIn,
+    SlideUp,
+    SlideDown,
+    ScaleUp,
 }
 
 fn default_one() -> f32 { 1.0 }
@@ -97,6 +162,9 @@ impl Default for TitleData {
             tracking: 0.0,
             line_spacing: 1.0,
             write_on: 1.0,
+            extrusion: None,
+            text_path: None,
+            char_animation: None,
         }
     }
 }

@@ -7,6 +7,19 @@ use crate::sync::MasterClock;
 use crate::texture::SharedFrameBuffer;
 use crate::video_decoder::VideoDecoder;
 
+/// Wrapper adapter so we can implement AlphaMaskProcessor (from klipp-title)
+/// for GpuEffectsPipeline (from klipp-effects). Orphan rule requires the newtype pattern.
+struct GpuAlphaMaskAdapter<'a>(&'a mut klipp_effects::gpu::GpuEffectsPipeline);
+
+impl klipp_title::AlphaMaskProcessor for GpuAlphaMaskAdapter<'_> {
+    fn blur(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
+        self.0.blur_alpha_gpu(mask, w, h, radius)
+    }
+    fn dilate(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
+        self.0.dilate_alpha_gpu(mask, w, h, radius)
+    }
+}
+
 /// Wrapper to make AudioOutput Send. The cpal::Stream inside is !Send
 /// due to platform internals, but we only ever use it on the engine thread.
 struct SendAudioOutput(#[allow(dead_code)] AudioOutput);
@@ -1266,7 +1279,9 @@ impl PlaybackEngine {
                 let seq = self.sequence.read().unwrap();
                 let (w, h) = (seq.resolution.width, seq.resolution.height);
                 drop(seq);
-                let rgba = self.title_renderer.render(&title_data, w, h);
+                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                let rgba = self.title_renderer.render_with_gpu(&title_data, w, h, gpu);
 
                 // Apply post-processing (color grade, effects, LUT)
                 let final_rgba = self.post_process_rgba(rgba, w, h);
@@ -1892,7 +1907,9 @@ impl PlaybackEngine {
                         }
                         self.v2_decoder = None;
                     }
-                    let mut rgba = self.title_renderer.render(title_data, res.width, res.height);
+                    let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                    let mut rgba = self.title_renderer.render_with_gpu(title_data, res.width, res.height, gpu);
 
                     // Apply opacity + transform keyframes to title overlay
                     let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
@@ -2299,7 +2316,9 @@ impl PlaybackEngine {
             self.clip_source_start = clip_source_in;
             self.clip_timeline_start = timeline_in;
 
-            let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+            let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+            let rgba = self.title_renderer.render_with_gpu(&title_data, res.width, res.height, gpu);
             let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(final_rgba, res.width, res.height);
@@ -2457,7 +2476,9 @@ impl PlaybackEngine {
                 self.clip_timeline_start = timeline_in;
 
                 // Render title frame and write to frame buffer
-                let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                let rgba = self.title_renderer.render_with_gpu(&title_data, res.width, res.height, gpu);
                 let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
                 let mut fb = self.frame_buffer.lock().unwrap();
                 fb.write_frame(final_rgba, res.width, res.height);
@@ -2924,7 +2945,9 @@ impl PlaybackEngine {
         drop(seq);
 
         if let Some((title_data, clip, res)) = title_clip_info {
-            let mut rgba = self.title_renderer.render(&title_data, res.width, res.height);
+            let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+            let mut rgba = self.title_renderer.render_with_gpu(&title_data, res.width, res.height, gpu);
 
             // Apply opacity keyframes to the title overlay
             let clip_relative_secs = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);

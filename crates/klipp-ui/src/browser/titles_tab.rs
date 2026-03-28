@@ -3,8 +3,8 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::{
-    FontStyle, TextAlignment, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData,
-    TitlePosition, TitleShadow,
+    CharAnimation, CharEntrance, FontStyle, TextAlignment, TextExtrusion, TextGlow, TextGradient,
+    TextOutline, TextPath, TitleBackground, TitleData, TitlePosition, TitleShadow,
 };
 
 struct TitleTemplate {
@@ -507,6 +507,69 @@ fn sty_brush() -> TitleData {
 }
 
 // ---------------------------------------------------------------------------
+// 3D Text (5)
+// ---------------------------------------------------------------------------
+
+fn three_d_block() -> TitleData {
+    TitleData {
+        extrusion: Some(TextExtrusion {
+            depth: 15.0, angle: 135.0,
+            face_color: [255, 255, 255, 255],
+            side_color: [80, 80, 120, 255],
+            lighting: 0.6,
+        }),
+        ..positioned("BLOCK", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+fn three_d_gold_emboss() -> TitleData {
+    TitleData {
+        extrusion: Some(TextExtrusion {
+            depth: 8.0, angle: 135.0,
+            face_color: [0, 0, 0, 0],
+            side_color: [160, 120, 40, 255],
+            lighting: 0.8,
+        }),
+        gradient: Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255] }),
+        ..positioned("EMBOSS", 72.0, FontStyle::Bold, GOLD, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+fn three_d_deep_shadow() -> TitleData {
+    TitleData {
+        extrusion: Some(TextExtrusion {
+            depth: 30.0, angle: 150.0,
+            face_color: [220, 50, 50, 255],
+            side_color: [60, 20, 20, 255],
+            lighting: 0.4,
+        }),
+        ..positioned("DEEP", 96.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+fn three_d_neon_extrude() -> TitleData {
+    TitleData {
+        extrusion: Some(TextExtrusion {
+            depth: 12.0, angle: 180.0,
+            face_color: [0, 255, 200, 255],
+            side_color: [0, 80, 60, 255],
+            lighting: 0.7,
+        }),
+        glow: Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6 }),
+        ..positioned("NEON 3D", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+fn three_d_retro_stack() -> TitleData {
+    TitleData {
+        extrusion: Some(TextExtrusion {
+            depth: 20.0, angle: 120.0,
+            face_color: [255, 220, 50, 255],
+            side_color: [150, 80, 30, 255],
+            lighting: 0.5,
+        }),
+        outline: Some(TextOutline { color: [40, 30, 20, 255], width: 2.0 }),
+        ..positioned("RETRO", 84.0, FontStyle::Bold, ORANGE, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Wedding / Event (5)
 // ---------------------------------------------------------------------------
 
@@ -527,7 +590,57 @@ fn wed_invitation() -> TitleData {
 }
 
 // ---------------------------------------------------------------------------
-// Master template array (112 templates)
+// Text on Path (3)
+// ---------------------------------------------------------------------------
+
+fn path_arc_title() -> TitleData {
+    TitleData {
+        text_path: Some(TextPath::Arc { radius: 250.0, start_angle: -90.0, sweep: 180.0 }),
+        ..centered("ARC TITLE", 56.0, FontStyle::Bold, WHITE, true)
+    }
+}
+fn path_circle_text() -> TitleData {
+    TitleData {
+        text_path: Some(TextPath::Circle { radius: 200.0 }),
+        ..centered("CIRCLE TEXT", 48.0, FontStyle::Bold, WHITE, true)
+    }
+}
+fn path_wave_text() -> TitleData {
+    TitleData {
+        text_path: Some(TextPath::Wave { amplitude: 30.0, frequency: 2.0, phase: 0.0 }),
+        ..centered("WAVE TEXT", 56.0, FontStyle::Bold, WHITE, true)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-Character Animation (2)
+// ---------------------------------------------------------------------------
+
+fn char_stagger_fade() -> TitleData {
+    TitleData {
+        char_animation: Some(CharAnimation {
+            stagger: 0.05,
+            entrance: CharEntrance::FadeIn,
+            wave_amplitude: 0.0,
+            wave_speed: 0.0,
+        }),
+        ..centered("Stagger Fade", 64.0, FontStyle::Regular, WHITE, true)
+    }
+}
+fn char_wave_bounce() -> TitleData {
+    TitleData {
+        char_animation: Some(CharAnimation {
+            stagger: 0.0,
+            entrance: CharEntrance::None,
+            wave_amplitude: 15.0,
+            wave_speed: 2.0,
+        }),
+        ..centered("Wave Bounce", 64.0, FontStyle::Bold, WHITE, true)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Master template array
 // ---------------------------------------------------------------------------
 
 const TITLES: &[TitleTemplate] = &[
@@ -658,6 +771,22 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Kinetic Bold", category: "Stylized", preview_text: "KINETIC", create_data: sty_kinetic, animation: None },
     TitleTemplate { name: "Brush Stroke", category: "Stylized", preview_text: "Brushstroke", create_data: sty_brush, animation: None },
 
+    // ---- 3D Text (5) ----
+    TitleTemplate { name: "3D Block", category: "3D Text", preview_text: "BLOCK", create_data: three_d_block, animation: None },
+    TitleTemplate { name: "Gold Emboss", category: "3D Text", preview_text: "EMBOSS", create_data: three_d_gold_emboss, animation: None },
+    TitleTemplate { name: "Deep Shadow", category: "3D Text", preview_text: "DEEP", create_data: three_d_deep_shadow, animation: None },
+    TitleTemplate { name: "Neon 3D", category: "3D Text", preview_text: "NEON 3D", create_data: three_d_neon_extrude, animation: None },
+    TitleTemplate { name: "Retro Stack", category: "3D Text", preview_text: "RETRO", create_data: three_d_retro_stack, animation: None },
+
+    // ---- Text on Path (3) ----
+    TitleTemplate { name: "Arc Title", category: "Text on Path", preview_text: "ARC TITLE", create_data: path_arc_title, animation: None },
+    TitleTemplate { name: "Circle Text", category: "Text on Path", preview_text: "CIRCLE TEXT", create_data: path_circle_text, animation: None },
+    TitleTemplate { name: "Wave Text", category: "Text on Path", preview_text: "WAVE TEXT", create_data: path_wave_text, animation: None },
+
+    // ---- Per-Character (2) ----
+    TitleTemplate { name: "Stagger Fade", category: "Per-Character", preview_text: "Stagger Fade", create_data: char_stagger_fade, animation: None },
+    TitleTemplate { name: "Wave Bounce", category: "Per-Character", preview_text: "Wave Bounce", create_data: char_wave_bounce, animation: None },
+
     // ---- Wedding / Event (5) ----
     TitleTemplate { name: "Save the Date", category: "Wedding / Event", preview_text: "Save the Date", create_data: wed_save_date, animation: None },
     TitleTemplate { name: "Couple Names", category: "Wedding / Event", preview_text: "Emma & James", create_data: wed_couple_names, animation: None },
@@ -712,6 +841,9 @@ const CATEGORIES: &[&str] = &[
     "Broadcast",
     "Educational",
     "Stylized",
+    "3D Text",
+    "Text on Path",
+    "Per-Character",
     "Wedding / Event",
 ];
 

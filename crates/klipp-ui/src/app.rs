@@ -4958,6 +4958,81 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.extrusion = if *enabled {
+                                    Some(klipp_timeline::TextExtrusion {
+                                        depth: *depth,
+                                        angle: *angle,
+                                        face_color: *face_color,
+                                        side_color: *side_color,
+                                        lighting: *lighting,
+                                    })
+                                } else {
+                                    None
+                                };
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
+                    let path = match path_kind {
+                        1 => Some(klipp_timeline::TextPath::Arc { radius: *p1, start_angle: *p2, sweep: *p3 }),
+                        2 => Some(klipp_timeline::TextPath::Circle { radius: *p1 }),
+                        3 => Some(klipp_timeline::TextPath::Wave { amplitude: *p1, frequency: *p2, phase: *p3 }),
+                        _ => None,
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.text_path = path.clone();
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleCharAnimation { clip_id, enabled, stagger, entrance, wave_amplitude, wave_speed } => {
+                    let anim = if *enabled {
+                        let ent = match entrance {
+                            1 => klipp_timeline::CharEntrance::FadeIn,
+                            2 => klipp_timeline::CharEntrance::SlideUp,
+                            3 => klipp_timeline::CharEntrance::SlideDown,
+                            4 => klipp_timeline::CharEntrance::ScaleUp,
+                            _ => klipp_timeline::CharEntrance::None,
+                        };
+                        Some(klipp_timeline::CharAnimation {
+                            stagger: *stagger,
+                            entrance: ent,
+                            wave_amplitude: *wave_amplitude,
+                            wave_speed: *wave_speed,
+                        })
+                    } else {
+                        None
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.char_animation = anim;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetTitleFadeDuration { duration } => {
                     self.state.title_fade_duration = *duration;
                     continue;

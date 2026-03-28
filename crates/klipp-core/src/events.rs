@@ -452,6 +452,16 @@ pub enum AppCommand {
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.
     SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
+    /// Set 3D text extrusion. `enabled=false` = disable.
+    SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
+    /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.
+    /// For Arc: p1=radius, p2=start_angle, p3=sweep
+    /// For Circle: p1=radius
+    /// For Wave: p1=amplitude, p2=frequency, p3=phase
+    SetTitleTextPath { clip_id: ClipId, path_kind: u8, p1: f32, p2: f32, p3: f32 },
+    /// Set per-character animation. entrance: 0=None, 1=FadeIn, 2=SlideUp, 3=SlideDown, 4=ScaleUp.
+    /// Set enabled=false to disable entirely.
+    SetTitleCharAnimation { clip_id: ClipId, enabled: bool, stagger: f32, entrance: u8, wave_amplitude: f32, wave_speed: f32 },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,

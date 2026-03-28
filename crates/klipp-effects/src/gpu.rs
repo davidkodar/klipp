@@ -28,6 +28,10 @@ pub struct GpuEffectsPipeline {
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
     grain_pipeline: wgpu::ComputePipeline,
+    // Compute pipelines — alpha mask operations (for title renderer)
+    alpha_blur_h_pipeline: wgpu::ComputePipeline,
+    alpha_blur_v_pipeline: wgpu::ComputePipeline,
+    alpha_dilate_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
@@ -275,6 +279,9 @@ impl GpuEffectsPipeline {
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
+        let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
+        let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
+        let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE);
 
         // LUT buffer: 6 curves × 256 entries × 4 bytes = 6144 bytes
         let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -317,6 +324,9 @@ impl GpuEffectsPipeline {
             huesat_lut_buf,
             qualifier_pipeline,
             grain_pipeline,
+            alpha_blur_h_pipeline,
+            alpha_blur_v_pipeline,
+            alpha_dilate_pipeline,
             transition_pipeline,
             bind_group_layout,
             transition_bgl,
@@ -808,6 +818,77 @@ impl GpuEffectsPipeline {
         )
     }
 
+    /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
+    /// Uses 3-pass box blur to approximate Gaussian, same as the RGBA blur.
+    pub fn blur_alpha_gpu(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
+        let pixel_count = (w * h) as u64;
+        // Each alpha value stored as one u32
+        let byte_size = pixel_count * 4;
+        self.ensure_buffers(byte_size);
+
+        // Convert u8 alpha -> u32 for GPU
+        let input_u32: Vec<u32> = mask.iter().map(|&a| a as u32).collect();
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&input_u32));
+
+        let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
+
+        // 3-pass box blur for gaussian approximation
+        let boxes = boxes_for_gaussian(radius);
+        let mut current_in_a = true;
+
+        for &box_r in &boxes {
+            if box_r == 0 { continue; }
+
+            // Horizontal pass
+            let (inp, out) = if current_in_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
+            self.write_params(&AlphaBlurParams { width: w, height: h, radius: box_r as u32, _pad: 0 });
+            self.dispatch(&self.alpha_blur_h_pipeline, inp, out, workgroups);
+            current_in_a = !current_in_a;
+
+            // Vertical pass
+            let (inp, out) = if current_in_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
+            self.dispatch(&self.alpha_blur_v_pipeline, inp, out, workgroups);
+            current_in_a = !current_in_a;
+        }
+
+        let result_buf = if current_in_a { buf_a } else { buf_b };
+        let result_bytes = self.download(result_buf, byte_size);
+
+        // Convert u32 back to u8
+        let result_u32: &[u32] = bytemuck::cast_slice(&result_bytes);
+        result_u32.iter().map(|&v| v.min(255) as u8).collect()
+    }
+
+    /// Dilate an alpha mask on the GPU using circular distance.
+    pub fn dilate_alpha_gpu(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
+        let r = radius.ceil() as u32;
+        if r == 0 { return mask.to_vec(); }
+
+        let pixel_count = (w * h) as u64;
+        let byte_size = pixel_count * 4;
+        self.ensure_buffers(byte_size);
+
+        let input_u32: Vec<u32> = mask.iter().map(|&a| a as u32).collect();
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&input_u32));
+
+        let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
+
+        self.write_params(&AlphaDilateParams { width: w, height: h, radius: r, _pad: 0 });
+        self.dispatch(&self.alpha_dilate_pipeline, buf_a, buf_b, workgroups);
+
+        let result_bytes = self.download(buf_b, byte_size);
+        let result_u32: &[u32] = bytemuck::cast_slice(&result_bytes);
+        result_u32.iter().map(|&v| v.min(255) as u8).collect()
+    }
+
     fn write_params<T: bytemuck::Pod>(&self, data: &T) {
         let bytes = bytemuck::bytes_of(data);
         self.queue.write_buffer(&self.params_buf, 0, bytes);
@@ -1089,6 +1170,24 @@ struct GpuGrainParams {
     monochrome: u32,
 }
 // 8 fields × 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AlphaBlurParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AlphaDilateParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -2065,5 +2164,109 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = u32(clamp((g + grain_g * weight) * 255.0, 0.0, 255.0));
     let bo = u32(clamp((b + grain_b * weight) * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | a;
+}
+";
+
+// ─── Alpha Mask GPU Shaders ─────────────────────────────────────────────────
+
+const SHADER_ALPHA_BLUR_H: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = idx / params.width;
+    let x = idx % params.width;
+    var sum: u32 = 0u;
+    var count: u32 = 0u;
+    let r = i32(params.radius);
+    for (var dx = -r; dx <= r; dx++) {
+        let nx = i32(x) + dx;
+        if nx >= 0 && nx < i32(params.width) {
+            sum += input[y * params.width + u32(nx)];
+            count += 1u;
+        }
+    }
+    output[idx] = sum / count;
+}
+";
+
+const SHADER_ALPHA_BLUR_V: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = idx / params.width;
+    let x = idx % params.width;
+    var sum: u32 = 0u;
+    var count: u32 = 0u;
+    let r = i32(params.radius);
+    for (var dy = -r; dy <= r; dy++) {
+        let ny = i32(y) + dy;
+        if ny >= 0 && ny < i32(params.height) {
+            sum += input[u32(ny) * params.width + x];
+            count += 1u;
+        }
+    }
+    output[idx] = sum / count;
+}
+";
+
+const SHADER_ALPHA_DILATE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = idx / params.width;
+    let x = idx % params.width;
+    var max_val: u32 = 0u;
+    let r = i32(params.radius);
+    let r_sq = f32(r * r);
+    for (var dy = -r; dy <= r; dy++) {
+        let ny = i32(y) + dy;
+        if ny < 0 || ny >= i32(params.height) { continue; }
+        for (var dx = -r; dx <= r; dx++) {
+            let nx = i32(x) + dx;
+            if nx < 0 || nx >= i32(params.width) { continue; }
+            let dist_sq = f32(dx * dx + dy * dy);
+            if dist_sq <= r_sq {
+                let val = input[u32(ny) * params.width + u32(nx)];
+                if val > max_val { max_val = val; }
+            }
+        }
+    }
+    output[idx] = max_val;
 }
 ";
