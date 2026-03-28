@@ -4475,7 +4475,10 @@ impl TimelinePanel {
                                 state.browser_skim_media_id = Some(media_id);
                             }
 
-                            state.viewer_mode = klipp_core::ViewerMode::Source;
+                            // Stay in Program mode during timeline skimming — the skim frame
+                            // goes through the frame buffer → video_texture path, which uses
+                            // the correct media resolution for letterboxing (WYSIWYG).
+                            // Only set source_media_id for skim cleanup tracking.
                             state.source_media_id = Some(media_id);
 
                             // Draw skim position indicator on clip
