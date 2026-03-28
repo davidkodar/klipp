@@ -1117,7 +1117,7 @@ impl ViewerPanel {
             None => return,
         };
 
-        // Only for media clips (not gaps or titles)
+        // Only show transform controls for clips (skip gaps)
         if matches!(clip.kind, klipp_timeline::ClipKind::Gap) {
             return;
         }
@@ -1130,27 +1130,42 @@ impl ViewerPanel {
         let scale_to_screen_y = image_rect.height() / frame_h;
         let center_screen = image_rect.center();
 
-        // Transform position in screen coords (position is in frame pixels from center)
+        // Anchor point (0.0-1.0, default 0.5 = center)
+        let anchor_x = transform.anchor_x;
+        let anchor_y = transform.anchor_y;
+
+        // pos_screen is the anchor/pivot point in screen space
         let pos_screen = egui::pos2(
             center_screen.x + transform.position_x * scale_to_screen_x,
             center_screen.y + transform.position_y * scale_to_screen_y,
         );
 
-        // Bounding box corners (considering scale)
+        // Bounding box half-extents in screen space
         let half_w = frame_w * 0.5 * transform.scale_x * scale_to_screen_x;
         let half_h = frame_h * 0.5 * transform.scale_y * scale_to_screen_y;
 
+        // The anchor offset: how far the box center is from the anchor point.
+        // When anchor is (0.5, 0.5) this is zero (center pivot).
+        // When anchor is (0.0, 0.0) the pivot is at the top-left, so the box
+        // center is shifted right and down by half_w/half_h.
+        let anchor_offset_x = (anchor_x - 0.5) * frame_w * transform.scale_x * scale_to_screen_x;
+        let anchor_offset_y = (anchor_y - 0.5) * frame_h * transform.scale_y * scale_to_screen_y;
+
+        // The bounding box center, offset so the anchor maps to pos_screen
+        let box_center_x = pos_screen.x - anchor_offset_x;
+        let box_center_y = pos_screen.y - anchor_offset_y;
+
         let rotation_rad = transform.rotation.to_radians();
 
-        // Unrotated corners relative to pos_screen
+        // Unrotated corners relative to box center
         let raw_corners = [
-            egui::pos2(pos_screen.x - half_w, pos_screen.y - half_h), // top-left
-            egui::pos2(pos_screen.x + half_w, pos_screen.y - half_h), // top-right
-            egui::pos2(pos_screen.x + half_w, pos_screen.y + half_h), // bottom-right
-            egui::pos2(pos_screen.x - half_w, pos_screen.y + half_h), // bottom-left
+            egui::pos2(box_center_x - half_w, box_center_y - half_h), // top-left
+            egui::pos2(box_center_x + half_w, box_center_y - half_h), // top-right
+            egui::pos2(box_center_x + half_w, box_center_y + half_h), // bottom-right
+            egui::pos2(box_center_x - half_w, box_center_y + half_h), // bottom-left
         ];
 
-        // Rotate corners around pos_screen
+        // Rotate corners around pos_screen (the anchor/pivot point)
         let corners: [egui::Pos2; 4] = std::array::from_fn(|i| {
             rotate_point(raw_corners[i], pos_screen, rotation_rad)
         });
@@ -1210,10 +1225,26 @@ impl ViewerPanel {
             egui::Stroke::new(1.0, egui::Color32::BLACK),
         );
 
+        // Anchor point indicator — small diamond at the pivot
+        let anchor_diamond = 4.0;
+        let anchor_pts = [
+            egui::pos2(pos_screen.x, pos_screen.y - anchor_diamond),
+            egui::pos2(pos_screen.x + anchor_diamond, pos_screen.y),
+            egui::pos2(pos_screen.x, pos_screen.y + anchor_diamond),
+            egui::pos2(pos_screen.x - anchor_diamond, pos_screen.y),
+        ];
+        let anchor_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 220);
+        for i in 0..4 {
+            painter.line_segment(
+                [anchor_pts[i], anchor_pts[(i + 1) % 4]],
+                egui::Stroke::new(1.5, anchor_color),
+            );
+        }
+
         // Rotation handle — small circle above the top edge
         let rot_distance = 25.0;
         let rot_handle_pos = rotate_point(
-            egui::pos2(pos_screen.x, pos_screen.y - half_h - rot_distance),
+            egui::pos2(box_center_x, box_center_y - half_h - rot_distance),
             pos_screen,
             rotation_rad,
         );
@@ -1246,6 +1277,7 @@ impl ViewerPanel {
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let pointer_released = ui.input(|i| i.pointer.primary_released());
+        let shift_held = ui.input(|i| i.modifiers.shift);
         let hit_radius = 10.0;
 
         // Handle ongoing drag
@@ -1255,7 +1287,7 @@ impl ViewerPanel {
                 let final_transform = self.compute_dragged_transform(
                     &drag, pointer_pos,
                     scale_to_screen_x, scale_to_screen_y,
-                    center_screen,
+                    center_screen, shift_held,
                 );
                 if let Some(idx) = effect_index.or(Some(drag.effect_index)) {
                     cmds.push(AppCommand::EndEffectDrag {
@@ -1271,7 +1303,7 @@ impl ViewerPanel {
                 let new_transform = self.compute_dragged_transform(
                     &drag, pointer_pos,
                     scale_to_screen_x, scale_to_screen_y,
-                    center_screen,
+                    center_screen, shift_held,
                 );
                 let idx = effect_index.unwrap_or(drag.effect_index);
                 cmds.push(AppCommand::UpdateBuiltinEffect {
@@ -1399,6 +1431,7 @@ impl ViewerPanel {
     }
 
     /// Compute the new transform parameters based on the current drag state.
+    #[allow(clippy::too_many_arguments)]
     fn compute_dragged_transform(
         &self,
         drag: &ViewerTransformDrag,
@@ -1406,6 +1439,7 @@ impl ViewerPanel {
         scale_to_screen_x: f32,
         scale_to_screen_y: f32,
         center_screen: egui::Pos2,
+        shift_held: bool,
     ) -> TransformParams {
         let pointer = match pointer_pos {
             Some(p) => p,
@@ -1414,7 +1448,7 @@ impl ViewerPanel {
 
         let initial = &drag.initial_transform;
 
-        // The center of the transform in screen space (based on initial transform)
+        // The anchor/pivot point in screen space (based on initial transform)
         let initial_pos_screen = egui::pos2(
             center_screen.x + initial.position_x * scale_to_screen_x,
             center_screen.y + initial.position_y * scale_to_screen_y,
@@ -1436,13 +1470,29 @@ impl ViewerPanel {
             | TransformHandle::ScaleTopRight
             | TransformHandle::ScaleBottomLeft
             | TransformHandle::ScaleBottomRight => {
-                let initial_dist = (drag.drag_start_pos - initial_pos_screen).length().max(1.0);
-                let current_dist = (pointer - initial_pos_screen).length();
-                let scale_factor = current_dist / initial_dist;
-                TransformParams {
-                    scale_x: (initial.scale_x * scale_factor).max(0.01),
-                    scale_y: (initial.scale_y * scale_factor).max(0.01),
-                    ..*initial
+                if shift_held {
+                    // Non-uniform scale: X and Y independently based on drag direction
+                    let initial_dx = (drag.drag_start_pos.x - initial_pos_screen.x).abs();
+                    let initial_dy = (drag.drag_start_pos.y - initial_pos_screen.y).abs();
+                    let current_dx = (pointer.x - initial_pos_screen.x).abs();
+                    let current_dy = (pointer.y - initial_pos_screen.y).abs();
+                    let scale_x = if initial_dx > 1.0 { current_dx / initial_dx } else { 1.0 };
+                    let scale_y = if initial_dy > 1.0 { current_dy / initial_dy } else { 1.0 };
+                    TransformParams {
+                        scale_x: (initial.scale_x * scale_x).max(0.01),
+                        scale_y: (initial.scale_y * scale_y).max(0.01),
+                        ..*initial
+                    }
+                } else {
+                    // Uniform scale: distance from anchor point
+                    let initial_dist = (drag.drag_start_pos - initial_pos_screen).length().max(1.0);
+                    let current_dist = (pointer - initial_pos_screen).length();
+                    let scale_factor = current_dist / initial_dist;
+                    TransformParams {
+                        scale_x: (initial.scale_x * scale_factor).max(0.01),
+                        scale_y: (initial.scale_y * scale_factor).max(0.01),
+                        ..*initial
+                    }
                 }
             }
             TransformHandle::Rotation => {
