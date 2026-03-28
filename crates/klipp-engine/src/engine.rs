@@ -309,7 +309,7 @@ impl PlaybackEngine {
             let timeout = if self.state == PlaybackState::Playing {
                 Duration::from_millis(1)
             } else {
-                Duration::from_millis(50)
+                Duration::from_millis(8)
             };
 
             // Collect all pending commands, coalescing seeks
