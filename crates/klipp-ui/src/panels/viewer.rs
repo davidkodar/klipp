@@ -263,7 +263,7 @@ impl ViewerPanel {
         // Small margin so the video frame never touches the panel edges.
         // This ensures transform handles at the frame corners are always fully visible.
         // The black background still fills the full panel — only the video fit area is inset.
-        let fit_margin = 6.0;
+        let fit_margin = 12.0;
         let fit_rect = viewer_rect.shrink(fit_margin);
 
         let video_aspect = video_w / video_h;
