@@ -2905,6 +2905,7 @@ impl PlaybackEngine {
     /// Re-render title overlay (V2) from current sequence data.
     /// Called on SequenceUpdated when paused so title text/font/color changes show instantly.
     fn refresh_v2_title_overlay(&mut self) {
+        eprintln!("[V2-REFRESH] playhead={:.3}s state={:?}", self.playhead.to_secs_f64(), self.state);
         let seq = self.sequence.read().unwrap();
         let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
         let title_clip_info = seq.tracks.iter()
@@ -2923,8 +2924,13 @@ impl PlaybackEngine {
             });
         drop(seq);
 
+        eprintln!("[V2-REFRESH] found_title={}", title_clip_info.is_some());
         if let Some((title_data, clip, res)) = title_clip_info {
+            eprintln!("[V2-REFRESH] rendering title text='{}' size={} res={}x{}",
+                title_data.text.chars().take(20).collect::<String>(), title_data.font_size, res.width, res.height);
             let mut rgba = self.title_renderer.render(&title_data, res.width, res.height);
+            eprintln!("[V2-REFRESH] rendered {} bytes, non-zero-alpha={}", rgba.len(),
+                rgba.chunks_exact(4).filter(|p| p[3] > 0).count());
 
             // Apply opacity keyframes to the title overlay
             let clip_relative_secs = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
@@ -2986,6 +2992,7 @@ impl PlaybackEngine {
     }
 
     fn regrade_cached_frame(&mut self) {
+        eprintln!("[REGRADE] pregrade={} v2_cache={}", self.cached_pregrade_frame.is_some(), self.v2_frame_cache.is_some());
         // Case 1: V1 video exists — regrade and composite with V2 overlay
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
             let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);

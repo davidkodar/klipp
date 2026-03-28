@@ -1335,6 +1335,9 @@ impl KlippApp {
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap();
         *seq = self.state.sequences[self.state.active_sequence_idx].clone();
+        drop(seq);
+        // Always sync the UI playhead to the engine so title overlay lookups work
+        let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
     }
 
     /// Sync sequence and re-grade the cached frame directly on the UI thread.
