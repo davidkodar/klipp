@@ -5147,6 +5147,92 @@ impl TimelinePanel {
         track_response.context_menu(|ui| {
             ui.set_min_width(160.0);
             if let Some(clip_id) = state.selected_clip {
+                // ── Title/Text clip actions ──
+                let title_data_cloned: Option<klipp_timeline::TitleData> = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.title_data())
+                    .cloned();
+                if let Some(ref td) = title_data_cloned {
+                    if ui.button("\u{270F} Edit Text").clicked() {
+                        state.viewer_text_edit = true;
+                        state.viewer_text_edit_clip = Some(clip_id);
+                        state.viewer_text_edit_request_focus = true;
+                        state.viewer_char_positions.clear();
+                        state.viewer_text_cursor = 0;
+                        state.viewer_text_select_anchor = None;
+                        state.viewer_text_edit_buffer = td.text.clone();
+                        cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                        ui.close_menu();
+                    }
+                    {
+                        // Alignment submenu
+                        let current_align = &td.alignment;
+                        ui.menu_button(format!("\u{2630} Alignment: {}", match current_align {
+                            klipp_timeline::TextAlignment::Left => "Left",
+                            klipp_timeline::TextAlignment::Center => "Center",
+                            klipp_timeline::TextAlignment::Right => "Right",
+                        }), |ui| {
+                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Left, "Left").clicked() {
+                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 0 });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Center, "Center").clicked() {
+                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 1 });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Right, "Right").clicked() {
+                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 2 });
+                                ui.close_menu();
+                            }
+                        });
+                        // Font style submenu
+                        let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
+                        let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+                        ui.menu_button("\u{1D5D4} Font Style", |ui| {
+                            if ui.selectable_label(!is_bold && !is_italic, "Regular").clicked() {
+                                cmds.push(AppCommand::UpdateTitleData {
+                                    clip_id, text: td.text.clone(), font_size: td.font_size,
+                                    font_name: td.font_name.clone(), font_style: 0, color: td.color,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(is_bold && !is_italic, "Bold").clicked() {
+                                cmds.push(AppCommand::UpdateTitleData {
+                                    clip_id, text: td.text.clone(), font_size: td.font_size,
+                                    font_name: td.font_name.clone(), font_style: 1, color: td.color,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(!is_bold && is_italic, "Italic").clicked() {
+                                cmds.push(AppCommand::UpdateTitleData {
+                                    clip_id, text: td.text.clone(), font_size: td.font_size,
+                                    font_name: td.font_name.clone(), font_style: 2, color: td.color,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(is_bold && is_italic, "Bold Italic").clicked() {
+                                cmds.push(AppCommand::UpdateTitleData {
+                                    clip_id, text: td.text.clone(), font_size: td.font_size,
+                                    font_name: td.font_name.clone(), font_style: 3, color: td.color,
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                        // Reset styles (clear all style runs)
+                        if !td.style_runs.is_empty() {
+                            if ui.button("\u{21BA} Reset Text Styles").clicked() {
+                                cmds.push(AppCommand::ApplyTitleStyle {
+                                    clip_id, range_start: 0, range_end: td.text.len(),
+                                    property: "clear_all".into(), value: String::new(),
+                                });
+                                ui.close_menu();
+                            }
+                        }
+                    } // end alignment/style block
+                    ui.separator();
+                } // end title_data_cloned
+
                 if ui.button("Remove Clip").clicked() {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                     ui.close_menu();

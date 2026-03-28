@@ -210,37 +210,39 @@ impl TitleRenderer {
             ..LayoutSettings::default()
         });
 
-        // Append text with per-run font sizes when style runs exist
+        // Append text with per-run font sizes when style runs exist.
+        // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
+        let mut segment_info: Vec<(usize, usize)> = Vec::new();
+
         if title.style_runs.is_empty() {
+            segment_info.push((0, 0));
             layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
         } else {
-            // Build segments from style runs, each with its own font size
             let mut pos = 0usize;
             for run in &title.style_runs {
-                // Gap before this run (use base style)
                 if run.start > pos && run.start <= title.text.len() {
                     let segment = &title.text[pos..run.start];
                     if !segment.is_empty() {
+                        segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
                     pos = run.start;
                 }
-                // This run's text with its own font size
                 let run_end = run.end.min(title.text.len());
                 if run_end > pos {
                     let segment = &title.text[pos..run_end];
                     let run_size = run.font_size.unwrap_or(title.font_size) * scale;
                     if !segment.is_empty() {
-                        // TODO: per-run font loading (different font families per run)
+                        segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
                     }
                     pos = run_end;
                 }
             }
-            // Remaining text after last run (use base style)
             if pos < title.text.len() {
                 let segment = &title.text[pos..];
                 if !segment.is_empty() {
+                    segment_info.push((layout.glyphs().len(), pos));
                     layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                 }
             }
@@ -263,6 +265,19 @@ impl TitleRenderer {
 
         // ── Post-process glyph positions for tracking and line spacing ──
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
+
+        // Fix up byte_offset: fontdue's byte_offset is per-segment, but style runs
+        // use absolute byte positions. Add each segment's byte start.
+        for (seg_idx, &(glyph_start, byte_start)) in segment_info.iter().enumerate() {
+            let glyph_end = if seg_idx + 1 < segment_info.len() {
+                segment_info[seg_idx + 1].0
+            } else {
+                glyphs_owned.len()
+            };
+            for g in &mut glyphs_owned[glyph_start..glyph_end] {
+                g.byte_offset += byte_start;
+            }
+        }
 
         // Apply line spacing multiplier (shift lines after the first)
         if title.line_spacing != 1.0 {
@@ -329,8 +344,14 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        // Position offset
-        let offset_x = title.position.x * width as f32 - text_w * 0.5 - text_min_x;
+        // Position offset — alignment affects horizontal anchor point.
+        // The layout's max_width is width*0.9, leaving 5% margin each side.
+        let margin = width as f32 * 0.05;
+        let offset_x = match title.alignment {
+            TextAlignment::Left => margin - text_min_x,
+            TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
+            TextAlignment::Center => title.position.x * width as f32 - text_w * 0.5 - text_min_x,
+        };
         let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
 
         // Compute the mask bounding box (padded for effects)
@@ -920,7 +941,12 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        let offset_x = title.position.x * width as f32 - text_w * 0.5 - text_min_x;
+        let margin = width as f32 * 0.05;
+        let offset_x = match title.alignment {
+            TextAlignment::Left => margin - text_min_x,
+            TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
+            TextAlignment::Center => title.position.x * width as f32 - text_w * 0.5 - text_min_x,
+        };
         let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
 
         // Build character positions from glyph data.

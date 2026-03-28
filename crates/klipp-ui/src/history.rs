@@ -263,6 +263,14 @@ pub enum EditCommand {
         new_timeline_out: RationalTime,
     },
 
+    // === TITLE EDITING ===
+    EditTitle {
+        clip_id: ClipId,
+        description: &'static str,
+        old_data: klipp_timeline::TitleData,
+        new_data: klipp_timeline::TitleData,
+    },
+
 }
 
 impl EditCommand {
@@ -293,6 +301,7 @@ impl EditCommand {
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
+            EditCommand::EditTitle { description, .. } => description,
         }
     }
 }

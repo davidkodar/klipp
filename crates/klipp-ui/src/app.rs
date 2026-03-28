@@ -1337,6 +1337,28 @@ impl KlippApp {
     /// Render a title clip to the viewer's overlay texture for instant UI preview.
     /// This is the FCP approach: title is a separate layer composited by the viewer,
     /// not written to the shared frame buffer (which avoids race conditions with the engine).
+    /// Snapshot a title clip's TitleData for undo. Returns None if clip not found or not a title.
+    fn snapshot_title(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::TitleData> {
+        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data())
+            .cloned()
+    }
+
+    /// Push a title edit undo entry if the data changed.
+    fn push_title_undo(&mut self, clip_id: klipp_core::ClipId, description: &'static str, old: klipp_timeline::TitleData) {
+        if let Some(new) = self.snapshot_title(clip_id) {
+            if old != new {
+                self.state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: self.state.active_sequence_idx,
+                    command: crate::history::EditCommand::EditTitle {
+                        clip_id, description, old_data: old, new_data: new,
+                    },
+                });
+            }
+        }
+    }
+
     /// Mark a title clip for overlay texture refresh on the next frame.
     fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
         // Clear old overlay immediately to prevent ghosting during position/alignment changes
@@ -4792,6 +4814,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4806,7 +4829,6 @@ impl KlippApp {
                                     _ => klipp_timeline::FontStyle::Regular,
                                 };
                                 td.color = *color;
-                                // Adjust style runs if text length changed
                                 if td.text.len() != old_len {
                                     klipp_timeline::adjust_style_runs_for_text_change(
                                         &mut td.style_runs,
@@ -4816,14 +4838,17 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Title Text", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
-                    // Keep engine playhead in sync (needed for V2 overlay during playback)
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     self.state.dirty = true;
                     continue;
                 }
                 AppCommand::SetTitleAlignment { clip_id, alignment } => {
+                    let old_td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                        .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
+                        .and_then(|c| c.title_data()).cloned();
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4835,18 +4860,18 @@ impl KlippApp {
                             }
                         }
                     }
-                    self.render_title_to_viewer(*clip_id);
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                    self.state.dirty = true;
-                    continue;
-                }
-                AppCommand::SetTitlePosition { clip_id, x, y } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                                td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
-                            }
+                    if let Some(old) = old_td {
+                        if let Some(new) = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                            .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
+                            .and_then(|c| c.title_data()).cloned()
+                        {
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditTitle {
+                                    clip_id: *clip_id, description: "Set Alignment",
+                                    old_data: old, new_data: new,
+                                },
+                            });
                         }
                     }
                     self.render_title_to_viewer(*clip_id);
@@ -4855,7 +4880,24 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitlePosition { clip_id, x, y } => {
+                    let old = self.snapshot_title(*clip_id);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
+                            }
+                        }
+                    }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Move Title", old); }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4867,6 +4909,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Background", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4874,6 +4917,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4890,6 +4934,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4897,6 +4942,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4908,6 +4954,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4915,6 +4962,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4926,6 +4974,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4933,6 +4982,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4944,6 +4994,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Gradient", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4951,6 +5002,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleOutlines { clip_id, outlines } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4963,6 +5015,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4970,6 +5023,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4983,6 +5037,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -4990,6 +5045,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5003,6 +5059,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Pattern", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5010,6 +5067,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleTracking { clip_id, tracking } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5017,6 +5075,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Tracking", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5024,6 +5083,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleWriteOn { clip_id, write_on } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5031,6 +5091,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Write-On", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5038,6 +5099,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleLineSpacing { clip_id, line_spacing } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5045,6 +5107,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Line Spacing", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5052,6 +5115,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5069,6 +5133,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Extrusion", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5076,6 +5141,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
+                    let old = self.snapshot_title(*clip_id);
                     let path = match path_kind {
                         1 => Some(klipp_timeline::TextPath::Arc { radius: *p1, start_angle: *p2, sweep: *p3 }),
                         2 => Some(klipp_timeline::TextPath::Circle { radius: *p1 }),
@@ -5089,6 +5155,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Text Path", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5141,6 +5208,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
+                    let old = self.snapshot_title(*clip_id);
                     let mb = if *enabled {
                         Some(klipp_timeline::MotionBlur {
                             shutter_angle: *shutter_angle,
@@ -5156,6 +5224,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Motion Blur", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5163,9 +5232,15 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::ApplyTitleStyle { clip_id, range_start, range_end, property, value } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                // Special: clear_all removes all style runs
+                                if property == "clear_all" {
+                                    td.style_runs.clear();
+                                    break;
+                                }
                                 let text_len = td.text.len();
                                 let prop = property.as_str();
                                 let val = value.as_str();
@@ -5208,6 +5283,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Title Style", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -5215,6 +5291,7 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::ClearTitleStyleRuns { clip_id } => {
+                    let old = self.snapshot_title(*clip_id);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -5222,6 +5299,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Clear Title Styles", old); }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -7175,6 +7253,15 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::EditTitle { clip_id, old_data, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Title(old_data.clone());
+                        break;
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+            }
         }
     }
 
@@ -7471,6 +7558,15 @@ impl KlippApp {
                         break;
                     }
                 }
+            }
+            EditCommand::EditTitle { clip_id, new_data, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Title(new_data.clone());
+                        break;
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
             }
         }
     }
