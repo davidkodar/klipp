@@ -439,30 +439,6 @@ fn show_title_editor(
     });
     ui.add_space(4.0);
 
-    // Slide presets row
-    ui.horizontal(|ui| {
-        ui.label("Slide:");
-        if ui.small_button("Left").on_hover_text("Slide in from left").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, -0.5, td.position.y, true);
-        }
-        if ui.small_button("Right").on_hover_text("Slide in from right").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, 1.5, td.position.y, true);
-        }
-        if ui.small_button("Up").on_hover_text("Slide in from bottom").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, td.position.x, td.position.y, td.position.x, 1.5, false);
-        }
-    });
-    ui.add_space(4.0);
-
-    // Scale presets row
-    ui.horizontal(|ui| {
-        if ui.small_button("Pop In").clicked() {
-            emit_pop_in(cmds, clip_id);
-        }
-        if ui.small_button("Grow In").clicked() {
-            emit_grow_in(cmds, clip_id, fade_dur);
-        }
-    });
     ui.add_space(4.0);
 
     // Clear all animation
@@ -508,13 +484,12 @@ fn emit_fade_out(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_d
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: start, value: 1.0 });
     // Keyframe at t=clip_dur: opacity 0.0
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: end, value: 0.0 });
-    // Set Bezier with ease-in tangents
-    // We don't know exact indices since other keyframes might exist, so we use the time-based approach:
-    // After adding, the keyframes are sorted by time. We need to find the indices.
-    // Since we can't query state here, we emit the tangent commands referencing what we expect.
-    // For a clean fade-out only (2 keyframes), indices would be 0 and 1.
-    // For fade-in+out (4 keyframes), fade-out indices would be 2 and 3.
-    // We'll use a dedicated helper that accounts for existing fade-in keyframes.
+    // Set Bezier with ease-in tangents on ALL existing opacity keyframes (indices determined after add+sort)
+    // We emit for indices 0..4 to cover both fade-in+out case (4 KFs) and fade-out only (2 KFs)
+    // SetVideoKeyframeInterpolation silently ignores out-of-bounds indices
+    for i in 0..4 {
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: i, interpolation: klipp_core::Interpolation::Bezier });
+    }
 }
 
 /// Emit position keyframes for slide-in effect.

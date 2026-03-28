@@ -1890,7 +1890,21 @@ impl PlaybackEngine {
                         }
                         self.v2_decoder = None;
                     }
-                    let rgba = self.title_renderer.render(title_data, res.width, res.height);
+                    let mut rgba = self.title_renderer.render(title_data, res.width, res.height);
+
+                    // Apply opacity keyframes to title overlay
+                    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                    let opacity_default = clip.builtin_effects.iter()
+                        .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                        .unwrap_or(1.0);
+                    let opacity = klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default);
+                    if (opacity - 1.0).abs() > 0.001 {
+                        let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
+                        for pixel in rgba.chunks_exact_mut(4) {
+                            pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
+                        }
+                    }
+
                     self.v2_frame_cache = Some(crate::types::DecodedFrame {
                         data: crate::types::FrameData::Rgba(rgba),
                         width: res.width,
@@ -2871,7 +2885,7 @@ impl PlaybackEngine {
     fn refresh_v2_title_overlay(&mut self) {
         let seq = self.sequence.read().unwrap();
         let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
-        let title_clip = seq.tracks.iter()
+        let title_clip_info = seq.tracks.iter()
             .enumerate()
             .filter(|(i, t)| {
                 !t.muted && match t.kind {
@@ -2882,13 +2896,43 @@ impl PlaybackEngine {
             })
             .find_map(|(_ti, track)| {
                 track.clip_at_timecode(self.playhead).and_then(|(_, clip)| {
-                    clip.title_data().map(|td| (td.clone(), seq.resolution))
+                    clip.title_data().map(|td| (td.clone(), clip.clone(), seq.resolution))
                 })
             });
         drop(seq);
 
-        if let Some((title_data, res)) = title_clip {
-            let rgba = self.title_renderer.render(&title_data, res.width, res.height);
+        if let Some((title_data, clip, res)) = title_clip_info {
+            let mut rgba = self.title_renderer.render(&title_data, res.width, res.height);
+
+            // Apply opacity keyframes to the title overlay
+            let clip_relative_secs = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+            let eval_ctx = klipp_core::EvalContext {
+                clip_time_secs: clip_relative_secs,
+                clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+                timeline_time_secs: self.playhead.to_secs_f64(),
+                fps: self.fps.as_f64(),
+                seed: clip.id.0.as_u64_pair().0,
+            };
+
+            // Evaluate opacity
+            let opacity_default = clip.builtin_effects.iter()
+                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                .unwrap_or(1.0);
+            let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
+                Some(stack) if !stack.modifiers.is_empty() => {
+                    klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx)
+                }
+                _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
+            };
+
+            // Apply opacity to all alpha pixels
+            if (opacity - 1.0).abs() > 0.001 {
+                let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
+                }
+            }
+
             self.v2_frame_cache = Some(crate::types::DecodedFrame {
                 data: crate::types::FrameData::Rgba(rgba),
                 width: res.width,
