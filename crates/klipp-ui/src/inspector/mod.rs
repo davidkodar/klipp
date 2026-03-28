@@ -627,6 +627,43 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+    // ── Texture Fill ──
+    ui.separator();
+    ui.label(egui::RichText::new("Texture Fill").strong().size(11.0));
+    {
+        let has_texture = td.texture_fill_path.is_some();
+        let mut tex_enabled = has_texture;
+        if ui.checkbox(&mut tex_enabled, "Enable").changed() {
+            if !tex_enabled {
+                cmds.push(AppCommand::SetTitleTextureFill { clip_id, path: None });
+            }
+        }
+        if has_texture {
+            if let Some(ref tex_path) = td.texture_fill_path {
+                let display_name = std::path::Path::new(tex_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(tex_path);
+                ui.horizontal(|ui| {
+                    ui.label("File:");
+                    ui.label(egui::RichText::new(display_name).monospace().size(10.0));
+                });
+            }
+        }
+        if ui.button("Browse...").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tga"])
+                .pick_file()
+            {
+                cmds.push(AppCommand::SetTitleTextureFill {
+                    clip_id,
+                    path: Some(path.to_string_lossy().to_string()),
+                });
+            }
+        }
+    }
+    ui.add_space(8.0);
+
     // ── 3D Extrusion ──
     ui.separator();
     ui.label(egui::RichText::new("3D Extrusion").strong().size(11.0));
@@ -808,6 +845,43 @@ fn show_title_editor(
                     entrance: new_entrance_idx as u8,
                     wave_amplitude: wave_amp,
                     wave_speed: wave_spd,
+                });
+            }
+        }
+    }
+    ui.add_space(8.0);
+
+    // ── Motion Blur ──
+    ui.separator();
+    ui.label(egui::RichText::new("Motion Blur").strong().size(11.0));
+    {
+        let mut enabled = td.motion_blur.is_some();
+        if ui.checkbox(&mut enabled, "Enable").changed() {
+            cmds.push(AppCommand::SetTitleMotionBlur {
+                clip_id,
+                enabled,
+                shutter_angle: 180.0,
+                samples: 8,
+            });
+        }
+        if let Some(mb) = &td.motion_blur {
+            let mut shutter = mb.shutter_angle;
+            let mut samples = mb.samples as i32;
+            let mut mb_changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Shutter Angle:");
+                mb_changed |= ui.add(egui::DragValue::new(&mut shutter).range(1.0..=360.0).speed(1.0).suffix("\u{00b0}").fixed_decimals(0)).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Samples:");
+                mb_changed |= ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed();
+            });
+            if mb_changed {
+                cmds.push(AppCommand::SetTitleMotionBlur {
+                    clip_id,
+                    enabled: true,
+                    shutter_angle: shutter,
+                    samples: samples as u8,
                 });
             }
         }

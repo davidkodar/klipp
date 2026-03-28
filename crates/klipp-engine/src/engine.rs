@@ -1946,7 +1946,7 @@ impl PlaybackEngine {
                         || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
 
                     if has_transform {
-                        let td = clip.builtin_effects.iter()
+                        let tdef = clip.builtin_effects.iter()
                             .find_map(|e| match e {
                                 klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
                                     Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
@@ -1963,29 +1963,84 @@ impl PlaybackEngine {
                             seed: clip.id.0.as_u64_pair().0,
                         };
 
-                        // Evaluate with modifiers (Throw for scrolling, Oscillate for pulsing, etc.)
-                        let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, td.0, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0),
-                        };
-                        let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, td.1, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1),
-                        };
-                        let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, td.2, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2),
-                        };
-                        let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, td.4, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4),
-                        };
+                        // Check for motion blur on animated title
+                        let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
 
-                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
+                        if let Some(mb) = motion_blur {
+                            // Multi-sample motion blur: render transform at N time offsets and blend
+                            let frame_dur = self.fps.frame_duration_secs();
+                            let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
+                            let n = mb.samples as usize;
+                            let pixel_count = (res.width * res.height) as usize * 4;
+                            let mut accum = vec![0u32; pixel_count];
+
+                            for si in 0..n {
+                                let t_offset = if n > 1 {
+                                    (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
+                                } else {
+                                    0.0
+                                };
+                                let sample_t = (clip_relative_secs + t_offset).max(0.0);
+                                let sample_eval = klipp_core::EvalContext {
+                                    clip_time_secs: sample_t,
+                                    ..eval_ctx
+                                };
+
+                                let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                                    Some(stack) if !stack.modifiers.is_empty() =>
+                                        klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
+                                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
+                                };
+                                let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                                    Some(stack) if !stack.modifiers.is_empty() =>
+                                        klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
+                                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
+                                };
+                                let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                                    Some(stack) if !stack.modifiers.is_empty() =>
+                                        klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
+                                    _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
+                                };
+                                let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                                    Some(stack) if !stack.modifiers.is_empty() =>
+                                        klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
+                                    _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
+                                };
+
+                                let sample_rgba = klipp_effects::transform::apply(
+                                    rgba.clone(), res.width, res.height,
+                                    spx, spy, ssc, ssc, sro, tdef.5, tdef.6,
+                                );
+                                for (i, &b) in sample_rgba.iter().enumerate() {
+                                    accum[i] += b as u32;
+                                }
+                            }
+                            rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
+                        } else {
+                            // No motion blur — single transform
+                            let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
+                            };
+                            let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
+                            };
+                            let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
+                            };
+                            let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
+                            };
+
+                            rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6);
+                        }
                     }
 
                     self.v2_frame_cache = Some(crate::types::DecodedFrame {
@@ -3033,7 +3088,7 @@ impl PlaybackEngine {
                 || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
 
             if has_transform {
-                let td = clip.builtin_effects.iter()
+                let tdef = clip.builtin_effects.iter()
                     .find_map(|e| match e {
                         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
                             Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
@@ -3041,28 +3096,84 @@ impl PlaybackEngine {
                     })
                     .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
 
-                let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, td.0, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, td.0),
-                };
-                let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, td.1, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, td.1),
-                };
-                let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, td.2, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, td.2),
-                };
-                let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, td.4, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, td.4),
-                };
+                // Check for motion blur on animated title
+                let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
 
-                rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, td.5, td.6);
+                if let Some(mb) = motion_blur {
+                    // Multi-sample motion blur: render transform at N time offsets and blend
+                    let frame_dur = self.fps.frame_duration_secs();
+                    let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
+                    let n = mb.samples as usize;
+                    let pixel_count = (res.width * res.height) as usize * 4;
+                    let mut accum = vec![0u32; pixel_count];
+
+                    for si in 0..n {
+                        let t_offset = if n > 1 {
+                            (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
+                        } else {
+                            0.0
+                        };
+                        let sample_t = (clip_relative_secs + t_offset).max(0.0);
+                        let sample_eval = klipp_core::EvalContext {
+                            clip_time_secs: sample_t,
+                            ..eval_ctx
+                        };
+
+                        let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
+                        };
+                        let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
+                        };
+                        let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
+                        };
+                        let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
+                        };
+
+                        let sample_rgba = klipp_effects::transform::apply(
+                            rgba.clone(), res.width, res.height,
+                            spx, spy, ssc, ssc, sro, tdef.5, tdef.6,
+                        );
+                        for (i, &b) in sample_rgba.iter().enumerate() {
+                            accum[i] += b as u32;
+                        }
+                    }
+                    rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
+                } else {
+                    // No motion blur — single transform
+                    let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                        Some(stack) if !stack.modifiers.is_empty() =>
+                            klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
+                        _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
+                    };
+                    let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                        Some(stack) if !stack.modifiers.is_empty() =>
+                            klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
+                        _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
+                    };
+                    let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                        Some(stack) if !stack.modifiers.is_empty() =>
+                            klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
+                        _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
+                    };
+                    let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                        Some(stack) if !stack.modifiers.is_empty() =>
+                            klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
+                        _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
+                    };
+
+                    rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6);
+                }
             }
 
             self.v2_frame_cache = Some(crate::types::DecodedFrame {

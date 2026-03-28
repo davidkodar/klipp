@@ -507,6 +507,44 @@ fn sty_brush() -> TitleData {
 }
 
 // ---------------------------------------------------------------------------
+// Texture Fill (3) — user selects image via inspector
+// ---------------------------------------------------------------------------
+
+fn tex_fill_bold() -> TitleData {
+    TitleData {
+        text: String::from("TEXTURE"),
+        font_size: 96.0,
+        font_style: FontStyle::Bold,
+        texture_fill_path: None, // User selects image in inspector
+        outline: Some(TextOutline { color: [40, 40, 40, 255], width: 2.0 }),
+        ..positioned("TEXTURE", 96.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+
+fn tex_fill_shadow() -> TitleData {
+    TitleData {
+        text: String::from("IMAGE FILL"),
+        font_size: 72.0,
+        font_style: FontStyle::Bold,
+        texture_fill_path: None, // User selects image in inspector
+        shadow: Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 8.0 }),
+        outline: Some(TextOutline { color: [255, 255, 255, 180], width: 1.0 }),
+        ..positioned("IMAGE FILL", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+
+fn tex_fill_glow() -> TitleData {
+    TitleData {
+        text: String::from("PHOTO TEXT"),
+        font_size: 84.0,
+        font_style: FontStyle::Bold,
+        texture_fill_path: None, // User selects image in inspector
+        glow: Some(TextGlow { color: [255, 200, 100, 255], radius: 12.0, intensity: 0.6 }),
+        ..positioned("PHOTO TEXT", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3D Text (5)
 // ---------------------------------------------------------------------------
 
@@ -771,6 +809,11 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Kinetic Bold", category: "Stylized", preview_text: "KINETIC", create_data: sty_kinetic, animation: None },
     TitleTemplate { name: "Brush Stroke", category: "Stylized", preview_text: "Brushstroke", create_data: sty_brush, animation: None },
 
+    // ---- Texture Fill (3) ----
+    TitleTemplate { name: "Texture Fill", category: "Texture Fill", preview_text: "TEXTURE", create_data: tex_fill_bold, animation: None },
+    TitleTemplate { name: "Image + Shadow", category: "Texture Fill", preview_text: "IMAGE FILL", create_data: tex_fill_shadow, animation: None },
+    TitleTemplate { name: "Photo Glow", category: "Texture Fill", preview_text: "PHOTO TEXT", create_data: tex_fill_glow, animation: None },
+
     // ---- 3D Text (5) ----
     TitleTemplate { name: "3D Block", category: "3D Text", preview_text: "BLOCK", create_data: three_d_block, animation: None },
     TitleTemplate { name: "Gold Emboss", category: "3D Text", preview_text: "EMBOSS", create_data: three_d_gold_emboss, animation: None },
@@ -841,6 +884,7 @@ const CATEGORIES: &[&str] = &[
     "Broadcast",
     "Educational",
     "Stylized",
+    "Texture Fill",
     "3D Text",
     "Text on Path",
     "Per-Character",
@@ -1164,6 +1208,35 @@ fn paint_title_preview(
                 title.preview_text,
                 egui::FontId::proportional(font_size),
                 text_color,
+            );
+        }
+        "Texture Fill" => {
+            // Hatched/patterned preview to suggest "image goes here"
+            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x18, 0x18, 0x18));
+            // Draw diagonal hatch lines to suggest texture
+            let step = 8.0;
+            let mut x = rect.min.x;
+            while x < rect.max.x + rect.height() {
+                let p0 = egui::pos2((x).max(rect.min.x), rect.min.y);
+                let p1 = egui::pos2((x - rect.height()).max(rect.min.x), rect.max.y);
+                painter.line_segment([p0, p1], egui::Stroke::new(0.5, egui::Color32::from_rgb(60, 60, 80)));
+                x += step;
+            }
+            let text_color = egui::Color32::from_rgba_premultiplied(200, 200, 220, 255);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                title.preview_text,
+                egui::FontId::proportional(12.0),
+                text_color,
+            );
+            // Small hint at bottom
+            painter.text(
+                egui::pos2(rect.center().x, rect.max.y - 6.0),
+                egui::Align2::CENTER_BOTTOM,
+                "select image",
+                egui::FontId::proportional(7.0),
+                egui::Color32::from_rgb(120, 120, 140),
             );
         }
         _ => {

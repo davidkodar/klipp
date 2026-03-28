@@ -81,6 +81,20 @@ pub struct TitleData {
     /// Per-character animation (staggered entrance, wave)
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
+    /// Image file path to use as text fill texture (None = use color/gradient/pattern)
+    #[serde(default)]
+    pub texture_fill_path: Option<String>,
+    /// Motion blur settings (None = disabled)
+    #[serde(default)]
+    pub motion_blur: Option<MotionBlur>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MotionBlur {
+    /// Shutter angle in degrees (0-360, default 180 = half-frame blur)
+    pub shutter_angle: f32,
+    /// Number of samples (more = smoother but slower, 4-16 typical)
+    pub samples: u8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -165,6 +179,8 @@ impl Default for TitleData {
             extrusion: None,
             text_path: None,
             char_animation: None,
+            texture_fill_path: None,
+            motion_blur: None,
         }
     }
 }

@@ -49,6 +49,8 @@ pub struct TitleRenderer {
     fallback_font: Font,
     font_cache: HashMap<String, Font>,
     font_registry: BTreeMap<String, Vec<font_discovery::FontInfo>>,
+    /// Cached texture fill image: (path, rgba_data, width, height)
+    texture_fill_cache: Option<(String, Vec<u8>, u32, u32)>,
 }
 
 impl Default for TitleRenderer {
@@ -70,6 +72,7 @@ impl TitleRenderer {
             fallback_font,
             font_cache: HashMap::new(),
             font_registry: registry,
+            texture_fill_cache: None,
         }
     }
 
@@ -646,7 +649,9 @@ impl TitleRenderer {
     /// Render a `TitleData` to an RGBA buffer of `width x height` pixels (backward compat).
     pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
         let layout = self.render_layout(title, width, height);
-        Self::compose(&layout, title, width, height, None)
+        let mut buf = Self::compose(&layout, title, width, height, None);
+        self.apply_texture_fill(&mut buf, &layout, title, width, height);
+        buf
     }
 
     /// Render with optional GPU-accelerated alpha mask processing.
@@ -658,7 +663,109 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
     ) -> Vec<u8> {
         let layout = self.render_layout(title, width, height);
-        Self::compose(&layout, title, width, height, gpu)
+        let mut buf = Self::compose(&layout, title, width, height, gpu);
+        self.apply_texture_fill(&mut buf, &layout, title, width, height);
+        buf
+    }
+
+    /// Load a texture fill image, caching it across frames.
+    fn load_texture_fill(&mut self, path: &str) -> Option<(&[u8], u32, u32)> {
+        // Check if we already have this path cached
+        let needs_load = match &self.texture_fill_cache {
+            Some((cached_path, _, _, _)) => cached_path != path,
+            None => true,
+        };
+
+        if needs_load {
+            match image::open(path) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = (rgba.width(), rgba.height());
+                    self.texture_fill_cache = Some((path.to_string(), rgba.into_raw(), w, h));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load texture fill image '{}': {}", path, e);
+                    self.texture_fill_cache = None;
+                    return None;
+                }
+            }
+        }
+
+        self.texture_fill_cache
+            .as_ref()
+            .map(|(_, data, w, h)| (data.as_slice(), *w, *h))
+    }
+
+    /// Apply texture fill over the composed buffer, replacing text fill pixels
+    /// with sampled image pixels where the alpha mask is non-zero.
+    fn apply_texture_fill(
+        &mut self,
+        buf: &mut [u8],
+        layout: &TitleLayout,
+        title: &TitleData,
+        width: u32,
+        _height: u32,
+    ) {
+        let tex_path = match &title.texture_fill_path {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => return,
+        };
+
+        if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
+            return;
+        }
+
+        // Text bounding box in frame coordinates
+        let text_left = layout.text_left;
+        let text_top = layout.text_top;
+        let text_w = (layout.text_right - layout.text_left).max(1.0);
+        let text_h = (layout.text_bottom - layout.text_top).max(1.0);
+
+        let (tex_data, tex_w, tex_h) = match self.load_texture_fill(&tex_path) {
+            Some(t) => t,
+            None => return,
+        };
+
+        let mask_w = layout.mask_w as usize;
+        let mask_h = layout.mask_h as usize;
+        let mask_x0 = layout.mask_x0 as usize;
+        let mask_y0 = layout.mask_y0 as usize;
+        let w = width as usize;
+
+        for my in 0..mask_h {
+            for mx in 0..mask_w {
+                let mask_alpha = layout.alpha_mask[my * mask_w + mx];
+                if mask_alpha == 0 {
+                    continue;
+                }
+
+                let global_x = mask_x0 + mx;
+                let global_y = mask_y0 + my;
+                if global_x >= w {
+                    continue;
+                }
+
+                // Map pixel position within the text bounding box to texture coordinates
+                let u = ((global_x as f32 - text_left) / text_w).clamp(0.0, 1.0);
+                let v = ((global_y as f32 - text_top) / text_h).clamp(0.0, 1.0);
+
+                let tx = ((u * (tex_w as f32 - 1.0)).round() as u32).min(tex_w - 1);
+                let ty = ((v * (tex_h as f32 - 1.0)).round() as u32).min(tex_h - 1);
+                let tex_idx = ((ty * tex_w + tx) * 4) as usize;
+                if tex_idx + 3 >= tex_data.len() {
+                    continue;
+                }
+
+                let buf_idx = (global_y * w + global_x) * 4;
+                let alpha = mask_alpha as f32 / 255.0;
+
+                // Replace the fill color with the texture color, modulated by mask alpha
+                buf[buf_idx] = (tex_data[tex_idx] as f32 * alpha) as u8;
+                buf[buf_idx + 1] = (tex_data[tex_idx + 1] as f32 * alpha) as u8;
+                buf[buf_idx + 2] = (tex_data[tex_idx + 2] as f32 * alpha) as u8;
+                buf[buf_idx + 3] = mask_alpha;
+            }
+        }
     }
 }
 

@@ -462,6 +462,10 @@ pub enum AppCommand {
     /// Set per-character animation. entrance: 0=None, 1=FadeIn, 2=SlideUp, 3=SlideDown, 4=ScaleUp.
     /// Set enabled=false to disable entirely.
     SetTitleCharAnimation { clip_id: ClipId, enabled: bool, stagger: f32, entrance: u8, wave_amplitude: f32, wave_speed: f32 },
+    /// Set image texture fill path. `path: None` = disable texture fill.
+    SetTitleTextureFill { clip_id: ClipId, path: Option<String> },
+    /// Set motion blur. `enabled=false` = disable.
+    SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,

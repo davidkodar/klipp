@@ -247,6 +247,10 @@ pub enum ClipKindJson {
         text_path: serde_json::Value,
         #[serde(default)]
         char_animation: serde_json::Value,
+        #[serde(default)]
+        texture_fill_path: Option<String>,
+        #[serde(default)]
+        motion_blur: serde_json::Value,
     },
     Gap,
 }

@@ -331,6 +331,8 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 extrusion,
                 text_path,
                 char_animation,
+                texture_fill_path,
+                motion_blur,
             } => {
                 let align = match alignment.as_str() {
                     "Left" => TextAlignment::Left,
@@ -355,6 +357,7 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 let ext: Option<klipp_timeline::TextExtrusion> = serde_json::from_value(extrusion.clone()).ok().flatten();
                 let tp: Option<klipp_timeline::TextPath> = serde_json::from_value(text_path.clone()).ok().flatten();
                 let ca: Option<klipp_timeline::CharAnimation> = serde_json::from_value(char_animation.clone()).ok().flatten();
+                let mb: Option<klipp_timeline::MotionBlur> = serde_json::from_value(motion_blur.clone()).ok().flatten();
                 ClipKind::Title(TitleData {
                     text: text.clone(),
                     font_size: *font_size,
@@ -380,6 +383,8 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
+                    texture_fill_path: texture_fill_path.clone(),
+                    motion_blur: mb,
                 })
             }
             ClipKindJson::Gap => ClipKind::Gap,

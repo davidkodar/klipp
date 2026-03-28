@@ -5071,6 +5071,42 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetTitleTextureFill { clip_id, path } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.texture_fill_path = path.clone();
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
+                    let mb = if *enabled {
+                        Some(klipp_timeline::MotionBlur {
+                            shutter_angle: *shutter_angle,
+                            samples: *samples,
+                        })
+                    } else {
+                        None
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.motion_blur = mb;
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetTitleFadeDuration { duration } => {
                     self.state.title_fade_duration = *duration;
                     continue;

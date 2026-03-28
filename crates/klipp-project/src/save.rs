@@ -254,6 +254,8 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             extrusion: serde_json::to_value(&data.extrusion).unwrap_or_default(),
             text_path: serde_json::to_value(&data.text_path).unwrap_or_default(),
             char_animation: serde_json::to_value(&data.char_animation).unwrap_or_default(),
+            texture_fill_path: data.texture_fill_path.clone(),
+            motion_blur: serde_json::to_value(&data.motion_blur).unwrap_or_default(),
         },
         ClipKind::Gap => ClipKindJson::Gap,
     }
