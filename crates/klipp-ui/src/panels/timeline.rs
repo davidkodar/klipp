@@ -771,11 +771,10 @@ impl TimelinePanel {
 
             // Track header right-click context menu
             {
-                // Context menu area: only the track name area at top of header
-                let ctx_h = 22.0;
+                // Context menu area: full track header height
                 let hdr_rect = egui::Rect::from_min_size(
                     egui::pos2(header_rect.left(), track_y),
-                    egui::vec2(state.track_header_width, ctx_h),
+                    egui::vec2(state.track_header_width, track_height),
                 );
                 let hdr_resp = ui.interact(
                     hdr_rect,
@@ -784,18 +783,76 @@ impl TimelinePanel {
                 );
                 let track_id = state.sequence().tracks[track_idx].id;
                 hdr_resp.context_menu(|ui| {
-                    ui.set_min_width(160.0);
-                    if ui.button("Add Track Above").clicked() {
-                        cmds.push(AppCommand::AddTrackAbove { track_index: track_idx });
-                        ui.close_menu();
-                    }
-                    if ui.button("Add Track Below").clicked() {
-                        cmds.push(AppCommand::AddTrackBelow { track_index: track_idx });
-                        ui.close_menu();
-                    }
+                    ui.set_min_width(180.0);
+
+                    // Add track with specific type
+                    ui.menu_button("Add Track Above", |ui| {
+                        if ui.button("Video Track").clicked() {
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Video);
+                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Audio Track").clicked() {
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
+                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Text Track").clicked() {
+                            let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Text);
+                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Subtitle Track").clicked() {
+                            let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
+                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button("Add Track Below", |ui| {
+                        if ui.button("Video Track").clicked() {
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Video);
+                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
+                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Audio Track").clicked() {
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
+                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
+                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Text Track").clicked() {
+                            let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Text);
+                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
+                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                        if ui.button("Subtitle Track").clicked() {
+                            let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
+                            let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
+                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
+                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                    });
+
                     ui.separator();
                     if ui.button("Rename Track").clicked() {
-                        // For now, auto-rename to next name
                         ui.close_menu();
                     }
                     ui.separator();
@@ -925,6 +982,54 @@ impl TimelinePanel {
             }
 
             track_y += track_height;
+        }
+
+        // ── Empty area below tracks: right-click to add new track ──
+        if !self.embedded {
+            let empty_area = egui::Rect::from_min_max(
+                egui::pos2(header_rect.left(), track_y),
+                egui::pos2(header_rect.right(), header_rect.bottom()),
+            );
+            if empty_area.height() > 10.0 {
+                let empty_resp = ui.interact(
+                    empty_area,
+                    ui.id().with("empty_track_area_ctx"),
+                    egui::Sense::click(),
+                );
+                empty_resp.context_menu(|ui| {
+                    ui.set_min_width(160.0);
+                    ui.label(egui::RichText::new("Add Track").strong().size(11.0));
+                    ui.separator();
+                    if ui.button("Video Track").clicked() {
+                        let name = state.sequence().next_track_name(TrackKind::Video);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Video);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Audio Track").clicked() {
+                        let name = state.sequence().next_track_name(TrackKind::Audio);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Text Track").clicked() {
+                        let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Text);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Subtitle Track").clicked() {
+                        let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                });
+            }
         }
 
         // ── Linked clip connection lines ──────────────────────────────

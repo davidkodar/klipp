@@ -48,7 +48,9 @@ pub fn show(
     }
     let mut deferred_action: Option<TrackAction> = None;
 
-    for (track_idx, track) in state.sequence().tracks.iter().enumerate() {
+    let track_count = state.sequence().tracks.len();
+    for track_idx in 0..track_count {
+        let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
         let track_h = match track.kind {
             TrackKind::Audio => crate::theme::TRACK_AUDIO_H,
             TrackKind::Text | TrackKind::Subtitle => crate::theme::TRACK_TEXT_H,
@@ -260,8 +262,49 @@ pub fn show(
         }
 
         let track_role = track.magnetic_role.clone();
+        let track_id = track.id;
+        let _track_kind = track.kind;
         header_resp.context_menu(|ui| {
             ui.set_min_width(180.0);
+
+            // Add track options
+            ui.menu_button("Add Track Above", |ui| {
+                for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
+                    if ui.button(label).clicked() {
+                        let name = match kind {
+                            TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
+                            TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
+                            TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
+                            TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
+                        };
+                        let new_track = klipp_timeline::Track::new(&name, kind);
+                        state.sequences[state.active_sequence_idx].tracks.insert(track_idx, new_track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                }
+            });
+            ui.menu_button("Add Track Below", |ui| {
+                for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
+                    if ui.button(label).clicked() {
+                        let name = match kind {
+                            TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
+                            TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
+                            TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
+                            TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
+                        };
+                        let new_track = klipp_timeline::Track::new(&name, kind);
+                        let idx = (track_idx + 1).min(state.sequence().tracks.len());
+                        state.sequences[state.active_sequence_idx].tracks.insert(idx, new_track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                }
+            });
+
+            ui.separator();
+
+            // Magnetic role options
             match track_role {
                 klipp_timeline::TrackRole::Connected => {
                     if ui.button("Create Storyline (Shift+S)").clicked() {
@@ -281,13 +324,54 @@ pub fn show(
                         ui.close_menu();
                     }
                 }
-                klipp_timeline::TrackRole::Primary => {
-                    // No storyline options for primary track
+                klipp_timeline::TrackRole::Primary => {}
+            }
+
+            ui.separator();
+
+            // Remove track
+            let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
+            if ui.add_enabled(!has_clips, egui::Button::new("Remove Track")).clicked() {
+                cmds.push(AppCommand::RemoveTrack { track_id });
+                ui.close_menu();
+            }
+            if has_clips {
+                if ui.button("Remove Track (with clips)").clicked() {
+                    cmds.push(AppCommand::RemoveTrack { track_id });
+                    ui.close_menu();
                 }
             }
         });
 
         y += track_h;
+    }
+
+    // ── Empty area below tracks: right-click to add track ──
+    let empty_rect = egui::Rect::from_min_max(
+        egui::pos2(header_rect.min.x, y),
+        header_rect.max,
+    );
+    if empty_rect.height() > 10.0 {
+        let empty_resp = ui.interact(empty_rect, ui.id().with("empty_header_ctx"), egui::Sense::click());
+        empty_resp.context_menu(|ui| {
+            ui.set_min_width(160.0);
+            ui.label(egui::RichText::new("Add Track").strong().size(11.0));
+            ui.separator();
+            for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
+                if ui.button(label).clicked() {
+                    let name = match kind {
+                        TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
+                        TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
+                        TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
+                        TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
+                    };
+                    let new_track = klipp_timeline::Track::new(&name, kind);
+                    state.sequences[state.active_sequence_idx].tracks.push(new_track);
+                    cmds.push(AppCommand::SequenceUpdated);
+                    ui.close_menu();
+                }
+            }
+        });
     }
 
     // Apply deferred toggles

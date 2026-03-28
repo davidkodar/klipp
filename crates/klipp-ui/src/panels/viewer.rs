@@ -253,8 +253,15 @@ impl ViewerPanel {
             return;
         }
 
-        let (video_w, video_h) = current_media_info
-            .map(|(w, h, _)| (w as f32, h as f32))
+        // Use the actual video texture dimensions for aspect ratio — this matches what's
+        // actually being displayed. The engine may render at sequence resolution (e.g. 1920×1080)
+        // even if the source clip is 1920×818. Using the texture size ensures WYSIWYG.
+        let tex_dims = self.video_texture.as_ref()
+            .map(|t| t.size_vec2())
+            .filter(|s| s.x > 0.0 && s.y > 0.0);
+        let (video_w, video_h) = tex_dims
+            .map(|s| (s.x, s.y))
+            .or_else(|| current_media_info.map(|(w, h, _)| (w as f32, h as f32)))
             .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
             .unwrap_or((1920.0, 1080.0));
 
@@ -263,24 +270,10 @@ impl ViewerPanel {
         let video_aspect = video_w / video_h;
         let panel_aspect = viewer_rect.width() / viewer_rect.height();
 
-        // First compute the natural fit (no margin)
-        let (natural_w, natural_h) = if video_aspect > panel_aspect {
+        let (display_w, display_h) = if video_aspect > panel_aspect {
             (viewer_rect.width(), viewer_rect.width() / video_aspect)
         } else {
             (viewer_rect.height() * video_aspect, viewer_rect.height())
-        };
-
-        // Add margin only on the axis where the video fills edge-to-edge.
-        // This ensures transform handles at the frame corners are always visible.
-        let handle_margin = 10.0;
-        let (display_w, display_h) = if video_aspect > panel_aspect {
-            // Video fills width — add horizontal margin, vertical already has letterbox space
-            let w = (viewer_rect.width() - handle_margin * 2.0).max(1.0);
-            (w, w / video_aspect)
-        } else {
-            // Video fills height — add vertical margin, horizontal already has letterbox space
-            let h = (viewer_rect.height() - handle_margin * 2.0).max(1.0);
-            (h * video_aspect, h)
         };
 
         let image_rect = egui::Rect::from_center_size(
@@ -1341,9 +1334,12 @@ impl ViewerPanel {
         // remain visible even when the bounding box extends outside the video frame).
         // Use an expanded clip rect so transform handles at the frame edges are fully visible.
         // The handles are 8px squares and the rotation handle extends 30px above the frame.
-        // Use screen rect to ensure handles can be drawn anywhere visible
-        let screen_rect = ui.ctx().screen_rect();
-        let painter = ui.painter().with_clip_rect(screen_rect);
+        // Use a foreground-layer painter so transform handles draw ON TOP of
+        // everything (toolbar, transport bar, etc.) and are never covered.
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            ui.id().with("transform_controls"),
+        ));
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);

@@ -401,6 +401,8 @@ pub struct AppState {
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
     pub show_markers_panel: bool,
+    pub show_browser_panel: bool,
+    pub show_inspector_panel: bool,
 
     /// True when any egui popup/menu/combobox is open. Set at start of each frame.
     pub modal_or_popup_open: bool,
@@ -751,6 +753,8 @@ impl Default for AppState {
             master_muted: false,
             confirm_remove_track: None,
             show_markers_panel: false,
+            show_browser_panel: true,
+            show_inspector_panel: true,
             modal_or_popup_open: false,
             show_preferences: false,
             auto_create_tracks: true,

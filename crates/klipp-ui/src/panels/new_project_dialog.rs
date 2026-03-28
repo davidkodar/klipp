@@ -3,6 +3,7 @@ use klipp_core::AppCommand;
 use std::path::PathBuf;
 
 pub const RESOLUTION_PRESETS: &[(&str, u32, u32)] = &[
+    ("Automatic (from first clip)", 0, 0),
     ("720p HD", 1280, 720),
     ("1080p HD", 1920, 1080),
     ("1080p 4:3", 1440, 1080),
@@ -15,6 +16,7 @@ pub const RESOLUTION_PRESETS: &[(&str, u32, u32)] = &[
 ];
 
 pub const FPS_PRESETS: &[(&str, u32, u32)] = &[
+    ("Automatic (from first clip)", 0, 0),
     ("23.976 fps", 24000, 1001),
     ("24 fps", 24, 1),
     ("25 fps", 25, 1),
@@ -48,10 +50,10 @@ impl NewProjectDialog {
         Self {
             project_name: String::new(),
             location,
-            resolution_idx: 1, // 1080p HD
+            resolution_idx: 0, // Automatic (from first clip)
             custom_width: 1920,
             custom_height: 1080,
-            fps_idx: 1, // 24 fps
+            fps_idx: 0, // Automatic (from first clip)
             sequence_name: String::new(),
             name_manually_edited: false,
         }
@@ -61,10 +63,10 @@ impl NewProjectDialog {
     pub fn reset(&mut self, default_location: Option<&PathBuf>) {
         self.project_name.clear();
         self.sequence_name.clear();
-        self.resolution_idx = 1;
+        self.resolution_idx = 0; // Automatic
         self.custom_width = 1920;
         self.custom_height = 1080;
-        self.fps_idx = 1;
+        self.fps_idx = 0; // Automatic
         self.name_manually_edited = false;
         if let Some(loc) = default_location {
             self.location = loc.clone();
@@ -285,18 +287,28 @@ impl NewProjectDialog {
     }
 
     fn resolved_resolution(&self) -> (u32, u32) {
-        let (_, w, h) = RESOLUTION_PRESETS[self.resolution_idx];
-        if w == 0 && h == 0 {
-            // Custom
-            (self.custom_width.max(64), self.custom_height.max(64))
+        if self.resolution_idx == 0 {
+            // "Automatic (from first clip)" — use 0×0 as sentinel, auto-set when first clip added
+            (0, 0)
         } else {
-            (w, h)
+            let (_, w, h) = RESOLUTION_PRESETS[self.resolution_idx];
+            if w == 0 && h == 0 {
+                // Custom
+                (self.custom_width.max(64), self.custom_height.max(64))
+            } else {
+                (w, h)
+            }
         }
     }
 
     fn resolved_fps(&self) -> (u32, u32) {
-        let (_, num, den) = FPS_PRESETS[self.fps_idx];
-        (num, den)
+        if self.fps_idx == 0 {
+            // "Automatic" — use 0/0 as sentinel, auto-set from first clip
+            (0, 0)
+        } else {
+            let (_, num, den) = FPS_PRESETS[self.fps_idx];
+            (num, den)
+        }
     }
 }
 

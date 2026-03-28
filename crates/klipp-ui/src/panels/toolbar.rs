@@ -482,9 +482,32 @@ impl ToolbarPanel {
         ui.menu_button(egui::RichText::new("View").size(11.0), |ui| {
             if ui.button("Full Screen Viewer").clicked() { cmds.push(AppCommand::ToggleFullscreen); ui.close_menu(); }
             ui.separator();
-            if ui.button(if state.use_proxies { "\u{2713} Proxies" } else { "  Proxies" }).clicked() { cmds.push(AppCommand::SetUseProxies(!state.use_proxies)); ui.close_menu(); }
+            let browser_label = if state.show_browser_panel { "\u{2713} Browser Panel" } else { "  Browser Panel" };
+            if ui.button(browser_label).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
+            let inspector_label = if state.show_inspector_panel { "\u{2713} Inspector Panel" } else { "  Inspector Panel" };
+            if ui.button(inspector_label).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
             if ui.button(if state.show_markers_panel { "\u{2713} Markers" } else { "  Markers" }).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
             if ui.button(if state.show_curve_editor { "\u{2713} Curve Editor" } else { "  Curve Editor" }).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            ui.separator();
+            if ui.button(if state.use_proxies { "\u{2713} Proxies" } else { "  Proxies" }).clicked() { cmds.push(AppCommand::SetUseProxies(!state.use_proxies)); ui.close_menu(); }
+            ui.separator();
+            let fc_label = match state.viewer_overlay { crate::state::ViewerOverlay::FalseColor => "\u{2713} False Color (Alt+F)", _ => "  False Color (Alt+F)" };
+            if ui.button(fc_label).clicked() {
+                state.viewer_overlay = match state.viewer_overlay {
+                    crate::state::ViewerOverlay::FalseColor => crate::state::ViewerOverlay::None,
+                    _ => crate::state::ViewerOverlay::FalseColor,
+                };
+                ui.close_menu();
+            }
+            let zebra_label = match state.viewer_overlay { crate::state::ViewerOverlay::Zebra => "\u{2713} Zebra Stripes", _ => "  Zebra Stripes" };
+            if ui.button(zebra_label).clicked() {
+                state.viewer_overlay = match state.viewer_overlay {
+                    crate::state::ViewerOverlay::Zebra => crate::state::ViewerOverlay::None,
+                    _ => crate::state::ViewerOverlay::Zebra,
+                };
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.add(egui::Button::new("Preferences...").shortcut_text("Ctrl+,")).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_menu(); }
         });
     }

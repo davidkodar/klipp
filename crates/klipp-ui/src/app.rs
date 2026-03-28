@@ -1482,6 +1482,20 @@ impl KlippApp {
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
                         let is_audio_only = item.video_codec.is_empty();
+
+                        // Auto-set sequence resolution + FPS from first video clip (FCP behavior)
+                        if !is_audio_only && item.resolution.width > 0 && item.resolution.height > 0 {
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let has_video_clips = seq.tracks.iter()
+                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                .any(|t| !t.clips.is_empty());
+                            if !has_video_clips {
+                                seq.resolution = item.resolution;
+                                seq.fps = item.fps;
+                                self.state.fps = item.fps;
+                            }
+                        }
+
                         // Route: audio-only → first audio track, video → first video track
                         let target_kind = if is_audio_only {
                             klipp_timeline::TrackKind::Audio
@@ -1508,6 +1522,18 @@ impl KlippApp {
                 AppCommand::AppendClipToTrack { media_id, track_index } => {
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
+                        // Auto-set sequence resolution + FPS from first video clip
+                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let has_video_clips = seq.tracks.iter()
+                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                .any(|t| !t.clips.is_empty());
+                            if !has_video_clips {
+                                seq.resolution = item.resolution;
+                                seq.fps = item.fps;
+                                self.state.fps = item.fps;
+                            }
+                        }
                         if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
                             if track.magnetic_role == klipp_timeline::TrackRole::Primary {
                                 // Magnetic path: append via MagneticEditor
@@ -1548,6 +1574,18 @@ impl KlippApp {
                 }
                 AppCommand::ImportMediaLinked { media_id } => {
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                        // Auto-set sequence resolution + FPS from first video clip
+                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let has_video_clips = seq.tracks.iter()
+                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                .any(|t| !t.clips.is_empty());
+                            if !has_video_clips {
+                                seq.resolution = item.resolution;
+                                seq.fps = item.fps;
+                                self.state.fps = item.fps;
+                            }
+                        }
                         // Check for browser range selection (trimmed source in/out)
                         let range = self.state.browser_range_selection.take()
                             .filter(|r| r.media_id == *media_id);
@@ -6178,8 +6216,18 @@ impl KlippApp {
                     name, location, fps_num, fps_den, width, height, sequence_name,
                 } => {
                     let project_dir = location.join(format!("{name}.klipp"));
-                    let fps = klipp_core::Fps::new(*fps_num, *fps_den);
-                    let resolution = klipp_core::Resolution { width: *width, height: *height };
+                    // "Automatic" FPS: use 24fps as placeholder, auto-set from first clip
+                    let fps = if *fps_num == 0 || *fps_den == 0 {
+                        klipp_core::Fps::new(24, 1)
+                    } else {
+                        klipp_core::Fps::new(*fps_num, *fps_den)
+                    };
+                    // "Automatic" resolution: use 1920×1080 as placeholder, auto-set from first clip
+                    let resolution = if *width == 0 || *height == 0 {
+                        klipp_core::Resolution { width: 1920, height: 1080 }
+                    } else {
+                        klipp_core::Resolution { width: *width, height: *height }
+                    };
                     let seq_name = if sequence_name.is_empty() {
                         name.clone()
                     } else {
@@ -6192,12 +6240,11 @@ impl KlippApp {
                         resolution,
                         tracks: {
                             let mut tracks = vec![
-                                klipp_timeline::Track::new("Video 2", klipp_timeline::TrackKind::Video),
                                 klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
                                 klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
                             ];
-                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Primary;
-                            tracks[2].magnetic_role = klipp_timeline::TrackRole::Connected;
+                            tracks[0].magnetic_role = klipp_timeline::TrackRole::Primary;
+                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Connected;
                             tracks
                         },
                         in_point: None,
@@ -6212,6 +6259,7 @@ impl KlippApp {
                     self.state.project_path = Some(project_dir.clone());
                     self.state.created_at = Some(klipp_project::iso8601_now());
                     self.state.dirty = false;
+                    self.state.filmstrip_generating = false;
                     self.state.selected_clip = None;
                     self.state.selected_clips.clear();
                     self.state.hovered_clip = None;
@@ -6277,12 +6325,11 @@ impl KlippApp {
                         resolution: klipp_core::Resolution { width: *width, height: *height },
                         tracks: {
                             let mut tracks = vec![
-                                klipp_timeline::Track::new("Video 2", klipp_timeline::TrackKind::Video),
                                 klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
                                 klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
                             ];
-                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Primary;
-                            tracks[2].magnetic_role = klipp_timeline::TrackRole::Connected;
+                            tracks[0].magnetic_role = klipp_timeline::TrackRole::Primary;
+                            tracks[1].magnetic_role = klipp_timeline::TrackRole::Connected;
                             tracks
                         },
                         in_point: None,
@@ -8126,8 +8173,8 @@ impl KlippApp {
                     _ => ViewerOverlay::Zebra,
                 };
             }
-            // F key (bare) — toggle false color overlay
-            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
+            // Alt+F — toggle false color overlay
+            if !i.modifiers.ctrl && i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::F)
             {
                 use crate::state::ViewerOverlay;
@@ -9155,8 +9202,8 @@ impl eframe::App for KlippApp {
                     let main_bottom = statusbar_rect.min.y;
                     let main_height = main_bottom - main_top;
 
-                    // Browser (left)
-                    let browser_w = self.layout.browser_width;
+                    // Browser (left) — collapsible
+                    let browser_w = if self.state.show_browser_panel { self.layout.browser_width } else { 0.0 };
                     let browser_rect = egui::Rect::from_min_size(
                         egui::pos2(full.min.x, main_top),
                         egui::vec2(browser_w, main_height),
@@ -9168,9 +9215,13 @@ impl eframe::App for KlippApp {
                         egui::vec2(theme::RESIZER_THICKNESS, main_height),
                     );
 
-                    // Inspector (right) — clamp to available space
-                    let max_inspector_w = (full.width() - browser_w - theme::RESIZER_THICKNESS * 2.0 - 100.0).max(theme::INSPECTOR_MIN_W);
-                    let inspector_w = self.layout.inspector_width.min(max_inspector_w);
+                    // Inspector (right) — collapsible, clamp to available space
+                    let inspector_w = if self.state.show_inspector_panel {
+                        let max_inspector_w = (full.width() - browser_w - theme::RESIZER_THICKNESS * 2.0 - 100.0).max(theme::INSPECTOR_MIN_W);
+                        self.layout.inspector_width.min(max_inspector_w)
+                    } else {
+                        0.0
+                    };
                     let inspector_rect = egui::Rect::from_min_size(
                         egui::pos2(full.max.x - inspector_w, main_top),
                         egui::vec2(inspector_w, main_height),
