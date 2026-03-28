@@ -416,8 +416,8 @@ fn show_title_editor(
     // Fade duration scrubby slider
     let mut fade_dur = state.title_fade_duration;
     ui.horizontal(|ui| {
-        ui.label("Fade Duration:");
-        if ui.add(egui::DragValue::new(&mut fade_dur).range(0.1..=3.0).speed(0.02).suffix("s").fixed_decimals(2)).changed() {
+        ui.label("Duration:");
+        if ui.add(egui::DragValue::new(&mut fade_dur).range(0.1..=30.0).speed(0.05).suffix("s").fixed_decimals(2)).changed() {
             // We store this via a mutable borrow trick — emit a command
             cmds.push(AppCommand::SetTitleFadeDuration { duration: fade_dur });
         }
@@ -428,13 +428,16 @@ fn show_title_editor(
     ui.horizontal(|ui| {
         if ui.small_button("Fade In").clicked() {
             emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
         if ui.small_button("Fade Out").clicked() {
+            cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Opacity });
             emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
         }
         if ui.small_button("Fade In+Out").clicked() {
             emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
             emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
     });
     ui.add_space(4.0);
@@ -444,12 +447,19 @@ fn show_title_editor(
         ui.label("Slide:");
         if ui.small_button("Left").on_hover_text("Slide in from left").clicked() {
             emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, -960.0, 0.0, true);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
         if ui.small_button("Right").on_hover_text("Slide in from right").clicked() {
             emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 960.0, 0.0, true);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
         if ui.small_button("Up").on_hover_text("Slide in from bottom").clicked() {
             emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 0.0, 540.0, false);
+            cmds.push(AppCommand::ClearTitleOverlay);
+        }
+        if ui.small_button("Down").on_hover_text("Slide in from top").clicked() {
+            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 0.0, -540.0, false);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
     });
     ui.add_space(4.0);
@@ -457,10 +467,12 @@ fn show_title_editor(
     // Scale presets row
     ui.horizontal(|ui| {
         if ui.small_button("Pop In").clicked() {
-            emit_pop_in(cmds, clip_id);
+            emit_pop_in(cmds, clip_id, fade_dur);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
         if ui.small_button("Grow In").clicked() {
             emit_grow_in(cmds, clip_id, fade_dur);
+            cmds.push(AppCommand::ClearTitleOverlay);
         }
     });
     ui.add_space(4.0);
@@ -488,6 +500,7 @@ fn show_title_editor(
 /// Emit opacity keyframes for a fade-in effect.
 fn emit_fade_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, _clip_dur: f32) {
     let d = fade_dur as f64;
+    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Opacity });
     // Keyframe at t=0: opacity 0.0
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: 0.0, value: 0.0 });
     // Keyframe at t=fade_dur: opacity 1.0
@@ -524,6 +537,7 @@ fn emit_slide_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_d
     let d = fade_dur as f64;
     let span = d;
     if is_x {
+        cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::PositionX });
         cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: 0.0, value: start_x });
         cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: d, value: dest_x });
         cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
@@ -531,6 +545,7 @@ fn emit_slide_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_d
         cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
         cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
     } else {
+        cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::PositionY });
         cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: 0.0, value: start_y });
         cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: d, value: dest_y });
         cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
@@ -541,24 +556,28 @@ fn emit_slide_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_d
 }
 
 /// Emit scale keyframes for a "pop in" effect with overshoot.
-fn emit_pop_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId) {
-    // t=0: scale 0.0, t=0.3: scale 1.1 (overshoot), t=0.5: scale 1.0 (settle)
+fn emit_pop_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, anim_dur: f32) {
+    let d = anim_dur as f64;
+    let t_overshoot = d * 0.6;
+    let t_settle = d;
+    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Scale });
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.0 });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.3, value: 1.1 });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.5, value: 1.0 });
-    // Set Bezier on all three
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: t_overshoot, value: 1.1 });
+    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: t_settle, value: 1.0 });
     for i in 0..3 {
         cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: i, interpolation: klipp_core::Interpolation::Bezier });
     }
-    // Tangents: ease-out on first segment, ease-both on overshoot->settle
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * 0.3, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * 0.3, 0.0)), tangent_out: Some((0.42 * 0.2, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 2, tangent_in: Some((-0.42 * 0.2, 0.0)), tangent_out: None });
+    let span1 = t_overshoot;
+    let span2 = t_settle - t_overshoot;
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span1, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * span1, 0.0)), tangent_out: Some((0.42 * span2, 0.0)) });
+    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 2, tangent_in: Some((-0.42 * span2, 0.0)), tangent_out: None });
 }
 
 /// Emit scale keyframes for a "grow in" effect.
 fn emit_grow_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32) {
     let d = fade_dur as f64;
+    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Scale });
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.5 });
     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: d, value: 1.0 });
     cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });

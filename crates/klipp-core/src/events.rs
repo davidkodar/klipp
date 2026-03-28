@@ -435,6 +435,7 @@ pub enum AppCommand {
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32 },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
+    ClearTitleOverlay,
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },
@@ -607,6 +608,7 @@ pub enum AppCommand {
         end_pos_y: f32,
     },
     ClearTransformKeyframes { clip_id: ClipId },
+    ClearVideoParamKeyframes { clip_id: ClipId, param: VideoParam },
 
     // Audio ducking
     AutoDuckAudio {

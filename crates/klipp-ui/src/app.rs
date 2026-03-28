@@ -98,6 +98,7 @@ pub struct KlippApp {
     state: AppState,
     toolbar: ToolbarPanel,
     viewer: ViewerPanel,
+    title_renderer: klipp_title::TitleRenderer,
     #[allow(dead_code)]
     inspector: InspectorPanel, // kept for potential fallback; old code fully superseded by new_inspector
     markers: MarkersPanel,
@@ -184,6 +185,7 @@ impl KlippApp {
             state: AppState::default(),
             toolbar: ToolbarPanel,
             viewer: ViewerPanel::default(),
+            title_renderer: klipp_title::TitleRenderer::new(),
             inspector: InspectorPanel::default(),
             markers: MarkersPanel::default(),
             preferences_panel: PreferencesPanel::default(),
@@ -1332,12 +1334,54 @@ impl KlippApp {
         uuid::Uuid::nil()
     }
 
+    /// Render a title clip to the viewer's overlay texture for instant UI preview.
+    /// This is the FCP approach: title is a separate layer composited by the viewer,
+    /// not written to the shared frame buffer (which avoids race conditions with the engine).
+    /// Mark a title clip for overlay texture refresh on the next frame.
+    fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
+        // Clear old overlay immediately to prevent ghosting during position/alignment changes
+        self.viewer.title_overlay_texture = None;
+        self.state.pending_title_preview_clip = Some(clip_id);
+    }
+
+    /// Upload title overlay texture if pending. Called from update() where ctx is available.
+    fn upload_title_overlay(&mut self, ctx: &egui::Context) {
+        let clip_id = match self.state.pending_title_preview_clip.take() {
+            Some(id) => id,
+            None => return,
+        };
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let td = seq.tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data());
+        if let Some(td) = td {
+            let td = td.clone();
+            let (w, h) = (seq.resolution.width, seq.resolution.height);
+            let title_rgba = self.title_renderer.render(&td, w, h);
+
+            let pixels: Vec<egui::Color32> = title_rgba
+                .chunks_exact(4)
+                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .collect();
+
+            let image = egui::ColorImage {
+                size: [w as usize, h as usize],
+                pixels,
+            };
+
+            self.viewer.title_overlay_texture = Some(ctx.load_texture(
+                "klipp-title-overlay",
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+            self.viewer.title_overlay_size = (w, h);
+            ctx.request_repaint();
+        }
+    }
+
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap();
         *seq = self.state.sequences[self.state.active_sequence_idx].clone();
-        drop(seq);
-        // Always sync the UI playhead to the engine so title overlay lookups work
-        let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
     }
 
     /// Sync sequence and re-grade the cached frame directly on the UI thread.
@@ -3528,6 +3572,21 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::ClearVideoParamKeyframes { clip_id, param } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            match param {
+                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes.clear(),
+                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes.clear(),
+                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes.clear(),
+                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes.clear(),
+                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes.clear(),
+                            }
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 // ── Keyframe clipboard: Copy ──────────────────────────────
                 AppCommand::CopyAudioKeyframes { clip_id, param } => {
                     if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
@@ -4588,7 +4647,7 @@ impl KlippApp {
                     let timeline_out = *timeline_in + duration;
                     let title_data = self.state.pending_title_data.take()
                         .unwrap_or_default();
-                    let clip = klipp_timeline::Clip {
+                    let mut clip = klipp_timeline::Clip {
                         id: klipp_core::ClipId::new(),
                         kind: klipp_timeline::ClipKind::Title(title_data),
                         timeline_in: *timeline_in,
@@ -4624,6 +4683,13 @@ impl KlippApp {
                         speed: 1.0,
                         audio_effects: Vec::new(),
                     };
+                    // Apply baked-in title animation keyframes
+                    if let Some(anim_str) = self.state.pending_title_animation.take() {
+                        let clip_dur = 5.0_f64;
+                        apply_title_animation(&mut clip, &anim_str, clip_dur);
+                        // Clear title overlay so it starts invisible for animated titles
+                        self.state.clear_title_overlay = true;
+                    }
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         track.clips.push(clip.clone());
                         track.clips.sort_by_key(|c| c.timeline_in.value);
@@ -4657,9 +4723,10 @@ impl KlippApp {
                             }
                         }
                     }
+                    self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
+                    // Keep engine playhead in sync (needed for V2 overlay during playback)
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
@@ -4675,9 +4742,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
@@ -4689,9 +4756,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
@@ -4707,9 +4774,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
                     continue;
                 }
@@ -4730,13 +4797,18 @@ impl KlippApp {
                             }
                         }
                     }
+                    self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
                     self.state.dirty = true;
                     continue;
                 }
                 AppCommand::SetTitleFadeDuration { duration } => {
                     self.state.title_fade_duration = *duration;
+                    continue;
+                }
+                AppCommand::ClearTitleOverlay => {
+                    self.viewer.title_overlay_texture = None;
                     continue;
                 }
 
@@ -8397,6 +8469,7 @@ impl eframe::App for KlippApp {
         self.drain_proxy_progress();
         self.poll_render_queue();
         self.upload_frame_to_egui(ctx);
+        self.upload_title_overlay(ctx);
         self.poll_effect_thumbnails(ctx);
 
         // Rebuild media usage cache if dirty (O(clips) once per edit, then O(1) per render)
@@ -9071,7 +9144,7 @@ impl eframe::App for KlippApp {
                         } else {
                             // Edit workspace: standard clip inspector
                             let cmds = self.new_inspector.show(
-                                ui, &self.state, &self.theme,
+                                ui, &mut self.state, &self.theme,
                                 &mut self.layout.active_inspector_tab,
                             );
                             all_cmds.extend(cmds);
@@ -9400,6 +9473,14 @@ impl eframe::App for KlippApp {
 
         // 11. Send all commands
         self.send_commands(all_cmds);
+
+        // 11.5. Upload title overlay texture if a title property was changed this frame
+        self.upload_title_overlay(ctx);
+
+        // Clear title overlay during playback (engine handles compositing then)
+        if self.state.playback == PlaybackState::Playing {
+            self.viewer.title_overlay_texture = None;
+        }
 
         // 11a. Skim cleanup: if no panel set the skim flag this frame, clear skim state
         let lost_focus = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
@@ -10707,4 +10788,322 @@ fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+/// Apply baked-in animation keyframes to a title clip based on an animation identifier string.
+///
+/// Animation format: `"type_duration"` or `"type1+type2_duration"` where duration is in seconds.
+/// Examples: `"fade_in_0.5"`, `"slide_left_1.0"`, `"fade_in+slide_left_0.8"`, `"fade_in_out_0.5"`
+fn apply_title_animation(clip: &mut klipp_timeline::Clip, anim_str: &str, clip_dur: f64) {
+    use klipp_core::{Interpolation, Keyframe};
+
+    // Helper to create a bezier keyframe with ease tangents
+    let bezier_kf = |t: f64, v: f32, t_in: (f64, f32), t_out: (f64, f32)| -> Keyframe {
+        Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: Interpolation::Bezier,
+            tangent_in: t_in,
+            tangent_out: t_out,
+        }
+    };
+
+    // Parse compound animations (e.g. "fade_in+slide_left_0.8")
+    // Split on '+' for combinations, last segment contains the duration suffix
+    let parts: Vec<&str> = anim_str.split('+').collect();
+
+    for part in &parts {
+        // Extract the animation type and duration from the last underscore-separated number
+        let (anim_type, dur) = parse_anim_part(part);
+        let d = dur as f64;
+        let span = d;
+
+        match anim_type {
+            "fade_in" => {
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "fade_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.opacity_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "fade_in_out" => {
+                let out_start = (clip_dur - d).max(d);
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(out_start, 1.0, (-0.42 * span, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_left" => {
+                clip.transform_pos_x_keyframes.push(bezier_kf(0.0, -960.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_x_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_right" => {
+                clip.transform_pos_x_keyframes.push(bezier_kf(0.0, 960.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_x_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_up" => {
+                clip.transform_pos_y_keyframes.push(bezier_kf(0.0, 540.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_y_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_down" => {
+                clip.transform_pos_y_keyframes.push(bezier_kf(0.0, -540.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_y_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_out_left" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_pos_x_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_x_keyframes.push(bezier_kf(clip_dur, -960.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_out_right" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_pos_x_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_x_keyframes.push(bezier_kf(clip_dur, 960.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_out_up" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_pos_y_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_y_keyframes.push(bezier_kf(clip_dur, -540.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "slide_out_down" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_pos_y_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_pos_y_keyframes.push(bezier_kf(clip_dur, 540.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "pop_in" => {
+                let t_over = d * 0.6;
+                let t_settle = d;
+                let span1 = t_over;
+                let span2 = t_settle - t_over;
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span1, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(t_over, 1.1, (-0.42 * span1, 0.0), (0.42 * span2, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(t_settle, 1.0, (-0.42 * span2, 0.0), (0.0, 0.0)));
+            }
+            "pop_out" => {
+                let start = (clip_dur - d).max(0.0);
+                let t_over = start + d * 0.4;
+                let span1 = d * 0.4;
+                let span2 = d * 0.6;
+                clip.transform_scale_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span1, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(t_over, 1.1, (-0.42 * span1, 0.0), (0.42 * span2, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span2, 0.0), (0.0, 0.0)));
+            }
+            "grow_in" => {
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.5, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "shrink_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_scale_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "zoom_in" => {
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "zoom_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_scale_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            // ── Advanced animations ──
+            "spin_in" => {
+                clip.transform_rotation_keyframes.push(bezier_kf(0.0, 360.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "spin_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_rotation_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(clip_dur, 360.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "swirl_in" => {
+                clip.transform_rotation_keyframes.push(bezier_kf(0.0, 720.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(d * 0.3, 1.0, (-0.42 * span * 0.3, 0.0), (0.0, 0.0)));
+            }
+            "bounce_in" => {
+                let s = |f: f64| f * d;
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.1 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.4), 1.2, (-0.1 * d, 0.0), (0.05 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.6), 0.9, (-0.05 * d, 0.0), (0.05 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.8), 1.05, (-0.05 * d, 0.0), (0.05 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.05 * d, 0.0), (0.0, 0.0)));
+            }
+            "elastic" => {
+                let s = |f: f64| f * d;
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.08 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.3), 1.3, (-0.08 * d, 0.0), (0.04 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.5), 0.85, (-0.04 * d, 0.0), (0.04 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.7), 1.1, (-0.04 * d, 0.0), (0.04 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.85), 0.95, (-0.04 * d, 0.0), (0.04 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.04 * d, 0.0), (0.0, 0.0)));
+            }
+            "shake" => {
+                let shake_dur = d.min(clip_dur);
+                let n = 10;
+                for i in 0..=n {
+                    let t = (i as f64 / n as f64) * shake_dur;
+                    let amp = 20.0 * (1.0 - i as f32 / n as f32);
+                    let val = if i == 0 || i == n { 0.0 } else if i % 2 == 0 { amp } else { -amp };
+                    clip.transform_pos_x_keyframes.push(Keyframe {
+                        time_secs: t, value: val, interpolation: Interpolation::Linear,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    });
+                }
+            }
+            "swing_in" => {
+                let s = |f: f64| f * d;
+                clip.transform_rotation_keyframes.push(bezier_kf(0.0, -30.0, (0.0, 0.0), (0.1 * d, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(s(0.4), 10.0, (-0.1 * d, 0.0), (0.08 * d, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(s(0.7), -5.0, (-0.08 * d, 0.0), (0.06 * d, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(d, 0.0, (-0.06 * d, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.1 * d, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(s(0.2), 1.0, (-0.1 * d, 0.0), (0.0, 0.0)));
+            }
+            "explode_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_scale_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.2 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(clip_dur, 3.0, (-0.2 * span, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.2 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.2 * span, 0.0), (0.0, 0.0)));
+            }
+            "implode_in" => {
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 3.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "pulse" => {
+                let s = |f: f64| f * d;
+                clip.transform_scale_keyframes.push(bezier_kf(0.0, 1.0, (0.0, 0.0), (0.1 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(s(0.5), 1.15, (-0.1 * d, 0.0), (0.1 * d, 0.0)));
+                clip.transform_scale_keyframes.push(bezier_kf(d, 1.0, (-0.1 * d, 0.0), (0.0, 0.0)));
+            }
+            "rotate_in" => {
+                clip.transform_rotation_keyframes.push(bezier_kf(0.0, -90.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(d, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(0.0, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(d, 1.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "rotate_out" => {
+                let start = (clip_dur - d).max(0.0);
+                clip.transform_rotation_keyframes.push(bezier_kf(start, 0.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.transform_rotation_keyframes.push(bezier_kf(clip_dur, 90.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(start, 1.0, (0.0, 0.0), (0.42 * span, 0.0)));
+                clip.opacity_keyframes.push(bezier_kf(clip_dur, 0.0, (-0.42 * span, 0.0), (0.0, 0.0)));
+            }
+            "glitch" => {
+                // Rapid opacity flicker
+                let n = 8;
+                let flicker_dur = d.min(clip_dur);
+                for i in 0..=n {
+                    let t = (i as f64 / n as f64) * flicker_dur;
+                    let val = if i == n { 1.0 } else if i % 2 == 0 { 0.0 } else { 1.0 };
+                    clip.opacity_keyframes.push(Keyframe {
+                        time_secs: t, value: val, interpolation: Interpolation::Step,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    });
+                }
+            }
+            "float_up" => {
+                // Slow continuous upward drift over entire clip
+                clip.transform_pos_y_keyframes.push(bezier_kf(0.0, 50.0, (0.0, 0.0), (0.33 * clip_dur, 0.0)));
+                clip.transform_pos_y_keyframes.push(bezier_kf(clip_dur, -50.0, (-0.33 * clip_dur, 0.0), (0.0, 0.0)));
+            }
+            // ── Continuous motion via modifiers ──
+            "scroll_up" => {
+                use klipp_core::modifier::*;
+                clip.transform_pos_y_keyframes.push(Keyframe {
+                    time_secs: 0.0, value: 600.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+                clip.param_modifiers.entry(ParamId::PositionY).or_default().modifiers.push(
+                    Modifier::Throw { velocity: -100.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "scroll_down" => {
+                use klipp_core::modifier::*;
+                clip.transform_pos_y_keyframes.push(Keyframe {
+                    time_secs: 0.0, value: -600.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+                clip.param_modifiers.entry(ParamId::PositionY).or_default().modifiers.push(
+                    Modifier::Throw { velocity: 100.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "ticker_left" => {
+                use klipp_core::modifier::*;
+                clip.transform_pos_x_keyframes.push(Keyframe {
+                    time_secs: 0.0, value: 1000.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+                clip.param_modifiers.entry(ParamId::PositionX).or_default().modifiers.push(
+                    Modifier::Throw { velocity: -200.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "ticker_right" => {
+                use klipp_core::modifier::*;
+                clip.transform_pos_x_keyframes.push(Keyframe {
+                    time_secs: 0.0, value: -1000.0, interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+                clip.param_modifiers.entry(ParamId::PositionX).or_default().modifiers.push(
+                    Modifier::Throw { velocity: 200.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "spinning" => {
+                use klipp_core::modifier::*;
+                clip.param_modifiers.entry(ParamId::Rotation).or_default().modifiers.push(
+                    Modifier::Throw { velocity: 90.0, acceleration: 0.0, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "pulsing" => {
+                use klipp_core::modifier::*;
+                clip.param_modifiers.entry(ParamId::Scale).or_default().modifiers.push(
+                    Modifier::Oscillate { amplitude: 0.1, frequency: 1.5, phase: 0.0, waveform: Waveform::Sine, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "breathing" => {
+                use klipp_core::modifier::*;
+                clip.param_modifiers.entry(ParamId::Opacity).or_default().modifiers.push(
+                    Modifier::Oscillate { amplitude: 0.3, frequency: 0.5, phase: 0.0, waveform: Waveform::Sine, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            "floating" => {
+                use klipp_core::modifier::*;
+                clip.param_modifiers.entry(ParamId::PositionY).or_default().modifiers.push(
+                    Modifier::Wiggle { amplitude: 15.0, frequency: 0.5, blend: ModifierBlend::Add, enabled: true }
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // Sort keyframes by time after all animations applied
+    clip.opacity_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    clip.transform_pos_x_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    clip.transform_pos_y_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    clip.transform_scale_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    clip.transform_rotation_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+/// Parse an animation part string like "fade_in_0.5" into ("fade_in", 0.5f32).
+fn parse_anim_part(s: &str) -> (&str, f32) {
+    // Find the last '_' followed by a number
+    if let Some(pos) = s.rfind('_') {
+        let (name, dur_str) = s.split_at(pos);
+        let dur_str = &dur_str[1..]; // skip the '_'
+        if let Ok(dur) = dur_str.parse::<f32>() {
+            return (name, dur);
+        }
+    }
+    (s, 0.5) // default 0.5s
 }

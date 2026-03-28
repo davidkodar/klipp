@@ -895,7 +895,7 @@ impl TimelinePanel {
                                 egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)),
                             );
                             if !any_down {
-                                if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, .. }) = state.drag_drop.end() {
+                                if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
                                     // Calculate timeline position from cursor x
                                     let rel_x = pos.x - content_rect.left();
                                     let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
@@ -904,6 +904,7 @@ impl TimelinePanel {
                                     let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
                                     let duration_frames = fps_rate * 5;
                                     state.pending_title_data = Some(title_data);
+                                    state.pending_title_animation = animation;
                                     cmds.push(AppCommand::CreateTitleClip {
                                         track_index: track_idx,
                                         timeline_in,
@@ -1131,7 +1132,7 @@ impl TimelinePanel {
                 // Check if cursor is outside all track rects
                 let on_any_track = self.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
-                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, .. }) = state.drag_drop.end() {
+                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
                         // Create a new text track and place the title there
                         let track_num = state.sequence().tracks.iter()
                             .filter(|t| t.kind == TrackKind::Text).count() + 1;
@@ -1148,6 +1149,7 @@ impl TimelinePanel {
                         let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
                         let duration_frames = fps_rate * 5;
                         state.pending_title_data = Some(title_data);
+                        state.pending_title_animation = animation;
                         cmds.push(AppCommand::CreateTitleClip {
                             track_index: track_idx,
                             timeline_in,

@@ -503,9 +503,16 @@ pub struct AppState {
 
     /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
     pub pending_title_data: Option<klipp_timeline::TitleData>,
+    /// Title clip that needs its overlay texture refreshed on the next frame.
+    pub pending_title_preview_clip: Option<klipp_core::ClipId>,
+    /// Clear title overlay texture (animation preset applied — text starts invisible)
+    pub clear_title_overlay: bool,
 
     /// Duration (in seconds) for title animation fade presets.
     pub title_fade_duration: f32,
+
+    /// Pending animation identifier for title creation (consumed by CreateTitleClip handler).
+    pub pending_title_animation: Option<String>,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -780,7 +787,10 @@ impl Default for AppState {
             show_curve_editor: false,
             available_fonts: Vec::new(),
             pending_title_data: None,
+            pending_title_preview_clip: None,
+            clear_title_overlay: false,
             title_fade_duration: 0.5,
+            pending_title_animation: None,
         }
     }
 }

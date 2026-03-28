@@ -16,7 +16,7 @@ pub enum DragPayload {
     /// Dragging a media item from the media browser tab.
     MediaClip { media_id: MediaId },
     /// Dragging a title template from the titles browser tab.
-    Title { template_name: String, title_data: TitleData },
+    Title { template_name: String, title_data: TitleData, animation: Option<String> },
 }
 
 /// Global drag-and-drop state for cross-panel interactions.

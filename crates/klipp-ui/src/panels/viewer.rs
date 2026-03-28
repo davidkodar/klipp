@@ -8,6 +8,10 @@ use klipp_engine::PlaybackState;
 #[derive(Default)]
 pub struct ViewerPanel {
     pub video_texture: Option<egui::TextureHandle>,
+    /// Separate texture for title overlay — rendered on UI thread for instant preview.
+    /// Drawn on top of video_texture with alpha blending. Cleared when title is deselected.
+    pub title_overlay_texture: Option<egui::TextureHandle>,
+    pub title_overlay_size: (u32, u32),
 }
 
 impl ViewerPanel {
@@ -271,6 +275,16 @@ impl ViewerPanel {
 
         // Draw video frame
         if let Some(tex) = &self.video_texture {
+            ui.painter().image(
+                tex.id(),
+                image_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+
+        // Draw title overlay (separate texture, alpha-blended on top of video)
+        if let Some(tex) = &self.title_overlay_texture {
             ui.painter().image(
                 tex.id(),
                 image_rect,
