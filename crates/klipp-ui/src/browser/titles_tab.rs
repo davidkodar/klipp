@@ -871,79 +871,91 @@ pub fn show(
                 continue;
             }
 
-            // Category header
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(*category).strong().size(11.0).color(theme.text_accent));
+            // Collapsible category (collapsed by default, auto-expand when searching)
             ui.add_space(4.0);
+            let cat_id = ui.make_persistent_id(format!("title_cat_{category}"));
+            let default_open = *category == "Basic"; // Only Basic open by default
+            let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(), cat_id, default_open,
+            );
+            if !search_lower.is_empty() {
+                col_state.set_open(true);
+            }
+            col_state.show_header(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}  ({})", category, cat_titles.len()))
+                        .strong().size(11.0).color(theme.text_accent)
+                );
+            })
+            .body(|ui| {
+                ui.add_space(4.0);
+                egui::Grid::new(format!("titles_grid_{category}"))
+                    .num_columns(2)
+                    .spacing([6.0, 6.0])
+                    .min_col_width(card_w)
+                    .show(ui, |ui| {
+                        for (i, title) in cat_titles.iter().enumerate() {
+                            let resp = title_card(ui, theme, title, card_w);
 
-            egui::Grid::new(format!("titles_grid_{category}"))
-                .num_columns(2)
-                .spacing([6.0, 6.0])
-                .min_col_width(card_w)
-                .show(ui, |ui| {
-                    for (i, title) in cat_titles.iter().enumerate() {
-                        let resp = title_card(ui, theme, title, card_w);
+                            // Double-click: create title clip at playhead
+                            if resp.double_clicked() {
+                                let title_data = (title.create_data)();
+                                state.pending_title_data = Some(title_data);
+                                state.pending_title_animation = title.animation.map(|s| s.to_string());
+                                let ph = state.playhead;
+                                let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
+                                    .enumerate()
+                                    .find(|(_, t)| {
+                                        t.kind == klipp_timeline::TrackKind::Text
+                                            && t.clip_at_timecode(ph).is_none()
+                                    })
+                                    .map(|(idx, _)| idx);
+                                let track_index = match track_index {
+                                    Some(idx) => idx,
+                                    None => {
+                                        let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
+                                            .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
+                                            .count() + 1;
+                                        let track = klipp_timeline::Track::new(
+                                            &format!("Text {track_num}"),
+                                            klipp_timeline::TrackKind::Text,
+                                        );
+                                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                                        0
+                                    }
+                                };
+                                let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                                let duration_frames = fps_rate * 5;
+                                cmds.push(AppCommand::CreateTitleClip {
+                                    track_index,
+                                    timeline_in: ph,
+                                    duration_frames,
+                                });
+                                state.toast.show(format!(
+                                    "\"{}\" title added to timeline",
+                                    title.name
+                                ));
+                            }
 
-                        // Double-click: create title clip at playhead
-                        if resp.double_clicked() {
-                            let title_data = (title.create_data)();
-                            state.pending_title_data = Some(title_data);
-                            state.pending_title_animation = title.animation.map(|s| s.to_string());
-                            // Find a free text track or create one
-                            let ph = state.playhead;
-                            let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
-                                .enumerate()
-                                .find(|(_, t)| {
-                                    t.kind == klipp_timeline::TrackKind::Text
-                                        && t.clip_at_timecode(ph).is_none()
-                                })
-                                .map(|(idx, _)| idx);
-                            let track_index = match track_index {
-                                Some(idx) => idx,
-                                None => {
-                                    let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                        .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
-                                        .count() + 1;
-                                    let track = klipp_timeline::Track::new(
-                                        &format!("Text {track_num}"),
-                                        klipp_timeline::TrackKind::Text,
-                                    );
-                                    state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                                    0
-                                }
-                            };
-                            let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                            let duration_frames = fps_rate * 5;
-                            cmds.push(AppCommand::CreateTitleClip {
-                                track_index,
-                                timeline_in: ph,
-                                duration_frames,
-                            });
-                            state.toast.show(format!(
-                                "\"{}\" title added to timeline",
-                                title.name
-                            ));
+                            // Drag: begin title drag
+                            if resp.drag_started() {
+                                let data = (title.create_data)();
+                                state.drag_drop.begin(DragPayload::Title {
+                                    template_name: title.name.to_string(),
+                                    title_data: data,
+                                    animation: title.animation.map(|s| s.to_string()),
+                                });
+                            }
+
+                            if i % 2 == 1 {
+                                ui.end_row();
+                            }
                         }
-
-                        // Drag: begin title drag
-                        if resp.drag_started() {
-                            let data = (title.create_data)();
-                            state.drag_drop.begin(DragPayload::Title {
-                                template_name: title.name.to_string(),
-                                title_data: data,
-                                animation: title.animation.map(|s| s.to_string()),
-                            });
-                        }
-
-                        if i % 2 == 1 {
+                        if cat_titles.len() % 2 == 1 {
                             ui.end_row();
                         }
-                    }
-                    // End the last row if odd number of items
-                    if cat_titles.len() % 2 == 1 {
-                        ui.end_row();
-                    }
-                });
+                    });
+            });
         }
     });
 
