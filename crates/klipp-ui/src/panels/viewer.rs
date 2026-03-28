@@ -1324,8 +1324,9 @@ impl ViewerPanel {
         // Use a painter with an expanded clip rect so transform handles
         // near the edges of image_rect are not clipped (FCP-style: handles
         // remain visible even when the bounding box extends outside the video frame).
-        let transform_clip = image_rect.expand(40.0).intersect(ui.clip_rect());
-        let painter = ui.painter().with_clip_rect(transform_clip);
+        // Use the full UI clip rect (viewer panel) so transform handles are never cut off,
+        // even when the bounding box extends beyond the video frame area.
+        let painter = ui.painter();
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
