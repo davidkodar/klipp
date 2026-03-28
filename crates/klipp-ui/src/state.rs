@@ -513,6 +513,16 @@ pub struct AppState {
 
     /// Pending animation identifier for title creation (consumed by CreateTitleClip handler).
     pub pending_title_animation: Option<String>,
+
+    // Viewer text edit mode (double-click title in viewer)
+    /// When true, the viewer shows an editable text overlay for a title clip.
+    pub viewer_text_edit: bool,
+    /// The text being edited (clone of TitleData.text, synced on every change).
+    pub viewer_text_edit_buffer: String,
+    /// Clip being text-edited.
+    pub viewer_text_edit_clip: Option<ClipId>,
+    /// Whether to request focus on the text edit widget (first frame only).
+    pub viewer_text_edit_request_focus: bool,
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -791,6 +801,10 @@ impl Default for AppState {
             clear_title_overlay: false,
             title_fade_duration: 0.5,
             pending_title_animation: None,
+            viewer_text_edit: false,
+            viewer_text_edit_buffer: String::new(),
+            viewer_text_edit_clip: None,
+            viewer_text_edit_request_focus: false,
         }
     }
 }

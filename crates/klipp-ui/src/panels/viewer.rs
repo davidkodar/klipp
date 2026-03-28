@@ -284,17 +284,161 @@ impl ViewerPanel {
         }
 
         // Draw title overlay (separate texture, alpha-blended on top of video)
-        if let Some(tex) = &self.title_overlay_texture {
-            ui.painter().image(
-                tex.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
+        // Skip drawing the static overlay when in text edit mode (the TextEdit widget replaces it)
+        if !state.viewer_text_edit {
+            if let Some(tex) = &self.title_overlay_texture {
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+
+        // ── Viewer text edit mode ──
+        // Double-click on viewer while a title clip is selected → enter text edit mode
+        if !state.viewer_text_edit {
+            if let Some(clip_id) = state.selected_clip {
+                let is_title = state.sequence().tracks.iter()
+                    .any(|t| t.find_clip(clip_id).is_some_and(|c| c.title_data().is_some()));
+                if is_title && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if image_rect.contains(pos) {
+                            state.viewer_text_edit = true;
+                            state.viewer_text_edit_clip = Some(clip_id);
+                            state.viewer_text_edit_request_focus = true;
+                            // Load current text into edit buffer
+                            if let Some(td) = state.sequence().tracks.iter()
+                                .find_map(|t| t.find_clip(clip_id))
+                                .and_then(|c| c.title_data())
+                            {
+                                state.viewer_text_edit_buffer = td.text.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Auto-exit text edit if the clip was deselected or changed
+        if state.viewer_text_edit {
+            let still_selected = state.viewer_text_edit_clip
+                .is_some_and(|cid| state.selected_clip == Some(cid));
+            if !still_selected {
+                state.viewer_text_edit = false;
+                state.viewer_text_edit_clip = None;
+                state.viewer_text_edit_buffer.clear();
+            }
+        }
+
+        // Draw text edit overlay when active
+        if state.viewer_text_edit {
+            // Semi-transparent dark overlay behind the text editor
+            let overlay_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
+            ui.painter().rect_filled(image_rect, 0.0, overlay_bg);
+
+            // Get title position from TitleData for placement
+            let (title_x, title_y) = state.viewer_text_edit_clip
+                .and_then(|cid| {
+                    state.sequence().tracks.iter()
+                        .find_map(|t| t.find_clip(cid))
+                        .and_then(|c| c.title_data().map(|td| (td.position.x, td.position.y)))
+                })
+                .unwrap_or((0.5, 0.5));
+
+            let text_center = egui::pos2(
+                image_rect.min.x + title_x as f32 * image_rect.width(),
+                image_rect.min.y + title_y as f32 * image_rect.height(),
             );
+
+            let text_edit_rect = egui::Rect::from_center_size(
+                text_center,
+                egui::vec2(image_rect.width() * 0.8, image_rect.height() * 0.4),
+            );
+
+            // Clamp the rect to stay within the image area
+            let text_edit_rect = text_edit_rect.intersect(image_rect);
+
+            let mut text = state.viewer_text_edit_buffer.clone();
+            let te_response = ui.allocate_new_ui(
+                egui::UiBuilder::new().max_rect(text_edit_rect),
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .desired_width(text_edit_rect.width())
+                            .font(egui::FontId::proportional(24.0))
+                            .text_color(egui::Color32::WHITE)
+                            .frame(false)
+                            .cursor_at_end(true)
+                    )
+                },
+            );
+
+            // Request focus on the first frame
+            if state.viewer_text_edit_request_focus {
+                te_response.inner.request_focus();
+                state.viewer_text_edit_request_focus = false;
+            }
+
+            if text != state.viewer_text_edit_buffer {
+                state.viewer_text_edit_buffer = text.clone();
+                // Emit UpdateTitleData command to sync changes live
+                if let Some(clip_id) = state.viewer_text_edit_clip {
+                    if let Some(td) = state.sequence().tracks.iter()
+                        .find_map(|t| t.find_clip(clip_id))
+                        .and_then(|c| c.title_data())
+                    {
+                        let font_style = match td.font_style {
+                            klipp_timeline::FontStyle::Regular => 0u8,
+                            klipp_timeline::FontStyle::Bold => 1,
+                            klipp_timeline::FontStyle::Italic => 2,
+                            klipp_timeline::FontStyle::BoldItalic => 3,
+                        };
+                        cmds.push(AppCommand::UpdateTitleData {
+                            clip_id,
+                            text,
+                            font_size: td.font_size,
+                            font_name: td.font_name.clone(),
+                            font_style,
+                            color: td.color,
+                        });
+                    }
+                }
+            }
+
+            // Border around edit area
+            let accent = egui::Color32::from_rgb(255, 195, 50);
+            ui.painter().rect_stroke(
+                text_edit_rect,
+                4.0,
+                egui::Stroke::new(2.0, accent),
+            );
+
+            // "Editing" label above the edit area
+            ui.painter().text(
+                egui::pos2(text_edit_rect.left(), text_edit_rect.top() - 4.0),
+                egui::Align2::LEFT_BOTTOM,
+                "Editing Title \u{2014} press Escape to exit",
+                egui::FontId::proportional(11.0),
+                accent,
+            );
+
+            // Exit on Escape or click outside the text edit area
+            let exit_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let click_outside = ui.input(|i| i.pointer.primary_clicked())
+                && ui.input(|i| i.pointer.interact_pos())
+                    .is_some_and(|pos| !text_edit_rect.contains(pos));
+            if exit_escape || click_outside {
+                state.viewer_text_edit = false;
+                state.viewer_text_edit_clip = None;
+                state.viewer_text_edit_buffer.clear();
+            }
         }
 
         // ── On-screen transform controls ──
-        if state.show_transform_controls && state.eyedropper_mode == crate::state::EyedropperMode::None {
+        // Suppress transform controls during text edit mode
+        if state.show_transform_controls && !state.viewer_text_edit && state.eyedropper_mode == crate::state::EyedropperMode::None {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 

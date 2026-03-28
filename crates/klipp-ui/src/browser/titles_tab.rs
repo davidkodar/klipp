@@ -121,10 +121,10 @@ fn shadow_glow(color: [u8; 4]) -> Option<TitleShadow> {
 // Template create functions — Basic (10)
 // ---------------------------------------------------------------------------
 
-fn basic_plain_title() -> TitleData { centered("Your Title Here", 72.0, FontStyle::Regular, WHITE, true) }
+fn basic_plain_title() -> TitleData { centered("[Your Title]", 72.0, FontStyle::Regular, WHITE, true) }
 fn basic_subtitle() -> TitleData {
     TitleData {
-        text: "Subtitle text".into(),
+        text: "[Subtitle text]".into(),
         font_size: 28.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Regular,
@@ -136,54 +136,54 @@ fn basic_subtitle() -> TitleData {
         ..TitleData::default()
     }
 }
-fn basic_credits() -> TitleData { centered("DIRECTED BY", 48.0, FontStyle::Regular, WHITE, false) }
-fn basic_big_bold() -> TitleData { centered("BIG BOLD", 96.0, FontStyle::Bold, WHITE, true) }
+fn basic_credits() -> TitleData { centered("DIRECTED BY\n[Your Name]", 48.0, FontStyle::Regular, WHITE, false) }
+fn basic_big_bold() -> TitleData { centered("[Your Title]", 96.0, FontStyle::Bold, WHITE, true) }
 fn basic_small_caption() -> TitleData {
-    positioned("Caption text", 20.0, FontStyle::Regular, WHITE_DIM, TextAlignment::Center, 0.5, 0.92, None)
+    positioned("[Caption text]", 20.0, FontStyle::Regular, WHITE_DIM, TextAlignment::Center, 0.5, 0.92, None)
 }
 fn basic_centered_quote() -> TitleData {
-    positioned("\u{201c}Quote goes here\u{201d}", 42.0, FontStyle::Italic, WHITE_DIM, TextAlignment::Center, 0.5, 0.5, shadow_soft())
+    positioned("\u{201c}[Your quote here]\u{201d}", 42.0, FontStyle::Italic, WHITE_DIM, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn basic_label() -> TitleData {
-    positioned("LABEL", 24.0, FontStyle::Bold, WHITE, TextAlignment::Left, 0.06, 0.06, shadow_default())
+    positioned("[LABEL]", 24.0, FontStyle::Bold, WHITE, TextAlignment::Left, 0.06, 0.06, shadow_default())
 }
 fn basic_watermark() -> TitleData {
-    positioned("WATERMARK", 20.0, FontStyle::Regular, [255, 255, 255, 80], TextAlignment::Right, 0.94, 0.94, None)
+    positioned("[WATERMARK]", 20.0, FontStyle::Regular, [255, 255, 255, 80], TextAlignment::Right, 0.94, 0.94, None)
 }
 fn basic_end_card() -> TitleData { centered_on_bg("THE END", 64.0, FontStyle::Regular, WHITE, BLACK) }
-fn basic_simple_slide() -> TitleData { centered("Simple Slide", 56.0, FontStyle::Regular, WHITE, false) }
+fn basic_simple_slide() -> TitleData { centered("[Your Title]", 56.0, FontStyle::Regular, WHITE, false) }
 
 // ---------------------------------------------------------------------------
 // Lower Thirds (12)
 // ---------------------------------------------------------------------------
 
-fn lt_classic() -> TitleData { lower_third_style("Name \u{00b7} Title", 36.0, FontStyle::Regular, WHITE, [0, 0, 0, 180], 0.15, 0.85) }
-fn lt_minimal_bar() -> TitleData { lower_third_style("Interview", 24.0, FontStyle::Regular, WHITE, [200, 160, 40, 200], 0.08, 0.88) }
-fn lt_interview() -> TitleData { lower_third_style("Jane Smith\nSenior Producer", 28.0, FontStyle::Regular, WHITE, [0, 0, 0, 200], 0.12, 0.84) }
+fn lt_classic() -> TitleData { lower_third_style("[Name] \u{00b7} [Title]", 36.0, FontStyle::Regular, WHITE, [0, 0, 0, 180], 0.15, 0.85) }
+fn lt_minimal_bar() -> TitleData { lower_third_style("[Interview Topic]", 24.0, FontStyle::Regular, WHITE, [200, 160, 40, 200], 0.08, 0.88) }
+fn lt_interview() -> TitleData { lower_third_style("[Guest Name]\n[Guest Title]", 28.0, FontStyle::Regular, WHITE, [0, 0, 0, 200], 0.12, 0.84) }
 fn lt_news_banner() -> TitleData { lower_third_style("BREAKING NEWS", 32.0, FontStyle::Bold, WHITE, [180, 20, 20, 220], 0.05, 0.88) }
-fn lt_documentary() -> TitleData { lower_third_style("Historical Figure", 30.0, FontStyle::Italic, WHITE_DIM, [40, 40, 50, 200], 0.12, 0.85) }
-fn lt_location() -> TitleData { lower_third_style("New York, USA", 26.0, FontStyle::Regular, WHITE, [0, 0, 0, 170], 0.1, 0.87) }
-fn lt_date_stamp() -> TitleData { lower_third_style("March 15, 2024", 22.0, FontStyle::Regular, WHITE_DIM, [0, 0, 0, 160], 0.1, 0.9) }
-fn lt_social_handle() -> TitleData { lower_third_style("@username", 28.0, FontStyle::Bold, CYAN, [0, 0, 0, 180], 0.1, 0.87) }
-fn lt_quote_attribution() -> TitleData { lower_third_style("\u{2014} Speaker Name", 24.0, FontStyle::Italic, WHITE_DIM, [0, 0, 0, 150], 0.15, 0.88) }
-fn lt_podcast_guest() -> TitleData { lower_third_style("Guest Name\nPodcast Host", 30.0, FontStyle::Regular, WHITE, [60, 20, 120, 200], 0.1, 0.84) }
-fn lt_corporate() -> TitleData { lower_third_style("John Doe\nCEO, Acme Corp", 28.0, FontStyle::Regular, WHITE, [30, 50, 80, 210], 0.12, 0.84) }
-fn lt_broadcast() -> TitleData { lower_third_style("REPORTER NAME", 30.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.86) }
+fn lt_documentary() -> TitleData { lower_third_style("[Subject Name]", 30.0, FontStyle::Italic, WHITE_DIM, [40, 40, 50, 200], 0.12, 0.85) }
+fn lt_location() -> TitleData { lower_third_style("[City, Country]", 26.0, FontStyle::Regular, WHITE, [0, 0, 0, 170], 0.1, 0.87) }
+fn lt_date_stamp() -> TitleData { lower_third_style("[Month Day, Year]", 22.0, FontStyle::Regular, WHITE_DIM, [0, 0, 0, 160], 0.1, 0.9) }
+fn lt_social_handle() -> TitleData { lower_third_style("@[username]", 28.0, FontStyle::Bold, CYAN, [0, 0, 0, 180], 0.1, 0.87) }
+fn lt_quote_attribution() -> TitleData { lower_third_style("\u{2014} [Speaker Name]", 24.0, FontStyle::Italic, WHITE_DIM, [0, 0, 0, 150], 0.15, 0.88) }
+fn lt_podcast_guest() -> TitleData { lower_third_style("[Guest Name]\n[Podcast Title]", 30.0, FontStyle::Regular, WHITE, [60, 20, 120, 200], 0.1, 0.84) }
+fn lt_corporate() -> TitleData { lower_third_style("[Full Name]\n[Job Title, Company]", 28.0, FontStyle::Regular, WHITE, [30, 50, 80, 210], 0.12, 0.84) }
+fn lt_broadcast() -> TitleData { lower_third_style("[REPORTER NAME]", 30.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.86) }
 
 // ---------------------------------------------------------------------------
 // Cinematic (12)
 // ---------------------------------------------------------------------------
 
-fn cin_chapter_card() -> TitleData { centered_on_bg("PART I", 64.0, FontStyle::Regular, GOLD, [20, 20, 25, 240]) }
-fn cin_opening_title() -> TitleData { centered("THE JOURNEY", 96.0, FontStyle::Bold, WHITE, true) }
-fn cin_film_credits() -> TitleData { centered("Written and Directed by\nYour Name", 42.0, FontStyle::Regular, WHITE, false) }
-fn cin_directors_credit() -> TitleData { centered("A FILM BY\nDIRECTOR NAME", 48.0, FontStyle::Regular, WHITE_DIM, false) }
-fn cin_dramatic_reveal() -> TitleData { centered("REVELATION", 84.0, FontStyle::Bold, WHITE, true) }
+fn cin_chapter_card() -> TitleData { centered_on_bg("[PART I]", 64.0, FontStyle::Regular, GOLD, [20, 20, 25, 240]) }
+fn cin_opening_title() -> TitleData { centered("[Film Title]", 96.0, FontStyle::Bold, WHITE, true) }
+fn cin_film_credits() -> TitleData { centered("Written and Directed by\n[Your Name]", 42.0, FontStyle::Regular, WHITE, false) }
+fn cin_directors_credit() -> TitleData { centered("A FILM BY\n[Director Name]", 48.0, FontStyle::Regular, WHITE_DIM, false) }
+fn cin_dramatic_reveal() -> TitleData { centered("[Title]", 84.0, FontStyle::Bold, WHITE, true) }
 fn cin_movie_poster() -> TitleData {
-    positioned("MOVIE TITLE", 90.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, shadow_hard())
+    positioned("[MOVIE TITLE]", 90.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, shadow_hard())
 }
 fn cin_scene_location() -> TitleData {
-    positioned("LONDON, ENGLAND\n1942", 36.0, FontStyle::Regular, WHITE, TextAlignment::Left, 0.08, 0.88, shadow_default())
+    positioned("[CITY, COUNTRY]\n[Year]", 36.0, FontStyle::Regular, WHITE, TextAlignment::Left, 0.08, 0.88, shadow_default())
 }
 fn cin_retro_title() -> TitleData {
     positioned("RETRO", 72.0, FontStyle::Bold, [255, 220, 150, 255], TextAlignment::Center, 0.5, 0.5, shadow_soft())
@@ -218,7 +218,7 @@ fn sm_thumbnail() -> TitleData {
 }
 fn sm_subscribe_cta() -> TitleData {
     TitleData {
-        text: "SUBSCRIBE".into(),
+        text: "SUBSCRIBE to [Channel Name]".into(),
         font_size: 42.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Bold,
@@ -245,11 +245,11 @@ fn sm_like_share() -> TitleData {
     }
 }
 fn sm_hashtag() -> TitleData {
-    positioned("#trending", 48.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, shadow_soft())
+    positioned("#[hashtag]", 48.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn sm_comment() -> TitleData {
     TitleData {
-        text: "User comment here...".into(),
+        text: "[Your comment here...]".into(),
         font_size: 28.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Regular,
@@ -333,11 +333,11 @@ fn bc_breaking_news() -> TitleData {
         ..TitleData::default()
     }
 }
-fn bc_news_ticker() -> TitleData { lower_third_style("Breaking: Story details here...", 26.0, FontStyle::Regular, WHITE, [20, 20, 80, 220], 0.05, 0.94) }
-fn bc_weather() -> TitleData { lower_third_style("New York  72\u{00b0}F", 28.0, FontStyle::Regular, WHITE, [0, 80, 160, 210], 0.08, 0.87) }
+fn bc_news_ticker() -> TitleData { lower_third_style("Breaking: [Story details here...]", 26.0, FontStyle::Regular, WHITE, [20, 20, 80, 220], 0.05, 0.94) }
+fn bc_weather() -> TitleData { lower_third_style("[City]  [Temp]\u{00b0}F", 28.0, FontStyle::Regular, WHITE, [0, 80, 160, 210], 0.08, 0.87) }
 fn bc_score_bug() -> TitleData {
     TitleData {
-        text: "HOME 3 - 2 AWAY".into(),
+        text: "[HOME] 0 - 0 [AWAY]".into(),
         font_size: 28.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Bold,
@@ -349,8 +349,8 @@ fn bc_score_bug() -> TitleData {
         ..TitleData::default()
     }
 }
-fn bc_reporter() -> TitleData { lower_third_style("REPORTER NAME\nCity Bureau", 28.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.84) }
-fn bc_program_title() -> TitleData { centered_on_bg("PROGRAM TITLE", 56.0, FontStyle::Bold, WHITE, [20, 30, 60, 240]) }
+fn bc_reporter() -> TitleData { lower_third_style("[Reporter Name]\n[City Bureau]", 28.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.84) }
+fn bc_program_title() -> TitleData { centered_on_bg("[PROGRAM TITLE]", 56.0, FontStyle::Bold, WHITE, [20, 30, 60, 240]) }
 fn bc_live_badge() -> TitleData {
     TitleData {
         text: "LIVE".into(),
@@ -401,10 +401,10 @@ fn bc_alert() -> TitleData {
 // Educational (8)
 // ---------------------------------------------------------------------------
 
-fn edu_lesson() -> TitleData { centered_on_bg("Lesson 1: Introduction", 48.0, FontStyle::Bold, WHITE, [30, 30, 60, 240]) }
+fn edu_lesson() -> TitleData { centered_on_bg("Lesson [#]: [Topic]", 48.0, FontStyle::Bold, WHITE, [30, 30, 60, 240]) }
 fn edu_key_point() -> TitleData {
     TitleData {
-        text: "Key Point: Important fact here".into(),
+        text: "Key Point: [Important fact here]".into(),
         font_size: 36.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Bold,
@@ -418,7 +418,7 @@ fn edu_key_point() -> TitleData {
 }
 fn edu_definition() -> TitleData {
     TitleData {
-        text: "Term: Definition goes here".into(),
+        text: "[Term]: [Definition goes here]".into(),
         font_size: 32.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Regular,
@@ -430,7 +430,7 @@ fn edu_definition() -> TitleData {
         ..TitleData::default()
     }
 }
-fn edu_step() -> TitleData { centered_on_bg("Step 1: Getting Started", 42.0, FontStyle::Bold, WHITE, [40, 60, 40, 240]) }
+fn edu_step() -> TitleData { centered_on_bg("Step [#]: [Description]", 42.0, FontStyle::Bold, WHITE, [40, 60, 40, 240]) }
 fn edu_formula() -> TitleData {
     positioned("E = mc\u{00b2}", 48.0, FontStyle::Regular, GREEN, TextAlignment::Center, 0.5, 0.5, shadow_default())
 }
@@ -451,7 +451,7 @@ fn edu_annotation() -> TitleData {
 fn edu_summary() -> TitleData { centered_on_bg("Summary", 48.0, FontStyle::Bold, WHITE, [50, 30, 80, 240]) }
 fn edu_quiz() -> TitleData {
     TitleData {
-        text: "What is the answer?".into(),
+        text: "[Your question here?]".into(),
         font_size: 42.0,
         font_name: "sans-serif".into(),
         font_style: FontStyle::Bold,
@@ -574,16 +574,16 @@ fn three_d_retro_stack() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn wed_save_date() -> TitleData {
-    positioned("Save the Date\nJune 15, 2024", 48.0, FontStyle::Italic, GOLD, TextAlignment::Center, 0.5, 0.5, shadow_soft())
+    positioned("Save the Date\n[Month Day, Year]", 48.0, FontStyle::Italic, GOLD, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn wed_couple_names() -> TitleData {
-    positioned("Emma & James", 64.0, FontStyle::Italic, WHITE, TextAlignment::Center, 0.5, 0.5, shadow_soft())
+    positioned("[Name] & [Name]", 64.0, FontStyle::Italic, WHITE, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn wed_thank_you() -> TitleData {
     positioned("Thank You", 72.0, FontStyle::Italic, GOLD, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn wed_event_details() -> TitleData {
-    centered_on_bg("Saturday, June 15\n4:00 PM\nGrand Ballroom", 36.0, FontStyle::Regular, WHITE, [30, 25, 40, 230])
+    centered_on_bg("[Day, Month Date]\n[Time]\n[Venue Name]", 36.0, FontStyle::Regular, WHITE, [30, 25, 40, 230])
 }
 fn wed_invitation() -> TitleData {
     centered_on_bg("You Are Cordially Invited", 42.0, FontStyle::Italic, GOLD, [20, 15, 30, 240])
@@ -645,39 +645,39 @@ fn char_wave_bounce() -> TitleData {
 
 const TITLES: &[TitleTemplate] = &[
     // ---- Basic (10) ----
-    TitleTemplate { name: "Plain Title", category: "Basic", preview_text: "Your Title Here", create_data: basic_plain_title, animation: None },
-    TitleTemplate { name: "Subtitle", category: "Basic", preview_text: "Subtitle text", create_data: basic_subtitle, animation: None },
+    TitleTemplate { name: "Plain Title", category: "Basic", preview_text: "[Your Title]", create_data: basic_plain_title, animation: None },
+    TitleTemplate { name: "Subtitle", category: "Basic", preview_text: "[Subtitle text]", create_data: basic_subtitle, animation: None },
     TitleTemplate { name: "Credits", category: "Basic", preview_text: "DIRECTED BY", create_data: basic_credits, animation: None },
-    TitleTemplate { name: "Big Bold", category: "Basic", preview_text: "BIG BOLD", create_data: basic_big_bold, animation: None },
-    TitleTemplate { name: "Small Caption", category: "Basic", preview_text: "Caption text", create_data: basic_small_caption, animation: None },
+    TitleTemplate { name: "Big Bold", category: "Basic", preview_text: "[Your Title]", create_data: basic_big_bold, animation: None },
+    TitleTemplate { name: "Small Caption", category: "Basic", preview_text: "[Caption text]", create_data: basic_small_caption, animation: None },
     TitleTemplate { name: "Centered Quote", category: "Basic", preview_text: "\u{201c}Quote\u{201d}", create_data: basic_centered_quote, animation: None },
-    TitleTemplate { name: "Label", category: "Basic", preview_text: "LABEL", create_data: basic_label, animation: None },
-    TitleTemplate { name: "Watermark", category: "Basic", preview_text: "WATERMARK", create_data: basic_watermark, animation: None },
+    TitleTemplate { name: "Label", category: "Basic", preview_text: "[LABEL]", create_data: basic_label, animation: None },
+    TitleTemplate { name: "Watermark", category: "Basic", preview_text: "[WATERMARK]", create_data: basic_watermark, animation: None },
     TitleTemplate { name: "End Card", category: "Basic", preview_text: "THE END", create_data: basic_end_card, animation: None },
-    TitleTemplate { name: "Simple Slide", category: "Basic", preview_text: "Simple Slide", create_data: basic_simple_slide, animation: None },
+    TitleTemplate { name: "Simple Slide", category: "Basic", preview_text: "[Your Title]", create_data: basic_simple_slide, animation: None },
 
     // ---- Lower Thirds (12) ----
-    TitleTemplate { name: "Classic Lower Third", category: "Lower Thirds", preview_text: "Name \u{00b7} Title", create_data: lt_classic, animation: None },
-    TitleTemplate { name: "Minimal Bar", category: "Lower Thirds", preview_text: "Interview", create_data: lt_minimal_bar, animation: None },
-    TitleTemplate { name: "Interview", category: "Lower Thirds", preview_text: "Jane Smith", create_data: lt_interview, animation: None },
+    TitleTemplate { name: "Classic Lower Third", category: "Lower Thirds", preview_text: "[Name] \u{00b7} [Title]", create_data: lt_classic, animation: None },
+    TitleTemplate { name: "Minimal Bar", category: "Lower Thirds", preview_text: "[Interview]", create_data: lt_minimal_bar, animation: None },
+    TitleTemplate { name: "Interview", category: "Lower Thirds", preview_text: "[Guest Name]", create_data: lt_interview, animation: None },
     TitleTemplate { name: "News Banner", category: "Lower Thirds", preview_text: "BREAKING NEWS", create_data: lt_news_banner, animation: None },
-    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "Historical Figure", create_data: lt_documentary, animation: None },
-    TitleTemplate { name: "Location Tag", category: "Lower Thirds", preview_text: "New York, USA", create_data: lt_location, animation: None },
-    TitleTemplate { name: "Date Stamp", category: "Lower Thirds", preview_text: "March 15, 2024", create_data: lt_date_stamp, animation: None },
-    TitleTemplate { name: "Social Handle", category: "Lower Thirds", preview_text: "@username", create_data: lt_social_handle, animation: None },
-    TitleTemplate { name: "Quote Attribution", category: "Lower Thirds", preview_text: "\u{2014} Speaker", create_data: lt_quote_attribution, animation: None },
-    TitleTemplate { name: "Podcast Guest", category: "Lower Thirds", preview_text: "Guest Name", create_data: lt_podcast_guest, animation: None },
-    TitleTemplate { name: "Corporate", category: "Lower Thirds", preview_text: "John Doe", create_data: lt_corporate, animation: None },
-    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "REPORTER", create_data: lt_broadcast, animation: None },
+    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Subject]", create_data: lt_documentary, animation: None },
+    TitleTemplate { name: "Location Tag", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location, animation: None },
+    TitleTemplate { name: "Date Stamp", category: "Lower Thirds", preview_text: "[Month Day]", create_data: lt_date_stamp, animation: None },
+    TitleTemplate { name: "Social Handle", category: "Lower Thirds", preview_text: "@[username]", create_data: lt_social_handle, animation: None },
+    TitleTemplate { name: "Quote Attribution", category: "Lower Thirds", preview_text: "\u{2014} [Speaker]", create_data: lt_quote_attribution, animation: None },
+    TitleTemplate { name: "Podcast Guest", category: "Lower Thirds", preview_text: "[Guest Name]", create_data: lt_podcast_guest, animation: None },
+    TitleTemplate { name: "Corporate", category: "Lower Thirds", preview_text: "[Full Name]", create_data: lt_corporate, animation: None },
+    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[REPORTER]", create_data: lt_broadcast, animation: None },
 
     // ---- Cinematic (12) ----
-    TitleTemplate { name: "Chapter Card", category: "Cinematic", preview_text: "PART I", create_data: cin_chapter_card, animation: None },
-    TitleTemplate { name: "Opening Title", category: "Cinematic", preview_text: "THE JOURNEY", create_data: cin_opening_title, animation: None },
+    TitleTemplate { name: "Chapter Card", category: "Cinematic", preview_text: "[PART I]", create_data: cin_chapter_card, animation: None },
+    TitleTemplate { name: "Opening Title", category: "Cinematic", preview_text: "[Film Title]", create_data: cin_opening_title, animation: None },
     TitleTemplate { name: "Film Credits", category: "Cinematic", preview_text: "Written by...", create_data: cin_film_credits, animation: None },
     TitleTemplate { name: "Director's Credit", category: "Cinematic", preview_text: "A FILM BY", create_data: cin_directors_credit, animation: None },
-    TitleTemplate { name: "Dramatic Reveal", category: "Cinematic", preview_text: "REVELATION", create_data: cin_dramatic_reveal, animation: None },
-    TitleTemplate { name: "Movie Poster", category: "Cinematic", preview_text: "MOVIE TITLE", create_data: cin_movie_poster, animation: None },
-    TitleTemplate { name: "Scene Location", category: "Cinematic", preview_text: "LONDON, 1942", create_data: cin_scene_location, animation: None },
+    TitleTemplate { name: "Dramatic Reveal", category: "Cinematic", preview_text: "[Title]", create_data: cin_dramatic_reveal, animation: None },
+    TitleTemplate { name: "Movie Poster", category: "Cinematic", preview_text: "[MOVIE TITLE]", create_data: cin_movie_poster, animation: None },
+    TitleTemplate { name: "Scene Location", category: "Cinematic", preview_text: "[CITY, Year]", create_data: cin_scene_location, animation: None },
     TitleTemplate { name: "Retro Title", category: "Cinematic", preview_text: "RETRO", create_data: cin_retro_title, animation: None },
     TitleTemplate { name: "Typewriter", category: "Cinematic", preview_text: "typewriter_text", create_data: cin_typewriter, animation: None },
     TitleTemplate { name: "Glitch Title", category: "Cinematic", preview_text: "GL1TCH", create_data: cin_glitch, animation: None },
