@@ -3,7 +3,8 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::{
-    FontStyle, TextAlignment, TitleBackground, TitleData, TitlePosition, TitleShadow,
+    FontStyle, TextAlignment, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData,
+    TitlePosition, TitleShadow,
 };
 
 struct TitleTemplate {
@@ -35,6 +36,7 @@ fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: boo
         } else {
             None
         },
+        ..TitleData::default()
     }
 }
 
@@ -50,6 +52,7 @@ fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8;
         position: TitlePosition { x: 0.5, y: 0.5 },
         background: TitleBackground::FullFrame { color: bg },
         shadow: None,
+        ..TitleData::default()
     }
 }
 
@@ -65,6 +68,7 @@ fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [
         position: TitlePosition { x, y },
         background: TitleBackground::Color { color: bg, padding: 12.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 
@@ -81,6 +85,7 @@ fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: Te
         position: TitlePosition { x, y },
         background: TitleBackground::None,
         shadow,
+        ..TitleData::default()
     }
 }
 
@@ -128,6 +133,7 @@ fn basic_subtitle() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.88 },
         background: TitleBackground::Color { color: [0, 0, 0, 153], padding: 10.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn basic_credits() -> TitleData { centered("DIRECTED BY", 48.0, FontStyle::Regular, WHITE, false) }
@@ -221,6 +227,7 @@ fn sm_subscribe_cta() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.8 },
         background: TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn sm_like_share() -> TitleData {
@@ -234,6 +241,7 @@ fn sm_like_share() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.85 },
         background: TitleBackground::Color { color: [40, 100, 200, 220], padding: 12.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn sm_hashtag() -> TitleData {
@@ -250,6 +258,7 @@ fn sm_comment() -> TitleData {
         position: TitlePosition { x: 0.15, y: 0.75 },
         background: TitleBackground::Color { color: [50, 50, 60, 200], padding: 14.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn sm_poll() -> TitleData {
@@ -321,6 +330,7 @@ fn bc_breaking_news() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.12 },
         background: TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn bc_news_ticker() -> TitleData { lower_third_style("Breaking: Story details here...", 26.0, FontStyle::Regular, WHITE, [20, 20, 80, 220], 0.05, 0.94) }
@@ -336,6 +346,7 @@ fn bc_score_bug() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.06 },
         background: TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn bc_reporter() -> TitleData { lower_third_style("REPORTER NAME\nCity Bureau", 28.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.84) }
@@ -351,6 +362,7 @@ fn bc_live_badge() -> TitleData {
         position: TitlePosition { x: 0.92, y: 0.06 },
         background: TitleBackground::Color { color: [220, 20, 20, 240], padding: 8.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn bc_time_zone() -> TitleData {
@@ -364,6 +376,7 @@ fn bc_time_zone() -> TitleData {
         position: TitlePosition { x: 0.94, y: 0.94 },
         background: TitleBackground::Color { color: [0, 0, 0, 150], padding: 6.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn bc_network_bug() -> TitleData {
@@ -380,6 +393,7 @@ fn bc_alert() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.5 },
         background: TitleBackground::Color { color: [180, 40, 0, 230], padding: 18.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 
@@ -399,6 +413,7 @@ fn edu_key_point() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.5 },
         background: TitleBackground::Color { color: [0, 0, 0, 180], padding: 16.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn edu_definition() -> TitleData {
@@ -412,6 +427,7 @@ fn edu_definition() -> TitleData {
         position: TitlePosition { x: 0.15, y: 0.5 },
         background: TitleBackground::Color { color: [20, 60, 80, 200], padding: 14.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn edu_step() -> TitleData { centered_on_bg("Step 1: Getting Started", 42.0, FontStyle::Bold, WHITE, [40, 60, 40, 240]) }
@@ -429,6 +445,7 @@ fn edu_annotation() -> TitleData {
         position: TitlePosition { x: 0.92, y: 0.15 },
         background: TitleBackground::Color { color: [0, 0, 0, 140], padding: 8.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 fn edu_summary() -> TitleData { centered_on_bg("Summary", 48.0, FontStyle::Bold, WHITE, [50, 30, 80, 240]) }
@@ -443,6 +460,7 @@ fn edu_quiz() -> TitleData {
         position: TitlePosition { x: 0.5, y: 0.35 },
         background: TitleBackground::Color { color: [80, 40, 160, 210], padding: 16.0 },
         shadow: None,
+        ..TitleData::default()
     }
 }
 
@@ -451,10 +469,18 @@ fn edu_quiz() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn sty_neon() -> TitleData {
-    positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, shadow_glow([0, 200, 220, 180]))
+    TitleData {
+        glow: Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 }),
+        outline: Some(TextOutline { color: [0, 255, 200, 255], width: 2.0 }),
+        ..positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None)
+    }
 }
 fn sty_outline() -> TitleData {
-    positioned("OUTLINE", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 0.0, offset_y: 0.0, blur: 3.0 }))
+    TitleData {
+        outline: Some(TextOutline { color: [255, 255, 255, 255], width: 3.0 }),
+        color: [255, 255, 255, 80], // semi-transparent fill to emphasise the outline
+        ..positioned("OUTLINE", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    }
 }
 fn sty_handwritten() -> TitleData {
     positioned("handwritten feel", 48.0, FontStyle::Italic, WHITE_DIM, TextAlignment::Center, 0.5, 0.5, shadow_soft())
@@ -463,7 +489,10 @@ fn sty_stamp() -> TitleData {
     positioned("APPROVED", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, shadow_hard())
 }
 fn sty_gradient() -> TitleData {
-    positioned("GRADIENT", 72.0, FontStyle::Bold, PURPLE, TextAlignment::Center, 0.5, 0.5, shadow_glow([160, 80, 255, 150]))
+    TitleData {
+        gradient: Some(TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] }),
+        ..positioned("GRADIENT", 72.0, FontStyle::Bold, PURPLE, TextAlignment::Center, 0.5, 0.5, shadow_glow([160, 80, 255, 150]))
+    }
 }
 fn sty_vintage() -> TitleData {
     positioned("Vintage", 56.0, FontStyle::Regular, [255, 220, 150, 255], TextAlignment::Center, 0.5, 0.5, shadow_soft())

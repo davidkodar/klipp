@@ -223,6 +223,12 @@ pub enum ClipKindJson {
         background: serde_json::Value,
         #[serde(default)]
         shadow: serde_json::Value,
+        #[serde(default)]
+        outline: serde_json::Value,
+        #[serde(default)]
+        glow: serde_json::Value,
+        #[serde(default)]
+        gradient: serde_json::Value,
     },
     Gap,
 }

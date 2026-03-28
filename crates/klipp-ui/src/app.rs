@@ -4780,7 +4780,7 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
-                AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y } => {
+                AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                             if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -4789,11 +4789,65 @@ impl KlippApp {
                                         color: *color,
                                         offset_x: *offset_x,
                                         offset_y: *offset_y,
-                                        blur: 0.0,
+                                        blur: *blur,
                                     });
                                 } else {
                                     td.shadow = None;
                                 }
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.outline = if *enabled {
+                                    Some(klipp_timeline::TextOutline { color: *color, width: *width })
+                                } else {
+                                    None
+                                };
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.glow = if *enabled {
+                                    Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
+                                } else {
+                                    None
+                                };
+                            }
+                        }
+                    }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                            if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                                td.gradient = if *enabled {
+                                    Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
+                                } else {
+                                    None
+                                };
                             }
                         }
                     }

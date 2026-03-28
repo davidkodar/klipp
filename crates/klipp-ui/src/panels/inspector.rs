@@ -721,6 +721,7 @@ impl InspectorPanel {
                 color: shadow.color,
                 offset_x: shadow.offset_x,
                 offset_y: shadow.offset_y,
+                blur: shadow.blur,
             });
         }
         if has_shadow {
@@ -738,6 +739,7 @@ impl InspectorPanel {
                     color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()],
                     offset_x: ox,
                     offset_y: oy,
+                    blur: shadow.blur,
                 });
             }
         }

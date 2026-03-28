@@ -5,7 +5,8 @@ mod marker;
 mod sequence;
 
 pub use clip_kind::{
-    ClipKind, FontStyle, TextAlignment, TitleBackground, TitleData, TitlePosition, TitleShadow,
+    ClipKind, FontStyle, TextAlignment, TextGlow, TextGradient, TextOutline, TitleBackground,
+    TitleData, TitlePosition, TitleShadow,
 };
 pub use marker::Marker;
 pub use sequence::{

@@ -45,6 +45,15 @@ pub struct TitleData {
     pub position: TitlePosition,
     pub background: TitleBackground,
     pub shadow: Option<TitleShadow>,
+    /// Outline/stroke around text
+    #[serde(default)]
+    pub outline: Option<TextOutline>,
+    /// Outer glow effect
+    #[serde(default)]
+    pub glow: Option<TextGlow>,
+    /// Gradient fill (overrides solid color when set)
+    #[serde(default)]
+    pub gradient: Option<TextGradient>,
 }
 
 impl Default for TitleData {
@@ -59,6 +68,9 @@ impl Default for TitleData {
             position: TitlePosition { x: 0.5, y: 0.5 },
             background: TitleBackground::None,
             shadow: None,
+            outline: None,
+            glow: None,
+            gradient: None,
         }
     }
 }
@@ -106,4 +118,26 @@ pub struct TitleShadow {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct TextOutline {
+    pub color: [u8; 4],
+    /// Width in pixels, typically 1-8
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct TextGlow {
+    pub color: [u8; 4],
+    /// Blur radius in pixels, typically 5-30
+    pub radius: f32,
+    /// Intensity 0.0-1.0, default 0.8
+    pub intensity: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextGradient {
+    pub top_color: [u8; 4],
+    pub bottom_color: [u8; 4],
 }

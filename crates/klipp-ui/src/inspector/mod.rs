@@ -391,18 +391,103 @@ fn show_title_editor(
     let shadow = td.shadow.unwrap_or(klipp_timeline::TitleShadow { color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0 });
     let mut shadow_enabled = has_shadow;
     if ui.checkbox(&mut shadow_enabled, "Enable Shadow").changed() {
-        cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: shadow_enabled, color: shadow.color, offset_x: shadow.offset_x, offset_y: shadow.offset_y });
+        cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: shadow_enabled, color: shadow.color, offset_x: shadow.offset_x, offset_y: shadow.offset_y, blur: shadow.blur });
     }
     if has_shadow {
         let mut ox = shadow.offset_x;
         let mut oy = shadow.offset_y;
+        let mut sb = shadow.blur;
         let mut s_changed = false;
         s_changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
         s_changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
+        s_changed |= ui.add(egui::Slider::new(&mut sb, 0.0..=30.0).text("Blur").step_by(0.5)).changed();
         let mut s_col = egui::Color32::from_rgba_premultiplied(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]);
         s_changed |= ui.color_edit_button_srgba(&mut s_col).changed();
         if s_changed {
-            cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: true, color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()], offset_x: ox, offset_y: oy });
+            cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: true, color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()], offset_x: ox, offset_y: oy, blur: sb });
+        }
+    }
+    ui.add_space(8.0);
+
+    // Outline
+    ui.separator();
+    ui.label(egui::RichText::new("Outline").strong().size(11.0));
+    let has_outline = td.outline.is_some();
+    let outline = td.outline.unwrap_or(klipp_timeline::TextOutline { color: [255, 255, 255, 255], width: 2.0 });
+    let mut outline_enabled = has_outline;
+    if ui.checkbox(&mut outline_enabled, "Enable Outline").changed() {
+        cmds.push(AppCommand::SetTitleOutline { clip_id, enabled: outline_enabled, color: outline.color, width: outline.width });
+    }
+    if has_outline {
+        let mut ow = outline.width;
+        let mut o_changed = false;
+        o_changed |= ui.add(egui::Slider::new(&mut ow, 0.5..=12.0).text("Width").step_by(0.5).suffix(" px")).changed();
+        let mut o_col = egui::Color32::from_rgba_premultiplied(outline.color[0], outline.color[1], outline.color[2], outline.color[3]);
+        o_changed |= ui.color_edit_button_srgba(&mut o_col).changed();
+        if o_changed {
+            cmds.push(AppCommand::SetTitleOutline {
+                clip_id, enabled: true,
+                color: [o_col.r(), o_col.g(), o_col.b(), o_col.a()],
+                width: ow,
+            });
+        }
+    }
+    ui.add_space(8.0);
+
+    // Glow
+    ui.separator();
+    ui.label(egui::RichText::new("Glow").strong().size(11.0));
+    let has_glow = td.glow.is_some();
+    let glow = td.glow.unwrap_or(klipp_timeline::TextGlow { color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8 });
+    let mut glow_enabled = has_glow;
+    if ui.checkbox(&mut glow_enabled, "Enable Glow").changed() {
+        cmds.push(AppCommand::SetTitleGlow { clip_id, enabled: glow_enabled, color: glow.color, radius: glow.radius, intensity: glow.intensity });
+    }
+    if has_glow {
+        let mut gr = glow.radius;
+        let mut gi = glow.intensity;
+        let mut g_changed = false;
+        g_changed |= ui.add(egui::Slider::new(&mut gr, 1.0..=40.0).text("Radius").step_by(0.5).suffix(" px")).changed();
+        g_changed |= ui.add(egui::Slider::new(&mut gi, 0.0..=1.0).text("Intensity").step_by(0.05)).changed();
+        let mut g_col = egui::Color32::from_rgba_premultiplied(glow.color[0], glow.color[1], glow.color[2], glow.color[3]);
+        g_changed |= ui.color_edit_button_srgba(&mut g_col).changed();
+        if g_changed {
+            cmds.push(AppCommand::SetTitleGlow {
+                clip_id, enabled: true,
+                color: [g_col.r(), g_col.g(), g_col.b(), g_col.a()],
+                radius: gr, intensity: gi,
+            });
+        }
+    }
+    ui.add_space(8.0);
+
+    // Gradient Fill
+    ui.separator();
+    ui.label(egui::RichText::new("Gradient Fill").strong().size(11.0));
+    let has_gradient = td.gradient.is_some();
+    let gradient = td.gradient.clone().unwrap_or(klipp_timeline::TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
+    let mut gradient_enabled = has_gradient;
+    if ui.checkbox(&mut gradient_enabled, "Enable Gradient").changed() {
+        cmds.push(AppCommand::SetTitleGradient { clip_id, enabled: gradient_enabled, top_color: gradient.top_color, bottom_color: gradient.bottom_color });
+    }
+    if has_gradient {
+        let mut grad_changed = false;
+        let mut top_col = egui::Color32::from_rgba_premultiplied(gradient.top_color[0], gradient.top_color[1], gradient.top_color[2], gradient.top_color[3]);
+        let mut bot_col = egui::Color32::from_rgba_premultiplied(gradient.bottom_color[0], gradient.bottom_color[1], gradient.bottom_color[2], gradient.bottom_color[3]);
+        ui.horizontal(|ui| {
+            ui.label("Top:");
+            grad_changed |= ui.color_edit_button_srgba(&mut top_col).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Bottom:");
+            grad_changed |= ui.color_edit_button_srgba(&mut bot_col).changed();
+        });
+        if grad_changed {
+            cmds.push(AppCommand::SetTitleGradient {
+                clip_id, enabled: true,
+                top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
+                bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
+            });
         }
     }
     ui.add_space(12.0);

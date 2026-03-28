@@ -432,7 +432,13 @@ pub enum AppCommand {
     SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
-    SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32 },
+    SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    /// Set text outline. `None` = disable.
+    SetTitleOutline { clip_id: ClipId, enabled: bool, color: [u8; 4], width: f32 },
+    /// Set text glow. `enabled=false` = disable.
+    SetTitleGlow { clip_id: ClipId, enabled: bool, color: [u8; 4], radius: f32, intensity: f32 },
+    /// Set gradient fill. `enabled=false` = disable, uses solid color instead.
+    SetTitleGradient { clip_id: ClipId, enabled: bool, top_color: [u8; 4], bottom_color: [u8; 4] },
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,

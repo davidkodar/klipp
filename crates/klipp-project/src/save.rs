@@ -242,6 +242,9 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             position_y: data.position.y,
             background: serde_json::to_value(&data.background).unwrap_or_default(),
             shadow: serde_json::to_value(&data.shadow).unwrap_or_default(),
+            outline: serde_json::to_value(&data.outline).unwrap_or_default(),
+            glow: serde_json::to_value(&data.glow).unwrap_or_default(),
+            gradient: serde_json::to_value(&data.gradient).unwrap_or_default(),
         },
         ClipKind::Gap => ClipKindJson::Gap,
     }

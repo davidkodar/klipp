@@ -319,6 +319,9 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 position_y,
                 background,
                 shadow,
+                outline,
+                glow,
+                gradient,
             } => {
                 let align = match alignment.as_str() {
                     "Left" => TextAlignment::Left,
@@ -334,6 +337,9 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 let bg: TitleBackground = serde_json::from_value(background.clone())
                     .unwrap_or(TitleBackground::None);
                 let sh: Option<TitleShadow> = serde_json::from_value(shadow.clone()).ok().flatten();
+                let ol: Option<klipp_timeline::TextOutline> = serde_json::from_value(outline.clone()).ok().flatten();
+                let gl: Option<klipp_timeline::TextGlow> = serde_json::from_value(glow.clone()).ok().flatten();
+                let gr: Option<klipp_timeline::TextGradient> = serde_json::from_value(gradient.clone()).ok().flatten();
                 ClipKind::Title(TitleData {
                     text: text.clone(),
                     font_size: *font_size,
@@ -347,6 +353,9 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     },
                     background: bg,
                     shadow: sh,
+                    outline: ol,
+                    glow: gl,
+                    gradient: gr,
                 })
             }
             ClipKindJson::Gap => ClipKind::Gap,

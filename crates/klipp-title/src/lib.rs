@@ -185,80 +185,270 @@ impl TitleRenderer {
             }
         }
 
-        // Draw shadow if present
-        if let Some(shadow) = &title.shadow {
-            let shadow_ox = shadow.offset_x * scale + offset_x;
-            let shadow_oy = shadow.offset_y * scale + offset_y;
-            Self::rasterize_glyphs(
-                font,
-                &mut buf,
-                glyphs,
-                shadow_ox,
-                shadow_oy,
-                w,
-                h,
-                &shadow.color,
-            );
+        // ── Rasterize glyphs into a temporary alpha mask ──
+        // Compute the mask bounding box (padded for effects)
+        let max_pad = effect_padding(title, scale);
+        let mask_x0 = ((text_min_x + offset_x).floor() as i32 - max_pad).max(0) as usize;
+        let mask_y0 = ((text_min_y + offset_y).floor() as i32 - max_pad).max(0) as usize;
+        let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).min(w as i32) as usize;
+        let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + 1).min(h as i32) as usize;
+        let mask_w = mask_x1.saturating_sub(mask_x0);
+        let mask_h = mask_y1.saturating_sub(mask_y0);
+
+        if mask_w == 0 || mask_h == 0 {
+            return buf;
         }
 
-        // Draw text glyphs
-        Self::rasterize_glyphs(
-            font,
-            &mut buf,
-            glyphs,
-            offset_x,
-            offset_y,
-            w,
-            h,
-            &title.color,
-        );
+        // Rasterize glyphs into alpha mask
+        let mut alpha_mask = vec![0u8; mask_w * mask_h];
+        rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
+
+        // ── Render effects back-to-front ──
+
+        // 1. Outer glow
+        if let Some(glow) = &title.glow {
+            let blurred = blur_alpha(&alpha_mask, mask_w, mask_h, glow.radius * scale);
+            draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, glow.intensity);
+        }
+
+        // 2. Shadow (with blur support)
+        if let Some(shadow) = &title.shadow {
+            let sox = (shadow.offset_x * scale).round() as i32;
+            let soy = (shadow.offset_y * scale).round() as i32;
+
+            if shadow.blur > 0.0 {
+                // Create offset mask, then blur it
+                let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
+                let blurred = blur_alpha(&offset_mask, mask_w, mask_h, shadow.blur * scale);
+                draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+            } else {
+                // No blur — draw shadow at offset directly
+                let offset_mask = offset_alpha(&alpha_mask, mask_w, mask_h, sox, soy);
+                draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+            }
+        }
+
+        // 3. Outline/stroke
+        if let Some(outline) = &title.outline {
+            let dilated = dilate_alpha(&alpha_mask, mask_w, mask_h, outline.width * scale);
+            // Draw dilated minus original = outline ring
+            let mut outline_mask = vec![0u8; mask_w * mask_h];
+            for i in 0..outline_mask.len() {
+                outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
+            }
+            draw_mask_to_buf(&mut buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
+        }
+
+        // 4. Text fill (solid color or gradient)
+        if let Some(gradient) = &title.gradient {
+            // Gradient fill based on Y position within text bounding box
+            let text_top = (text_min_y + offset_y) as i32;
+            let text_bot = (text_max_y + offset_y) as i32;
+            let text_height = (text_bot - text_top).max(1) as f32;
+            for my in 0..mask_h {
+                let global_y = (mask_y0 + my) as i32;
+                let t = ((global_y - text_top) as f32 / text_height).clamp(0.0, 1.0);
+                let r = lerp_u8(gradient.top_color[0], gradient.bottom_color[0], t);
+                let g = lerp_u8(gradient.top_color[1], gradient.bottom_color[1], t);
+                let b = lerp_u8(gradient.top_color[2], gradient.bottom_color[2], t);
+                let a = lerp_u8(gradient.top_color[3], gradient.bottom_color[3], t);
+                for mx in 0..mask_w {
+                    let cov = alpha_mask[my * mask_w + mx];
+                    if cov == 0 { continue; }
+                    let px = mask_x0 + mx;
+                    let py = mask_y0 + my;
+                    if px >= w || py >= h { continue; }
+                    let alpha = (cov as u16 * a as u16 / 255) as u8;
+                    let tinted = [r, g, b, alpha];
+                    let idx = (py * w + px) * 4;
+                    blend_pixel(&mut buf, idx, &tinted);
+                }
+            }
+        } else {
+            // Solid color fill
+            draw_mask_to_buf(&mut buf, &alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &title.color, 1.0);
+        }
 
         buf
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn rasterize_glyphs(
-        font: &Font,
-        buf: &mut [u8],
-        glyphs: &[fontdue::layout::GlyphPosition],
-        offset_x: f32,
-        offset_y: f32,
-        buf_w: usize,
-        buf_h: usize,
-        color: &[u8; 4],
-    ) {
-        for glyph in glyphs {
-            if glyph.width == 0 || glyph.height == 0 {
-                continue;
-            }
-            let (_, coverage) = font.rasterize_config(glyph.key);
+/// Compute the maximum padding needed around the text bounding box for effects.
+fn effect_padding(title: &TitleData, scale: f32) -> i32 {
+    let mut pad = 0i32;
+    if let Some(outline) = &title.outline {
+        pad = pad.max((outline.width * scale).ceil() as i32 + 1);
+    }
+    if let Some(glow) = &title.glow {
+        pad = pad.max((glow.radius * scale * 2.0).ceil() as i32 + 1);
+    }
+    if let Some(shadow) = &title.shadow {
+        let sx = (shadow.offset_x.abs() * scale).ceil() as i32;
+        let sy = (shadow.offset_y.abs() * scale).ceil() as i32;
+        let sb = (shadow.blur * scale * 2.0).ceil() as i32;
+        pad = pad.max(sx + sb + 1);
+        pad = pad.max(sy + sb + 1);
+    }
+    pad
+}
 
-            let gx = (glyph.x + offset_x) as i32;
-            let gy = (glyph.y + offset_y) as i32;
+/// Rasterize fontdue glyphs into a single-channel alpha mask.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_to_mask(
+    font: &Font,
+    glyphs: &[fontdue::layout::GlyphPosition],
+    offset_x: f32,
+    offset_y: f32,
+    mask: &mut [u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+) {
+    for glyph in glyphs {
+        if glyph.width == 0 || glyph.height == 0 {
+            continue;
+        }
+        let (_, coverage) = font.rasterize_config(glyph.key);
 
-            for row in 0..glyph.height {
-                let py = gy + row as i32;
-                if py < 0 || py >= buf_h as i32 {
-                    continue;
-                }
-                for col in 0..glyph.width {
-                    let px = gx + col as i32;
-                    if px < 0 || px >= buf_w as i32 {
-                        continue;
-                    }
-                    let cov = coverage[row * glyph.width + col];
-                    if cov == 0 {
-                        continue;
-                    }
-                    let idx = (py as usize * buf_w + px as usize) * 4;
-                    // Premultiply coverage with color alpha
-                    let alpha = (cov as u16 * color[3] as u16 / 255) as u8;
-                    let tinted = [color[0], color[1], color[2], alpha];
-                    blend_pixel(buf, idx, &tinted);
-                }
+        let gx = (glyph.x + offset_x) as i32;
+        let gy = (glyph.y + offset_y) as i32;
+
+        for row in 0..glyph.height {
+            let py = gy + row as i32;
+            let my = py - mask_y0 as i32;
+            if my < 0 || my >= mask_h as i32 { continue; }
+            for col in 0..glyph.width {
+                let px = gx + col as i32;
+                let mx = px - mask_x0 as i32;
+                if mx < 0 || mx >= mask_w as i32 { continue; }
+                let cov = coverage[row * glyph.width + col];
+                if cov == 0 { continue; }
+                let idx = my as usize * mask_w + mx as usize;
+                // Max blend so overlapping glyphs don't exceed 255
+                mask[idx] = mask[idx].max(cov);
             }
         }
     }
+}
+
+/// Draw an alpha mask onto an RGBA buffer using a given color and intensity.
+#[allow(clippy::too_many_arguments)]
+fn draw_mask_to_buf(
+    buf: &mut [u8],
+    mask: &[u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    buf_w: usize,
+    buf_h: usize,
+    color: &[u8; 4],
+    intensity: f32,
+) {
+    for my in 0..mask_h {
+        let py = mask_y0 + my;
+        if py >= buf_h { continue; }
+        for mx in 0..mask_w {
+            let px = mask_x0 + mx;
+            if px >= buf_w { continue; }
+            let cov = mask[my * mask_w + mx];
+            if cov == 0 { continue; }
+            let alpha = (cov as f32 * color[3] as f32 * intensity / (255.0 * 1.0)).min(255.0) as u8;
+            if alpha == 0 { continue; }
+            let tinted = [color[0], color[1], color[2], alpha];
+            let idx = (py * buf_w + px) * 4;
+            blend_pixel(buf, idx, &tinted);
+        }
+    }
+}
+
+/// Offset an alpha mask by (dx, dy) pixels.
+fn offset_alpha(mask: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> Vec<u8> {
+    let mut out = vec![0u8; w * h];
+    for y in 0..h as i32 {
+        let sy = y - dy;
+        if sy < 0 || sy >= h as i32 { continue; }
+        for x in 0..w as i32 {
+            let sx = x - dx;
+            if sx < 0 || sx >= w as i32 { continue; }
+            out[y as usize * w + x as usize] = mask[sy as usize * w + sx as usize];
+        }
+    }
+    out
+}
+
+/// Dilate an alpha mask by `radius` pixels using circular distance.
+fn dilate_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
+    let r = radius.ceil() as i32;
+    if r <= 0 { return mask.to_vec(); }
+    let mut dilated = vec![0u8; w * h];
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let mut max_alpha = 0u8;
+            for dy in -r..=r {
+                let ny = y + dy;
+                if ny < 0 || ny >= h as i32 { continue; }
+                for dx in -r..=r {
+                    let nx = x + dx;
+                    if nx < 0 || nx >= w as i32 { continue; }
+                    let dist_sq = dx * dx + dy * dy;
+                    let r_sq = (radius * radius) as i32;
+                    if dist_sq <= r_sq {
+                        let a = mask[ny as usize * w + nx as usize];
+                        if a > max_alpha { max_alpha = a; }
+                    }
+                }
+            }
+            dilated[y as usize * w + x as usize] = max_alpha;
+        }
+    }
+    dilated
+}
+
+/// Blur an alpha mask using a 2-pass box blur approximation of gaussian (3 iterations).
+fn blur_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
+    let r = radius.round() as usize;
+    if r == 0 { return mask.to_vec(); }
+    let mut src = mask.to_vec();
+    // 3 passes of box blur for gaussian approximation
+    for _ in 0..3 {
+        let mut temp = vec![0u8; w * h];
+        // Horizontal pass
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                let x0 = x.saturating_sub(r);
+                let x1 = (x + r).min(w - 1);
+                for dx in x0..=x1 {
+                    sum += src[y * w + dx] as u32;
+                    count += 1;
+                }
+                temp[y * w + x] = (sum / count) as u8;
+            }
+        }
+        // Vertical pass
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                let y0 = y.saturating_sub(r);
+                let y1 = (y + r).min(h - 1);
+                for dy in y0..=y1 {
+                    sum += temp[dy * w + x] as u32;
+                    count += 1;
+                }
+                src[y * w + x] = (sum / count) as u8;
+            }
+        }
+    }
+    src
+}
+
+#[inline]
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
 }
 
 /// Alpha-blend `src` (RGBA) over the pixel at `buf[idx..idx+4]`.
@@ -359,5 +549,70 @@ mod tests {
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
         let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(count2 > count1, "Shadow should add more non-transparent pixels");
+    }
+
+    #[test]
+    fn outline_adds_extra_pixels() {
+        let mut renderer = TitleRenderer::new();
+        let no_outline = TitleData {
+            text: "O".to_string(),
+            font_size: 100.0,
+            ..TitleData::default()
+        };
+        let with_outline = TitleData {
+            outline: Some(klipp_timeline::TextOutline {
+                color: [255, 0, 0, 255],
+                width: 4.0,
+            }),
+            ..no_outline.clone()
+        };
+        let buf1 = renderer.render(&no_outline, 640, 480);
+        let buf2 = renderer.render(&with_outline, 640, 480);
+        let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(count2 > count1, "Outline should add more non-transparent pixels");
+    }
+
+    #[test]
+    fn glow_adds_extra_pixels() {
+        let mut renderer = TitleRenderer::new();
+        let no_glow = TitleData {
+            text: "G".to_string(),
+            font_size: 100.0,
+            ..TitleData::default()
+        };
+        let with_glow = TitleData {
+            glow: Some(klipp_timeline::TextGlow {
+                color: [0, 255, 0, 255],
+                radius: 10.0,
+                intensity: 0.8,
+            }),
+            ..no_glow.clone()
+        };
+        let buf1 = renderer.render(&no_glow, 640, 480);
+        let buf2 = renderer.render(&with_glow, 640, 480);
+        let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let count2 = buf2.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(count2 > count1, "Glow should add more non-transparent pixels");
+    }
+
+    #[test]
+    fn gradient_produces_color_variation() {
+        let mut renderer = TitleRenderer::new();
+        let title = TitleData {
+            text: "GRADIENT".to_string(),
+            font_size: 100.0,
+            gradient: Some(klipp_timeline::TextGradient {
+                top_color: [255, 0, 0, 255],
+                bottom_color: [0, 0, 255, 255],
+            }),
+            ..TitleData::default()
+        };
+        let buf = renderer.render(&title, 640, 480);
+        // Should have both reddish and bluish pixels
+        let has_red = buf.chunks_exact(4).any(|p| p[3] > 0 && p[0] > 100 && p[2] < 50);
+        let has_blue = buf.chunks_exact(4).any(|p| p[3] > 0 && p[2] > 100 && p[0] < 50);
+        assert!(has_red, "Gradient should produce red-ish pixels at top");
+        assert!(has_blue, "Gradient should produce blue-ish pixels at bottom");
     }
 }
