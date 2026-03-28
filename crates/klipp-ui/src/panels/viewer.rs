@@ -334,9 +334,10 @@ impl ViewerPanel {
 
         // Draw text edit overlay when active
         if state.viewer_text_edit {
-            // Semi-transparent dark overlay behind the text editor
+            // Semi-transparent dark overlay behind the text editor, clipped to image_rect
+            let clipped_painter = ui.painter().with_clip_rect(image_rect);
             let overlay_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
-            ui.painter().rect_filled(image_rect, 0.0, overlay_bg);
+            clipped_painter.rect_filled(image_rect, 0.0, overlay_bg);
 
             // Get title position from TitleData for placement
             let (title_x, title_y) = state.viewer_text_edit_clip
@@ -347,6 +348,7 @@ impl ViewerPanel {
                 })
                 .unwrap_or((0.5, 0.5));
 
+            // Position relative to image_rect (the letterboxed video area)
             let text_center = egui::pos2(
                 image_rect.min.x + title_x as f32 * image_rect.width(),
                 image_rect.min.y + title_y as f32 * image_rect.height(),
@@ -362,8 +364,10 @@ impl ViewerPanel {
 
             let mut text = state.viewer_text_edit_buffer.clone();
             let te_response = ui.allocate_new_ui(
-                egui::UiBuilder::new().max_rect(text_edit_rect),
+                egui::UiBuilder::new()
+                    .max_rect(text_edit_rect),
                 |ui| {
+                    ui.set_clip_rect(image_rect);
                     ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .desired_width(text_edit_rect.width())
@@ -407,22 +411,25 @@ impl ViewerPanel {
                 }
             }
 
-            // Border around edit area
+            // Border and label clipped to image_rect so they don't overflow
             let accent = egui::Color32::from_rgb(255, 195, 50);
-            ui.painter().rect_stroke(
+            clipped_painter.rect_stroke(
                 text_edit_rect,
                 4.0,
                 egui::Stroke::new(2.0, accent),
             );
 
-            // "Editing" label above the edit area
-            ui.painter().text(
-                egui::pos2(text_edit_rect.left(), text_edit_rect.top() - 4.0),
-                egui::Align2::LEFT_BOTTOM,
-                "Editing Title \u{2014} press Escape to exit",
-                egui::FontId::proportional(11.0),
-                accent,
-            );
+            // "Editing" label above the edit area (only if there's room within image_rect)
+            let label_y = text_edit_rect.top() - 4.0;
+            if label_y >= image_rect.top() + 12.0 {
+                clipped_painter.text(
+                    egui::pos2(text_edit_rect.left(), label_y),
+                    egui::Align2::LEFT_BOTTOM,
+                    "Editing Title \u{2014} press Escape to exit",
+                    egui::FontId::proportional(11.0),
+                    accent,
+                );
+            }
 
             // Exit on Escape or click outside the text edit area
             let exit_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1314,7 +1321,11 @@ impl ViewerPanel {
             rotate_point(raw_corners[i], pos_screen, rotation_rad)
         });
 
-        let painter = ui.painter();
+        // Use a painter with an expanded clip rect so transform handles
+        // near the edges of image_rect are not clipped (FCP-style: handles
+        // remain visible even when the bounding box extends outside the video frame).
+        let transform_clip = image_rect.expand(40.0).intersect(ui.clip_rect());
+        let painter = ui.painter().with_clip_rect(transform_clip);
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
