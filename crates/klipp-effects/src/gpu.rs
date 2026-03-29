@@ -19,6 +19,11 @@ pub struct GpuEffectsPipeline {
     crop_pipeline: wgpu::ComputePipeline,
     transform_pipeline: wgpu::ComputePipeline,
     chroma_key_pipeline: wgpu::ComputePipeline,
+    // Compute pipelines — light effects
+    bloom_threshold_pipeline: wgpu::ComputePipeline,
+    bloom_blend_pipeline: wgpu::ComputePipeline,
+    glow_blend_pipeline: wgpu::ComputePipeline,
+    light_rays_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
@@ -227,6 +232,11 @@ impl GpuEffectsPipeline {
         let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP);
         let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
         let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
+        let bloom_threshold_pipeline = create_pipeline(&device, &pipeline_layout, "bloom_threshold", SHADER_BLOOM_THRESHOLD);
+        // Bloom/glow blend uses 4-binding layout (input, bright/blurred, output, params) — same as transitions
+        let bloom_blend_pipeline = create_pipeline(&device, &transition_pl, "bloom_blend", SHADER_BLOOM_BLEND);
+        let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
+        let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
@@ -318,6 +328,10 @@ impl GpuEffectsPipeline {
             crop_pipeline,
             transform_pipeline,
             chroma_key_pipeline,
+            bloom_threshold_pipeline,
+            bloom_blend_pipeline,
+            glow_blend_pipeline,
+            light_rays_pipeline,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
@@ -808,6 +822,71 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.chroma_key_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Bloom { threshold, radius, intensity } => {
+                    // Step 1: Extract bright pixels to buf_c
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    self.write_params(&BloomThresholdParams {
+                        width, height,
+                        threshold: *threshold,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
+
+                    // Step 2: Blur the bright pixels (3-pass box blur in buf_c)
+                    let boxes = crate::blur::boxes_for_gaussian(*radius);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+
+                    // Step 3: Additive blend blurred bright (buf_c) onto input
+                    self.write_params(&BloomBlendParams {
+                        width, height,
+                        intensity: *intensity,
+                        _pad: 0,
+                    });
+                    // bloom_blend reads input + buf_c, writes output
+                    self.dispatch_bloom_blend(input, buf_c, output, workgroups, *intensity, width, height);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Glow { radius, intensity } => {
+                    // Step 1: Blur entire image to buf_c
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    // Copy input to buf_c first
+                    let byte_size = (width * height * 4) as u64;
+                    {
+                        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                        enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
+                        self.queue.submit(Some(enc.finish()));
+                    }
+
+                    let boxes = crate::blur::boxes_for_gaussian(*radius);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+
+                    // Step 2: Screen blend blurred (buf_c) with original (input) → output
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, width, height);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
+                    self.write_params(&LightRaysParams {
+                        width, height,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        threshold: *threshold,
+                        samples: (*samples).clamp(4, 128),
+                        decay: *decay,
+                        intensity: *intensity,
+                    });
+                    self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
             }
         }
 
@@ -1005,6 +1084,58 @@ impl GpuEffectsPipeline {
 
         self.download(buf_b, byte_size)
     }
+
+    /// Dispatch bloom blend: additive blend of bright (buf_c) onto original (input) → output
+    fn dispatch_bloom_blend(
+        &self, input: &wgpu::Buffer, bright: &wgpu::Buffer, output: &wgpu::Buffer,
+        workgroups: u32, intensity: f32, width: u32, height: u32,
+    ) {
+        self.write_params(&BloomBlendParams { width, height, intensity, _pad: 0 });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_blend_bg"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bright.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&self.bloom_blend_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(Some(enc.finish()));
+    }
+
+    /// Dispatch glow blend: screen blend of blurred (buf_c) onto original (input) → output
+    fn dispatch_bloom_blend_screen(
+        &self, input: &wgpu::Buffer, blurred: &wgpu::Buffer, output: &wgpu::Buffer,
+        workgroups: u32, intensity: f32, width: u32, height: u32,
+    ) {
+        self.write_params(&BloomBlendParams { width, height, intensity, _pad: 0 });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glow_blend_bg"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: blurred.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&self.glow_blend_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(Some(enc.finish()));
+    }
 }
 
 // ─── Param structs (must be Pod for bytemuck) ────────────────────────────────
@@ -1075,6 +1206,37 @@ struct ChromaKeyParams {
     tolerance: f32,
     spill_suppression: f32,
     _pad: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BloomThresholdParams {
+    width: u32,
+    height: u32,
+    threshold: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BloomBlendParams {
+    width: u32,
+    height: u32,
+    intensity: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LightRaysParams {
+    width: u32,
+    height: u32,
+    center_x: f32,
+    center_y: f32,
+    threshold: f32,
+    samples: u32,
+    decay: f32,
+    intensity: f32,
 }
 
 #[repr(C)]
@@ -2268,5 +2430,159 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     output[idx] = max_val;
+}
+";
+
+// ─── Light effect shaders ──────────────────────────────────────────────────────
+
+const SHADER_BLOOM_THRESHOLD: &str = "
+struct Params { width: u32, height: u32, threshold: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = f32((v >> 24u) & 0xFFu) / 255.0;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if luma > params.threshold {
+        let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
+        let br = u32(clamp(r * factor * 255.0, 0.0, 255.0));
+        let bg = u32(clamp(g * factor * 255.0, 0.0, 255.0));
+        let bb = u32(clamp(b * factor * 255.0, 0.0, 255.0));
+        let ba = u32(a * 255.0);
+        output[idx] = br | (bg << 8u) | (bb << 16u) | (ba << 24u);
+    } else {
+        output[idx] = 0u;
+    }
+}
+";
+
+const SHADER_BLOOM_BLEND: &str = "
+struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> original: array<u32>;
+@group(0) @binding(1) var<storage, read> bright: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let ov = original[idx];
+    let bv = bright[idx];
+    let or = f32(ov & 0xFFu);
+    let og = f32((ov >> 8u) & 0xFFu);
+    let ob = f32((ov >> 16u) & 0xFFu);
+    let oa = (ov >> 24u) & 0xFFu;
+    let br = f32(bv & 0xFFu) * params.intensity;
+    let bg = f32((bv >> 8u) & 0xFFu) * params.intensity;
+    let bb = f32((bv >> 16u) & 0xFFu) * params.intensity;
+    let rr = u32(clamp(or + br, 0.0, 255.0));
+    let rg = u32(clamp(og + bg, 0.0, 255.0));
+    let rb = u32(clamp(ob + bb, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+}
+";
+
+const SHADER_GLOW_BLEND: &str = "
+struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> original: array<u32>;
+@group(0) @binding(1) var<storage, read> blurred: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let ov = original[idx];
+    let bv = blurred[idx];
+    let or = f32(ov & 0xFFu) / 255.0;
+    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
+    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
+    let oa = (ov >> 24u) & 0xFFu;
+    let br = f32(bv & 0xFFu) / 255.0 * params.intensity;
+    let bg = f32((bv >> 8u) & 0xFFu) / 255.0 * params.intensity;
+    let bb = f32((bv >> 16u) & 0xFFu) / 255.0 * params.intensity;
+    // Screen blend: 1 - (1-a)(1-b)
+    let sr = 1.0 - (1.0 - or) * (1.0 - br);
+    let sg = 1.0 - (1.0 - og) * (1.0 - bg);
+    let sb = 1.0 - (1.0 - ob) * (1.0 - bb);
+    let rr = u32(clamp(sr * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(sg * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(sb * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+}
+";
+
+const SHADER_LIGHT_RAYS: &str = "
+struct Params {
+    width: u32, height: u32,
+    center_x: f32, center_y: f32,
+    threshold: f32, samples: u32,
+    decay: f32, intensity: f32,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = f32(idx % params.width);
+    let y = f32(idx / params.width);
+    let cx = params.center_x * f32(params.width);
+    let cy = params.center_y * f32(params.height);
+    let dx = x - cx;
+    let dy = y - cy;
+    let step = params.decay / f32(params.samples);
+
+    var r_sum: f32 = 0.0;
+    var g_sum: f32 = 0.0;
+    var b_sum: f32 = 0.0;
+    var weight: f32 = 1.0;
+    let decay_per_sample = 1.0 - step;
+
+    for (var s: u32 = 0u; s < params.samples; s = s + 1u) {
+        let t = f32(s) * step;
+        let sx = clamp(u32(x - dx * t), 0u, params.width - 1u);
+        let sy = clamp(u32(y - dy * t), 0u, params.height - 1u);
+        let si = sy * params.width + sx;
+        let sv = input[si];
+        let sr = f32(sv & 0xFFu) / 255.0;
+        let sg = f32((sv >> 8u) & 0xFFu) / 255.0;
+        let sb = f32((sv >> 16u) & 0xFFu) / 255.0;
+        let luma = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+        if luma > params.threshold {
+            r_sum += sr * weight;
+            g_sum += sg * weight;
+            b_sum += sb * weight;
+        }
+        weight *= decay_per_sample;
+    }
+
+    let inv_samples = 1.0 / f32(params.samples);
+    let ray_r = r_sum * inv_samples * params.intensity;
+    let ray_g = g_sum * inv_samples * params.intensity;
+    let ray_b = b_sum * inv_samples * params.intensity;
+
+    let ov = input[idx];
+    let or = f32(ov & 0xFFu) / 255.0;
+    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
+    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
+    let oa = (ov >> 24u) & 0xFFu;
+
+    let rr = u32(clamp((or + ray_r) * 255.0, 0.0, 255.0));
+    let rg = u32(clamp((og + ray_g) * 255.0, 0.0, 255.0));
+    let rb = u32(clamp((ob + ray_b) * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
 }
 ";

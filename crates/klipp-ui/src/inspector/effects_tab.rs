@@ -452,6 +452,9 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Crop { .. } => "Crop",
         klipp_effects::BuiltinEffect::Transform { .. } => "Transform",
         klipp_effects::BuiltinEffect::ChromaKey { .. } => "Chroma Key",
+        klipp_effects::BuiltinEffect::Bloom { .. } => "Bloom",
+        klipp_effects::BuiltinEffect::Glow { .. } => "Glow",
+        klipp_effects::BuiltinEffect::LightRays { .. } => "Light Rays",
     }
 }
 
@@ -470,13 +473,22 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::ChromaKey { .. } => BuiltinEffect::ChromaKey {
             key_color: [0, 255, 0], tolerance: 0.2, spill_suppression: 0.1,
         },
+        BuiltinEffect::Bloom { .. } => BuiltinEffect::Bloom {
+            threshold: 0.7, radius: 20.0, intensity: 0.5,
+        },
+        BuiltinEffect::Glow { .. } => BuiltinEffect::Glow {
+            radius: 30.0, intensity: 0.4,
+        },
+        BuiltinEffect::LightRays { .. } => BuiltinEffect::LightRays {
+            center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 64, decay: 0.3, intensity: 0.5,
+        },
     }
 }
 
 /// Returns true if the effect has more than 1 adjustable parameter (worth a reset-all button).
 fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
     use klipp_effects::BuiltinEffect;
-    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. })
+    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. })
 }
 
 /// Returns true if the effect is at its default values.
@@ -639,6 +651,64 @@ fn show_builtin_effect_params(
             track_scrubby!("tolerance", r_t, *tolerance);
             let r_s = scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, "", ks_s);
             track_scrubby!("spill", r_s, *spill_suppression);
+        }
+        klipp_effects::BuiltinEffect::Bloom { threshold, radius, intensity } => {
+            *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+
+            let ks_th = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+
+            let r_th = scrubby_param_row(ui, "Threshold", threshold, 0.0..=1.0, 0.7, 0.005, 2, "", ks_th);
+            track_scrubby!("threshold", r_th, *threshold);
+            let r_r = scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 20.0, 0.5, 1, " px", ks_r);
+            track_scrubby!("radius", r_r, *radius);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.5, 0.01, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
+        }
+        klipp_effects::BuiltinEffect::Glow { radius, intensity } => {
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+
+            let r_r = scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 30.0, 0.5, 1, " px", ks_r);
+            track_scrubby!("radius", r_r, *radius);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.4, 0.01, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
+        }
+        klipp_effects::BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
+            *center_x = eval_effect_kf(clip, effect_index, "center_x", clip_time_secs, *center_x);
+            *center_y = eval_effect_kf(clip, effect_index, "center_y", clip_time_secs, *center_y);
+            *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);
+            *decay = eval_effect_kf(clip, effect_index, "decay", clip_time_secs, *decay);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+
+            let ks_cx = Some(effect_keyframe_state(clip, effect_index, "center_x", clip_time_secs));
+            let ks_cy = Some(effect_keyframe_state(clip, effect_index, "center_y", clip_time_secs));
+            let ks_th = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "decay", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+
+            let r_cx = scrubby_param_row(ui, "Center X", center_x, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cx);
+            track_scrubby!("center_x", r_cx, *center_x);
+            let r_cy = scrubby_param_row(ui, "Center Y", center_y, 0.0..=1.0, 0.3, 0.005, 3, "", ks_cy);
+            track_scrubby!("center_y", r_cy, *center_y);
+            let r_th = scrubby_param_row(ui, "Threshold", threshold, 0.0..=1.0, 0.6, 0.005, 2, "", ks_th);
+            track_scrubby!("threshold", r_th, *threshold);
+            // samples is u32, convert to f32 for slider then back
+            let mut samples_f = *samples as f32;
+            let ks_s = None; // samples not typically keyframed
+            let r_s = scrubby_param_row(ui, "Samples", &mut samples_f, 4.0..=128.0, 64.0, 1.0, 0, "", ks_s);
+            *samples = samples_f as u32;
+            track_scrubby!("", r_s, samples_f);
+            let r_d = scrubby_param_row(ui, "Decay", decay, 0.0..=1.0, 0.3, 0.005, 3, "", ks_d);
+            track_scrubby!("decay", r_d, *decay);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.5, 0.01, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
         }
     }
 

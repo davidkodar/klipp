@@ -1,7 +1,8 @@
-mod blur;
+pub mod blur;
 mod chroma_key;
 mod crop;
 pub mod gpu;
+mod light;
 mod opacity;
 mod sharpen;
 pub mod transform;
@@ -59,6 +60,37 @@ pub enum BuiltinEffect {
         /// Spill suppression (0.0–1.0)
         spill_suppression: f32,
     },
+    /// Bloom: extract bright areas, blur, and add back for a cinematic glow.
+    Bloom {
+        /// Luminance threshold for bright areas (0.0–1.0, default 0.7)
+        threshold: f32,
+        /// Blur radius for the bloom (pixels, default 20.0)
+        radius: f32,
+        /// Intensity of the bloom overlay (0.0–2.0, default 0.5)
+        intensity: f32,
+    },
+    /// Soft glow: diffuse light wrap around bright areas.
+    Glow {
+        /// Blur radius for the glow (pixels, default 30.0)
+        radius: f32,
+        /// Glow intensity (0.0–2.0, default 0.4)
+        intensity: f32,
+    },
+    /// God rays: volumetric light rays emanating from a point.
+    LightRays {
+        /// X position of the light source (0.0–1.0, default 0.5 = center)
+        center_x: f32,
+        /// Y position of the light source (0.0–1.0, default 0.3 = upper third)
+        center_y: f32,
+        /// Luminance threshold for ray sources (0.0–1.0, default 0.6)
+        threshold: f32,
+        /// Number of radial blur samples (4–128, default 64)
+        samples: u32,
+        /// How far rays extend (0.0–1.0, default 0.3)
+        decay: f32,
+        /// Ray intensity (0.0–2.0, default 0.5)
+        intensity: f32,
+    },
 }
 
 /// Apply a chain of built-in effects to an RGBA frame.
@@ -89,6 +121,15 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
             chroma_key::apply(rgba, *key_color, *tolerance, *spill_suppression)
+        }
+        BuiltinEffect::Bloom { threshold, radius, intensity } => {
+            light::apply_bloom(rgba, width, height, *threshold, *radius, *intensity)
+        }
+        BuiltinEffect::Glow { radius, intensity } => {
+            light::apply_glow(rgba, width, height, *radius, *intensity)
+        }
+        BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
+            light::apply_light_rays(rgba, width, height, *center_x, *center_y, *threshold, *samples, *decay, *intensity)
         }
     }
 }

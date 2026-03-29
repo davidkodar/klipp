@@ -268,6 +268,17 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 spill_suppression: 0.2,
             }
         }
+        klipp_effects::BuiltinEffect::Bloom { .. } => {
+            klipp_effects::BuiltinEffect::Bloom { threshold: 0.5, radius: 25.0, intensity: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::Glow { .. } => {
+            klipp_effects::BuiltinEffect::Glow { radius: 35.0, intensity: 0.8 }
+        }
+        klipp_effects::BuiltinEffect::LightRays { .. } => {
+            klipp_effects::BuiltinEffect::LightRays {
+                center_x: 0.5, center_y: 0.3, threshold: 0.4, samples: 64, decay: 0.4, intensity: 0.8,
+            }
+        }
     }
 }
 

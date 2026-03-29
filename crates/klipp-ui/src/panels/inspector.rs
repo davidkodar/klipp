@@ -1265,6 +1265,9 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Crop { .. } => "Crop",
         klipp_effects::BuiltinEffect::Transform { .. } => "Transform",
         klipp_effects::BuiltinEffect::ChromaKey { .. } => "Chroma Key",
+        klipp_effects::BuiltinEffect::Bloom { .. } => "Bloom",
+        klipp_effects::BuiltinEffect::Glow { .. } => "Glow",
+        klipp_effects::BuiltinEffect::LightRays { .. } => "Light Rays",
     }
 }
 
@@ -1330,6 +1333,28 @@ fn show_builtin_effect_params(
             }
             track_slider!(ui.add(egui::Slider::new(tolerance, 0.0..=1.0).text("Tolerance")));
             track_slider!(ui.add(egui::Slider::new(spill_suppression, 0.0..=1.0).text("Spill")));
+        }
+        klipp_effects::BuiltinEffect::Bloom { threshold, radius, intensity } => {
+            track_slider!(ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("Threshold")));
+            track_slider!(ui.add(egui::Slider::new(radius, 0.0..=100.0).text("Radius")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=2.0).text("Intensity")));
+        }
+        klipp_effects::BuiltinEffect::Glow { radius, intensity } => {
+            track_slider!(ui.add(egui::Slider::new(radius, 0.0..=100.0).text("Radius")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=2.0).text("Intensity")));
+        }
+        klipp_effects::BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
+            track_slider!(ui.add(egui::Slider::new(center_x, 0.0..=1.0).text("Center X")));
+            track_slider!(ui.add(egui::Slider::new(center_y, 0.0..=1.0).text("Center Y")));
+            track_slider!(ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("Threshold")));
+            let mut samples_f = *samples as f32;
+            let r = ui.add(egui::Slider::new(&mut samples_f, 4.0..=128.0).text("Samples"));
+            *samples = samples_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+            track_slider!(ui.add(egui::Slider::new(decay, 0.0..=1.0).text("Decay")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=2.0).text("Intensity")));
         }
     }
 
