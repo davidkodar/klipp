@@ -908,7 +908,7 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.vignette_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation: _ } => {
                     // Same as bloom: threshold → blur → screen blend
                     let buf_c = self.buf_c.as_ref().unwrap();
                     self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });

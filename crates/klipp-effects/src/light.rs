@@ -156,7 +156,7 @@ pub fn apply_vignette(
     let h = height as f32;
     let cx = w * 0.5;
     let cy = h * 0.5;
-    let aspect = w / h;
+    let _aspect = w / h;
     let softness = softness.max(0.01);
 
     for y in 0..height {
@@ -315,7 +315,6 @@ pub fn apply_anamorphic_streak(
 ) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
-    let len = rgba.len();
     let half_len = (length * 0.5) as usize;
 
     // Extract bright → horizontal blur only
