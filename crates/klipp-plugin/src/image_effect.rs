@@ -266,7 +266,6 @@ unsafe extern "C" fn clip_get_image_fn(
 ) -> OfxStatus {
     // Find which instance this clip belongs to
     let Some((inst_handle, clip_name)) = instance::lookup_clip(clip) else {
-        warn!("[OFX] clipGetImage: BAD_HANDLE clip={:?} (not in CLIP_TO_INSTANCE)", clip);
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
 
@@ -275,17 +274,13 @@ unsafe extern "C" fn clip_get_image_fn(
         inst.clips.get(&clip_name).and_then(|c| c.current_image)
     }) {
         Some(Some(img_handle)) => {
-            tracing::debug!("[OFX] clipGetImage: clip='{}' -> {:?}", clip_name, img_handle);
             *img_props_out = img_handle;
             K_OFX_STAT_OK
         }
         Some(None) => {
-            // Clip exists but has no image (e.g., disconnected Mask clip)
-            tracing::debug!("[OFX] clipGetImage: clip='{}' has no image (disconnected)", clip_name);
             K_OFX_STAT_FAILED
         }
         _ => {
-            warn!("[OFX] clipGetImage: clip='{}' instance not found", clip_name);
             K_OFX_STAT_FAILED
         }
     }

@@ -192,7 +192,7 @@ unsafe impl Sync for OfxMemorySuiteV1 {}
 #[repr(C)]
 pub struct OfxMultiThreadSuiteV1 {
     pub multithread: unsafe extern "C" fn(
-        func: unsafe extern "C" fn(*mut c_void, c_uint, c_uint),
+        func: unsafe extern "C" fn(c_uint, c_uint, *mut c_void),
         n_threads: c_uint,
         custom_arg: *mut c_void,
     ) -> OfxStatus,

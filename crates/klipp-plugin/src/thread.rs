@@ -19,50 +19,16 @@ thread_local! {
 // ── Suite functions ─────────────────────────────────────────────────
 
 unsafe extern "C" fn multithread_fn(
-    func: unsafe extern "C" fn(*mut c_void, c_uint, c_uint),
+    func: unsafe extern "C" fn(c_uint, c_uint, *mut c_void),
     n_threads: c_uint,
     custom_arg: *mut c_void,
 ) -> OfxStatus {
-    let num_cpus = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(1);
-    let n = (n_threads).min(num_cpus).max(1);
-
-    if n == 1 {
-        // Single-threaded fast path — no need to spawn
-        func(custom_arg, 0, 1);
-        return K_OFX_STAT_OK;
-    }
-
-    // OFX guarantees custom_arg and func stay valid for the duration of the call,
-    // and std::thread::scope guarantees all threads join before returning.
-    // Bundle everything into a Send wrapper to satisfy Rust's thread safety.
-    let ctx = ThreadContext { func, custom_arg };
-
-    std::thread::scope(|scope| {
-        for i in 0..n {
-            let ctx = &ctx;
-            scope.spawn(move || {
-                THREAD_INDEX.set(i);
-                IS_SPAWNED.set(true);
-                unsafe { (ctx.func)(ctx.custom_arg, i, n) };
-                IS_SPAWNED.set(false);
-            });
-        }
-    });
-
+    // Single-threaded dispatch: call once with threadIndex=0, threadMax=1.
+    // OFX spec OfxThreadFunctionV1: func(threadIndex, threadMax, customArg)
+    let _ = n_threads;
+    func(0, 1, custom_arg);
     K_OFX_STAT_OK
 }
-
-/// Bundle OFX thread function + arg so we can mark it Send.
-/// Safety: OFX guarantees both pointers are valid for the call duration,
-/// and std::thread::scope joins all threads before returning.
-struct ThreadContext {
-    func: unsafe extern "C" fn(*mut c_void, c_uint, c_uint),
-    custom_arg: *mut c_void,
-}
-unsafe impl Send for ThreadContext {}
-unsafe impl Sync for ThreadContext {}
 
 unsafe extern "C" fn multithread_num_cpus_fn(n: *mut c_uint) -> OfxStatus {
     *n = std::thread::available_parallelism()

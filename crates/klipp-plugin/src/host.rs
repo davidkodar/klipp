@@ -647,8 +647,8 @@ impl OfxHostRuntime {
             ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
             ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
             ps.set_int("OfxImageEffectInstancePropSequentialRender", 0, 0);
-            ps.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 1);
-            ps.set_int("OfxImageEffectPropSupportsTiles", 0, 1);
+            ps.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 0);
+            ps.set_int("OfxImageEffectPropSupportsTiles", 0, 0);
             ps.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
             ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
         });
@@ -905,6 +905,7 @@ impl OfxHostRuntime {
         frame_time: f64,
         abort: &Option<Arc<AtomicBool>>,
     ) -> Result<Vec<u8>, PluginError> {
+
         // Get or create instance
         let inst_handle = self.get_or_create_instance(&effect.plugin_name, effect.context)?;
 
@@ -1249,93 +1250,11 @@ impl OfxHostRuntime {
             self.sync_params_to_instance(inst_handle, &tv);
         }
 
-        // ── RoD: Get Region of Definition ───────────────────────────
-        // Ask the plugin what output region it will produce.
-        let mut rod_in = PropertySet::default();
-        rod_in.set_double("OfxPropTime", 0, frame_time);
-        rod_in.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-        rod_in.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
-        let rod_in_handle = property::register_propset(rod_in);
-
-        let mut rod_out = PropertySet::default();
-        // Default RoD = full frame
-        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 0, 0.0);
-        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 1, 0.0);
-        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 2, width as f64);
-        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 3, height as f64);
-        let rod_out_handle = property::register_propset(rod_out);
-
-        let rod_status = self.call_action_raw(
-            plugin_idx,
-            b"OfxImageEffectActionGetRegionOfDefinition\0",
-            inst_handle,
-            rod_in_handle,
-            rod_out_handle,
-        );
-
-        // Read back RoD (use default if plugin returned ReplyDefault or didn't handle)
-        let (rod_x1, rod_y1, rod_x2, rod_y2) = if rod_status == ffi::K_OFX_STAT_OK {
-            property::with_propset(rod_out_handle, |ps| {
-                (
-                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 0).unwrap_or(0.0),
-                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 1).unwrap_or(0.0),
-                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 2).unwrap_or(width as f64),
-                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 3).unwrap_or(height as f64),
-                )
-            }).unwrap_or((0.0, 0.0, width as f64, height as f64))
-        } else {
-            (0.0, 0.0, width as f64, height as f64)
-        };
-        property::remove_propset(rod_in_handle);
-        property::remove_propset(rod_out_handle);
-
-        // ── RoI: Get Regions of Interest ────────────────────────────
-        // Ask the plugin what region of each input it needs.
-        let input_clip_names: Vec<String> = instance::with_instance(inst_handle, |inst| {
-            inst.clips.keys()
-                .filter(|k| k.as_str() != "Output")
-                .cloned()
-                .collect()
-        }).unwrap_or_default();
-
-        if !input_clip_names.is_empty() {
-            let mut roi_in = PropertySet::default();
-            roi_in.set_double("OfxPropTime", 0, frame_time);
-            roi_in.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-            roi_in.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
-            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 0, rod_x1);
-            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 1, rod_y1);
-            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 2, rod_x2);
-            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 3, rod_y2);
-            let roi_in_handle = property::register_propset(roi_in);
-
-            let mut roi_out = PropertySet::default();
-            for clip_name in &input_clip_names {
-                let prop = format!("OfxImageClipPropRoI_{}", clip_name);
-                roi_out.set_double(&prop, 0, rod_x1);
-                roi_out.set_double(&prop, 1, rod_y1);
-                roi_out.set_double(&prop, 2, rod_x2);
-                roi_out.set_double(&prop, 3, rod_y2);
-            }
-            let roi_out_handle = property::register_propset(roi_out);
-
-            let _roi_status = self.call_action_raw(
-                plugin_idx,
-                b"OfxImageEffectActionGetRegionsOfInterest\0",
-                inst_handle,
-                roi_in_handle,
-                roi_out_handle,
-            );
-
-            property::remove_propset(roi_in_handle);
-            property::remove_propset(roi_out_handle);
-        }
-
-        // Convert RoD to pixel render window (integer coordinates)
-        let render_x1 = rod_x1.floor() as i32;
-        let render_y1 = rod_y1.floor() as i32;
-        let render_x2 = rod_x2.ceil() as i32;
-        let render_y2 = rod_y2.ceil() as i32;
+        // Full-frame render window (tiling disabled for stability with real plugins)
+        let render_x1 = 0i32;
+        let render_y1 = 0i32;
+        let render_x2 = width as i32;
+        let render_y2 = height as i32;
 
         // Call kOfxImageEffectActionBeginSequenceRender (required by OFX spec before Render)
         let mut bsr_args = PropertySet::default();
