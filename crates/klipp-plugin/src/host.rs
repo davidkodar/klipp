@@ -232,12 +232,15 @@ impl OfxHostRuntime {
             host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
         }
 
-        // Try to initialize OpenGL (headless EGL)
-        let opengl = crate::gpu_opengl::OpenGlRuntime::new();
-        if let Some(ref gl) = opengl {
-            info!("OFX: OpenGL rendering enabled — {} ({})", gl.gl_version(), gl.gl_renderer());
+        // OpenGL: probe availability without holding the context.
+        // The actual context is created lazily per-render to avoid
+        // conflicting with eframe's glow/GL context on the main thread.
+        let opengl_available = crate::gpu_opengl::OpenGlRuntime::new().is_some();
+        if opengl_available {
+            info!("OFX: OpenGL rendering available (lazy init)");
             host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
         }
+        let opengl: Option<crate::gpu_opengl::OpenGlRuntime> = None;
 
         let host_propset_handle = property::register_propset(host_props);
 
@@ -1192,11 +1195,21 @@ impl OfxHostRuntime {
             }
         }
 
-        // ── OpenGL: make context current and set up runtime ────────
+        // ── OpenGL: lazily create context and set up runtime ────────
         if use_opengl && !cuda_active && !opencl_active {
+            // Lazy init: create OpenGL context on first use
+            if self.opengl.is_none() {
+                self.opengl = crate::gpu_opengl::OpenGlRuntime::new();
+                if self.opengl.is_none() {
+                    warn!("OFX: OpenGL context creation failed at render time");
+                }
+            }
             if let Some(ref gl) = self.opengl {
                 if gl.make_current() {
                     opengl_active = true;
+                    // Store the runtime reference for the suite functions.
+                    // Safety: self.opengl is stable in memory (Box behind Option,
+                    // self is &mut so no concurrent access) and we clear it after render.
                     unsafe { crate::gpu_opengl::set_gl_runtime(gl) };
 
                     // Call kOfxActionOpenGLContextAttached (once per instance)
@@ -1209,7 +1222,7 @@ impl OfxHostRuntime {
                     if needs_attach {
                         self.call_action_raw(
                             plugin_idx,
-                            crate::constants::kOfxActionOpenGLContextAttached.as_bytes(),
+                            b"OfxActionOpenGLContextAttached\0",
                             inst_handle,
                             std::ptr::null_mut(),
                             std::ptr::null_mut(),
