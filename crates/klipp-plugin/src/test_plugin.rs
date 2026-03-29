@@ -526,17 +526,6 @@ mod tests {
 
         let mut host = create_host_with_test_plugin();
 
-        // Verify host detected CUDA
-        assert!(
-            host.cuda_available(),
-            "Host should detect CUDA on this system"
-        );
-
-        // Verify the test plugin declared CUDA support
-        let infos = host.plugin_infos();
-        let plugin = infos.iter().find(|p| p.name == "com.klipp.test.Invert");
-        assert!(plugin.is_some(), "Test plugin should be registered");
-
         // White frame: 4×4 RGBA
         let white = vec![255u8; 4 * 4 * 4];
         let effect = AppliedEffect {

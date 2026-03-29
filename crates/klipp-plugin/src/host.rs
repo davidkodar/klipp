@@ -217,29 +217,16 @@ impl OfxHostRuntime {
         let mut host_props = PropertySet::default();
         property::populate_host_properties(&mut host_props);
 
-        // Try to initialize CUDA (NVIDIA)
-        let cuda = crate::gpu_cuda::CudaRuntime::new();
-        if let Some(ref cuda) = cuda {
-            info!("OFX: CUDA GPU rendering enabled on '{}'", cuda.device_name());
-            host_props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "true");
-            host_props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "true");
-        }
+        // GPU rendering: all contexts are lazily initialized at first render
+        // to avoid corrupting driver state or conflicting with eframe's contexts.
+        // We advertise capabilities upfront so plugins can declare support.
+        host_props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "true");
+        host_props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "true");
+        host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
+        host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
 
-        // Try to initialize OpenCL (AMD/Intel/NVIDIA)
-        let opencl = crate::gpu_opencl::OpenClRuntime::new();
-        if let Some(ref cl) = opencl {
-            info!("OFX: OpenCL GPU rendering enabled on '{}' ({})", cl.device_name(), cl.platform_name());
-            host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
-        }
-
-        // OpenGL: probe availability without holding the context.
-        // The actual context is created lazily per-render to avoid
-        // conflicting with eframe's glow/GL context on the main thread.
-        let opengl_available = crate::gpu_opengl::OpenGlRuntime::new().is_some();
-        if opengl_available {
-            info!("OFX: OpenGL rendering available (lazy init)");
-            host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
-        }
+        let cuda: Option<crate::gpu_cuda::CudaRuntime> = None;
+        let opencl: Option<crate::gpu_opencl::OpenClRuntime> = None;
         let opengl: Option<crate::gpu_opengl::OpenGlRuntime> = None;
 
         let host_propset_handle = property::register_propset(host_props);
@@ -1124,6 +1111,13 @@ impl OfxHostRuntime {
         let mut opengl_active = false;
 
         if use_cuda {
+            // Lazy init CUDA on first use
+            if self.cuda.is_none() {
+                self.cuda = crate::gpu_cuda::CudaRuntime::new();
+                if let Some(ref c) = self.cuda {
+                    info!("OFX: CUDA initialized lazily on '{}'", c.device_name());
+                }
+            }
             if let Some(ref cuda) = self.cuda {
                 if cuda.push_context() {
                     cuda_active = true;
@@ -1165,6 +1159,13 @@ impl OfxHostRuntime {
                 }
             }
         } else if use_opencl {
+            // Lazy init OpenCL on first use
+            if self.opencl.is_none() {
+                self.opencl = crate::gpu_opencl::OpenClRuntime::new();
+                if let Some(ref c) = self.opencl {
+                    info!("OFX: OpenCL initialized lazily on '{}' ({})", c.device_name(), c.platform_name());
+                }
+            }
             if let Some(ref cl) = self.opencl {
                 opencl_active = true;
 
