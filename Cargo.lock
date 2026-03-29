@@ -2068,6 +2068,7 @@ dependencies = [
  "klipp-media",
  "klipp-timeline",
  "klipp-ui",
+ "png 0.17.16",
  "tracing",
  "tracing-subscriber",
 ]

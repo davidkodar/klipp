@@ -59,11 +59,35 @@ fn main() -> Result<()> {
 
     info!("Engine thread spawned");
 
+    // Load window icon from embedded PNG
+    let icon_data = {
+        let png_bytes = include_bytes!("../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-256.png");
+        let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+        let mut reader = decoder.read_info().expect("Failed to decode app icon PNG");
+        let mut buf = vec![0u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).expect("Failed to read app icon frame");
+        let rgba = match info.color_type {
+            png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => buf[..info.buffer_size()]
+                .chunks_exact(3)
+                .flat_map(|c| [c[0], c[1], c[2], 255])
+                .collect(),
+            _ => panic!("Unsupported icon PNG color type"),
+        };
+        egui::IconData {
+            rgba,
+            width: info.width,
+            height: info.height,
+        }
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Klipp")
             .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([960.0, 600.0]),
+            .with_min_inner_size([960.0, 600.0])
+            .with_icon(std::sync::Arc::new(icon_data))
+            .with_app_id("klipp"),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

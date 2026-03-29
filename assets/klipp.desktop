@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Klipp
+Comment=Video Editor
+Exec=klipp
+Icon=klipp
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;
+StartupWMClass=klipp

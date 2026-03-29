@@ -15,9 +15,37 @@ pub struct LaunchScreen {
     thumbnail_textures: HashMap<PathBuf, egui::TextureHandle>,
     /// Project being renamed: (path, new name buffer)
     renaming_project: Option<(PathBuf, String)>,
+    logo_texture: Option<egui::TextureHandle>,
 }
 
 impl LaunchScreen {
+    fn ensure_logo_texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
+        self.logo_texture.get_or_insert_with(|| {
+            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
+            let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+            let mut reader = decoder.read_info().expect("logo PNG decode");
+            let mut buf = vec![0u8; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buf).expect("logo PNG frame");
+            let bytes = &buf[..info.buffer_size()];
+            let pixels: Vec<egui::Color32> = match info.color_type {
+                png::ColorType::Rgba => bytes
+                    .chunks_exact(4)
+                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                    .collect(),
+                png::ColorType::Rgb => bytes
+                    .chunks_exact(3)
+                    .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                    .collect(),
+                _ => panic!("Unsupported logo PNG color type"),
+            };
+            let image = egui::ColorImage {
+                size: [info.width as usize, info.height as usize],
+                pixels,
+            };
+            ctx.load_texture("klipp_launch_logo", image, egui::TextureOptions::LINEAR)
+        })
+    }
+
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -26,6 +54,7 @@ impl LaunchScreen {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        self.ensure_logo_texture(ctx);
         let full_rect = ui.max_rect();
 
         // Fill background
@@ -119,33 +148,30 @@ impl LaunchScreen {
     ) {
         let area = ui.max_rect();
 
-        // Logo — larger version for launch screen
-        let logo_color = theme.accent;
-        let logo_center = egui::pos2(area.center().x, area.min.y + 60.0);
-        let scale = 2.5;
-        let shield_pts = vec![
-            egui::pos2(logo_center.x - 12.0 * scale, logo_center.y - 24.0 * scale),
-            egui::pos2(logo_center.x, logo_center.y - 30.0 * scale),
-            egui::pos2(logo_center.x + 12.0 * scale, logo_center.y - 24.0 * scale),
-            egui::pos2(logo_center.x + 12.0 * scale, logo_center.y - 8.0 * scale),
-            egui::pos2(logo_center.x, logo_center.y),
-            egui::pos2(logo_center.x - 12.0 * scale, logo_center.y - 8.0 * scale),
-        ];
-        ui.painter().add(egui::Shape::convex_polygon(
-            shield_pts,
-            egui::Color32::TRANSPARENT,
-            egui::Stroke::new(2.0, logo_color),
-        ));
+        // Logo — app icon + "Klipp" text
+        let logo_size = 80.0;
+        let logo_center = egui::pos2(area.center().x, area.min.y + 55.0);
+        let logo_rect = egui::Rect::from_center_size(
+            logo_center,
+            egui::vec2(logo_size, logo_size),
+        );
+        let logo_tex = self.logo_texture.as_ref().unwrap();
+        ui.painter().image(
+            logo_tex.id(),
+            logo_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
         ui.painter().text(
-            egui::pos2(logo_center.x, logo_center.y + 20.0),
+            egui::pos2(logo_center.x, logo_center.y + logo_size * 0.5 + 14.0),
             egui::Align2::CENTER_CENTER,
             "Klipp",
             egui::FontId::proportional(28.0),
-            logo_color,
+            theme.accent,
         );
 
         // Buttons
-        let buttons_y = logo_center.y + 60.0;
+        let buttons_y = logo_center.y + logo_size * 0.5 + 45.0;
         let button_w = SIDEBAR_W - 40.0;
 
         // New Project button
@@ -496,23 +522,20 @@ impl LaunchScreen {
         };
 
         if !has_thumb {
-            // Draw small Klipp shield as placeholder
-            let center = thumb_rect.center();
-            let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 60);
-            let s = 1.2;
-            let shield_pts = vec![
-                egui::pos2(center.x - 12.0 * s, center.y - 24.0 * s),
-                egui::pos2(center.x, center.y - 30.0 * s),
-                egui::pos2(center.x + 12.0 * s, center.y - 24.0 * s),
-                egui::pos2(center.x + 12.0 * s, center.y - 8.0 * s),
-                egui::pos2(center.x, center.y),
-                egui::pos2(center.x - 12.0 * s, center.y - 8.0 * s),
-            ];
-            ui.painter().add(egui::Shape::convex_polygon(
-                shield_pts,
-                egui::Color32::TRANSPARENT,
-                egui::Stroke::new(1.5, logo_color),
-            ));
+            // Draw Klipp logo as placeholder
+            let logo_icon_size = 48.0;
+            let logo_rect = egui::Rect::from_center_size(
+                thumb_rect.center(),
+                egui::vec2(logo_icon_size, logo_icon_size),
+            );
+            if let Some(tex) = self.logo_texture.as_ref() {
+                ui.painter().image(
+                    tex.id(),
+                    logo_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::from_white_alpha(60),
+                );
+            }
         }
 
         // Info area (bottom 1/3)

@@ -5,7 +5,9 @@ use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::{AppCommand, Tool};
 
-pub struct ToolbarPanel;
+pub struct ToolbarPanel {
+    pub logo_texture: Option<egui::TextureHandle>,
+}
 
 impl ToolbarPanel {
     pub fn show(
@@ -171,13 +173,40 @@ impl ToolbarPanel {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_space(10.0);
 
-                // Brand: shield icon + "Klipp"
-                let brand_center = egui::pos2(
-                    ui.cursor().min.x + 8.0,
-                    cy,
+                // Brand: logo icon + "Klipp"
+                let logo_tex = self.logo_texture.get_or_insert_with(|| {
+                    let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-64.png");
+                    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+                    let mut reader = decoder.read_info().expect("logo PNG decode");
+                    let mut buf = vec![0u8; reader.output_buffer_size()];
+                    let info = reader.next_frame(&mut buf).expect("logo PNG frame");
+                    let bytes = &buf[..info.buffer_size()];
+                    let pixels: Vec<egui::Color32> = match info.color_type {
+                        png::ColorType::Rgba => bytes
+                            .chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                            .collect(),
+                        png::ColorType::Rgb => bytes
+                            .chunks_exact(3)
+                            .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                            .collect(),
+                        _ => panic!("Unsupported logo PNG color type"),
+                    };
+                    let image = egui::ColorImage { size: [info.width as usize, info.height as usize], pixels };
+                    ui.ctx().load_texture("klipp_logo", image, egui::TextureOptions::LINEAR)
+                });
+                let logo_size = 18.0;
+                let logo_rect = egui::Rect::from_center_size(
+                    egui::pos2(ui.cursor().min.x + logo_size * 0.5, cy),
+                    egui::vec2(logo_size, logo_size),
                 );
-                draw_shield_icon(ui.painter(), brand_center, 8.0, theme.accent);
-                ui.add_space(20.0);
+                ui.painter().image(
+                    logo_tex.id(),
+                    logo_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                ui.add_space(logo_size + 4.0);
                 ui.label(egui::RichText::new("Klipp").size(15.0).strong().color(theme.text_accent));
                 ui.add_space(12.0);
 
@@ -560,24 +589,6 @@ fn sep(ui: &mut egui::Ui, theme: &KlippTheme) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(1.0, 22.0), egui::Sense::hover());
     ui.painter().rect_filled(r, 0.0, theme.border_light);
     ui.add_space(4.0);
-}
-
-fn draw_shield_icon(painter: &egui::Painter, center: egui::Pos2, r: f32, color: egui::Color32) {
-    let pts = vec![
-        egui::pos2(center.x - r, center.y - r * 0.5),
-        egui::pos2(center.x, center.y - r),
-        egui::pos2(center.x + r, center.y - r * 0.5),
-        egui::pos2(center.x + r, center.y + r * 0.2),
-        egui::pos2(center.x, center.y + r),
-        egui::pos2(center.x - r, center.y + r * 0.2),
-    ];
-    painter.add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5, color)));
-    // Checkmark
-    painter.add(egui::Shape::line(vec![
-        egui::pos2(center.x - r * 0.3, center.y),
-        egui::pos2(center.x - r * 0.05, center.y + r * 0.3),
-        egui::pos2(center.x + r * 0.35, center.y - r * 0.25),
-    ], egui::Stroke::new(1.5, color)));
 }
 
 // ═══════════════════════════════════════════

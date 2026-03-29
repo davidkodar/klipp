@@ -12,6 +12,7 @@ pub struct ViewerPanel {
     /// Drawn on top of video_texture with alpha blending. Cleared when title is deselected.
     pub title_overlay_texture: Option<egui::TextureHandle>,
     pub title_overlay_size: (u32, u32),
+    pub logo_texture: Option<egui::TextureHandle>,
 }
 
 impl ViewerPanel {
@@ -226,30 +227,51 @@ impl ViewerPanel {
         let lb_h = viewer_rect.height() * 0.08;
 
         if !has_content {
-            // Empty state: Klipp shield + text at 40% opacity
-            let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
+            // Empty state: Klipp logo at 40% opacity
             let center = viewer_rect.center();
-            let shield_pts = vec![
-                egui::pos2(center.x - 12.0, center.y - 24.0),
-                egui::pos2(center.x, center.y - 30.0),
-                egui::pos2(center.x + 12.0, center.y - 24.0),
-                egui::pos2(center.x + 12.0, center.y - 8.0),
-                egui::pos2(center.x, center.y),
-                egui::pos2(center.x - 12.0, center.y - 8.0),
-            ];
-            ui.painter().add(egui::Shape::convex_polygon(
-                shield_pts,
-                egui::Color32::TRANSPARENT,
-                egui::Stroke::new(1.5, logo_color),
-            ));
+            let logo_tex = self.logo_texture.get_or_insert_with(|| {
+                let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
+                let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+                let mut reader = decoder.read_info().expect("viewer logo PNG decode");
+                let mut buf = vec![0u8; reader.output_buffer_size()];
+                let info = reader.next_frame(&mut buf).expect("viewer logo PNG frame");
+                let bytes = &buf[..info.buffer_size()];
+                let pixels: Vec<egui::Color32> = match info.color_type {
+                    png::ColorType::Rgba => bytes
+                        .chunks_exact(4)
+                        .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                        .collect(),
+                    png::ColorType::Rgb => bytes
+                        .chunks_exact(3)
+                        .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                        .collect(),
+                    _ => panic!("Unsupported viewer logo PNG color type"),
+                };
+                let image = egui::ColorImage {
+                    size: [info.width as usize, info.height as usize],
+                    pixels,
+                };
+                ui.ctx().load_texture("klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
+            });
+            let logo_size = 48.0;
+            let logo_rect = egui::Rect::from_center_size(
+                egui::pos2(center.x, center.y - 8.0),
+                egui::vec2(logo_size, logo_size),
+            );
+            ui.painter().image(
+                logo_tex.id(),
+                logo_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::from_white_alpha(102),
+            );
+            let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
             ui.painter().text(
-                egui::pos2(center.x, center.y + 16.0),
+                egui::pos2(center.x, center.y + logo_size * 0.5),
                 egui::Align2::CENTER_CENTER,
                 "Klipp",
                 egui::FontId::proportional(16.0),
                 logo_color,
             );
-            // Empty state: no letterbox, no safe area — just clean black + logo
             return;
         }
 

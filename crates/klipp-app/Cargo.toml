@@ -16,3 +16,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 ffmpeg-next = { workspace = true }
+png = "0.17"
