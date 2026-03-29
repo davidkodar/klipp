@@ -11,6 +11,12 @@ pub enum DragPayload {
         /// OFX plugin identifier (if OFX), or empty for built-in.
         plugin_id: String,
     },
+    /// Dragging an audio effect from the effects browser.
+    AudioEffect {
+        name: String,
+        /// Audio effect type_id (e.g. "eq", "compressor", "reverb")
+        type_id: String,
+    },
     /// Dragging a transition from the transitions browser tab.
     Transition { name: String },
     /// Dragging a media item from the media browser tab.

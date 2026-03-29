@@ -7,6 +7,7 @@ use crate::browser::effects_tab::EffectCategory;
 pub enum EffectSource {
     Builtin(klipp_effects::BuiltinEffect),
     Ofx(String), // plugin identifier
+    Audio(String), // audio effect type_id (e.g. "eq", "compressor")
 }
 
 /// A single entry in the effects browser.
@@ -192,6 +193,91 @@ impl EffectRegistry {
                 source_label: "Built-in",
                 grouping: "Stylize".into(),
             },
+            // ── Audio effects ──
+            EffectEntry {
+                name: "Parametric EQ".into(),
+                category: EffectCategory::AudioEQ,
+                source: EffectSource::Audio("eq".into()),
+                source_label: "Built-in",
+                grouping: "EQ".into(),
+            },
+            EffectEntry {
+                name: "Pitch Shift".into(),
+                category: EffectCategory::AudioEQ,
+                source: EffectSource::Audio("pitch_shift".into()),
+                source_label: "Built-in",
+                grouping: "EQ".into(),
+            },
+            EffectEntry {
+                name: "Compressor".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("compressor".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "Limiter".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("limiter".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "Noise Gate".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("gate".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "De-Esser".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("deesser".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "Normalize".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("normalize".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "Noise Reduction".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("noise_reduction".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "De-click".into(),
+                category: EffectCategory::AudioDynamics,
+                source: EffectSource::Audio("declick".into()),
+                source_label: "Built-in",
+                grouping: "Dynamics".into(),
+            },
+            EffectEntry {
+                name: "Reverb".into(),
+                category: EffectCategory::AudioReverb,
+                source: EffectSource::Audio("reverb".into()),
+                source_label: "Built-in",
+                grouping: "Reverb".into(),
+            },
+            EffectEntry {
+                name: "Delay".into(),
+                category: EffectCategory::AudioReverb,
+                source: EffectSource::Audio("delay".into()),
+                source_label: "Built-in",
+                grouping: "Reverb".into(),
+            },
+            EffectEntry {
+                name: "Chorus".into(),
+                category: EffectCategory::AudioReverb,
+                source: EffectSource::Audio("chorus".into()),
+                source_label: "Built-in",
+                grouping: "Reverb".into(),
+            },
         ];
 
         Self { effects, reference_frame: None }
@@ -250,10 +336,17 @@ impl EffectRegistry {
     /// Filter effects by category and search query, sorted alphabetically.
     pub fn filtered(&self, category: EffectCategory, search: &str) -> Vec<&EffectEntry> {
         let search_lower = search.to_lowercase();
+        let _is_audio_cat = matches!(category, EffectCategory::AudioAll | EffectCategory::AudioEQ | EffectCategory::AudioDynamics | EffectCategory::AudioReverb);
         let mut result: Vec<&EffectEntry> = self.effects
             .iter()
             .filter(|e| {
-                (category == EffectCategory::All || e.category == category)
+                let e_is_audio = matches!(e.category, EffectCategory::AudioEQ | EffectCategory::AudioDynamics | EffectCategory::AudioReverb);
+                let cat_match = match category {
+                    EffectCategory::All => !e_is_audio, // All = all video effects
+                    EffectCategory::AudioAll => e_is_audio, // AudioAll = all audio effects
+                    _ => e.category == category,
+                };
+                cat_match
                     && (search_lower.is_empty()
                         || e.name.to_lowercase().contains(&search_lower)
                         || e.grouping.to_lowercase().contains(&search_lower))

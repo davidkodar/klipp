@@ -117,6 +117,10 @@ impl ThumbnailRenderer {
                     EffectSource::Ofx(plugin_id) => {
                         apply_ofx_visual_proxy(&frame, plugin_id)
                     }
+                    EffectSource::Audio(_) => {
+                        // Audio effects have no visual preview
+                        continue;
+                    }
                 };
                 let _ = tx.send(ThumbnailResult {
                     effect_name: name.clone(),

@@ -996,6 +996,47 @@ impl TimelinePanel {
                 }
             }
 
+            // Audio effect drag-and-drop: highlight audio clip when dragging audio effect over it
+            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+                let hover_pos = ui.input(|i| i.pointer.hover_pos());
+                let any_down = ui.input(|i| i.pointer.any_down());
+                if let Some(pos) = hover_pos {
+                    if track_rect.contains(pos) {
+                        let zoom = state.timeline_zoom;
+                        let scroll = state.timeline_scroll_x;
+                        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                        let mut hit_clip_id = None;
+                        for clip in clips {
+                            let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+                            let clip_rect = egui::Rect::from_min_size(
+                                egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
+                                egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                            );
+                            if clip_rect.contains(pos) {
+                                hit_clip_id = Some(clip.id);
+                                painter.rect_stroke(
+                                    clip_rect, 3.0,
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 140)),
+                                );
+                                break;
+                            }
+                        }
+
+                        if !any_down {
+                            if let Some(clip_id) = hit_clip_id {
+                                if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
+                                    cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
+                                    state.toast.show(format!("\"{}\" applied to clip", name));
+                                }
+                            } else {
+                                state.drag_drop.end();
+                            }
+                        }
+                    }
+                }
+            }
+
             // Title template drag-and-drop: highlight text/video track when dragging title over it
             if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
                 let hover_pos = ui.input(|i| i.pointer.hover_pos());
@@ -1415,6 +1456,61 @@ impl TimelinePanel {
                 );
 
                 ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw audio effect drag ghost — teal pill following the cursor
+        if let Some(crate::drag_drop::DragPayload::AudioEffect { ref name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 130.0;
+                let ghost_h = 28.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("audio_effect_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 6.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210));
+                ghost_painter.rect_stroke(ghost_rect, 6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230)));
+
+                // Audio icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "\u{266B}", // musical note
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Effect name
+                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Global drag cleanup — if mouse released anywhere (not on a valid target), end the drag
+        {
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if !any_down {
+                if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
+                    | Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+                    state.drag_drop.end();
+                }
             }
         }
 
@@ -3516,13 +3612,14 @@ impl TimelinePanel {
                                 && state.dragging_audio_keyframe.is_none()
                                 && state.dragging_rubber_band.is_none()
                                 && state.dragging_fade_handle.is_none()
+                                && !state.drag_drop.is_active() // don't start rubber band during drag-and-drop
                                 && !alt_held
                             {
                                 state.dragging_rubber_band = Some(kf_clip_id);
                             }
 
-                            // Process active flat-line rubber band drag (blocked during fade handle drag)
-                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() {
+                            // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
+                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active() {
                                 if pointer_down {
                                     let new_val = y_to_value(pos.y);
                                     let (drag_gain, drag_volume, drag_pan) = match rb_param {

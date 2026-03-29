@@ -13,6 +13,11 @@ pub enum EffectCategory {
     Keying,
     Distort,
     Light,
+    // Audio categories
+    AudioAll,
+    AudioEQ,
+    AudioDynamics,
+    AudioReverb,
 }
 
 const CATEGORY_SIDEBAR_W: f32 = 110.0;
@@ -136,17 +141,55 @@ pub fn show(
                         .color(theme.text_secondary),
                 );
                 ui.add_space(2.0);
-                for label in ["EQ", "Dynamics", "Reverb"] {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(label).size(11.0).color(theme.text_dim));
+
+                let audio_categories = [
+                    (EffectCategory::AudioAll, "All"),
+                    (EffectCategory::AudioEQ, "EQ"),
+                    (EffectCategory::AudioDynamics, "Dynamics"),
+                    (EffectCategory::AudioReverb, "Reverb"),
+                ];
+
+                for (cat, label) in &audio_categories {
+                    let is_active = *active_category == *cat;
+                    let count = state.effect_registry.filtered(*cat, "").len();
+
+                    let row_resp = ui.horizontal(|ui| {
+                        let hovered = ui.rect_contains_pointer(ui.max_rect());
+                        let text_color = if is_active {
+                            theme.accent
+                        } else if hovered {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        };
+                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(12.0);
+                            let badge_color = if is_active {
+                                egui::Color32::from_rgb(60, 60, 65)
+                            } else {
+                                egui::Color32::from_rgb(45, 45, 50)
+                            };
                             let badge = egui::Button::new(
-                                egui::RichText::new("0").size(9.0).color(egui::Color32::from_rgb(80, 80, 85))
-                            ).fill(egui::Color32::from_rgb(40, 40, 45)).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
+                                egui::RichText::new(format!("{}", count)).size(9.0).color(theme.text_dim)
+                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
                             ui.add(badge);
                         });
                     });
+                    let row_rect = row_resp.response.rect;
+                    let click_resp = ui.interact(row_rect, ui.id().with(("audio_cat_click", *cat as u8)), egui::Sense::click());
+
+                    if is_active {
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
+                            egui::vec2(2.0, row_rect.height() - 4.0),
+                        );
+                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
+                    }
+
+                    if click_resp.clicked() {
+                        *active_category = *cat;
+                    }
                 }
                 }); // close indent
             });
@@ -172,11 +215,13 @@ pub fn show(
             };
             // Count effects by type
             let all_effects = state.effect_registry.filtered(*active_category, search_query);
-            let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_))).count();
+            let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_))).count();
             let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
 
             pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, egui::Color32::from_rgb(60, 150, 80));
-            pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, egui::Color32::from_rgb(80, 120, 200));
+            if ofx_count > 0 {
+                pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, egui::Color32::from_rgb(80, 120, 200));
+            }
             pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, egui::Color32::from_rgb(140, 70, 70));
         });
         ui.add_space(2.0);
@@ -185,7 +230,7 @@ pub fn show(
         let filtered: Vec<&_> = state.effect_registry.filtered(*active_category, search_query)
             .into_iter()
             .filter(|fx| {
-                let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_));
+                let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_));
                 let is_ofx = matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_));
 
                 // Source type filter
@@ -269,6 +314,9 @@ pub fn show(
                                             });
                                             state.toast.show(format!("\"{}\" applied", fx.name));
                                         }
+                                        EffectSource::Audio(_) => {
+                                            // Audio effects not yet applicable via double-click
+                                        }
                                     }
                                 } else {
                                     state.toast.show("Select a clip first".to_string());
@@ -276,15 +324,26 @@ pub fn show(
                             }
 
                             if resp.drag_started() {
-                                let (is_builtin, plugin_id) = match &fx.source {
-                                    EffectSource::Builtin(_) => (true, String::new()),
-                                    EffectSource::Ofx(id) => (false, id.clone()),
-                                };
-                                state.drag_drop.begin(DragPayload::Effect {
-                                    name: fx.name.clone(),
-                                    is_builtin,
-                                    plugin_id,
-                                });
+                                match &fx.source {
+                                    EffectSource::Audio(type_id) => {
+                                        state.drag_drop.begin(DragPayload::AudioEffect {
+                                            name: fx.name.clone(),
+                                            type_id: type_id.clone(),
+                                        });
+                                    }
+                                    _ => {
+                                        let (is_builtin, plugin_id) = match &fx.source {
+                                            EffectSource::Builtin(_) => (true, String::new()),
+                                            EffectSource::Ofx(id) => (false, id.clone()),
+                                            EffectSource::Audio(_) => unreachable!(),
+                                        };
+                                        state.drag_drop.begin(DragPayload::Effect {
+                                            name: fx.name.clone(),
+                                            is_builtin,
+                                            plugin_id,
+                                        });
+                                    }
+                                }
                             }
 
                             if i % 2 == 1 {
@@ -341,14 +400,16 @@ fn effect_card(
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
     let rounding = egui::Rounding::same(4.0);
 
-    // Hover highlight: subtle bright border
-    if hovered {
-        let highlight = preview_rect.expand(1.5);
-        painter.rect_stroke(highlight, rounding, egui::Stroke::new(1.5, theme.accent_dim));
-    }
-
     // Dark background for preview
     painter.rect_filled(preview_rect, rounding, theme.bg_panel);
+
+    // Subtle dark frame around the card (always visible)
+    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 50)));
+
+    // Brighter border on hover
+    if hovered {
+        painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.5, theme.accent_dim));
+    }
 
     if let Some(tex) = thumbnail {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -376,6 +437,7 @@ fn effect_card(
     let (badge_text, badge_color) = match &fx.source {
         crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200)),
         crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
+        crate::browser::effect_registry::EffectSource::Audio(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
     };
     {
         let badge_font = egui::FontId::monospace(8.0);
@@ -462,6 +524,10 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::Keying => theme.role_dialogue,
         EffectCategory::Distort => egui::Color32::from_rgb(0xe8, 0x50, 0x20),
         EffectCategory::Light => egui::Color32::from_rgb(0xf0, 0xd0, 0x60),
+        EffectCategory::AudioAll => egui::Color32::from_rgb(0x60, 0xc0, 0x80),
+        EffectCategory::AudioEQ => egui::Color32::from_rgb(0x50, 0xb0, 0x70),
+        EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x40, 0xa0, 0x90),
+        EffectCategory::AudioReverb => egui::Color32::from_rgb(0x60, 0x90, 0xb0),
     }
 }
 
@@ -516,6 +582,235 @@ fn paint_effect_preview(
                     [egui::pos2(x, rect.min.y), egui::pos2(x + 10.0, rect.max.y)],
                     egui::Stroke::new(1.0, cat_color.linear_multiply(0.3)),
                 );
+            }
+        }
+        EffectCategory::AudioEQ | EffectCategory::AudioDynamics | EffectCategory::AudioReverb | EffectCategory::AudioAll => {
+            let bg = egui::Color32::from_rgb(0x12, 0x18, 0x14);
+            painter.rect_filled(rect, 0.0, bg);
+
+            let type_id = match &fx.source {
+                crate::browser::effect_registry::EffectSource::Audio(id) => id.as_str(),
+                _ => "",
+            };
+            let cx = rect.center().x;
+            let cy = rect.center().y;
+            let w = rect.width();
+            let h = rect.height();
+            let accent = cat_color.linear_multiply(0.7);
+            let dim_line = cat_color.linear_multiply(0.25);
+
+            match type_id {
+                "eq" => {
+                    // Parametric EQ: frequency response curve
+                    let n = 40;
+                    let points: Vec<egui::Pos2> = (0..=n).map(|i| {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let freq = t * 3.0 * std::f32::consts::PI;
+                        let y = cy - (freq.sin() * 0.15 + (freq * 2.5).sin() * 0.1 + (freq * 0.4).cos() * 0.08) * h;
+                        egui::pos2(x, y)
+                    }).collect();
+                    // Grid lines
+                    for i in 1..4 {
+                        let y = rect.min.y + i as f32 * h / 4.0;
+                        painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], egui::Stroke::new(0.5, dim_line));
+                    }
+                    // Curve
+                    for pair in points.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                    }
+                }
+                "compressor" => {
+                    // Compressor: knee curve (input vs output)
+                    let margin = 8.0;
+                    let plot = rect.shrink(margin);
+                    // Diagonal reference line
+                    painter.line_segment([plot.min, plot.max], egui::Stroke::new(0.5, dim_line));
+                    // Compression knee curve
+                    let n = 30;
+                    let points: Vec<egui::Pos2> = (0..=n).map(|i| {
+                        let t = i as f32 / n as f32;
+                        let input = t;
+                        let threshold = 0.5;
+                        let ratio = 0.3;
+                        let output = if input < threshold { input } else { threshold + (input - threshold) * ratio };
+                        egui::pos2(plot.min.x + t * plot.width(), plot.max.y - output * plot.height())
+                    }).collect();
+                    for pair in points.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                    }
+                    // Threshold marker
+                    let tx = plot.min.x + 0.5 * plot.width();
+                    painter.line_segment([egui::pos2(tx, plot.min.y), egui::pos2(tx, plot.max.y)], egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 80)));
+                }
+                "limiter" => {
+                    // Limiter: hard ceiling line with clipped waveform
+                    let ceiling_y = rect.min.y + h * 0.3;
+                    painter.line_segment([egui::pos2(rect.min.x, ceiling_y), egui::pos2(rect.max.x, ceiling_y)], egui::Stroke::new(1.5, egui::Color32::from_rgb(220, 80, 60)));
+                    // Waveform hitting the ceiling
+                    let n = 50;
+                    for i in 0..n {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let amp = (t * 8.0 * std::f32::consts::PI).sin() * (0.3 + t * 0.5);
+                        let bar_h = (amp.abs() * h * 0.45).min(cy - ceiling_y);
+                        painter.line_segment([egui::pos2(x, cy + bar_h), egui::pos2(x, cy - bar_h)], egui::Stroke::new(1.5, accent));
+                    }
+                }
+                "gate" => {
+                    // Noise Gate: waveform with gaps (gated silence)
+                    let n = 60;
+                    for i in 0..n {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let amp = (t * 12.0 * std::f32::consts::PI).sin() * ((t * 3.0).sin().abs() * 0.8 + 0.1);
+                        let gated = amp.abs() > 0.35;
+                        if gated {
+                            painter.line_segment([egui::pos2(x, cy - amp * h * 0.35), egui::pos2(x, cy + amp * h * 0.35)], egui::Stroke::new(1.5, accent));
+                        } else {
+                            painter.line_segment([egui::pos2(x, cy - 0.5), egui::pos2(x, cy + 0.5)], egui::Stroke::new(0.5, dim_line));
+                        }
+                    }
+                }
+                "reverb" => {
+                    // Reverb: impulse with exponential decay tail
+                    let n = 60;
+                    for i in 0..n {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let envelope = if t < 0.05 { t / 0.05 } else { (-3.0 * (t - 0.05)).exp() };
+                        let noise = ((t * 80.0).sin() * (t * 130.0).cos()) * envelope;
+                        let bar_h = noise.abs() * h * 0.4;
+                        let alpha = (envelope * 200.0).min(255.0) as u8;
+                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
+                        painter.line_segment([egui::pos2(x, cy - bar_h), egui::pos2(x, cy + bar_h)], egui::Stroke::new(1.5, color));
+                    }
+                }
+                "delay" => {
+                    // Delay: repeated diminishing impulses
+                    for echo in 0..4 {
+                        let offset = echo as f32 * 0.22;
+                        let amp = 0.8_f32.powi(echo);
+                        let alpha = (amp * 220.0) as u8;
+                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
+                        let ex = rect.min.x + (0.1 + offset) * w;
+                        let bar_w = w * 0.08;
+                        for i in 0..8 {
+                            let t = i as f32 / 7.0;
+                            let x = ex + t * bar_w;
+                            let wave = (t * 4.0 * std::f32::consts::PI).sin() * amp * h * 0.3;
+                            painter.line_segment([egui::pos2(x, cy - wave), egui::pos2(x, cy + wave)], egui::Stroke::new(1.5, color));
+                        }
+                    }
+                }
+                "chorus" => {
+                    // Chorus: multiple overlapping slightly offset waves
+                    for layer in 0..3 {
+                        let phase = layer as f32 * 0.8;
+                        let offset_y = (layer as f32 - 1.0) * 3.0;
+                        let alpha = 180 - layer * 40;
+                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha as u8);
+                        let n = 40;
+                        let points: Vec<egui::Pos2> = (0..=n).map(|i| {
+                            let t = i as f32 / n as f32;
+                            let x = rect.min.x + t * w;
+                            let y = cy + offset_y + (t * 6.0 * std::f32::consts::PI + phase).sin() * h * 0.2;
+                            egui::pos2(x, y)
+                        }).collect();
+                        for pair in points.windows(2) {
+                            painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, color));
+                        }
+                    }
+                }
+                "deesser" => {
+                    // De-Esser: waveform with high-freq notch
+                    let n = 50;
+                    let points: Vec<egui::Pos2> = (0..=n).map(|i| {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let base = (t * 5.0 * std::f32::consts::PI).sin() * 0.3;
+                        let hf = (t * 25.0 * std::f32::consts::PI).sin() * 0.15;
+                        let suppress = if t > 0.4 && t < 0.7 { 0.2 } else { 1.0 };
+                        let y = cy - (base + hf * suppress) * h * 0.35;
+                        egui::pos2(x, y)
+                    }).collect();
+                    for pair in points.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+                    }
+                    // Suppression zone
+                    let zone = egui::Rect::from_min_max(
+                        egui::pos2(rect.min.x + 0.4 * w, rect.min.y),
+                        egui::pos2(rect.min.x + 0.7 * w, rect.max.y),
+                    );
+                    painter.rect_filled(zone, 0.0, egui::Color32::from_rgba_unmultiplied(220, 80, 60, 20));
+                }
+                "normalize" => {
+                    // Normalize: small waveform scaled up to fill
+                    let n = 50;
+                    // Before (small)
+                    for i in 0..n/2 {
+                        let t = i as f32 / (n as f32 / 2.0);
+                        let x = rect.min.x + t * w * 0.45;
+                        let amp = (t * 10.0 * std::f32::consts::PI).sin() * 0.15;
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.0, dim_line.linear_multiply(1.5)));
+                    }
+                    // Arrow
+                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx + 1.0, cy - 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx + 1.0, cy + 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    // After (full)
+                    for i in 0..n/2 {
+                        let t = i as f32 / (n as f32 / 2.0);
+                        let x = rect.min.x + 0.55 * w + t * w * 0.45;
+                        let amp = (t * 10.0 * std::f32::consts::PI).sin() * 0.4;
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5, accent));
+                    }
+                }
+                "pitch_shift" => {
+                    // Pitch Shift: sine wave morphing to different frequency
+                    let n = 40;
+                    let points: Vec<egui::Pos2> = (0..=n).map(|i| {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let freq = 4.0 + t * 4.0; // increasing frequency
+                        let y = cy - (t * freq * std::f32::consts::PI).sin() * h * 0.3;
+                        egui::pos2(x, y)
+                    }).collect();
+                    for pair in points.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                    }
+                }
+                "noise_reduction" | "declick" => {
+                    // Noise Reduction / De-click: noisy waveform → clean waveform
+                    let n = 50;
+                    // Noisy (left half)
+                    for i in 0..n/2 {
+                        let t = i as f32 / (n as f32 / 2.0);
+                        let x = rect.min.x + t * w * 0.45;
+                        let signal = (t * 8.0 * std::f32::consts::PI).sin() * 0.25;
+                        let noise = ((t * 50.0).sin() * (t * 73.0).cos()) * 0.12;
+                        painter.line_segment([egui::pos2(x, cy - (signal + noise) * h), egui::pos2(x, cy + (signal + noise).abs() * h * 0.3)], egui::Stroke::new(1.0, dim_line.linear_multiply(1.5)));
+                    }
+                    // Arrow
+                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    // Clean (right half)
+                    for i in 0..n/2 {
+                        let t = i as f32 / (n as f32 / 2.0);
+                        let x = rect.min.x + 0.55 * w + t * w * 0.45;
+                        let signal = (t * 8.0 * std::f32::consts::PI).sin() * 0.25;
+                        painter.line_segment([egui::pos2(x, cy - signal * h), egui::pos2(x, cy + signal.abs() * h * 0.3)], egui::Stroke::new(1.5, accent));
+                    }
+                }
+                _ => {
+                    // Generic audio: simple waveform
+                    let n = 40;
+                    for i in 0..n {
+                        let t = i as f32 / n as f32;
+                        let x = rect.min.x + t * w;
+                        let amp = (t * 8.0 * std::f32::consts::PI).sin() * 0.3;
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5, accent));
+                    }
+                }
             }
         }
         _ => {
