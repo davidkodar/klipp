@@ -182,6 +182,25 @@ pub fn show(
                     ui.add_space(2.0);
                 }
 
+                // Multi-view/stereo notice
+                let is_stereo = effect.plugin_name.contains("anaglyph")
+                    || effect.plugin_name.contains("Anaglyph")
+                    || effect.plugin_name.contains("joinViews")
+                    || effect.plugin_name.contains("JoinView")
+                    || effect.plugin_name.contains("mixViews")
+                    || effect.plugin_name.contains("MixView")
+                    || effect.plugin_name.contains("oneView")
+                    || effect.plugin_name.contains("OneView")
+                    || effect.plugin_name.contains("sideBySide")
+                    || effect.plugin_name.contains("SideBySide");
+                if is_stereo {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Requires multi-view").size(9.0).color(egui::Color32::from_rgb(180, 80, 80)).strong());
+                        ui.label(egui::RichText::new("— stereo 3D not supported yet").size(9.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
                 // Show parameter controls if plugin has declared params
                 if let Some(plugin_info) = state.available_plugins.iter().find(|p| p.name == effect.plugin_name) {
                     for desc in &plugin_info.parameters {

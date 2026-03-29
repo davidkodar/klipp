@@ -74,10 +74,11 @@ pub fn show(
                 for (cat, label) in &categories {
                     let is_active = *active_category == *cat;
                     let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
+                    let count = state.effect_registry.filtered(*cat, "").len();
 
                     let resp = ui.add(
                         egui::Label::new(
-                            egui::RichText::new(*label)
+                            egui::RichText::new(format!("{} ({})", label, count))
                                 .size(11.0)
                                 .color(text_color)
                         )
@@ -105,7 +106,57 @@ pub fn show(
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
 
-        let filtered = state.effect_registry.filtered(*active_category, search_query);
+        // ── Filter toggles ──
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let pill = |ui: &mut egui::Ui, label: &str, active: &mut bool, color: egui::Color32| {
+                let bg = if *active { color } else { egui::Color32::from_rgb(50, 50, 55) };
+                let text_color = if *active { egui::Color32::WHITE } else { egui::Color32::from_rgb(120, 120, 130) };
+                let resp = ui.add(
+                    egui::Button::new(egui::RichText::new(label).size(9.0).color(text_color))
+                        .fill(bg)
+                        .rounding(10.0)
+                        .min_size(egui::vec2(0.0, 18.0)),
+                );
+                if resp.clicked() { *active = !*active; }
+            };
+            // Count effects by type
+            let all_effects = state.effect_registry.filtered(*active_category, search_query);
+            let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_))).count();
+            let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
+
+            pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, egui::Color32::from_rgb(60, 150, 80));
+            pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, egui::Color32::from_rgb(80, 120, 200));
+            pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, egui::Color32::from_rgb(140, 70, 70));
+        });
+        ui.add_space(2.0);
+
+        // Apply filters
+        let filtered: Vec<&_> = state.effect_registry.filtered(*active_category, search_query)
+            .into_iter()
+            .filter(|fx| {
+                let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_));
+                let is_ofx = matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_));
+
+                // Source type filter
+                if is_builtin && !state.effect_filter_builtin { return false; }
+                if is_ofx && !state.effect_filter_ofx { return false; }
+
+                // Hide unsupported (stereo, render-only)
+                if state.effect_filter_hide_unsupported {
+                    let id = match &fx.source {
+                        crate::browser::effect_registry::EffectSource::Ofx(id) => id.as_str(),
+                        _ => "",
+                    };
+                    if id.contains("anaglyph") || id.contains("joinView") || id.contains("mixView")
+                        || id.contains("oneView") || id.contains("sideBySide") {
+                        return false;
+                    }
+                }
+
+                true
+            })
+            .collect();
         let count = filtered.len();
 
         egui::ScrollArea::vertical()
@@ -298,6 +349,28 @@ fn effect_card(
                 .size(9.0)
                 .color(theme.text_dim),
         );
+        // Limitation notices in tooltip
+        let name = &fx.name;
+        let plugin_id = match &fx.source {
+            crate::browser::effect_registry::EffectSource::Ofx(id) => id.as_str(),
+            _ => "",
+        };
+        if plugin_id.contains("cimg") || plugin_id.contains("CImg") || plugin_id.contains("PIK")
+            || plugin_id.contains("Keyer") || plugin_id.contains("IDistort")
+            || plugin_id.contains("STMap") || plugin_id.contains("VectorToColor")
+        {
+            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)));
+        }
+        if plugin_id.contains("Retime") || plugin_id.contains("SlitScan") || plugin_id.contains("timeOffset") {
+            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(egui::Color32::from_rgb(200, 100, 100)));
+        }
+        if plugin_id.contains("anaglyph") || plugin_id.contains("joinView") || plugin_id.contains("mixView")
+            || plugin_id.contains("oneView") || plugin_id.contains("sideBySide")
+            || name.contains("Anaglyph") || name.contains("Join Views") || name.contains("Mix Views")
+            || name.contains("One View") || name.contains("Side By Side")
+        {
+            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(egui::Color32::from_rgb(180, 80, 80)));
+        }
         ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
     });
 
