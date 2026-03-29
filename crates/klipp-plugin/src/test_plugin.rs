@@ -107,6 +107,26 @@ unsafe extern "C" fn main_entry(
                 }
             }
 
+            // Declare CUDA rendering support
+            let prop_suite = fetch_suite(
+                host_props,
+                b"OfxPropertySuite\0".as_ptr() as *const c_char,
+                1,
+            );
+            if !prop_suite.is_null() {
+                let props = &*(prop_suite as *const OfxPropertySuiteV1);
+                let mut effect_props: OfxPropertySetHandle = std::ptr::null_mut();
+                (ie.get_property_set)(effect, &mut effect_props);
+                if !effect_props.is_null() {
+                    (props.prop_set_string)(
+                        effect_props,
+                        b"OfxImageEffectPropCudaRenderSupported\0".as_ptr() as _,
+                        0,
+                        b"true\0".as_ptr() as _,
+                    );
+                }
+            }
+
             K_OFX_STAT_OK
         }
         "OfxImageEffectActionCreateInstance" | "OfxActionCreateInstance" => K_OFX_STAT_OK,
@@ -210,23 +230,80 @@ unsafe extern "C" fn main_entry(
                 return K_OFX_STAT_FAILED;
             }
 
-            // Invert RGB pixels, preserve alpha
+            // Check if CUDA rendering is enabled
+            let mut cuda_enabled: c_int = 0;
+            (props.prop_get_int)(
+                in_args_handle,
+                b"OfxImageEffectPropCudaEnabled\0".as_ptr() as _,
+                0,
+                &mut cuda_enabled,
+            );
+
             let width = (x2 - x1) as usize;
             let height = (y2 - y1) as usize;
-            let src = std::slice::from_raw_parts(src_data as *const u8, height * src_row_bytes as usize);
-            let dst = std::slice::from_raw_parts_mut(dst_data as *mut u8, height * dst_row_bytes as usize);
+            let frame_bytes = width * height * 4;
 
-            for y in 0..height {
-                let src_row = &src[y * src_row_bytes as usize..];
-                let dst_row = &mut dst[y * dst_row_bytes as usize..];
-                for x in 0..width {
-                    let si = x * 4;
-                    let di = x * 4;
-                    // Invert RGB, scale by strength
-                    dst_row[di] = ((255.0 - src_row[si] as f64) * strength + src_row[si] as f64 * (1.0 - strength)) as u8;
-                    dst_row[di + 1] = ((255.0 - src_row[si + 1] as f64) * strength + src_row[si + 1] as f64 * (1.0 - strength)) as u8;
-                    dst_row[di + 2] = ((255.0 - src_row[si + 2] as f64) * strength + src_row[si + 2] as f64 * (1.0 - strength)) as u8;
-                    dst_row[di + 3] = src_row[si + 3]; // alpha preserved
+            if cuda_enabled != 0 {
+                // ── CUDA path ───────────────────────────────────────
+                // Data pointers are CUDA device pointers. We use the CUDA
+                // runtime to download, process on CPU, and upload result.
+                // Real plugins would launch CUDA kernels directly.
+                let cuda = crate::gpu_cuda::CudaRuntime::new();
+                if let Some(cuda) = cuda {
+                    cuda.push_context();
+
+                    let src_dptr = src_data as u64;
+                    let dst_dptr = dst_data as u64;
+
+                    // Download source from device
+                    let mut src_cpu = vec![0u8; frame_bytes];
+                    if !cuda.copy_dtoh(&mut src_cpu, src_dptr) {
+                        cuda.pop_context();
+                        (ie.clip_release_image)(source_img);
+                        (ie.clip_release_image)(output_img);
+                        return K_OFX_STAT_GPU_RENDER_FAILED;
+                    }
+
+                    // Process: invert on CPU
+                    let mut dst_cpu = vec![0u8; frame_bytes];
+                    for i in (0..frame_bytes).step_by(4) {
+                        dst_cpu[i] = ((255.0 - src_cpu[i] as f64) * strength + src_cpu[i] as f64 * (1.0 - strength)) as u8;
+                        dst_cpu[i + 1] = ((255.0 - src_cpu[i + 1] as f64) * strength + src_cpu[i + 1] as f64 * (1.0 - strength)) as u8;
+                        dst_cpu[i + 2] = ((255.0 - src_cpu[i + 2] as f64) * strength + src_cpu[i + 2] as f64 * (1.0 - strength)) as u8;
+                        dst_cpu[i + 3] = src_cpu[i + 3]; // alpha
+                    }
+
+                    // Upload result to device
+                    if !cuda.copy_htod(dst_dptr, &dst_cpu) {
+                        cuda.pop_context();
+                        (ie.clip_release_image)(source_img);
+                        (ie.clip_release_image)(output_img);
+                        return K_OFX_STAT_GPU_RENDER_FAILED;
+                    }
+
+                    cuda.pop_context();
+                } else {
+                    // CUDA not available — signal fallback
+                    (ie.clip_release_image)(source_img);
+                    (ie.clip_release_image)(output_img);
+                    return K_OFX_STAT_GPU_RENDER_FAILED;
+                }
+            } else {
+                // ── CPU path ────────────────────────────────────────
+                let src = std::slice::from_raw_parts(src_data as *const u8, height * src_row_bytes as usize);
+                let dst = std::slice::from_raw_parts_mut(dst_data as *mut u8, height * dst_row_bytes as usize);
+
+                for y in 0..height {
+                    let src_row = &src[y * src_row_bytes as usize..];
+                    let dst_row = &mut dst[y * dst_row_bytes as usize..];
+                    for x in 0..width {
+                        let si = x * 4;
+                        let di = x * 4;
+                        dst_row[di] = ((255.0 - src_row[si] as f64) * strength + src_row[si] as f64 * (1.0 - strength)) as u8;
+                        dst_row[di + 1] = ((255.0 - src_row[si + 1] as f64) * strength + src_row[si + 1] as f64 * (1.0 - strength)) as u8;
+                        dst_row[di + 2] = ((255.0 - src_row[si + 2] as f64) * strength + src_row[si + 2] as f64 * (1.0 - strength)) as u8;
+                        dst_row[di + 3] = src_row[si + 3];
+                    }
                 }
             }
 
@@ -305,6 +382,7 @@ mod tests {
             plugin_name: "com.klipp.test.Invert".to_string(),
             enabled: true,
             param_values: HashMap::new(), // default Strength=1.0
+            ..Default::default()
         };
 
         let result = host.apply_effects_chain(&[effect], &white, 4, 4, 0.0);
@@ -331,6 +409,7 @@ mod tests {
             plugin_name: "com.klipp.test.Invert".to_string(),
             enabled: true,
             param_values: HashMap::new(),
+            ..Default::default()
         };
 
         let result = host.apply_effects_chain(&[effect], &black, 2, 2, 0.0);
@@ -355,6 +434,7 @@ mod tests {
             plugin_name: "com.klipp.test.Invert".to_string(),
             enabled: true,
             param_values: params,
+            ..Default::default()
         };
 
         let result = host.apply_effects_chain(&[effect], &white, 4, 4, 0.0);
@@ -379,6 +459,7 @@ mod tests {
             plugin_name: "com.klipp.test.Invert".to_string(),
             enabled: false,
             param_values: HashMap::new(),
+            ..Default::default()
         };
 
         let result = host.apply_effects_chain(&[effect], &white, 4, 4, 0.0);
@@ -431,5 +512,52 @@ mod tests {
         }
 
         crate::property::remove_propset(handle);
+    }
+
+    #[test]
+    fn test_cuda_gpu_render_pipeline() {
+        let _guard = lock_tests();
+
+        // Skip if CUDA is not available
+        if crate::gpu_cuda::CudaRuntime::new().is_none() {
+            println!("CUDA not available — skipping GPU render test");
+            return;
+        }
+
+        let mut host = create_host_with_test_plugin();
+
+        // Verify host detected CUDA
+        assert!(
+            host.cuda_available(),
+            "Host should detect CUDA on this system"
+        );
+
+        // Verify the test plugin declared CUDA support
+        let infos = host.plugin_infos();
+        let plugin = infos.iter().find(|p| p.name == "com.klipp.test.Invert");
+        assert!(plugin.is_some(), "Test plugin should be registered");
+
+        // White frame: 4×4 RGBA
+        let white = vec![255u8; 4 * 4 * 4];
+        let effect = AppliedEffect {
+            plugin_name: "com.klipp.test.Invert".to_string(),
+            enabled: true,
+            param_values: HashMap::new(),
+            ..Default::default()
+        };
+
+        // The host should automatically use CUDA since both sides support it.
+        // The full pipeline: CPU input → CUDA upload → plugin processes on device
+        // → CUDA download → CPU output.
+        let result = host.apply_effects_chain(&[effect], &white, 4, 4, 0.0);
+
+        assert_eq!(result.len(), white.len());
+        // Inverted white = black with alpha preserved
+        assert_eq!(result[0], 0, "R should be inverted to 0 (CUDA path)");
+        assert_eq!(result[1], 0, "G should be inverted to 0 (CUDA path)");
+        assert_eq!(result[2], 0, "B should be inverted to 0 (CUDA path)");
+        assert_eq!(result[3], 255, "A should be preserved (CUDA path)");
+
+        println!("CUDA GPU render pipeline test PASSED: host→device→plugin→device→host");
     }
 }

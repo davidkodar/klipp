@@ -3,6 +3,9 @@
 //! During kOfxActionDescribe, plugins call paramDefine() to declare their
 //! parameters. Each parameter has a type, label, range, default, etc.
 //! The host reads these back to build inspector UI and manage values.
+//!
+//! Supports keyframe animation: parameters can have time-varying values
+//! stored as sorted keyframe lists with linear interpolation.
 
 use crate::ffi::*;
 use crate::property::PropertySet;
@@ -10,6 +13,17 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr};
 use std::sync::{LazyLock, Mutex};
 use tracing::warn;
+
+// ── Keyframe ────────────────────────────────────────────────────────
+
+/// A single keyframe: a (time, value) pair for parameter animation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Keyframe {
+    pub time: f64,
+    pub value: ParamValue,
+}
+
+const KEYFRAME_TIME_EPSILON: f64 = 1e-9;
 
 // ── Parameter types ──────────────────────────────────────────────────
 
@@ -117,6 +131,8 @@ pub struct ParamInstance {
     pub descriptor: ParamDescriptor,
     pub value: ParamValue,
     pub props_handle: OfxPropertySetHandle,
+    /// Keyframes for animation, sorted by time.
+    pub keyframes: Vec<Keyframe>,
 }
 
 // Safety: props_handle is an opaque key into the global PROP_STORE (Mutex-protected).
@@ -291,6 +307,156 @@ fn read_typed_value(
     }
 }
 
+// ── Keyframe interpolation helpers ──────────────────────────────────
+
+/// Linear interpolation between two ParamValues. `t` is in [0, 1].
+/// Non-numeric types use step interpolation (return v1).
+fn interpolate_param(v1: &ParamValue, v2: &ParamValue, t: f64) -> ParamValue {
+    fn lerp(a: f64, b: f64, t: f64) -> f64 {
+        a + (b - a) * t
+    }
+    fn lerp_i(a: i32, b: i32, t: f64) -> i32 {
+        (a as f64 + (b as f64 - a as f64) * t).round() as i32
+    }
+
+    match (v1, v2) {
+        (ParamValue::Double(a), ParamValue::Double(b)) => ParamValue::Double(lerp(*a, *b, t)),
+        (ParamValue::Double2(a0, a1), ParamValue::Double2(b0, b1)) => {
+            ParamValue::Double2(lerp(*a0, *b0, t), lerp(*a1, *b1, t))
+        }
+        (ParamValue::Double3(a0, a1, a2), ParamValue::Double3(b0, b1, b2)) => {
+            ParamValue::Double3(lerp(*a0, *b0, t), lerp(*a1, *b1, t), lerp(*a2, *b2, t))
+        }
+        (ParamValue::Int(a), ParamValue::Int(b)) => ParamValue::Int(lerp_i(*a, *b, t)),
+        (ParamValue::Int2(a0, a1), ParamValue::Int2(b0, b1)) => {
+            ParamValue::Int2(lerp_i(*a0, *b0, t), lerp_i(*a1, *b1, t))
+        }
+        (ParamValue::Int3(a0, a1, a2), ParamValue::Int3(b0, b1, b2)) => {
+            ParamValue::Int3(lerp_i(*a0, *b0, t), lerp_i(*a1, *b1, t), lerp_i(*a2, *b2, t))
+        }
+        (ParamValue::Rgba(r1, g1, b1, a1), ParamValue::Rgba(r2, g2, b2, a2)) => {
+            ParamValue::Rgba(lerp(*r1, *r2, t), lerp(*g1, *g2, t), lerp(*b1, *b2, t), lerp(*a1, *a2, t))
+        }
+        (ParamValue::Rgb(r1, g1, b1), ParamValue::Rgb(r2, g2, b2)) => {
+            ParamValue::Rgb(lerp(*r1, *r2, t), lerp(*g1, *g2, t), lerp(*b1, *b2, t))
+        }
+        // Step interpolation for non-numeric types (Bool, Choice, String)
+        _ => v1.clone(),
+    }
+}
+
+/// Get the interpolated value at a given time from a sorted keyframe list.
+/// Returns None if no keyframes exist.
+fn value_at_time(keyframes: &[Keyframe], time: f64) -> Option<ParamValue> {
+    if keyframes.is_empty() {
+        return None;
+    }
+    if keyframes.len() == 1 {
+        return Some(keyframes[0].value.clone());
+    }
+
+    // Before first keyframe: hold first value
+    if time <= keyframes[0].time {
+        return Some(keyframes[0].value.clone());
+    }
+    // After last keyframe: hold last value
+    if time >= keyframes[keyframes.len() - 1].time {
+        return Some(keyframes[keyframes.len() - 1].value.clone());
+    }
+
+    // Find bracketing keyframes
+    let idx = keyframes.partition_point(|k| k.time < time);
+    if idx == 0 {
+        return Some(keyframes[0].value.clone());
+    }
+    let k0 = &keyframes[idx - 1];
+    let k1 = &keyframes[idx];
+    let dt = k1.time - k0.time;
+    if dt.abs() < KEYFRAME_TIME_EPSILON {
+        return Some(k1.value.clone());
+    }
+    let t = (time - k0.time) / dt;
+    Some(interpolate_param(&k0.value, &k1.value, t))
+}
+
+/// Extract the first f64 from a ParamValue (for derivative/integral math).
+fn param_value_as_f64(v: &ParamValue) -> f64 {
+    match v {
+        ParamValue::Double(v) => *v,
+        ParamValue::Int(v) => *v as f64,
+        ParamValue::Bool(v) => if *v { 1.0 } else { 0.0 },
+        ParamValue::Choice(v) => *v as f64,
+        ParamValue::Double2(a, _) => *a,
+        ParamValue::Double3(a, _, _) => *a,
+        ParamValue::Int2(a, _) => *a as f64,
+        ParamValue::Int3(a, _, _) => *a as f64,
+        ParamValue::Rgba(r, _, _, _) => *r,
+        ParamValue::Rgb(r, _, _) => *r,
+        _ => 0.0,
+    }
+}
+
+/// Insert a keyframe at the given time (sorted), replacing if time matches.
+fn insert_keyframe(keyframes: &mut Vec<Keyframe>, time: f64, value: ParamValue) {
+    let idx = keyframes.partition_point(|k| k.time < time - KEYFRAME_TIME_EPSILON);
+    if idx < keyframes.len() && (keyframes[idx].time - time).abs() < KEYFRAME_TIME_EPSILON {
+        keyframes[idx].value = value;
+    } else {
+        keyframes.insert(idx, Keyframe { time, value });
+    }
+}
+
+/// Write a ParamValue to the output pointer, dispatching by param type.
+/// Shared by paramGetValue and paramGetValueAtTime.
+unsafe fn write_param_value(value: &ParamValue, descriptor: &ParamDescriptor, out: *mut c_void) {
+    match value {
+        ParamValue::Double(v) => { *(out as *mut f64) = *v; }
+        ParamValue::Double2(a, b) => {
+            *(out as *mut f64) = *a;
+            *(out as *mut f64).add(1) = *b;
+        }
+        ParamValue::Double3(a, b, c) => {
+            *(out as *mut f64) = *a;
+            *(out as *mut f64).add(1) = *b;
+            *(out as *mut f64).add(2) = *c;
+        }
+        ParamValue::Int(v) => { *(out as *mut i32) = *v; }
+        ParamValue::Int2(a, b) => {
+            *(out as *mut i32) = *a;
+            *(out as *mut i32).add(1) = *b;
+        }
+        ParamValue::Int3(a, b, c) => {
+            *(out as *mut i32) = *a;
+            *(out as *mut i32).add(1) = *b;
+            *(out as *mut i32).add(2) = *c;
+        }
+        ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
+        ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
+        ParamValue::Rgba(r, g, b, a) => {
+            *(out as *mut f64) = *r;
+            *(out as *mut f64).add(1) = *g;
+            *(out as *mut f64).add(2) = *b;
+            *(out as *mut f64).add(3) = *a;
+        }
+        ParamValue::Rgb(r, g, b) => {
+            *(out as *mut f64) = *r;
+            *(out as *mut f64).add(1) = *g;
+            *(out as *mut f64).add(2) = *b;
+        }
+        ParamValue::String(_) | ParamValue::None => {
+            // For None, use default
+            let fallback = if matches!(value, ParamValue::None) { &descriptor.default } else { value };
+            match fallback {
+                ParamValue::Double(v) => { *(out as *mut f64) = *v; }
+                ParamValue::Int(v) => { *(out as *mut i32) = *v; }
+                ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
+                ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
+                _ => { *(out as *mut i32) = 0; }
+            }
+        }
+    }
+}
+
 // ── OfxParameterSuiteV1 implementation ──────────────────────────────
 
 unsafe extern "C" fn param_define_fn(
@@ -311,6 +477,7 @@ unsafe extern "C" fn param_define_fn(
         descriptor,
         value: ParamValue::None,
         props_handle,
+        keyframes: Vec::new(),
     };
     let handle_key = props_handle as usize;
     PARAM_STORE.lock().unwrap().insert(handle_key, pi);
@@ -360,6 +527,7 @@ unsafe extern "C" fn param_get_handle_fn(
             descriptor: ParamDescriptor::new(&name_str, ParamType::Bool),
             value: ParamValue::Bool(false),
             props_handle,
+            keyframes: Vec::new(),
         };
         PARAM_STORE.lock().unwrap().insert(handle_key, pi);
         let mut store = PARAM_SET_STORE.lock().unwrap();
@@ -497,30 +665,119 @@ unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void
     K_OFX_STAT_OK
 }
 
-/// paramGetValueAtTime — same as getValue, we don't support animation yet.
+/// paramGetValueAtTime — returns interpolated value at the given time.
+/// Falls back to the current value if no keyframes are set.
 unsafe extern "C" fn param_get_value_at_time_fn(
     handle: OfxParamHandle,
-    _time: c_double,
+    time: c_double,
     out: *mut c_void,
 ) -> OfxStatus {
-    param_get_value_fn(handle, out)
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get(&key) else {
+        warn!("[OFX] paramGetValueAtTime: BAD_HANDLE param={:?}", handle);
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+
+    // If keyframes exist, interpolate; otherwise use current value
+    let value = if !pi.keyframes.is_empty() {
+        value_at_time(&pi.keyframes, time).unwrap_or_else(|| pi.value.clone())
+    } else {
+        pi.value.clone()
+    };
+
+    write_param_value(&value, &pi.descriptor, out);
+    K_OFX_STAT_OK
 }
 
+/// paramGetDerivative — returns the rate of change at a given time.
 unsafe extern "C" fn param_get_derivative_fn(
-    _handle: OfxParamHandle,
-    _time: c_double,
-    _out: *mut c_void,
+    handle: OfxParamHandle,
+    time: c_double,
+    out: *mut c_void,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_UNSUPPORTED
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+
+    if pi.keyframes.len() < 2 {
+        // Constant — derivative is 0
+        *(out as *mut f64) = 0.0;
+        return K_OFX_STAT_OK;
+    }
+
+    // Find bracketing keyframes and compute slope
+    let kf = &pi.keyframes;
+    let idx = kf.partition_point(|k| k.time < time);
+    let (k0, k1) = if idx == 0 {
+        (&kf[0], &kf[1])
+    } else if idx >= kf.len() {
+        (&kf[kf.len() - 2], &kf[kf.len() - 1])
+    } else {
+        (&kf[idx - 1], &kf[idx])
+    };
+
+    let dt = k1.time - k0.time;
+    let derivative = if dt.abs() < KEYFRAME_TIME_EPSILON {
+        0.0
+    } else {
+        (param_value_as_f64(&k1.value) - param_value_as_f64(&k0.value)) / dt
+    };
+
+    *(out as *mut f64) = derivative;
+    K_OFX_STAT_OK
 }
 
+/// paramGetIntegral — returns the area under the curve between time1 and time2.
+/// Uses trapezoidal integration over linear keyframe segments.
 unsafe extern "C" fn param_get_integral_fn(
-    _handle: OfxParamHandle,
-    _time1: c_double,
-    _time2: c_double,
-    _out: *mut c_void,
+    handle: OfxParamHandle,
+    time1: c_double,
+    time2: c_double,
+    out: *mut c_void,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_UNSUPPORTED
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+
+    if pi.keyframes.is_empty() {
+        // Constant value — integral = value * duration
+        let v = param_value_as_f64(&pi.value);
+        *(out as *mut f64) = v * (time2 - time1);
+        return K_OFX_STAT_OK;
+    }
+
+    // Trapezoidal integration: sample at keyframe boundaries within [time1, time2]
+    let kf = &pi.keyframes;
+    let mut integral = 0.0;
+    let mut t_prev = time1;
+    let v_prev_val = value_at_time(kf, time1).unwrap_or_else(|| pi.value.clone());
+    let mut v_prev = param_value_as_f64(&v_prev_val);
+
+    for k in kf {
+        if k.time <= time1 {
+            continue;
+        }
+        if k.time >= time2 {
+            break;
+        }
+        let v_curr = param_value_as_f64(&k.value);
+        integral += (v_prev + v_curr) * 0.5 * (k.time - t_prev);
+        t_prev = k.time;
+        v_prev = v_curr;
+    }
+
+    // Final segment to time2
+    let v_end_val = value_at_time(kf, time2).unwrap_or_else(|| pi.value.clone());
+    let v_end = param_value_as_f64(&v_end_val);
+    integral += (v_prev + v_end) * 0.5 * (time2 - t_prev);
+
+    *(out as *mut f64) = integral;
+    K_OFX_STAT_OK
 }
 
 /// paramSetValue — write value from input pointer(s).
@@ -577,57 +834,220 @@ unsafe extern "C" fn param_set_value_fn(handle: OfxParamHandle, input: *const c_
     K_OFX_STAT_OK
 }
 
+/// paramSetValueAtTime — inserts or replaces a keyframe at the given time.
 unsafe extern "C" fn param_set_value_at_time_fn(
     handle: OfxParamHandle,
-    _time: c_double,
+    time: c_double,
     input: *const c_void,
 ) -> OfxStatus {
-    param_set_value_fn(handle, input)
-}
+    let key = handle as usize;
+    let mut store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get_mut(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
 
-unsafe extern "C" fn param_get_num_keys_fn(
-    _handle: OfxParamHandle,
-    n: *mut c_uint,
-) -> OfxStatus {
-    *n = 0; // no keyframing yet
+    // Read the value based on param type
+    let value = match pi.descriptor.param_type {
+        ParamType::Double => ParamValue::Double(*(input as *const f64)),
+        ParamType::Double2 => {
+            let p = input as *const f64;
+            ParamValue::Double2(*p, *p.add(1))
+        }
+        ParamType::Double3 => {
+            let p = input as *const f64;
+            ParamValue::Double3(*p, *p.add(1), *p.add(2))
+        }
+        ParamType::Int => ParamValue::Int(*(input as *const i32)),
+        ParamType::Int2 => {
+            let p = input as *const i32;
+            ParamValue::Int2(*p, *p.add(1))
+        }
+        ParamType::Int3 => {
+            let p = input as *const i32;
+            ParamValue::Int3(*p, *p.add(1), *p.add(2))
+        }
+        ParamType::Bool => ParamValue::Bool(*(input as *const i32) != 0),
+        ParamType::Choice => ParamValue::Choice(*(input as *const i32)),
+        ParamType::Rgba => {
+            let p = input as *const f64;
+            ParamValue::Rgba(*p, *p.add(1), *p.add(2), *p.add(3))
+        }
+        ParamType::Rgb => {
+            let p = input as *const f64;
+            ParamValue::Rgb(*p, *p.add(1), *p.add(2))
+        }
+        ParamType::String => {
+            let cstr = CStr::from_ptr(*(input as *const *const c_char));
+            ParamValue::String(cstr.to_string_lossy().to_string())
+        }
+        _ => return K_OFX_STAT_OK,
+    };
+
+    insert_keyframe(&mut pi.keyframes, time, value);
     K_OFX_STAT_OK
 }
 
-unsafe extern "C" fn param_get_key_time_fn(
-    _handle: OfxParamHandle,
-    _nth: c_uint,
-    _time: *mut c_double,
+unsafe extern "C" fn param_get_num_keys_fn(
+    handle: OfxParamHandle,
+    n: *mut c_uint,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_BAD_INDEX
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    match store.get(&key) {
+        Some(pi) => {
+            *n = pi.keyframes.len() as c_uint;
+            K_OFX_STAT_OK
+        }
+        None => K_OFX_STAT_ERR_BAD_HANDLE,
+    }
+}
+
+unsafe extern "C" fn param_get_key_time_fn(
+    handle: OfxParamHandle,
+    nth: c_uint,
+    time: *mut c_double,
+) -> OfxStatus {
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+    match pi.keyframes.get(nth as usize) {
+        Some(kf) => {
+            *time = kf.time;
+            K_OFX_STAT_OK
+        }
+        None => K_OFX_STAT_ERR_BAD_INDEX,
+    }
 }
 
 unsafe extern "C" fn param_get_key_index_fn(
-    _handle: OfxParamHandle,
-    _time: c_double,
-    _direction: c_int,
-    _index: *mut c_int,
+    handle: OfxParamHandle,
+    time: c_double,
+    direction: c_int,
+    index: *mut c_int,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_VALUE
+    let key = handle as usize;
+    let store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+
+    if pi.keyframes.is_empty() {
+        return K_OFX_STAT_ERR_VALUE;
+    }
+
+    let kf = &pi.keyframes;
+    let pos = kf.partition_point(|k| k.time < time - KEYFRAME_TIME_EPSILON);
+
+    match direction {
+        0 => {
+            // Exact match
+            if pos < kf.len() && (kf[pos].time - time).abs() < KEYFRAME_TIME_EPSILON {
+                *index = pos as c_int;
+                K_OFX_STAT_OK
+            } else {
+                K_OFX_STAT_ERR_VALUE
+            }
+        }
+        -1 => {
+            // At or before
+            if pos < kf.len() && (kf[pos].time - time).abs() < KEYFRAME_TIME_EPSILON {
+                *index = pos as c_int;
+                K_OFX_STAT_OK
+            } else if pos > 0 {
+                *index = (pos - 1) as c_int;
+                K_OFX_STAT_OK
+            } else {
+                K_OFX_STAT_ERR_VALUE
+            }
+        }
+        1 => {
+            // At or after
+            if pos < kf.len() {
+                *index = pos as c_int;
+                K_OFX_STAT_OK
+            } else {
+                K_OFX_STAT_ERR_VALUE
+            }
+        }
+        _ => K_OFX_STAT_ERR_VALUE,
+    }
 }
 
 unsafe extern "C" fn param_delete_key_fn(
-    _handle: OfxParamHandle,
-    _time: c_double,
+    handle: OfxParamHandle,
+    time: c_double,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_UNSUPPORTED
+    let key = handle as usize;
+    let mut store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get_mut(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+
+    let pos = pi.keyframes.iter().position(|k| (k.time - time).abs() < KEYFRAME_TIME_EPSILON);
+    match pos {
+        Some(idx) => {
+            pi.keyframes.remove(idx);
+            K_OFX_STAT_OK
+        }
+        None => K_OFX_STAT_ERR_VALUE,
+    }
 }
 
-unsafe extern "C" fn param_delete_all_keys_fn(_handle: OfxParamHandle) -> OfxStatus {
-    K_OFX_STAT_ERR_UNSUPPORTED
+unsafe extern "C" fn param_delete_all_keys_fn(handle: OfxParamHandle) -> OfxStatus {
+    let key = handle as usize;
+    let mut store = PARAM_STORE.lock().unwrap();
+    let Some(pi) = store.get_mut(&key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+    pi.keyframes.clear();
+    K_OFX_STAT_OK
 }
 
 unsafe extern "C" fn param_copy_fn(
-    _dst: OfxParamHandle,
-    _src: OfxParamHandle,
-    _offset: c_double,
-    _range: *const OfxRangeD,
+    dst: OfxParamHandle,
+    src: OfxParamHandle,
+    offset: c_double,
+    range: *const OfxRangeD,
 ) -> OfxStatus {
-    K_OFX_STAT_ERR_UNSUPPORTED
+    let src_key = src as usize;
+    let dst_key = dst as usize;
+    let mut store = PARAM_STORE.lock().unwrap();
+
+    // Extract source keyframes
+    let Some(src_pi) = store.get(&src_key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+    let src_keyframes: Vec<Keyframe> = if range.is_null() {
+        src_pi.keyframes.iter().map(|k| Keyframe {
+            time: k.time + offset,
+            value: k.value.clone(),
+        }).collect()
+    } else {
+        let r = &*range;
+        src_pi.keyframes.iter()
+            .filter(|k| k.time >= r.min && k.time <= r.max)
+            .map(|k| Keyframe {
+                time: k.time + offset,
+                value: k.value.clone(),
+            }).collect()
+    };
+    let src_value = src_pi.value.clone();
+
+    // Apply to destination
+    let Some(dst_pi) = store.get_mut(&dst_key) else {
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+    if src_keyframes.is_empty() {
+        // No keyframes — just copy the current value
+        dst_pi.value = src_value;
+    } else {
+        for kf in src_keyframes {
+            insert_keyframe(&mut dst_pi.keyframes, kf.time, kf.value);
+        }
+    }
+    K_OFX_STAT_OK
 }
 
 unsafe extern "C" fn param_edit_begin_fn(

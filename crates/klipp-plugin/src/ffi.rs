@@ -41,6 +41,10 @@ pub const K_OFX_STAT_REPLY_YES: OfxStatus = 12;
 pub const K_OFX_STAT_REPLY_NO: OfxStatus = 13;
 pub const K_OFX_STAT_REPLY_DEFAULT: OfxStatus = 14;
 
+// GPU render status codes (OFX 1.5)
+pub const K_OFX_STAT_GPU_OUT_OF_MEMORY: OfxStatus = 1001;
+pub const K_OFX_STAT_GPU_RENDER_FAILED: OfxStatus = 1002;
+
 // ── Geometry types ───────────────────────────────────────────────────
 
 #[repr(C)]
@@ -226,3 +230,26 @@ pub struct OfxProgressSuiteV1 {
 }
 
 unsafe impl Sync for OfxProgressSuiteV1 {}
+
+/// OfxImageEffectOpenGLRenderSuiteV1 — 3 functions (OFX 1.3+).
+/// Provides OpenGL texture loading for GPU-accelerated OFX plugins.
+#[repr(C)]
+pub struct OfxImageEffectOpenGLRenderSuiteV1 {
+    /// Load a clip's image as an OpenGL texture.
+    /// Returns a property set with kOfxImageEffectPropOpenGLTextureIndex/Target.
+    pub clip_load_texture: unsafe extern "C" fn(
+        clip: OfxImageClipHandle,
+        time: c_double,
+        format: *const c_char,
+        region: *const OfxRectD,
+        texture_handle: *mut OfxPropertySetHandle,
+    ) -> OfxStatus,
+    /// Release a texture previously loaded via clipLoadTexture.
+    pub clip_free_texture: unsafe extern "C" fn(
+        texture_handle: OfxPropertySetHandle,
+    ) -> OfxStatus,
+    /// Ask the host to free any cached GPU resources.
+    pub flush_resources: unsafe extern "C" fn() -> OfxStatus,
+}
+
+unsafe impl Sync for OfxImageEffectOpenGLRenderSuiteV1 {}

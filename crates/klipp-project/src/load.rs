@@ -222,6 +222,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                                 };
                                 (k.clone(), val)
                             }).collect::<HashMap<_, _>>(),
+                        ..Default::default()
                         }
                     }).collect(),
                     linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {

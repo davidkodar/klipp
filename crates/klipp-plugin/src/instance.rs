@@ -8,7 +8,8 @@ use crate::ffi::*;
 use crate::param::ParamValue;
 use crate::property::{self, PropertySet};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Per-clip OFX plugin instance.
 pub struct PluginInstance {
@@ -30,6 +31,8 @@ pub struct PluginInstance {
     pub premult_string: String,
     /// Plugin index in OfxHostRuntime.plugins.
     pub plugin_idx: usize,
+    /// Abort flag — set to true by the host to signal the plugin should stop rendering.
+    pub abort_flag: Arc<AtomicBool>,
 }
 
 // Safety: All handle fields are opaque keys into global Mutex-protected stores.
@@ -70,6 +73,7 @@ impl PluginInstance {
             clip_prefs_fetched: false,
             premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
             plugin_idx,
+            abort_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 

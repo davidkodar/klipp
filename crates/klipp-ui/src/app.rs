@@ -2631,6 +2631,7 @@ impl KlippApp {
                                 plugin_name: plugin_name.clone(),
                                 enabled: true,
                                 param_values: std::collections::HashMap::new(),
+                                ..Default::default()
                             });
                             break;
                         }

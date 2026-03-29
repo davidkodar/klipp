@@ -6,6 +6,7 @@ use crate::property::{self, PropertySet};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -32,8 +33,9 @@ impl std::fmt::Display for PluginError {
 
 // ── Enums ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum OfxCategory {
+    #[default]
     Filter,
     Color,
     Transition,
@@ -77,6 +79,8 @@ pub struct OfxPluginInfo {
     pub parameters: Vec<ParamDescriptor>,
     /// OFX grouping string (e.g. "Filter/Blur", "Color/Adjust")
     pub grouping: String,
+    /// Contexts this plugin supports (Filter, Transition, Generator).
+    pub supported_contexts: Vec<OfxCategory>,
 }
 
 // ── Loaded plugin ────────────────────────────────────────────────────
@@ -91,6 +95,14 @@ pub struct OfxPlugin {
     /// The premultiplication string this plugin uses (detected during Describe).
     /// Standard OFX uses "OfxImageUnPreMultiplied", Natron builds use "OfxImageAlphaUnPremultiplied".
     pub premult_string: String,
+    /// Contexts this plugin supports.
+    pub supported_contexts: Vec<OfxCategory>,
+    /// Whether this plugin supports CUDA rendering.
+    pub supports_cuda: bool,
+    /// Whether this plugin supports OpenCL rendering.
+    pub supports_opencl: bool,
+    /// Whether this plugin supports OpenGL rendering.
+    pub supports_opengl: bool,
     /// Raw plugin pointer — valid for the lifetime of _lib.
     raw: *const ffi::OfxPluginRaw,
     _lib: Arc<libloading::Library>,
@@ -124,6 +136,7 @@ impl OfxPlugin {
             category: self.category,
             parameters: self.param_descriptors.clone(),
             grouping: self.grouping.clone(),
+            supported_contexts: self.supported_contexts.clone(),
         }
     }
 }
@@ -178,6 +191,10 @@ pub struct OfxHostRuntime {
     c_host: Box<ffi::OfxHostC>,
     /// Maps plugin_name → instance handle (key in INSTANCE_STORE).
     instances: HashMap<String, usize>,
+    /// CUDA runtime (if available).
+    cuda: Option<crate::gpu_cuda::CudaRuntime>,
+    /// OpenCL runtime (if available — AMD/Intel/NVIDIA).
+    opencl: Option<crate::gpu_opencl::OpenClRuntime>,
 }
 
 // Safety: All handle fields are opaque keys into global Mutex-protected stores.
@@ -194,6 +211,22 @@ impl OfxHostRuntime {
         // Create and register host property set
         let mut host_props = PropertySet::default();
         property::populate_host_properties(&mut host_props);
+
+        // Try to initialize CUDA (NVIDIA)
+        let cuda = crate::gpu_cuda::CudaRuntime::new();
+        if let Some(ref cuda) = cuda {
+            info!("OFX: CUDA GPU rendering enabled on '{}'", cuda.device_name());
+            host_props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "true");
+            host_props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "true");
+        }
+
+        // Try to initialize OpenCL (AMD/Intel/NVIDIA)
+        let opencl = crate::gpu_opencl::OpenClRuntime::new();
+        if let Some(ref cl) = opencl {
+            info!("OFX: OpenCL GPU rendering enabled on '{}' ({})", cl.device_name(), cl.platform_name());
+            host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
+        }
+
         let host_propset_handle = property::register_propset(host_props);
 
         let c_host = Box::new(ffi::OfxHostC {
@@ -215,6 +248,8 @@ impl OfxHostRuntime {
             host_propset_handle,
             c_host,
             instances: HashMap::new(),
+            cuda,
+            opencl,
         }
     }
 
@@ -317,6 +352,10 @@ impl OfxHostRuntime {
                 description: String::new(),
                 grouping: String::new(),
                 premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
+                supported_contexts: Vec::new(),
+                supports_cuda: false,
+                supports_opencl: false,
+                supports_opengl: false,
                 raw,
                 _lib: lib.clone(),
                 initialized: false,
@@ -354,6 +393,10 @@ impl OfxHostRuntime {
             description: String::new(),
             grouping: String::new(),
             premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
+            supported_contexts: Vec::new(),
+            supports_cuda: false,
+            supports_opencl: false,
+            supports_opengl: false,
             raw: raw_ptr,
             _lib: lib,
             initialized: false,
@@ -423,25 +466,61 @@ impl OfxHostRuntime {
             );
         }
 
-        // 5. kOfxImageEffectActionDescribeInContext — most plugins define params here
-        let mut dic_args = PropertySet::default();
-        dic_args.set_string("OfxImageEffectPropContext", 0, crate::constants::kOfxImageEffectContextFilter);
-        let dic_args_handle = property::register_propset(dic_args);
+        // 5. Read which contexts the plugin supports from its descriptor
+        let plugin_contexts = instance::with_instance(desc_handle, |inst| {
+            property::with_propset(inst.props_handle, |ps| {
+                let dim = ps.dimension("OfxImageEffectPropSupportedContexts");
+                let mut contexts = Vec::new();
+                for i in 0..dim as usize {
+                    if let Some(ctx) = ps.get_string_lossy("OfxImageEffectPropSupportedContexts", i) {
+                        contexts.push(ctx);
+                    }
+                }
+                contexts
+            })
+        }).flatten().unwrap_or_default();
 
-        let status = self.call_action_raw(
-            plugin_idx,
-            b"OfxImageEffectActionDescribeInContext\0",
-            desc_handle,
-            dic_args_handle,
-            std::ptr::null_mut(),
-        );
-        if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
-            debug!(
-                "DescribeInContext returned {status} for {}",
-                self.plugins[plugin_idx].name
+        // Parse context strings into OfxCategory
+        let supported_contexts: Vec<OfxCategory> = if plugin_contexts.is_empty() {
+            vec![OfxCategory::Filter] // default to Filter if plugin didn't declare
+        } else {
+            plugin_contexts.iter().filter_map(|ctx| match ctx.as_str() {
+                "OfxImageEffectContextFilter" => Some(OfxCategory::Filter),
+                "OfxImageEffectContextTransition" => Some(OfxCategory::Transition),
+                "OfxImageEffectContextGenerator" => Some(OfxCategory::Generator),
+                "OfxImageEffectContextGeneral" => Some(OfxCategory::Other),
+                _ => None,
+            }).collect()
+        };
+
+        // 6. kOfxImageEffectActionDescribeInContext — call for each supported context
+        let context_strings: Vec<&str> = supported_contexts.iter().map(|c| match c {
+            OfxCategory::Filter => crate::constants::kOfxImageEffectContextFilter,
+            OfxCategory::Transition => crate::constants::kOfxImageEffectContextTransition,
+            OfxCategory::Generator => crate::constants::kOfxImageEffectContextGenerator,
+            _ => crate::constants::kOfxImageEffectContextFilter,
+        }).collect();
+
+        for ctx_str in &context_strings {
+            let mut dic_args = PropertySet::default();
+            dic_args.set_string("OfxImageEffectPropContext", 0, ctx_str);
+            let dic_args_handle = property::register_propset(dic_args);
+
+            let status = self.call_action_raw(
+                plugin_idx,
+                b"OfxImageEffectActionDescribeInContext\0",
+                desc_handle,
+                dic_args_handle,
+                std::ptr::null_mut(),
             );
+            if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
+                debug!(
+                    "DescribeInContext({}) returned {status} for {}",
+                    ctx_str, self.plugins[plugin_idx].name
+                );
+            }
+            property::remove_propset(dic_args_handle);
         }
-        property::remove_propset(dic_args_handle);
 
         // 6. Read back param descriptors (after both Describe and DescribeInContext)
         let descriptors = param::read_param_descriptors(desc_param_set);
@@ -472,9 +551,39 @@ impl OfxHostRuntime {
             }).flatten()
         }).flatten().unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
 
+        // Detect GPU rendering capabilities from plugin descriptor
+        let (supports_cuda, supports_opencl, supports_opengl) = instance::with_instance(desc_handle, |inst| {
+            property::with_propset(inst.props_handle, |ps| {
+                let cuda = ps.get_string_lossy(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0)
+                    .map(|s| s == "true" || s == "needed")
+                    .unwrap_or(false);
+                let opencl = ps.get_string_lossy(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0)
+                    .map(|s| s == "true" || s == "needed")
+                    .unwrap_or(false);
+                let gl = ps.get_string_lossy(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0)
+                    .map(|s| s == "true" || s == "needed")
+                    .unwrap_or(false);
+                (cuda, opencl, gl)
+            })
+        }).flatten().unwrap_or((false, false, false));
+
+        if supports_cuda {
+            info!("OFX: '{}' supports CUDA rendering", self.plugins[plugin_idx].name);
+        }
+        if supports_opencl {
+            info!("OFX: '{}' supports OpenCL rendering", self.plugins[plugin_idx].name);
+        }
+        if supports_opengl {
+            info!("OFX: '{}' supports OpenGL rendering", self.plugins[plugin_idx].name);
+        }
+
         let plugin = &mut self.plugins[plugin_idx];
         plugin.param_descriptors = descriptors;
         plugin.grouping = grouping;
+        plugin.supported_contexts = supported_contexts;
+        plugin.supports_cuda = supports_cuda;
+        plugin.supports_opencl = supports_opencl;
+        plugin.supports_opengl = supports_opengl;
         if !premult_str.is_empty() {
             plugin.premult_string = premult_str;
         }
@@ -490,16 +599,37 @@ impl OfxHostRuntime {
         &mut self,
         plugin_name: &str,
         plugin_idx: usize,
+        context: OfxCategory,
     ) -> Result<ffi::OfxImageEffectHandle, PluginError> {
         let mut inst = PluginInstance::new(plugin_idx);
         inst.premult_string = self.plugins[plugin_idx].premult_string.clone();
-        inst.add_clip("Source");
-        inst.add_clip("Output");
+
+        // Set up clips based on context
+        match context {
+            OfxCategory::Filter | OfxCategory::Color | OfxCategory::Other => {
+                inst.add_clip("Source");
+                inst.add_clip("Output");
+            }
+            OfxCategory::Transition => {
+                inst.add_clip("SourceFrom");
+                inst.add_clip("SourceTo");
+                inst.add_clip("Output");
+            }
+            OfxCategory::Generator => {
+                inst.add_clip("Output");
+            }
+        }
+
+        let context_str = match context {
+            OfxCategory::Filter | OfxCategory::Color | OfxCategory::Other => crate::constants::kOfxImageEffectContextFilter,
+            OfxCategory::Transition => crate::constants::kOfxImageEffectContextTransition,
+            OfxCategory::Generator => crate::constants::kOfxImageEffectContextGenerator,
+        };
 
         // Set up instance properties — must include project properties because
         // the OFX C++ support library reads them in the ImageEffect constructor.
         property::with_propset(inst.props_handle, |ps| {
-            ps.set_string("OfxImageEffectPropContext", 0, crate::constants::kOfxImageEffectContextFilter);
+            ps.set_string("OfxImageEffectPropContext", 0, context_str);
             ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
             ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
             // Project properties — needed by ImageEffect constructor
@@ -514,23 +644,38 @@ impl OfxHostRuntime {
             ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
             ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
             ps.set_int("OfxImageEffectInstancePropSequentialRender", 0, 0);
-            ps.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 0);
-            ps.set_int("OfxImageEffectPropSupportsTiles", 0, 0);
+            ps.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 1);
+            ps.set_int("OfxImageEffectPropSupportsTiles", 0, 1);
             ps.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
             ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
         });
+
+        // Determine which clips are "connected" based on context
+        let connected_clips: Vec<String> = match context {
+            OfxCategory::Filter | OfxCategory::Color | OfxCategory::Other => {
+                vec!["Source".to_string(), "Output".to_string()]
+            }
+            OfxCategory::Transition => {
+                vec!["SourceFrom".to_string(), "SourceTo".to_string(), "Output".to_string()]
+            }
+            OfxCategory::Generator => {
+                vec!["Output".to_string()]
+            }
+        };
 
         // Set up clip properties — constructor reads these via fetchClip
         let premult = self.plugins[plugin_idx].premult_string.clone();
         for (clip_name, clip) in &inst.clips {
             instance::register_clip_mapping(clip.handle, inst.handle, clip_name);
+            let is_connected = connected_clips.contains(clip_name);
+            let is_required = connected_clips.contains(clip_name);
             property::with_propset(clip.props_handle, |ps| {
                 ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
                 ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageEffectPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageClipPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
-                ps.set_int("OfxImageClipPropConnected", 0, if clip_name == "Source" || clip_name == "Output" { 1 } else { 0 });
+                ps.set_int("OfxImageClipPropConnected", 0, if is_connected { 1 } else { 0 });
                 ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                 ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
                 ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
@@ -541,7 +686,7 @@ impl OfxHostRuntime {
                 ps.set_string("OfxImageEffectPropPreMultiplication", 0, &premult);
                 ps.set_int("OfxImageClipPropContinuousSamples", 0, 0);
                 ps.set_int("OfxImageClipPropIsMask", 0, if clip_name == "Mask" { 1 } else { 0 });
-                ps.set_int("OfxImageClipPropOptional", 0, if clip_name == "Source" || clip_name == "Output" { 0 } else { 1 });
+                ps.set_int("OfxImageClipPropOptional", 0, if is_required { 0 } else { 1 });
                 // Unmapped (pre-negotiation) format — required by OFX C++ support library
                 ps.set_string("OfxImageClipPropUnmappedComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, crate::constants::kOfxBitDepthByte);
@@ -571,6 +716,7 @@ impl OfxHostRuntime {
                     descriptor: desc.clone(),
                     value: desc.default.clone(),
                     props_handle,
+                    keyframes: Vec::new(),
                 };
                 {
                     let mut store = crate::param::PARAM_STORE.lock().unwrap();
@@ -637,6 +783,7 @@ impl OfxHostRuntime {
     fn get_or_create_instance(
         &mut self,
         plugin_name: &str,
+        context: OfxCategory,
     ) -> Result<ffi::OfxImageEffectHandle, PluginError> {
         if let Some(&key) = self.instances.get(plugin_name) {
             return Ok(key as ffi::OfxImageEffectHandle);
@@ -648,7 +795,7 @@ impl OfxHostRuntime {
             .position(|p| p.name == plugin_name && p.initialized)
             .ok_or(PluginError::NotFound)?;
 
-        self.create_instance(plugin_name, plugin_idx)
+        self.create_instance(plugin_name, plugin_idx, context)
     }
 
     /// Sync AppliedEffect.param_values into the instance's param store.
@@ -709,6 +856,20 @@ impl OfxHostRuntime {
         height: u32,
         frame_time: f64,
     ) -> Vec<u8> {
+        self.apply_effects_chain_with_abort(effects, rgba, width, height, frame_time, None)
+    }
+
+    /// Apply a chain of effects with optional abort support.
+    /// Pass an `Arc<AtomicBool>` to allow cancellation from another thread.
+    pub fn apply_effects_chain_with_abort(
+        &mut self,
+        effects: &[AppliedEffect],
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        frame_time: f64,
+        abort: Option<Arc<AtomicBool>>,
+    ) -> Vec<u8> {
         if effects.is_empty() || effects.iter().all(|e| !e.enabled) {
             return rgba.to_vec();
         }
@@ -717,7 +878,14 @@ impl OfxHostRuntime {
             if !effect.enabled {
                 continue;
             }
-            match self.apply_effect(effect, &current, width, height, frame_time) {
+            // Check abort between effects in the chain
+            if let Some(ref flag) = abort {
+                if flag.load(Ordering::Relaxed) {
+                    debug!("OFX: effects chain aborted before '{}'", effect.plugin_name);
+                    return current;
+                }
+            }
+            match self.apply_effect(effect, &current, width, height, frame_time, &abort) {
                 Ok(result) => current = result,
                 Err(e) => warn!("OFX: apply_effect '{}' failed: {e}", effect.plugin_name),
             }
@@ -732,12 +900,26 @@ impl OfxHostRuntime {
         width: u32,
         height: u32,
         frame_time: f64,
+        abort: &Option<Arc<AtomicBool>>,
     ) -> Result<Vec<u8>, PluginError> {
         // Get or create instance
-        let inst_handle = self.get_or_create_instance(&effect.plugin_name)?;
+        let inst_handle = self.get_or_create_instance(&effect.plugin_name, effect.context)?;
 
         let plugin_idx = instance::with_instance(inst_handle, |inst| inst.plugin_idx)
             .ok_or(PluginError::NotFound)?;
+
+        // Determine which GPU path to use (priority: CUDA > OpenCL > CPU)
+        let use_cuda = self.cuda.is_some() && self.plugins[plugin_idx].supports_cuda;
+        let use_opencl = !use_cuda && self.opencl.is_some() && self.plugins[plugin_idx].supports_opencl;
+
+        // Set abort flag on the instance so the plugin's abort() callback can check it
+        instance::with_instance(inst_handle, |inst| {
+            if let Some(ref flag) = abort {
+                inst.abort_flag = flag.clone();
+            } else {
+                inst.abort_flag.store(false, Ordering::Relaxed);
+            }
+        });
 
         // Sync param values from the effect
         self.sync_params_to_instance(inst_handle, &effect.param_values);
@@ -760,14 +942,20 @@ impl OfxHostRuntime {
                 ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
             });
 
-            // Clip properties
+            // Clip properties — determine connected clips based on context
+            let connected = match effect.context {
+                OfxCategory::Filter | OfxCategory::Color | OfxCategory::Other => {
+                    vec!["Source", "Output"]
+                }
+                OfxCategory::Transition => vec!["SourceFrom", "SourceTo", "Output"],
+                OfxCategory::Generator => vec!["Output"],
+            };
             for (clip_name, clip) in &inst.clips {
+                let is_connected = connected.contains(&clip_name.as_str());
                 property::with_propset(clip.props_handle, |ps| {
                     ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
                     ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
-                    // Only Source and Output are connected — optional clips like Mask are not
-                    ps.set_int("OfxImageClipPropConnected", 0,
-                        if clip_name == "Source" || clip_name == "Output" { 1 } else { 0 });
+                    ps.set_int("OfxImageClipPropConnected", 0, if is_connected { 1 } else { 0 });
                     ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                     ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
                     ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
@@ -797,7 +985,9 @@ impl OfxHostRuntime {
             if cp_status == ffi::K_OFX_STAT_OK {
                 // Read back negotiated preferences and update clip properties
                 instance::with_instance(inst_handle, |inst| {
-                    for clip_name in ["Source", "Output"] {
+                    let clip_names: Vec<String> = inst.clips.keys().cloned().collect();
+                    for clip_name in clip_names {
+                        let clip_name = clip_name.as_str();
                         if let Some(clip) = inst.clips.get(clip_name) {
                             let components_key = format!("OfxImageClipPropComponents_{clip_name}");
                             let depth_key = format!("OfxImageEffectPropPixelDepth_{clip_name}");
@@ -837,27 +1027,254 @@ impl OfxHostRuntime {
             instance::with_instance(inst_handle, |inst| inst.clip_prefs_fetched = true);
         }
 
-        // Create input and output images
+        // Create input and output images based on context
         let premult = instance::with_instance(inst_handle, |inst| inst.premult_string.clone())
             .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
-        let input_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
-        // Initialize output with input data — plugins only write to unmasked pixels,
-        // leaving masked pixels unchanged. A zero-filled buffer causes black output
-        // when no mask is connected (all pixels treated as masked).
-        let output_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
 
-        let input_img_handle = image_effect::register_image(input_image);
-        let output_img_handle = image_effect::register_image(output_image);
+        // Track all registered image handles for cleanup
+        let mut registered_img_handles: Vec<ffi::OfxPropertySetHandle> = Vec::new();
 
-        // Set current images on clips
-        instance::with_instance(inst_handle, |inst| {
-            if let Some(clip) = inst.clips.get_mut("Source") {
-                clip.current_image = Some(input_img_handle);
+        match effect.context {
+            OfxCategory::Transition => {
+                // Transition: SourceFrom = input, SourceTo = transition_input, Output = blank
+                let from_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+                let from_handle = image_effect::register_image(from_image);
+                registered_img_handles.push(from_handle);
+
+                let to_data = effect.transition_input.as_deref().unwrap_or(input);
+                let to_image = OfxImage::from_rgba(to_data.to_vec(), width, height, frame_time, &premult);
+                let to_handle = image_effect::register_image(to_image);
+                registered_img_handles.push(to_handle);
+
+                let output_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+                let output_img_handle = image_effect::register_image(output_image);
+                registered_img_handles.push(output_img_handle);
+
+                instance::with_instance(inst_handle, |inst| {
+                    if let Some(clip) = inst.clips.get_mut("SourceFrom") {
+                        clip.current_image = Some(from_handle);
+                    }
+                    if let Some(clip) = inst.clips.get_mut("SourceTo") {
+                        clip.current_image = Some(to_handle);
+                    }
+                    if let Some(clip) = inst.clips.get_mut("Output") {
+                        clip.current_image = Some(output_img_handle);
+                    }
+                });
             }
-            if let Some(clip) = inst.clips.get_mut("Output") {
-                clip.current_image = Some(output_img_handle);
+            OfxCategory::Generator => {
+                // Generator: no input, Output only
+                let output_image = OfxImage::from_rgba(vec![0u8; (width * height * 4) as usize], width, height, frame_time, &premult);
+                let output_img_handle = image_effect::register_image(output_image);
+                registered_img_handles.push(output_img_handle);
+
+                instance::with_instance(inst_handle, |inst| {
+                    if let Some(clip) = inst.clips.get_mut("Output") {
+                        clip.current_image = Some(output_img_handle);
+                    }
+                });
             }
-        });
+            _ => {
+                // Filter: Source + Output
+                let input_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+                // Initialize output with input data — plugins only write to unmasked pixels,
+                // leaving masked pixels unchanged. A zero-filled buffer causes black output
+                // when no mask is connected (all pixels treated as masked).
+                let output_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+
+                let input_img_handle = image_effect::register_image(input_image);
+                let output_img_handle = image_effect::register_image(output_image);
+                registered_img_handles.push(input_img_handle);
+                registered_img_handles.push(output_img_handle);
+
+                instance::with_instance(inst_handle, |inst| {
+                    if let Some(clip) = inst.clips.get_mut("Source") {
+                        clip.current_image = Some(input_img_handle);
+                    }
+                    if let Some(clip) = inst.clips.get_mut("Output") {
+                        clip.current_image = Some(output_img_handle);
+                    }
+                });
+            }
+        }
+
+        // ── GPU: allocate device memory and override data pointers ──
+        // When GPU is active, kOfxImagePropData must point to device memory.
+        let mut cuda_device_ptrs: Vec<u64> = Vec::new();
+        let mut opencl_buffers: Vec<*mut std::ffi::c_void> = Vec::new();
+        let mut cuda_active = false;
+        let mut opencl_active = false;
+
+        if use_cuda {
+            if let Some(ref cuda) = self.cuda {
+                if cuda.push_context() {
+                    cuda_active = true;
+                    let frame_bytes = (width * height * 4) as usize;
+
+                    for &img_handle in &registered_img_handles {
+                        if let Some(dptr) = cuda.alloc(frame_bytes) {
+                            cuda_device_ptrs.push(dptr);
+
+                            let uploaded = image_effect::with_image(img_handle, |img| {
+                                cuda.copy_htod(dptr, &img.data)
+                            }).unwrap_or(false);
+
+                            if !uploaded {
+                                warn!("CUDA: failed to upload image to device, falling back to CPU");
+                                for &dp in &cuda_device_ptrs {
+                                    cuda.free(dp);
+                                }
+                                cuda_device_ptrs.clear();
+                                cuda_active = false;
+                                cuda.pop_context();
+                                break;
+                            }
+
+                            property::with_propset(img_handle, |ps| {
+                                ps.set_pointer("OfxImagePropData", 0, dptr as *mut std::ffi::c_void);
+                            });
+                        } else {
+                            warn!("CUDA: device alloc failed, falling back to CPU");
+                            for &dp in &cuda_device_ptrs {
+                                cuda.free(dp);
+                            }
+                            cuda_device_ptrs.clear();
+                            cuda_active = false;
+                            cuda.pop_context();
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if use_opencl {
+            if let Some(ref cl) = self.opencl {
+                opencl_active = true;
+
+                for &img_handle in &registered_img_handles {
+                    // Allocate cl_mem with a copy of the CPU data
+                    let mem = image_effect::with_image(img_handle, |img| {
+                        cl.alloc_with_data(&img.data)
+                    }).flatten();
+
+                    if let Some(mem) = mem {
+                        opencl_buffers.push(mem);
+
+                        // Override kOfxImagePropData to point to cl_mem
+                        // OFX spec: kOfxImagePropData is a cl_mem when OpenCL enabled
+                        property::with_propset(img_handle, |ps| {
+                            ps.set_pointer("OfxImagePropData", 0, mem);
+                        });
+                    } else {
+                        warn!("OpenCL: buffer alloc failed, falling back to CPU");
+                        for &m in &opencl_buffers {
+                            cl.free(m);
+                        }
+                        opencl_buffers.clear();
+                        opencl_active = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // The output image handle is always the last one registered
+        let output_img_handle = *registered_img_handles.last().unwrap();
+
+        // For transitions, set the Transition param value
+        if effect.context == OfxCategory::Transition {
+            let transition_value = OfxValue::Double(effect.transition_amount);
+            let mut tv = HashMap::new();
+            tv.insert("Transition".to_string(), transition_value);
+            self.sync_params_to_instance(inst_handle, &tv);
+        }
+
+        // ── RoD: Get Region of Definition ───────────────────────────
+        // Ask the plugin what output region it will produce.
+        let mut rod_in = PropertySet::default();
+        rod_in.set_double("OfxPropTime", 0, frame_time);
+        rod_in.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
+        rod_in.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+        let rod_in_handle = property::register_propset(rod_in);
+
+        let mut rod_out = PropertySet::default();
+        // Default RoD = full frame
+        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 0, 0.0);
+        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 1, 0.0);
+        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 2, width as f64);
+        rod_out.set_double("OfxImageEffectPropRegionOfDefinition", 3, height as f64);
+        let rod_out_handle = property::register_propset(rod_out);
+
+        let rod_status = self.call_action_raw(
+            plugin_idx,
+            b"OfxImageEffectActionGetRegionOfDefinition\0",
+            inst_handle,
+            rod_in_handle,
+            rod_out_handle,
+        );
+
+        // Read back RoD (use default if plugin returned ReplyDefault or didn't handle)
+        let (rod_x1, rod_y1, rod_x2, rod_y2) = if rod_status == ffi::K_OFX_STAT_OK {
+            property::with_propset(rod_out_handle, |ps| {
+                (
+                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 0).unwrap_or(0.0),
+                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 1).unwrap_or(0.0),
+                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 2).unwrap_or(width as f64),
+                    ps.get_double("OfxImageEffectPropRegionOfDefinition", 3).unwrap_or(height as f64),
+                )
+            }).unwrap_or((0.0, 0.0, width as f64, height as f64))
+        } else {
+            (0.0, 0.0, width as f64, height as f64)
+        };
+        property::remove_propset(rod_in_handle);
+        property::remove_propset(rod_out_handle);
+
+        // ── RoI: Get Regions of Interest ────────────────────────────
+        // Ask the plugin what region of each input it needs.
+        let input_clip_names: Vec<String> = instance::with_instance(inst_handle, |inst| {
+            inst.clips.keys()
+                .filter(|k| k.as_str() != "Output")
+                .cloned()
+                .collect()
+        }).unwrap_or_default();
+
+        if !input_clip_names.is_empty() {
+            let mut roi_in = PropertySet::default();
+            roi_in.set_double("OfxPropTime", 0, frame_time);
+            roi_in.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
+            roi_in.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 0, rod_x1);
+            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 1, rod_y1);
+            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 2, rod_x2);
+            roi_in.set_double("OfxImageEffectPropRegionOfInterest", 3, rod_y2);
+            let roi_in_handle = property::register_propset(roi_in);
+
+            let mut roi_out = PropertySet::default();
+            for clip_name in &input_clip_names {
+                let prop = format!("OfxImageClipPropRoI_{}", clip_name);
+                roi_out.set_double(&prop, 0, rod_x1);
+                roi_out.set_double(&prop, 1, rod_y1);
+                roi_out.set_double(&prop, 2, rod_x2);
+                roi_out.set_double(&prop, 3, rod_y2);
+            }
+            let roi_out_handle = property::register_propset(roi_out);
+
+            let _roi_status = self.call_action_raw(
+                plugin_idx,
+                b"OfxImageEffectActionGetRegionsOfInterest\0",
+                inst_handle,
+                roi_in_handle,
+                roi_out_handle,
+            );
+
+            property::remove_propset(roi_in_handle);
+            property::remove_propset(roi_out_handle);
+        }
+
+        // Convert RoD to pixel render window (integer coordinates)
+        let render_x1 = rod_x1.floor() as i32;
+        let render_y1 = rod_y1.floor() as i32;
+        let render_x2 = rod_x2.ceil() as i32;
+        let render_y2 = rod_y2.ceil() as i32;
 
         // Call kOfxImageEffectActionBeginSequenceRender (required by OFX spec before Render)
         let mut bsr_args = PropertySet::default();
@@ -870,6 +1287,20 @@ impl OfxHostRuntime {
         bsr_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         bsr_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
         bsr_args.set_int("OfxImageEffectPropRenderQualityDraft", 0, 0);
+        // GPU enable flags
+        bsr_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if use_cuda { 1 } else { 0 });
+        bsr_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if use_opencl { 1 } else { 0 });
+        bsr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
+        if use_cuda {
+            if let Some(ref cuda) = self.cuda {
+                bsr_args.set_pointer(crate::constants::kOfxImageEffectPropCudaStream, 0, cuda.stream_ptr());
+            }
+        }
+        if use_opencl {
+            if let Some(ref cl) = self.opencl {
+                bsr_args.set_pointer(crate::constants::kOfxImageEffectPropOpenCLCommandQueue, 0, cl.queue_ptr());
+            }
+        }
         let bsr_handle = property::register_propset(bsr_args);
 
         let bsr_status = self.call_action_raw(
@@ -882,21 +1313,22 @@ impl OfxHostRuntime {
         if bsr_status == ffi::K_OFX_STAT_FAILED {
             property::remove_propset(bsr_handle);
             // Clean up images
-            image_effect::release_image(input_img_handle);
-            image_effect::release_image(output_img_handle);
+            for &h in &registered_img_handles {
+                image_effect::release_image(h);
+            }
             return Err(PluginError::ActionFailed(format!(
                 "BeginSequenceRender returned {bsr_status}"
             )));
         }
         property::remove_propset(bsr_handle);
 
-        // Build inArgs for Render
+        // Build inArgs for Render — use RoD-derived render window
         let mut in_args = PropertySet::default();
         in_args.set_double("OfxPropTime", 0, frame_time);
-        in_args.set_int("OfxImageEffectPropRenderWindow", 0, 0);
-        in_args.set_int("OfxImageEffectPropRenderWindow", 1, 0);
-        in_args.set_int("OfxImageEffectPropRenderWindow", 2, width as i32);
-        in_args.set_int("OfxImageEffectPropRenderWindow", 3, height as i32);
+        in_args.set_int("OfxImageEffectPropRenderWindow", 0, render_x1);
+        in_args.set_int("OfxImageEffectPropRenderWindow", 1, render_y1);
+        in_args.set_int("OfxImageEffectPropRenderWindow", 2, render_x2);
+        in_args.set_int("OfxImageEffectPropRenderWindow", 3, render_y2);
         in_args.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
         in_args.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
         in_args.set_string("OfxImageEffectPropFieldToRender", 0, crate::constants::kOfxFieldNone);
@@ -904,6 +1336,20 @@ impl OfxHostRuntime {
         in_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         in_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
         in_args.set_int("OfxImageEffectPropRenderQualityDraft", 0, 0);
+        // GPU enable flags on render inArgs
+        in_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if use_cuda { 1 } else { 0 });
+        in_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if use_opencl { 1 } else { 0 });
+        in_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
+        if use_cuda {
+            if let Some(ref cuda) = self.cuda {
+                in_args.set_pointer(crate::constants::kOfxImageEffectPropCudaStream, 0, cuda.stream_ptr());
+            }
+        }
+        if use_opencl {
+            if let Some(ref cl) = self.opencl {
+                in_args.set_pointer(crate::constants::kOfxImageEffectPropOpenCLCommandQueue, 0, cl.queue_ptr());
+            }
+        }
         let in_args_handle = property::register_propset(in_args);
 
         // Call kOfxImageEffectActionRender
@@ -934,6 +1380,9 @@ impl OfxHostRuntime {
         esr_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         esr_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
         esr_args.set_int("OfxImageEffectPropRenderQualityDraft", 0, 0);
+        esr_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if cuda_active { 1 } else { 0 });
+        esr_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if opencl_active { 1 } else { 0 });
+        esr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
         let esr_handle = property::register_propset(esr_args);
 
         let _esr_status = self.call_action_raw(
@@ -947,34 +1396,156 @@ impl OfxHostRuntime {
 
         // Clear clip image references
         instance::with_instance(inst_handle, |inst| {
-            if let Some(clip) = inst.clips.get_mut("Source") {
-                clip.current_image = None;
-            }
-            if let Some(clip) = inst.clips.get_mut("Output") {
+            for clip in inst.clips.values_mut() {
                 clip.current_image = None;
             }
         });
 
-        // Read output image data
-        let result = if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
-            let output_data = image_effect::take_image(output_img_handle);
-            let _source_data = image_effect::take_image(input_img_handle);
-            output_data.map(|o| o.data).unwrap_or_else(|| input.to_vec())
+        // ── Handle GPU render failure → CPU fallback ────────────────
+        let gpu_failed = (cuda_active || opencl_active)
+            && (status == ffi::K_OFX_STAT_GPU_RENDER_FAILED
+                || status == ffi::K_OFX_STAT_GPU_OUT_OF_MEMORY);
+
+        if gpu_failed {
+            debug!("OFX: GPU render failed (status={status}) for '{}', retrying with CPU", effect.plugin_name);
+            // Clean up GPU resources
+            if cuda_active {
+                if let Some(ref cuda) = self.cuda {
+                    for &dp in &cuda_device_ptrs {
+                        cuda.free(dp);
+                    }
+                    cuda.pop_context();
+                }
+            }
+            if opencl_active {
+                if let Some(ref cl) = self.opencl {
+                    for &m in &opencl_buffers {
+                        cl.free(m);
+                    }
+                }
+            }
+            // Clean up images
+            for &h in &registered_img_handles {
+                image_effect::take_image(h);
+                image_effect::release_image(h);
+            }
+            // Clear clip references
+            instance::with_instance(inst_handle, |inst| {
+                for clip in inst.clips.values_mut() {
+                    clip.current_image = None;
+                }
+            });
+            // Retry without CUDA — recursive call but with a CPU-only effect
+            let mut cpu_effect = effect.clone();
+            cpu_effect.context = effect.context; // preserve context
+            // Mark instance for re-creation without CUDA
+            self.instances.remove(&effect.plugin_name);
+            instance::remove_instance(inst_handle);
+            // Temporarily disable GPU for this plugin and retry
+            let was_cuda = self.plugins[plugin_idx].supports_cuda;
+            let was_opencl = self.plugins[plugin_idx].supports_opencl;
+            self.plugins[plugin_idx].supports_cuda = false;
+            self.plugins[plugin_idx].supports_opencl = false;
+            let result = self.apply_effect(&cpu_effect, input, width, height, frame_time, abort);
+            self.plugins[plugin_idx].supports_cuda = was_cuda;
+            self.plugins[plugin_idx].supports_opencl = was_opencl;
+            return result;
+        }
+
+        // ── GPU: download output from device ────────────────────────
+        let gpu_active = cuda_active || opencl_active;
+        let result = if cuda_active {
+            if let Some(ref cuda) = self.cuda {
+                // Sync the stream to ensure plugin's kernel has completed
+                cuda.sync_stream();
+
+                let frame_bytes = (width * height * 4) as usize;
+                let mut output_cpu = vec![0u8; frame_bytes];
+
+                // The output device pointer is the last one allocated
+                let output_dptr = *cuda_device_ptrs.last().unwrap();
+
+                if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
+                    cuda.copy_dtoh(&mut output_cpu, output_dptr);
+                } else {
+                    output_cpu = input.to_vec();
+                }
+
+                // Free all device memory
+                for &dp in &cuda_device_ptrs {
+                    cuda.free(dp);
+                }
+                cuda.pop_context();
+
+                // Clean up CPU image objects
+                for &h in &registered_img_handles {
+                    image_effect::take_image(h);
+                    image_effect::release_image(h);
+                }
+
+                output_cpu
+            } else {
+                input.to_vec()
+            }
+        } else if opencl_active {
+            if let Some(ref cl) = self.opencl {
+                cl.finish(); // ensure plugin's kernels have completed
+
+                let frame_bytes = (width * height * 4) as usize;
+                let mut output_cpu = vec![0u8; frame_bytes];
+
+                // The output cl_mem is the last one allocated
+                let output_mem = *opencl_buffers.last().unwrap();
+
+                if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
+                    cl.read_buffer(output_mem, &mut output_cpu);
+                } else {
+                    output_cpu = input.to_vec();
+                }
+
+                // Free all cl_mem buffers
+                for &m in &opencl_buffers {
+                    cl.free(m);
+                }
+
+                // Clean up CPU image objects
+                for &h in &registered_img_handles {
+                    image_effect::take_image(h);
+                    image_effect::release_image(h);
+                }
+
+                output_cpu
+            } else {
+                input.to_vec()
+            }
         } else {
-            debug!(
-                "OFX render returned {status} for '{}'",
-                effect.plugin_name
-            );
-            // Clean up images on failure
-            image_effect::take_image(output_img_handle);
-            image_effect::take_image(input_img_handle);
-            input.to_vec()
+            // CPU path — read output from image data as before
+            if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
+                let output_data = image_effect::take_image(output_img_handle);
+                for &h in &registered_img_handles {
+                    if h != output_img_handle {
+                        image_effect::take_image(h);
+                    }
+                }
+                output_data.map(|o| o.data).unwrap_or_else(|| input.to_vec())
+            } else {
+                debug!(
+                    "OFX render returned {status} for '{}'",
+                    effect.plugin_name
+                );
+                for &h in &registered_img_handles {
+                    image_effect::take_image(h);
+                }
+                input.to_vec()
+            }
         };
 
-        // Release images
-        image_effect::release_image(input_img_handle);
-        // output already taken via take_image, just clean up propset if it wasn't taken
-        image_effect::release_image(output_img_handle);
+        // Release image propsets (if not already cleaned up by GPU path)
+        if !gpu_active {
+            for &h in &registered_img_handles {
+                image_effect::release_image(h);
+            }
+        }
 
         Ok(result)
     }
@@ -992,15 +1563,38 @@ impl OfxHostRuntime {
     pub fn host_propset_handle(&self) -> ffi::OfxPropertySetHandle {
         self.host_propset_handle
     }
+
+    /// Whether CUDA GPU rendering is available.
+    pub fn cuda_available(&self) -> bool {
+        self.cuda.is_some()
+    }
+
+    /// Whether OpenCL GPU rendering is available.
+    pub fn opencl_available(&self) -> bool {
+        self.opencl.is_some()
+    }
 }
 
 // ── Applied effect ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppliedEffect {
     pub plugin_name: String,
     pub enabled: bool,
     pub param_values: HashMap<String, OfxValue>,
+    /// The context this effect operates in (Filter, Transition, Generator).
+    #[serde(default = "default_filter_context")]
+    pub context: OfxCategory,
+    /// Secondary input for Transition effects (the "to" frame).
+    #[serde(skip)]
+    pub transition_input: Option<Vec<u8>>,
+    /// Transition amount (0.0 = fully "from", 1.0 = fully "to").
+    #[serde(default)]
+    pub transition_amount: f64,
+}
+
+fn default_filter_context() -> OfxCategory {
+    OfxCategory::Filter
 }
 
 /// Convert ParamType to OFX type string.

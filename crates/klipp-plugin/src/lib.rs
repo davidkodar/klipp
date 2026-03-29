@@ -1,5 +1,7 @@
 pub mod constants;
 pub mod ffi;
+pub mod gpu_cuda;
+pub mod gpu_opencl;
 pub mod host;
 pub mod image_effect;
 pub mod instance;

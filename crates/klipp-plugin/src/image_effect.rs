@@ -104,6 +104,11 @@ pub fn take_image(handle: OfxPropertySetHandle) -> Option<OfxImage> {
     IMAGE_STORE.lock().unwrap().remove(&(handle as usize))
 }
 
+/// Access an image by handle for reading (without taking ownership).
+pub fn with_image<R>(handle: OfxPropertySetHandle, f: impl FnOnce(&OfxImage) -> R) -> Option<R> {
+    IMAGE_STORE.lock().unwrap().get(&(handle as usize)).map(f)
+}
+
 pub fn release_image(handle: OfxPropertySetHandle) {
     if let Some(img) = IMAGE_STORE.lock().unwrap().remove(&(handle as usize)) {
         property::remove_propset(img.props_handle);
@@ -322,8 +327,10 @@ unsafe extern "C" fn clip_get_region_of_definition_fn(
     }
 }
 
-unsafe extern "C" fn abort_fn(_effect: OfxImageEffectHandle) -> c_int {
-    0 // never abort
+unsafe extern "C" fn abort_fn(effect: OfxImageEffectHandle) -> c_int {
+    instance::with_instance(effect, |inst| {
+        if inst.abort_flag.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
+    }).unwrap_or(0)
 }
 
 unsafe extern "C" fn image_memory_alloc_fn(

@@ -549,17 +549,17 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     // Image effect capabilities
     props.set_int("OfxImageEffectHostPropIsBackground", 0, 0);
     props.set_int("OfxImageEffectPropSupportsOverlays", 0, 0);
-    props.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 0);
-    props.set_int("OfxImageEffectPropSupportsTiles", 0, 0);
+    props.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 1);
+    props.set_int("OfxImageEffectPropSupportsTiles", 0, 1);
     props.set_int("OfxImageEffectPropTemporalClipAccess", 0, 0);
     props.set_int("OfxImageEffectPropSupportsMultipleClipDepths", 0, 0);
     props.set_int("OfxImageEffectPropSupportsMultipleClipPARs", 0, 0);
     props.set_int("OfxImageEffectPropSetableFrameRate", 0, 0);
     props.set_int("OfxImageEffectPropSetableFielding", 0, 0);
     props.set_int("OfxParamHostPropSupportsCustomInteract", 0, 0);
-    props.set_int("OfxParamHostPropSupportsStringAnimation", 0, 0);
-    props.set_int("OfxParamHostPropSupportsChoiceAnimation", 0, 0);
-    props.set_int("OfxParamHostPropSupportsBooleanAnimation", 0, 0);
+    props.set_int("OfxParamHostPropSupportsStringAnimation", 0, 0); // string animation not practical
+    props.set_int("OfxParamHostPropSupportsChoiceAnimation", 0, 1);
+    props.set_int("OfxParamHostPropSupportsBooleanAnimation", 0, 1);
     props.set_int("OfxParamHostPropSupportsCustomAnimation", 0, 0);
     props.set_int("OfxParamHostPropSupportsParametricAnimation", 0, 0);
     props.set_int("OfxParamHostPropMaxParameters", 0, -1); // unlimited
@@ -568,14 +568,25 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     // Supported pixel depths: 8-bit only
     props.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
 
-    // Supported contexts: filter only
+    // Supported contexts: filter, transition, generator
     props.set_string("OfxImageEffectPropSupportedContexts", 0, crate::constants::kOfxImageEffectContextFilter);
+    props.set_string("OfxImageEffectPropSupportedContexts", 1, crate::constants::kOfxImageEffectContextTransition);
+    props.set_string("OfxImageEffectPropSupportedContexts", 2, crate::constants::kOfxImageEffectContextGenerator);
 
     // Supported pixel components: RGBA only
     props.set_string("OfxImageEffectPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
 
     // Sequential render
     props.set_int("OfxImageEffectInstancePropSequentialRender", 0, 0);
+
+    // GPU rendering capabilities — set dynamically by OfxHostRuntime
+    // based on available hardware. Defaults to "false" here.
+    props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "false");
+    props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "false");
+    props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "false");
+    props.set_string(crate::constants::kOfxImageEffectPropMetalRenderSupported, 0, "false");
+    props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "false");
+    props.set_string(crate::constants::kOfxImageEffectPropOpenCLSupported, 0, "false");
 }
 
 #[cfg(test)]
