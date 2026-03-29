@@ -172,6 +172,9 @@ unsafe extern "C" fn fetch_suite_fn(
         "OfxProgressSuite" if suite_version >= 1 => {
             &crate::message::PROGRESS_SUITE_V1 as *const _ as *const c_void
         }
+        "OfxImageEffectOpenGLRenderSuite" if suite_version == 1 => {
+            &crate::gpu_opengl::OPENGL_RENDER_SUITE_V1 as *const _ as *const c_void
+        }
         _ => {
             debug!("[OFX] Unknown suite: {} v{}", name, suite_version);
             std::ptr::null()
@@ -195,6 +198,8 @@ pub struct OfxHostRuntime {
     cuda: Option<crate::gpu_cuda::CudaRuntime>,
     /// OpenCL runtime (if available — AMD/Intel/NVIDIA).
     opencl: Option<crate::gpu_opencl::OpenClRuntime>,
+    /// OpenGL runtime (if available — headless EGL context).
+    opengl: Option<crate::gpu_opengl::OpenGlRuntime>,
 }
 
 // Safety: All handle fields are opaque keys into global Mutex-protected stores.
@@ -227,6 +232,13 @@ impl OfxHostRuntime {
             host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
         }
 
+        // Try to initialize OpenGL (headless EGL)
+        let opengl = crate::gpu_opengl::OpenGlRuntime::new();
+        if let Some(ref gl) = opengl {
+            info!("OFX: OpenGL rendering enabled — {} ({})", gl.gl_version(), gl.gl_renderer());
+            host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
+        }
+
         let host_propset_handle = property::register_propset(host_props);
 
         let c_host = Box::new(ffi::OfxHostC {
@@ -250,6 +262,7 @@ impl OfxHostRuntime {
             instances: HashMap::new(),
             cuda,
             opencl,
+            opengl,
         }
     }
 
@@ -908,9 +921,10 @@ impl OfxHostRuntime {
         let plugin_idx = instance::with_instance(inst_handle, |inst| inst.plugin_idx)
             .ok_or(PluginError::NotFound)?;
 
-        // Determine which GPU path to use (priority: CUDA > OpenCL > CPU)
+        // Determine which GPU path to use (priority: CUDA > OpenCL > OpenGL > CPU)
         let use_cuda = self.cuda.is_some() && self.plugins[plugin_idx].supports_cuda;
         let use_opencl = !use_cuda && self.opencl.is_some() && self.plugins[plugin_idx].supports_opencl;
+        let use_opengl = !use_cuda && !use_opencl && self.opengl.is_some() && self.plugins[plugin_idx].supports_opengl;
 
         // Set abort flag on the instance so the plugin's abort() callback can check it
         instance::with_instance(inst_handle, |inst| {
@@ -1104,6 +1118,7 @@ impl OfxHostRuntime {
         let mut opencl_buffers: Vec<*mut std::ffi::c_void> = Vec::new();
         let mut cuda_active = false;
         let mut opencl_active = false;
+        let mut opengl_active = false;
 
         if use_cuda {
             if let Some(ref cuda) = self.cuda {
@@ -1172,6 +1187,38 @@ impl OfxHostRuntime {
                         opencl_buffers.clear();
                         opencl_active = false;
                         break;
+                    }
+                }
+            }
+        }
+
+        // ── OpenGL: make context current and set up runtime ────────
+        if use_opengl && !cuda_active && !opencl_active {
+            if let Some(ref gl) = self.opengl {
+                if gl.make_current() {
+                    opengl_active = true;
+                    unsafe { crate::gpu_opengl::set_gl_runtime(gl) };
+
+                    // Call kOfxActionOpenGLContextAttached (once per instance)
+                    let needs_attach = instance::with_instance(inst_handle, |inst| {
+                        property::with_propset(inst.props_handle, |ps| {
+                            ps.get_int("_klipp_gl_attached", 0).unwrap_or(0) == 0
+                        })
+                    }).flatten().unwrap_or(true);
+
+                    if needs_attach {
+                        self.call_action_raw(
+                            plugin_idx,
+                            crate::constants::kOfxActionOpenGLContextAttached.as_bytes(),
+                            inst_handle,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        );
+                        instance::with_instance(inst_handle, |inst| {
+                            property::with_propset(inst.props_handle, |ps| {
+                                ps.set_int("_klipp_gl_attached", 0, 1);
+                            });
+                        });
                     }
                 }
             }
@@ -1290,7 +1337,7 @@ impl OfxHostRuntime {
         // GPU enable flags
         bsr_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if use_cuda { 1 } else { 0 });
         bsr_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if use_opencl { 1 } else { 0 });
-        bsr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
+        bsr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, if use_opengl { 1 } else { 0 });
         if use_cuda {
             if let Some(ref cuda) = self.cuda {
                 bsr_args.set_pointer(crate::constants::kOfxImageEffectPropCudaStream, 0, cuda.stream_ptr());
@@ -1339,7 +1386,7 @@ impl OfxHostRuntime {
         // GPU enable flags on render inArgs
         in_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if use_cuda { 1 } else { 0 });
         in_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if use_opencl { 1 } else { 0 });
-        in_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
+        in_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, if use_opengl { 1 } else { 0 });
         if use_cuda {
             if let Some(ref cuda) = self.cuda {
                 in_args.set_pointer(crate::constants::kOfxImageEffectPropCudaStream, 0, cuda.stream_ptr());
@@ -1382,7 +1429,7 @@ impl OfxHostRuntime {
         esr_args.set_int("OfxImageEffectPropRenderQualityDraft", 0, 0);
         esr_args.set_int(crate::constants::kOfxImageEffectPropCudaEnabled, 0, if cuda_active { 1 } else { 0 });
         esr_args.set_int(crate::constants::kOfxImageEffectPropOpenCLEnabled, 0, if opencl_active { 1 } else { 0 });
-        esr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, 0);
+        esr_args.set_int(crate::constants::kOfxImageEffectPropOpenGLEnabled, 0, if opengl_active { 1 } else { 0 });
         let esr_handle = property::register_propset(esr_args);
 
         let _esr_status = self.call_action_raw(
@@ -1402,7 +1449,7 @@ impl OfxHostRuntime {
         });
 
         // ── Handle GPU render failure → CPU fallback ────────────────
-        let gpu_failed = (cuda_active || opencl_active)
+        let gpu_failed = (cuda_active || opencl_active || opengl_active)
             && (status == ffi::K_OFX_STAT_GPU_RENDER_FAILED
                 || status == ffi::K_OFX_STAT_GPU_OUT_OF_MEMORY);
 
@@ -1422,6 +1469,12 @@ impl OfxHostRuntime {
                     for &m in &opencl_buffers {
                         cl.free(m);
                     }
+                }
+            }
+            if opengl_active {
+                crate::gpu_opengl::clear_gl_runtime();
+                if let Some(ref gl) = self.opengl {
+                    gl.release_current();
                 }
             }
             // Clean up images
@@ -1444,16 +1497,19 @@ impl OfxHostRuntime {
             // Temporarily disable GPU for this plugin and retry
             let was_cuda = self.plugins[plugin_idx].supports_cuda;
             let was_opencl = self.plugins[plugin_idx].supports_opencl;
+            let was_opengl = self.plugins[plugin_idx].supports_opengl;
             self.plugins[plugin_idx].supports_cuda = false;
             self.plugins[plugin_idx].supports_opencl = false;
+            self.plugins[plugin_idx].supports_opengl = false;
             let result = self.apply_effect(&cpu_effect, input, width, height, frame_time, abort);
             self.plugins[plugin_idx].supports_cuda = was_cuda;
             self.plugins[plugin_idx].supports_opencl = was_opencl;
+            self.plugins[plugin_idx].supports_opengl = was_opengl;
             return result;
         }
 
         // ── GPU: download output from device ────────────────────────
-        let gpu_active = cuda_active || opencl_active;
+        let gpu_active = cuda_active || opencl_active || opengl_active;
         let result = if cuda_active {
             if let Some(ref cuda) = self.cuda {
                 // Sync the stream to ensure plugin's kernel has completed
@@ -1507,6 +1563,31 @@ impl OfxHostRuntime {
                 for &m in &opencl_buffers {
                     cl.free(m);
                 }
+
+                // Clean up CPU image objects
+                for &h in &registered_img_handles {
+                    image_effect::take_image(h);
+                    image_effect::release_image(h);
+                }
+
+                output_cpu
+            } else {
+                input.to_vec()
+            }
+        } else if opengl_active {
+            // OpenGL path: plugin rendered into FBO via clipLoadTexture.
+            // Read back pixels from the bound FBO, then clean up.
+            if let Some(ref gl) = self.opengl {
+                gl.flush_and_finish();
+
+                let output_cpu = if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
+                    gl.read_pixels(width, height)
+                } else {
+                    input.to_vec()
+                };
+
+                crate::gpu_opengl::clear_gl_runtime();
+                gl.release_current();
 
                 // Clean up CPU image objects
                 for &h in &registered_img_handles {
@@ -1572,6 +1653,11 @@ impl OfxHostRuntime {
     /// Whether OpenCL GPU rendering is available.
     pub fn opencl_available(&self) -> bool {
         self.opencl.is_some()
+    }
+
+    /// Whether OpenGL rendering is available.
+    pub fn opengl_available(&self) -> bool {
+        self.opengl.is_some()
     }
 }
 
