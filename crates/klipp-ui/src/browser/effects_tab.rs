@@ -15,7 +15,7 @@ pub enum EffectCategory {
     Light,
 }
 
-const CATEGORY_SIDEBAR_W: f32 = 90.0;
+const CATEGORY_SIDEBAR_W: f32 = 110.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -52,12 +52,17 @@ pub fn show(
         egui::ScrollArea::vertical()
             .id_salt("effects_category_scroll")
             .show(ui, |ui| {
-                ui.add_space(4.0);
+                ui.add_space(6.0);
+                ui.spacing_mut().indent = 8.0; // left padding from window edge
+                ui.indent("cat_indent", |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+
+                // ── VIDEO section ──
                 ui.label(
                     egui::RichText::new("VIDEO")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
-                        .color(theme.text_dim),
+                        .color(theme.text_secondary),
                 );
                 ui.add_space(2.0);
 
@@ -73,32 +78,77 @@ pub fn show(
 
                 for (cat, label) in &categories {
                     let is_active = *active_category == *cat;
-                    let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
                     let count = state.effect_registry.filtered(*cat, "").len();
 
-                    let resp = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("{} ({})", label, count))
-                                .size(11.0)
-                                .color(text_color)
-                        )
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                    );
+                    // Category row — entire row is clickable
+                    let row_resp = ui.horizontal(|ui| {
+                        let hovered = ui.rect_contains_pointer(ui.max_rect());
+                        let text_color = if is_active {
+                            theme.accent
+                        } else if hovered {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        };
+                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(12.0);
+                            let badge_color = if is_active {
+                                egui::Color32::from_rgb(60, 60, 65)
+                            } else {
+                                egui::Color32::from_rgb(45, 45, 50)
+                            };
+                            let badge = egui::Button::new(
+                                egui::RichText::new(format!("{}", count))
+                                    .size(9.0)
+                                    .color(theme.text_dim)
+                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
+                            ui.add(badge);
+                        });
+                    });
+                    // Make the whole row clickable
+                    let row_rect = row_resp.response.rect;
+                    let click_resp = ui.interact(row_rect, ui.id().with(("cat_click", *cat as u8)), egui::Sense::click());
 
-                    // Highlight bar for active category
                     if is_active {
                         let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(resp.rect.min.x - 2.0, resp.rect.min.y),
-                            egui::vec2(2.0, resp.rect.height()),
+                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
+                            egui::vec2(2.0, row_rect.height() - 4.0),
                         );
                         ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
                     }
 
-                    if resp.clicked() {
+                    if click_resp.clicked() {
                         *active_category = *cat;
                     }
                 }
+
+                // ── Divider ──
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── AUDIO section ──
+                ui.label(
+                    egui::RichText::new("AUDIO")
+                        .size(10.0)
+                        .strong()
+                        .color(theme.text_secondary),
+                );
+                ui.add_space(2.0);
+                for label in ["EQ", "Dynamics", "Reverb"] {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(label).size(11.0).color(theme.text_dim));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(12.0);
+                            let badge = egui::Button::new(
+                                egui::RichText::new("0").size(9.0).color(egui::Color32::from_rgb(80, 80, 85))
+                            ).fill(egui::Color32::from_rgb(40, 40, 45)).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
+                            ui.add(badge);
+                        });
+                    });
+                }
+                }); // close indent
             });
     });
 
@@ -159,14 +209,24 @@ pub fn show(
             .collect();
         let count = filtered.len();
 
+        // ── Header: count + view toggle ──
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{} effects", count))
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+        });
+        ui.add_space(4.0);
+
         egui::ScrollArea::vertical()
             .id_salt("browser_effects_scroll")
             .show(ui, |ui| {
                 let grid_w = ui.available_width() - 8.0;
-                let spacing = 4.0;
+                let spacing = 6.0;
                 let card_w = ((grid_w - spacing) / 2.0).floor();
-                let preview_h = (card_w * 9.0 / 16.0).round(); // 16:9 aspect
-                let card_h = preview_h + 22.0; // preview + name label
+                let preview_h = (card_w * 9.0 / 16.0).round();
+                let card_h = preview_h + 36.0; // preview + name + category subtitle
 
                 egui::Grid::new("effects_grid")
                     .num_columns(2)
@@ -233,18 +293,24 @@ pub fn show(
                         }
                     });
 
-                // Item count at bottom
-                if count > 0 {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
+                // Status bar at bottom
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("{count} items"))
+                            .size(9.0)
+                            .color(theme.text_dim),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new(format!("{count} items"))
+                            egui::RichText::new("Drag to timeline to apply")
                                 .size(9.0)
-                                .color(theme.text_dim),
+                                .color(egui::Color32::from_rgb(90, 90, 100)),
                         );
                     });
-                }
+                });
             });
     });
 
@@ -328,15 +394,25 @@ fn effect_card(
         );
     }
 
-    // Name below preview
-    let name_y = card_rect.min.y + preview_h + 2.0;
+    // Name + category below preview
+    let name_y = card_rect.min.y + preview_h + 4.0;
     let name_galley = painter.layout(
         fx.name.clone(),
-        egui::FontId::proportional(10.0),
+        egui::FontId::proportional(11.0),
         if hovered { theme.text_primary } else { theme.text_secondary },
-        width - 2.0,
+        width - 6.0,
     );
-    painter.galley(egui::pos2(card_rect.min.x + 1.0, name_y), name_galley, theme.text_secondary);
+    painter.galley(egui::pos2(card_rect.min.x + 3.0, name_y), name_galley.clone(), theme.text_secondary);
+
+    // Category subtitle
+    let cat_y = name_y + name_galley.size().y + 1.0;
+    let cat_galley = painter.layout(
+        fx.grouping.clone(),
+        egui::FontId::proportional(9.0),
+        theme.text_dim,
+        width - 6.0,
+    );
+    painter.galley(egui::pos2(card_rect.min.x + 3.0, cat_y), cat_galley, theme.text_dim);
 
     // Tooltip with full info
     resp.clone().on_hover_ui(|ui| {
