@@ -381,6 +381,10 @@ pub enum AppCommand {
     UpdateBuiltinEffect { clip_id: ClipId, index: usize, effect: klipp_effects::BuiltinEffect },
     ReorderBuiltinEffect { clip_id: ClipId, from_index: usize, to_index: usize },
 
+    // Effect presets
+    SaveBuiltinEffectPreset { name: String, description: String, effect_key: String, effect: klipp_effects::BuiltinEffect },
+    DeleteBuiltinEffectPreset { effect_key: String, name: String },
+
     // Render Queue
     ShowRenderQueue,
     ClearCompletedJobs,

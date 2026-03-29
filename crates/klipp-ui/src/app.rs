@@ -183,7 +183,7 @@ impl KlippApp {
             sequence,
             media_pool_shared,
             state: AppState::default(),
-            toolbar: ToolbarPanel,
+            toolbar: ToolbarPanel { logo_texture: None },
             viewer: ViewerPanel::default(),
             title_renderer: klipp_title::TitleRenderer::new(),
             inspector: InspectorPanel::default(),
@@ -4513,6 +4513,24 @@ impl KlippApp {
                     if self.state.playback != PlaybackState::Playing {
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                     }
+                    continue;
+                }
+
+                // Effect presets
+                AppCommand::SaveBuiltinEffectPreset { ref name, ref description, ref effect_key, ref effect } => {
+                    let preset = crate::effect_presets::EffectPreset {
+                        name: name.clone(),
+                        description: description.clone(),
+                        effect_key: effect_key.clone(),
+                        builtin: Some(effect.clone()),
+                        ofx_params: None,
+                        is_builtin: false,
+                    };
+                    self.state.preset_manager.save_user_preset(preset);
+                    continue;
+                }
+                AppCommand::DeleteBuiltinEffectPreset { ref effect_key, ref name } => {
+                    self.state.preset_manager.delete_user_preset(effect_key, name);
                     continue;
                 }
 
@@ -9920,6 +9938,20 @@ impl eframe::App for KlippApp {
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(8.0);
+                        if let Some(tex) = self.toolbar.logo_texture.as_ref() {
+                            let logo_size = 64.0;
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(logo_size, logo_size),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().image(
+                                tex.id(),
+                                rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                            ui.add_space(4.0);
+                        }
                         ui.label(egui::RichText::new("Klipp").strong().size(20.0));
                         ui.add_space(4.0);
                         ui.label(format!("Version {}-dev", env!("CARGO_PKG_VERSION")));

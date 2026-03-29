@@ -84,7 +84,7 @@ pub fn show(
                 });
             })
             .body(|ui| {
-                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds, clip, clip_time_secs) {
+                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds, clip, clip_time_secs, state) {
                     cmds.push(AppCommand::UpdateBuiltinEffect {
                         clip_id,
                         index: i,
@@ -573,6 +573,7 @@ fn show_builtin_effect_params(
     cmds: &mut Vec<AppCommand>,
     clip: &Clip,
     clip_time_secs: f64,
+    state: &AppState,
 ) -> Option<klipp_effects::BuiltinEffect> {
     let mut updated = effect.clone();
     let mut changed = false;
@@ -582,6 +583,150 @@ fn show_builtin_effect_params(
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
     let kf_tolerance = 0.02;
+
+    // ── Preset selector ──
+    let effect_key = crate::effect_presets::builtin_effect_key(effect);
+    let presets = state.preset_manager.presets_for(effect_key);
+    if !presets.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Preset").size(10.0).color(egui::Color32::from_rgb(160, 160, 170)));
+            ui.add_space(4.0);
+            let combo_id = ui.make_persistent_id(format!("preset_combo_{clip_id:?}_{effect_index}"));
+            egui::ComboBox::from_id_salt(combo_id)
+                .selected_text("Select preset...")
+                .width(ui.available_width() - 80.0)
+                .show_ui(ui, |ui| {
+                    // Built-in presets
+                    let builtins: Vec<_> = presets.iter().filter(|p| p.is_builtin).collect();
+                    if !builtins.is_empty() {
+                        for preset in &builtins {
+                            let mut r = ui.selectable_label(false, &preset.name);
+                            if !preset.description.is_empty() {
+                                r = r.on_hover_text(&preset.description);
+                            }
+                            if r.clicked() {
+                                if let Some(ref fx) = preset.builtin {
+                                    cmds.push(AppCommand::UpdateBuiltinEffect {
+                                        clip_id,
+                                        index: effect_index,
+                                        effect: fx.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    // Separator + user presets
+                    let user_presets: Vec<_> = presets.iter().filter(|p| !p.is_builtin).collect();
+                    if !user_presets.is_empty() {
+                        if !builtins.is_empty() {
+                            ui.separator();
+                        }
+                        for preset in &user_presets {
+                            ui.horizontal(|ui| {
+                                let mut r = ui.selectable_label(false, &preset.name);
+                                if !preset.description.is_empty() {
+                                    r = r.on_hover_text(&preset.description);
+                                }
+                                if r.clicked() {
+                                    if let Some(ref fx) = preset.builtin {
+                                        cmds.push(AppCommand::UpdateBuiltinEffect {
+                                            clip_id,
+                                            index: effect_index,
+                                            effect: fx.clone(),
+                                        });
+                                    }
+                                }
+                                if ui.small_button("\u{00d7}").on_hover_text("Delete preset").clicked() {
+                                    cmds.push(AppCommand::DeleteBuiltinEffectPreset {
+                                        effect_key: preset.effect_key.clone(),
+                                        name: preset.name.clone(),
+                                    });
+                                }
+                            });
+                        }
+                    }
+                });
+            // Save button with popup
+            let save_popup_id = ui.make_persistent_id(format!("save_preset_{clip_id:?}_{effect_index}"));
+            let save_btn = ui.small_button("Save...");
+            if save_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+            }
+            egui::popup_below_widget(ui, save_popup_id, &save_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(200.0);
+                ui.label(egui::RichText::new("Save Preset").size(11.0).strong());
+                ui.add_space(4.0);
+                let data_id = ui.make_persistent_id(format!("preset_name_buf_{clip_id:?}_{effect_index}"));
+                let mut name_buf: String = ui.data_mut(|d| d.get_temp(data_id).unwrap_or_default());
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut name_buf);
+                });
+                ui.data_mut(|d| d.insert_temp(data_id, name_buf.clone()));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let name_valid = !name_buf.trim().is_empty();
+                    if ui.add_enabled(name_valid, egui::Button::new("Save")).clicked() {
+                        cmds.push(AppCommand::SaveBuiltinEffectPreset {
+                            name: name_buf.trim().to_string(),
+                            description: String::new(),
+                            effect_key: effect_key.to_string(),
+                            effect: effect.clone(),
+                        });
+                        ui.data_mut(|d| d.insert_temp::<String>(data_id, String::new()));
+                        ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.data_mut(|d| d.insert_temp::<String>(data_id, String::new()));
+                        ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+                    }
+                });
+            });
+        });
+        ui.add_space(4.0);
+    } else {
+        // No presets available, still show save button
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Preset").size(10.0).color(egui::Color32::from_rgb(160, 160, 170)));
+            ui.add_space(4.0);
+            let save_popup_id = ui.make_persistent_id(format!("save_preset_{clip_id:?}_{effect_index}"));
+            let save_btn = ui.small_button("Save...");
+            if save_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+            }
+            egui::popup_below_widget(ui, save_popup_id, &save_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(200.0);
+                ui.label(egui::RichText::new("Save Preset").size(11.0).strong());
+                ui.add_space(4.0);
+                let data_id = ui.make_persistent_id(format!("preset_name_buf_{clip_id:?}_{effect_index}"));
+                let mut name_buf: String = ui.data_mut(|d| d.get_temp(data_id).unwrap_or_default());
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut name_buf);
+                });
+                ui.data_mut(|d| d.insert_temp(data_id, name_buf.clone()));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let name_valid = !name_buf.trim().is_empty();
+                    if ui.add_enabled(name_valid, egui::Button::new("Save")).clicked() {
+                        cmds.push(AppCommand::SaveBuiltinEffectPreset {
+                            name: name_buf.trim().to_string(),
+                            description: String::new(),
+                            effect_key: effect_key.to_string(),
+                            effect: effect.clone(),
+                        });
+                        ui.data_mut(|d| d.insert_temp::<String>(data_id, String::new()));
+                        ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.data_mut(|d| d.insert_temp::<String>(data_id, String::new()));
+                        ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+                    }
+                });
+            });
+        });
+        ui.add_space(4.0);
+    }
 
     // Collect keyframe responses: (param_name, ScrubbyParamResponse, current_value)
     let mut kf_responses: Vec<(&str, crate::widgets::scrubby_param::ScrubbyParamResponse, f32)> = Vec::new();

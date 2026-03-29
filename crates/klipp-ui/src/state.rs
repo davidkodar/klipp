@@ -373,6 +373,8 @@ pub struct AppState {
 
     // Unified effects registry (built-in + OFX merged)
     pub effect_registry: crate::browser::effect_registry::EffectRegistry,
+    /// Effect presets (built-in + user-created)
+    pub preset_manager: crate::effect_presets::PresetManager,
     pub effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer,
 
     // Render queue
@@ -753,6 +755,7 @@ impl Default for AppState {
             frame_count: 0,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
+            preset_manager: crate::effect_presets::PresetManager::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
             render_queue: klipp_export::RenderQueue::new(),
             show_render_queue: false,
