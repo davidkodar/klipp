@@ -1374,6 +1374,50 @@ impl TimelinePanel {
             }
         }
 
+        // Draw effect drag ghost — a translucent pill following the cursor
+        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 120.0;
+                let ghost_h = 28.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("effect_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 6.0,
+                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210));
+                ghost_painter.rect_stroke(ghost_rect, 6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230)));
+
+                // "FX" icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 16.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "FX",
+                    egui::FontId::monospace(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Effect name
+                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 32.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
         // Range guide lines — 1px amber vertical lines at in/out points through track area
         {
             let theme = crate::theme::KlippTheme::default();
@@ -4398,10 +4442,16 @@ impl TimelinePanel {
                         egui::pos2(clip_rect.right() - pill_w - 4.0, clip_rect.top() + 4.0),
                         egui::vec2(pill_w, pill_h),
                     );
+                    // Dark outline for contrast on any clip color
+                    painter.rect_filled(
+                        pill_rect.expand(1.0),
+                        pill_h / 2.0 + 1.0,
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    );
                     painter.rect_filled(
                         pill_rect,
                         pill_h / 2.0,
-                        egui::Color32::from_rgba_unmultiplied(140, 80, 200, 180),
+                        egui::Color32::from_rgba_unmultiplied(140, 80, 200, 220),
                     );
                     painter.galley(
                         egui::pos2(pill_rect.left() + 3.0, pill_rect.top() + 1.0),
