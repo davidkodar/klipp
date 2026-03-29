@@ -1003,6 +1003,7 @@ impl InspectorPanel {
                     .map(|(_, name)| name)
                     .unwrap_or(&effect.plugin_name);
                 ui.label(display_name);
+                ui.label(egui::RichText::new("OFX").size(8.0).color(egui::Color32::from_rgb(80, 120, 200)).strong());
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Remove").clicked() {

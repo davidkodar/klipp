@@ -131,6 +131,7 @@ pub fn show(
                     });
                 }
                 ui.label(egui::RichText::new(display_name).size(11.0).strong().color(theme.text_primary));
+                ui.label(egui::RichText::new("OFX").size(8.0).color(egui::Color32::from_rgb(80, 120, 200)).strong());
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(egui::ImageButton::new(Icon::X.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Remove").clicked() {

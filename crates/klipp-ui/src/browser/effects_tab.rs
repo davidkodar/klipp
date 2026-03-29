@@ -255,7 +255,26 @@ fn effect_card(
         }
     }
 
-    // Name below preview — FCP style: just the name, no badges
+    // OFX badge on the preview area (top-right corner)
+    if matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_)) {
+        let badge_text = "OFX";
+        let badge_font = egui::FontId::monospace(8.0);
+        let badge_galley = painter.layout_no_wrap(badge_text.to_string(), badge_font, egui::Color32::WHITE);
+        let badge_w = badge_galley.size().x + 6.0;
+        let badge_h = badge_galley.size().y + 2.0;
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(card_rect.max.x - badge_w - 2.0, card_rect.min.y + 2.0),
+            egui::vec2(badge_w, badge_h),
+        );
+        painter.rect_filled(badge_rect, 2.0, egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200));
+        painter.galley(
+            egui::pos2(badge_rect.min.x + 3.0, badge_rect.min.y + 1.0),
+            badge_galley,
+            egui::Color32::WHITE,
+        );
+    }
+
+    // Name below preview
     let name_y = card_rect.min.y + preview_h + 2.0;
     let name_galley = painter.layout(
         fx.name.clone(),
