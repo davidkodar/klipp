@@ -279,6 +279,38 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 center_x: 0.5, center_y: 0.3, threshold: 0.4, samples: 64, decay: 0.4, intensity: 0.8,
             }
         }
+        klipp_effects::BuiltinEffect::Vignette { .. } => {
+            klipp_effects::BuiltinEffect::Vignette {
+                amount: -0.7, size: 0.6, softness: 0.4, roundness: 0.5,
+            }
+        }
+        klipp_effects::BuiltinEffect::Diffusion { .. } => {
+            klipp_effects::BuiltinEffect::Diffusion {
+                amount: 0.6, radius: 35.0, threshold: 0.3, desaturation: 0.4,
+            }
+        }
+        klipp_effects::BuiltinEffect::LensFlare { .. } => {
+            klipp_effects::BuiltinEffect::LensFlare {
+                position_x: 0.7, position_y: 0.3, brightness: 1.0,
+                flare_size: 0.25, ghost_count: 5, ghost_intensity: 0.5,
+                chromatic_aberration: 0.6,
+            }
+        }
+        klipp_effects::BuiltinEffect::LightWrap { .. } => {
+            klipp_effects::BuiltinEffect::LightWrap {
+                width: 25.0, intensity: 0.8, softness: 1.5,
+            }
+        }
+        klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => {
+            klipp_effects::BuiltinEffect::AnamorphicStreak {
+                threshold: 0.5, length: 120.0, intensity: 0.8, tint: 0.3,
+            }
+        }
+        klipp_effects::BuiltinEffect::FilmHalation { .. } => {
+            klipp_effects::BuiltinEffect::FilmHalation {
+                threshold: 0.5, radius: 25.0, intensity: 0.6, hue: 0.2,
+            }
+        }
     }
 }
 

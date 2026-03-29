@@ -455,6 +455,12 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Bloom { .. } => "Bloom",
         klipp_effects::BuiltinEffect::Glow { .. } => "Glow",
         klipp_effects::BuiltinEffect::LightRays { .. } => "Light Rays",
+        klipp_effects::BuiltinEffect::Vignette { .. } => "Vignette",
+        klipp_effects::BuiltinEffect::Diffusion { .. } => "Diffusion",
+        klipp_effects::BuiltinEffect::LensFlare { .. } => "Lens Flare",
+        klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
+        klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
+        klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
     }
 }
 
@@ -482,13 +488,35 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::LightRays { .. } => BuiltinEffect::LightRays {
             center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 64, decay: 0.3, intensity: 0.5,
         },
+        BuiltinEffect::Vignette { .. } => BuiltinEffect::Vignette {
+            amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5,
+        },
+        BuiltinEffect::Diffusion { .. } => BuiltinEffect::Diffusion {
+            amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
+        },
+        BuiltinEffect::LensFlare { .. } => BuiltinEffect::LensFlare {
+            position_x: 0.7, position_y: 0.3, brightness: 0.6,
+            flare_size: 0.15, ghost_count: 4, ghost_intensity: 0.3,
+            chromatic_aberration: 0.4,
+        },
+        BuiltinEffect::LightWrap { .. } => BuiltinEffect::LightWrap {
+            width: 15.0, intensity: 0.5, softness: 1.0,
+        },
+        BuiltinEffect::AnamorphicStreak { .. } => BuiltinEffect::AnamorphicStreak {
+            threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3,
+        },
+        BuiltinEffect::FilmHalation { .. } => BuiltinEffect::FilmHalation {
+            threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
+        },
     }
 }
 
 /// Returns true if the effect has more than 1 adjustable parameter (worth a reset-all button).
 fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
     use klipp_effects::BuiltinEffect;
-    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. })
+    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
+        | BuiltinEffect::Vignette { .. } | BuiltinEffect::Diffusion { .. } | BuiltinEffect::LensFlare { .. }
+        | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. })
 }
 
 /// Returns true if the effect is at its default values.
@@ -709,6 +737,135 @@ fn show_builtin_effect_params(
             track_scrubby!("decay", r_d, *decay);
             let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.5, 0.01, 2, "", ks_i);
             track_scrubby!("intensity", r_i, *intensity);
+        }
+        klipp_effects::BuiltinEffect::Vignette { amount, size, softness, roundness } => {
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            *size = eval_effect_kf(clip, effect_index, "size", clip_time_secs, *size);
+            *softness = eval_effect_kf(clip, effect_index, "softness", clip_time_secs, *softness);
+            *roundness = eval_effect_kf(clip, effect_index, "roundness", clip_time_secs, *roundness);
+
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "size", clip_time_secs));
+            let ks_sf = Some(effect_keyframe_state(clip, effect_index, "softness", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "roundness", clip_time_secs));
+
+            let r_a = scrubby_param_row(ui, "Amount", amount, -1.0..=1.0, -0.4, 0.005, 2, "", ks_a);
+            track_scrubby!("amount", r_a, *amount);
+            let r_s = scrubby_param_row(ui, "Size", size, 0.0..=2.0, 0.8, 0.01, 2, "", ks_s);
+            track_scrubby!("size", r_s, *size);
+            let r_sf = scrubby_param_row(ui, "Softness", softness, 0.0..=2.0, 0.5, 0.01, 2, "", ks_sf);
+            track_scrubby!("softness", r_sf, *softness);
+            let r_r = scrubby_param_row(ui, "Roundness", roundness, 0.0..=1.0, 0.5, 0.005, 2, "", ks_r);
+            track_scrubby!("roundness", r_r, *roundness);
+        }
+        klipp_effects::BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);
+            *desaturation = eval_effect_kf(clip, effect_index, "desaturation", clip_time_secs, *desaturation);
+
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_th = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "desaturation", clip_time_secs));
+
+            let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=1.0, 0.3, 0.005, 2, "", ks_a);
+            track_scrubby!("amount", r_a, *amount);
+            let r_r = scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 25.0, 0.5, 1, " px", ks_r);
+            track_scrubby!("radius", r_r, *radius);
+            let r_th = scrubby_param_row(ui, "Threshold", threshold, 0.0..=1.0, 0.5, 0.005, 2, "", ks_th);
+            track_scrubby!("threshold", r_th, *threshold);
+            let r_d = scrubby_param_row(ui, "Desaturation", desaturation, 0.0..=1.0, 0.2, 0.005, 2, "", ks_d);
+            track_scrubby!("desaturation", r_d, *desaturation);
+        }
+        klipp_effects::BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
+            *position_x = eval_effect_kf(clip, effect_index, "position_x", clip_time_secs, *position_x);
+            *position_y = eval_effect_kf(clip, effect_index, "position_y", clip_time_secs, *position_y);
+            *brightness = eval_effect_kf(clip, effect_index, "brightness", clip_time_secs, *brightness);
+            *flare_size = eval_effect_kf(clip, effect_index, "flare_size", clip_time_secs, *flare_size);
+            *ghost_intensity = eval_effect_kf(clip, effect_index, "ghost_intensity", clip_time_secs, *ghost_intensity);
+            *chromatic_aberration = eval_effect_kf(clip, effect_index, "chromatic_aberration", clip_time_secs, *chromatic_aberration);
+
+            let ks_px = Some(effect_keyframe_state(clip, effect_index, "position_x", clip_time_secs));
+            let ks_py = Some(effect_keyframe_state(clip, effect_index, "position_y", clip_time_secs));
+            let ks_b = Some(effect_keyframe_state(clip, effect_index, "brightness", clip_time_secs));
+            let ks_fs = Some(effect_keyframe_state(clip, effect_index, "flare_size", clip_time_secs));
+            let ks_gi = Some(effect_keyframe_state(clip, effect_index, "ghost_intensity", clip_time_secs));
+            let ks_ca = Some(effect_keyframe_state(clip, effect_index, "chromatic_aberration", clip_time_secs));
+
+            let r_px = scrubby_param_row(ui, "Position X", position_x, 0.0..=1.0, 0.7, 0.005, 3, "", ks_px);
+            track_scrubby!("position_x", r_px, *position_x);
+            let r_py = scrubby_param_row(ui, "Position Y", position_y, 0.0..=1.0, 0.3, 0.005, 3, "", ks_py);
+            track_scrubby!("position_y", r_py, *position_y);
+            let r_b = scrubby_param_row(ui, "Brightness", brightness, 0.0..=2.0, 0.6, 0.01, 2, "", ks_b);
+            track_scrubby!("brightness", r_b, *brightness);
+            let r_fs = scrubby_param_row(ui, "Flare Size", flare_size, 0.0..=1.0, 0.15, 0.005, 3, "", ks_fs);
+            track_scrubby!("flare_size", r_fs, *flare_size);
+            // ghost_count is u32, convert to f32 for slider then back
+            let mut gc_f = *ghost_count as f32;
+            let r_gc = scrubby_param_row(ui, "Ghost Count", &mut gc_f, 0.0..=8.0, 4.0, 1.0, 0, "", None);
+            *ghost_count = gc_f as u32;
+            track_scrubby!("", r_gc, gc_f);
+            let r_gi = scrubby_param_row(ui, "Ghost Intensity", ghost_intensity, 0.0..=1.0, 0.3, 0.005, 2, "", ks_gi);
+            track_scrubby!("ghost_intensity", r_gi, *ghost_intensity);
+            let r_ca = scrubby_param_row(ui, "Chromatic Aberration", chromatic_aberration, 0.0..=1.0, 0.4, 0.005, 2, "", ks_ca);
+            track_scrubby!("chromatic_aberration", r_ca, *chromatic_aberration);
+        }
+        klipp_effects::BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
+            *wrap_w = eval_effect_kf(clip, effect_index, "width", clip_time_secs, *wrap_w);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+            *softness = eval_effect_kf(clip, effect_index, "softness", clip_time_secs, *softness);
+
+            let ks_w = Some(effect_keyframe_state(clip, effect_index, "width", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "softness", clip_time_secs));
+
+            let r_w = scrubby_param_row(ui, "Width", wrap_w, 0.0..=100.0, 15.0, 0.5, 1, " px", ks_w);
+            track_scrubby!("width", r_w, *wrap_w);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=1.0, 0.5, 0.005, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
+            let r_s = scrubby_param_row(ui, "Softness", softness, 0.0..=2.0, 1.0, 0.01, 2, "", ks_s);
+            track_scrubby!("softness", r_s, *softness);
+        }
+        klipp_effects::BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
+            *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);
+            *length = eval_effect_kf(clip, effect_index, "length", clip_time_secs, *length);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+            *tint = eval_effect_kf(clip, effect_index, "tint", clip_time_secs, *tint);
+
+            let ks_th = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let ks_l = Some(effect_keyframe_state(clip, effect_index, "length", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+            let ks_t = Some(effect_keyframe_state(clip, effect_index, "tint", clip_time_secs));
+
+            let r_th = scrubby_param_row(ui, "Threshold", threshold, 0.0..=1.0, 0.7, 0.005, 2, "", ks_th);
+            track_scrubby!("threshold", r_th, *threshold);
+            let r_l = scrubby_param_row(ui, "Length", length, 0.0..=200.0, 80.0, 1.0, 0, " px", ks_l);
+            track_scrubby!("length", r_l, *length);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.5, 0.01, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
+            let r_t = scrubby_param_row(ui, "Tint", tint, 0.0..=1.0, 0.3, 0.005, 2, "", ks_t);
+            track_scrubby!("tint", r_t, *tint);
+        }
+        klipp_effects::BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+            *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+            *hue = eval_effect_kf(clip, effect_index, "hue", clip_time_secs, *hue);
+
+            let ks_th = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+            let ks_h = Some(effect_keyframe_state(clip, effect_index, "hue", clip_time_secs));
+
+            let r_th = scrubby_param_row(ui, "Threshold", threshold, 0.0..=1.0, 0.75, 0.005, 2, "", ks_th);
+            track_scrubby!("threshold", r_th, *threshold);
+            let r_r = scrubby_param_row(ui, "Radius", radius, 0.0..=50.0, 15.0, 0.5, 1, " px", ks_r);
+            track_scrubby!("radius", r_r, *radius);
+            let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=1.0, 0.3, 0.005, 2, "", ks_i);
+            track_scrubby!("intensity", r_i, *intensity);
+            let r_h = scrubby_param_row(ui, "Hue", hue, 0.0..=1.0, 0.2, 0.005, 2, "", ks_h);
+            track_scrubby!("hue", r_h, *hue);
         }
     }
 

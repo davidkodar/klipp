@@ -24,6 +24,10 @@ pub struct GpuEffectsPipeline {
     bloom_blend_pipeline: wgpu::ComputePipeline,
     glow_blend_pipeline: wgpu::ComputePipeline,
     light_rays_pipeline: wgpu::ComputePipeline,
+    vignette_pipeline: wgpu::ComputePipeline,
+    lens_flare_pipeline: wgpu::ComputePipeline,
+    anamorphic_streak_pipeline: wgpu::ComputePipeline,
+    film_halation_blend_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
@@ -237,6 +241,10 @@ impl GpuEffectsPipeline {
         let bloom_blend_pipeline = create_pipeline(&device, &transition_pl, "bloom_blend", SHADER_BLOOM_BLEND);
         let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
         let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
+        let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
+        let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE);
+        let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK);
+        let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
@@ -332,6 +340,10 @@ impl GpuEffectsPipeline {
             bloom_blend_pipeline,
             glow_blend_pipeline,
             light_rays_pipeline,
+            vignette_pipeline,
+            lens_flare_pipeline,
+            anamorphic_streak_pipeline,
+            film_halation_blend_pipeline,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
@@ -887,6 +899,113 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Vignette { amount, size, softness, roundness } => {
+                    self.write_params(&VignetteParams {
+                        width, height,
+                        amount: *amount, size: *size, softness: *softness, roundness: *roundness,
+                        _pad: 0, _pad2: 0,
+                    });
+                    self.dispatch(&self.vignette_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+                    // Same as bloom: threshold → blur → screen blend
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });
+                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
+                    let boxes = crate::blur::boxes_for_gaussian(*radius);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *amount, width, height);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
+                    self.write_params(&LensFlareParams {
+                        width, height,
+                        pos_x: *position_x, pos_y: *position_y,
+                        brightness: *brightness, flare_size: *flare_size,
+                        ghost_count: *ghost_count, ghost_intensity: *ghost_intensity,
+                        chromatic_aberration: *chromatic_aberration,
+                        _pad: 0, _pad2: 0, _pad3: 0,
+                    });
+                    self.dispatch(&self.lens_flare_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
+                    // Blur → blend where dark
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    let byte_size = (width * height * 4) as u64;
+                    {
+                        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                        enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
+                        self.queue.submit(Some(enc.finish()));
+                    }
+                    let boxes = crate::blur::boxes_for_gaussian(*wrap_w * *softness);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, width, height);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
+                    self.write_params(&AnamorphicStreakParams {
+                        width, height,
+                        threshold: *threshold,
+                        half_len: (*length * 0.5) as u32,
+                        intensity: *intensity,
+                        tint: *tint,
+                        _pad: 0, _pad2: 0,
+                    });
+                    self.dispatch(&self.anamorphic_streak_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+                    // Extract bright with halation color → blur → screen blend
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    let hal_r = 1.0f32;
+                    let hal_g = *hue * 0.6;
+                    let hal_b = *hue * *hue * 0.2;
+                    // Use bloom threshold to extract brights (with color tint applied after)
+                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });
+                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
+                    let boxes = crate::blur::boxes_for_gaussian(*radius);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+                    // Screen blend with halation tint
+                    self.write_params(&FilmHalationBlendParams {
+                        width, height, threshold: *threshold, intensity: *intensity,
+                        hal_r, hal_g, hal_b, _pad: 0,
+                    });
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("halation_bg"),
+                        layout: &self.transition_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                        ],
+                    });
+                    let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    { let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                      pass.set_pipeline(&self.film_halation_blend_pipeline);
+                      pass.set_bind_group(0, &bind_group, &[]);
+                      pass.dispatch_workgroups(workgroups, 1, 1);
+                    }
+                    self.queue.submit(Some(enc.finish()));
+                    current_in_a = !current_in_a;
+                }
             }
         }
 
@@ -1237,6 +1356,62 @@ struct LightRaysParams {
     samples: u32,
     decay: f32,
     intensity: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct VignetteParams {
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    softness: f32,
+    roundness: f32,
+    _pad: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LensFlareParams {
+    width: u32,
+    height: u32,
+    pos_x: f32,
+    pos_y: f32,
+    brightness: f32,
+    flare_size: f32,
+    ghost_count: u32,
+    ghost_intensity: f32,
+    chromatic_aberration: f32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AnamorphicStreakParams {
+    width: u32,
+    height: u32,
+    threshold: f32,
+    half_len: u32,
+    intensity: f32,
+    tint: f32,
+    _pad: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FilmHalationBlendParams {
+    width: u32,
+    height: u32,
+    threshold: f32,
+    intensity: f32,
+    hal_r: f32,
+    hal_g: f32,
+    hal_b: f32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -2583,6 +2758,161 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rr = u32(clamp((or + ray_r) * 255.0, 0.0, 255.0));
     let rg = u32(clamp((og + ray_g) * 255.0, 0.0, 255.0));
     let rb = u32(clamp((ob + ray_b) * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+}
+";
+
+const SHADER_VIGNETTE: &str = "
+struct Params { width: u32, height: u32, amount: f32, size: f32, softness: f32, roundness: f32, _pad: u32, _pad2: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = f32(idx % params.width);
+    let y = f32(idx / params.width);
+    let cx = f32(params.width) * 0.5;
+    let cy = f32(params.height) * 0.5;
+    let nx = (x - cx) / cx;
+    let ny = (y - cy) / cy;
+    let rect_dist = max(abs(nx), abs(ny));
+    let circ_dist = sqrt(nx * nx + ny * ny);
+    let dist = rect_dist * (1.0 - params.roundness) + circ_dist * params.roundness;
+    let falloff = clamp((dist - params.size) / max(params.softness, 0.01), 0.0, 1.0);
+    let factor = 1.0 + params.amount * falloff;
+    let v = input[idx];
+    let r = clamp(f32(v & 0xFFu) * factor, 0.0, 255.0);
+    let g = clamp(f32((v >> 8u) & 0xFFu) * factor, 0.0, 255.0);
+    let b = clamp(f32((v >> 16u) & 0xFFu) * factor, 0.0, 255.0);
+    let a = (v >> 24u) & 0xFFu;
+    output[idx] = u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (a << 24u);
+}
+";
+
+const SHADER_LENS_FLARE: &str = "
+struct Params {
+    width: u32, height: u32, pos_x: f32, pos_y: f32,
+    brightness: f32, flare_size: f32, ghost_count: u32, ghost_intensity: f32,
+    chromatic_aberration: f32, _pad: u32, _pad2: u32, _pad3: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let px = f32(idx % params.width);
+    let py = f32(idx / params.width);
+    let w = f32(params.width);
+    let h = f32(params.height);
+    let fx = params.pos_x * w;
+    let fy = params.pos_y * h;
+    let cx = w * 0.5;
+    let cy = h * 0.5;
+    let max_dim = max(w, h);
+    let disc_r = params.flare_size * max_dim;
+    var add_r: f32 = 0.0;
+    var add_g: f32 = 0.0;
+    var add_b: f32 = 0.0;
+    let dist = sqrt((px - fx) * (px - fx) + (py - fy) * (py - fy));
+    if dist < disc_r {
+        let falloff = 1.0 - dist / disc_r;
+        let glow = falloff * falloff * params.brightness;
+        add_r += glow;
+        add_g += glow * 0.9;
+        add_b += glow * 0.7;
+    }
+    for (var gi: u32 = 0u; gi < params.ghost_count; gi = gi + 1u) {
+        let t = (f32(gi) + 1.0) / (f32(params.ghost_count) + 1.0);
+        let gx = fx + (cx - fx) * t * 2.0;
+        let gy = fy + (cy - fy) * t * 2.0;
+        let gr = disc_r * (0.3 + t * 0.4);
+        let gdist = sqrt((px - gx) * (px - gx) + (py - gy) * (py - gy));
+        if gdist < gr {
+            let gf = 1.0 - gdist / gr;
+            let glow = gf * gf * params.ghost_intensity * params.brightness;
+            let ca = params.chromatic_aberration * t;
+            add_r += glow * (1.0 + ca);
+            add_g += glow;
+            add_b += glow * (1.0 - ca * 0.5);
+        }
+    }
+    let v = input[idx];
+    let rr = u32(clamp(f32(v & 0xFFu) + add_r * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(f32((v >> 8u) & 0xFFu) + add_g * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(f32((v >> 16u) & 0xFFu) + add_b * 255.0, 0.0, 255.0));
+    let a = (v >> 24u) & 0xFFu;
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_ANAMORPHIC_STREAK: &str = "
+struct Params { width: u32, height: u32, threshold: f32, half_len: u32, intensity: f32, tint: f32, _pad: u32, _pad2: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let tint_r = 1.0 + (1.0 - params.tint) * 0.3;
+    let tint_b = 1.0 + params.tint * 0.5;
+    var sr: f32 = 0.0; var sg: f32 = 0.0; var sb: f32 = 0.0;
+    let x_start = max(i32(x) - i32(params.half_len), 0);
+    let x_end = min(x + params.half_len + 1u, params.width);
+    let count = f32(x_end - u32(x_start));
+    for (var sx: u32 = u32(x_start); sx < x_end; sx = sx + 1u) {
+        let si = y * params.width + sx;
+        let sv = input[si];
+        let r = f32(sv & 0xFFu) / 255.0;
+        let g = f32((sv >> 8u) & 0xFFu) / 255.0;
+        let b = f32((sv >> 16u) & 0xFFu) / 255.0;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if luma > params.threshold {
+            let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
+            sr += r * factor; sg += g * factor; sb += b * factor;
+        }
+    }
+    sr = sr / count; sg = sg / count; sb = sb / count;
+    let v = input[idx];
+    let rr = u32(clamp(f32(v & 0xFFu) + sr * tint_r * params.intensity * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(f32((v >> 8u) & 0xFFu) + sg * params.intensity * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(f32((v >> 16u) & 0xFFu) + sb * tint_b * params.intensity * 255.0, 0.0, 255.0));
+    let a = (v >> 24u) & 0xFFu;
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_FILM_HALATION: &str = "
+struct Params { width: u32, height: u32, threshold: f32, intensity: f32, hal_r: f32, hal_g: f32, hal_b: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> original: array<u32>;
+@group(0) @binding(1) var<storage, read> halation: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let ov = original[idx];
+    let hv = halation[idx];
+    let or = f32(ov & 0xFFu) / 255.0;
+    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
+    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
+    let oa = (ov >> 24u) & 0xFFu;
+    let hr = f32(hv & 0xFFu) / 255.0 * params.intensity;
+    let hg = f32((hv >> 8u) & 0xFFu) / 255.0 * params.intensity;
+    let hb = f32((hv >> 16u) & 0xFFu) / 255.0 * params.intensity;
+    let sr = 1.0 - (1.0 - or) * (1.0 - hr);
+    let sg = 1.0 - (1.0 - og) * (1.0 - hg);
+    let sb = 1.0 - (1.0 - ob) * (1.0 - hb);
+    let rr = u32(clamp(sr * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(sg * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(sb * 255.0, 0.0, 255.0));
     output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
 }
 ";

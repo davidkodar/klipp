@@ -125,6 +125,62 @@ impl EffectRegistry {
                 source_label: "Built-in",
                 grouping: "Light".into(),
             },
+            EffectEntry {
+                name: "Vignette".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Vignette {
+                    amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Diffusion".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Diffusion {
+                    amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Lens Flare".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LensFlare {
+                    position_x: 0.7, position_y: 0.3, brightness: 0.6,
+                    flare_size: 0.15, ghost_count: 4, ghost_intensity: 0.3,
+                    chromatic_aberration: 0.4,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Light Wrap".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LightWrap {
+                    width: 15.0, intensity: 0.5, softness: 1.0,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Anamorphic Streak".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::AnamorphicStreak {
+                    threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Film Halation".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FilmHalation {
+                    threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
         ];
 
         Self { effects, reference_frame: None }

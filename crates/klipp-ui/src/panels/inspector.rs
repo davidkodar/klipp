@@ -1268,6 +1268,12 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Bloom { .. } => "Bloom",
         klipp_effects::BuiltinEffect::Glow { .. } => "Glow",
         klipp_effects::BuiltinEffect::LightRays { .. } => "Light Rays",
+        klipp_effects::BuiltinEffect::Vignette { .. } => "Vignette",
+        klipp_effects::BuiltinEffect::Diffusion { .. } => "Diffusion",
+        klipp_effects::BuiltinEffect::LensFlare { .. } => "Lens Flare",
+        klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
+        klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
+        klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
     }
 }
 
@@ -1355,6 +1361,49 @@ fn show_builtin_effect_params(
             changed |= r.changed();
             track_slider!(ui.add(egui::Slider::new(decay, 0.0..=1.0).text("Decay")));
             track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=2.0).text("Intensity")));
+        }
+        klipp_effects::BuiltinEffect::Vignette { amount, size, softness, roundness } => {
+            track_slider!(ui.add(egui::Slider::new(amount, -1.0..=1.0).text("Amount")));
+            track_slider!(ui.add(egui::Slider::new(size, 0.0..=2.0).text("Size")));
+            track_slider!(ui.add(egui::Slider::new(softness, 0.0..=2.0).text("Softness")));
+            track_slider!(ui.add(egui::Slider::new(roundness, 0.0..=1.0).text("Roundness")));
+        }
+        klipp_effects::BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+            track_slider!(ui.add(egui::Slider::new(amount, 0.0..=1.0).text("Amount")));
+            track_slider!(ui.add(egui::Slider::new(radius, 0.0..=100.0).text("Radius")));
+            track_slider!(ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("Threshold")));
+            track_slider!(ui.add(egui::Slider::new(desaturation, 0.0..=1.0).text("Desaturation")));
+        }
+        klipp_effects::BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
+            track_slider!(ui.add(egui::Slider::new(position_x, 0.0..=1.0).text("Position X")));
+            track_slider!(ui.add(egui::Slider::new(position_y, 0.0..=1.0).text("Position Y")));
+            track_slider!(ui.add(egui::Slider::new(brightness, 0.0..=2.0).text("Brightness")));
+            track_slider!(ui.add(egui::Slider::new(flare_size, 0.0..=1.0).text("Flare Size")));
+            let mut gc_f = *ghost_count as f32;
+            let r = ui.add(egui::Slider::new(&mut gc_f, 0.0..=8.0).text("Ghost Count"));
+            *ghost_count = gc_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+            track_slider!(ui.add(egui::Slider::new(ghost_intensity, 0.0..=1.0).text("Ghost Intensity")));
+            track_slider!(ui.add(egui::Slider::new(chromatic_aberration, 0.0..=1.0).text("Chromatic Aberration")));
+        }
+        klipp_effects::BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
+            track_slider!(ui.add(egui::Slider::new(wrap_w, 0.0..=100.0).text("Width")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=1.0).text("Intensity")));
+            track_slider!(ui.add(egui::Slider::new(softness, 0.0..=2.0).text("Softness")));
+        }
+        klipp_effects::BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
+            track_slider!(ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("Threshold")));
+            track_slider!(ui.add(egui::Slider::new(length, 0.0..=200.0).text("Length")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=2.0).text("Intensity")));
+            track_slider!(ui.add(egui::Slider::new(tint, 0.0..=1.0).text("Tint")));
+        }
+        klipp_effects::BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+            track_slider!(ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("Threshold")));
+            track_slider!(ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")));
+            track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=1.0).text("Intensity")));
+            track_slider!(ui.add(egui::Slider::new(hue, 0.0..=1.0).text("Hue")));
         }
     }
 

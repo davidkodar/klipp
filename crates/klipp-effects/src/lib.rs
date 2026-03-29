@@ -91,6 +91,76 @@ pub enum BuiltinEffect {
         /// Ray intensity (0.0–2.0, default 0.5)
         intensity: f32,
     },
+    /// Vignette: darken or lighten edges/corners of the frame.
+    Vignette {
+        /// How much to darken/lighten (-1.0=full black, 0.0=none, 1.0=full white, default -0.4)
+        amount: f32,
+        /// Size of the vignette center (0.0–2.0, default 0.8). Larger = more visible center.
+        size: f32,
+        /// Softness of the vignette falloff (0.0–2.0, default 0.5)
+        softness: f32,
+        /// Roundness: 0.0=rectangular, 1.0=circular (default 0.5)
+        roundness: f32,
+    },
+    /// Diffusion / Pro-Mist: softens highlights for a dreamy cinematic look.
+    Diffusion {
+        /// How much bright areas bleed into surroundings (0.0–1.0, default 0.3)
+        amount: f32,
+        /// Blur radius for the diffusion (pixels, default 25.0)
+        radius: f32,
+        /// Luminance threshold — only soften above this (0.0–1.0, default 0.5)
+        threshold: f32,
+        /// Saturation reduction in the diffused areas (0.0–1.0, default 0.2)
+        desaturation: f32,
+    },
+    /// Lens Flare: simulated lens flare with configurable position and style.
+    LensFlare {
+        /// X position of the flare source (0.0–1.0, default 0.7)
+        position_x: f32,
+        /// Y position of the flare source (0.0–1.0, default 0.3)
+        position_y: f32,
+        /// Overall brightness (0.0–2.0, default 0.6)
+        brightness: f32,
+        /// Size of the main flare disc (0.0–1.0, default 0.15)
+        flare_size: f32,
+        /// Number of ghost elements (0–8, default 4)
+        ghost_count: u32,
+        /// Intensity of ghost elements (0.0–1.0, default 0.3)
+        ghost_intensity: f32,
+        /// Chromatic fringing on ghosts (0.0–1.0, default 0.4)
+        chromatic_aberration: f32,
+    },
+    /// Light Wrap: bleed background light onto foreground edges (compositing essential).
+    LightWrap {
+        /// Width of the light wrap in pixels (0.0–100.0, default 15.0)
+        width: f32,
+        /// Intensity of the wrap (0.0–1.0, default 0.5)
+        intensity: f32,
+        /// Softness of the wrap falloff (0.0–2.0, default 1.0)
+        softness: f32,
+    },
+    /// Anamorphic Streak: horizontal lens flare streak on bright areas.
+    AnamorphicStreak {
+        /// Luminance threshold for streak sources (0.0–1.0, default 0.7)
+        threshold: f32,
+        /// Horizontal length of the streak in pixels (0.0–200.0, default 80.0)
+        length: f32,
+        /// Intensity of the streak (0.0–2.0, default 0.5)
+        intensity: f32,
+        /// Tint color: 0.0=warm amber, 0.5=neutral, 1.0=cool blue (default 0.3)
+        tint: f32,
+    },
+    /// Film Halation: vintage film look with red/orange bleed around bright highlights.
+    FilmHalation {
+        /// Luminance threshold for halation sources (0.0–1.0, default 0.75)
+        threshold: f32,
+        /// Blur radius for the halation (pixels, default 15.0)
+        radius: f32,
+        /// Intensity of the halation (0.0–1.0, default 0.3)
+        intensity: f32,
+        /// Hue of the halation: 0.0=deep red, 0.5=orange, 1.0=warm yellow (default 0.2)
+        hue: f32,
+    },
 }
 
 /// Apply a chain of built-in effects to an RGBA frame.
@@ -130,6 +200,24 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
             light::apply_light_rays(rgba, width, height, *center_x, *center_y, *threshold, *samples, *decay, *intensity)
+        }
+        BuiltinEffect::Vignette { amount, size, softness, roundness } => {
+            light::apply_vignette(rgba, width, height, *amount, *size, *softness, *roundness)
+        }
+        BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+            light::apply_diffusion(rgba, width, height, *amount, *radius, *threshold, *desaturation)
+        }
+        BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
+            light::apply_lens_flare(rgba, width, height, *position_x, *position_y, *brightness, *flare_size, *ghost_count, *ghost_intensity, *chromatic_aberration)
+        }
+        BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
+            light::apply_light_wrap(rgba, width, height, *wrap_w, *intensity, *softness)
+        }
+        BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
+            light::apply_anamorphic_streak(rgba, width, height, *threshold, *length, *intensity, *tint)
+        }
+        BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+            light::apply_film_halation(rgba, width, height, *threshold, *radius, *intensity, *hue)
         }
     }
 }
