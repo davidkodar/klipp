@@ -551,7 +551,7 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     props.set_int("OfxImageEffectPropSupportsOverlays", 0, 0);
     props.set_int("OfxImageEffectPropSupportsMultiResolution", 0, 0);
     props.set_int("OfxImageEffectPropSupportsTiles", 0, 0);
-    props.set_int("OfxImageEffectPropTemporalClipAccess", 0, 0);
+    props.set_int("OfxImageEffectPropTemporalClipAccess", 0, 1);
     props.set_int("OfxImageEffectPropSupportsMultipleClipDepths", 0, 0);
     props.set_int("OfxImageEffectPropSupportsMultipleClipPARs", 0, 0);
     props.set_int("OfxImageEffectPropSetableFrameRate", 0, 0);

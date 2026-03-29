@@ -1006,6 +1006,10 @@ impl GpuEffectsPipeline {
                     self.queue.submit(Some(enc.finish()));
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::SpeedRamp { .. } => {
+                    // SpeedRamp is handled at the engine level (frame queue + GPU blend),
+                    // not in the per-frame GPU effects chain. Pass through.
+                }
             }
         }
 

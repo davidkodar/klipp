@@ -202,6 +202,9 @@ pub struct OfxHostRuntime {
     opencl: Option<crate::gpu_opencl::OpenClRuntime>,
     /// OpenGL runtime (if available — headless EGL context).
     opengl: Option<crate::gpu_opengl::OpenGlRuntime>,
+    /// Current render context — frame dimensions for temporal access.
+    render_width: u32,
+    render_height: u32,
 }
 
 // Safety: All handle fields are opaque keys into global Mutex-protected stores.
@@ -255,6 +258,8 @@ impl OfxHostRuntime {
             cuda,
             opencl,
             opengl,
+            render_width: 0,
+            render_height: 0,
         }
     }
 
@@ -893,11 +898,25 @@ impl OfxHostRuntime {
         height: u32,
         frame_time: f64,
     ) -> Vec<u8> {
-        self.apply_effects_chain_with_abort(effects, rgba, width, height, frame_time, None)
+        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, None, None)
     }
 
-    /// Apply a chain of effects with optional abort support.
-    /// Pass an `Arc<AtomicBool>` to allow cancellation from another thread.
+    /// Apply effects with a frame provider for temporal clip access.
+    /// The frame_provider closure takes a time (seconds) and returns
+    /// (rgba_bytes, width, height) for the decoded frame at that time.
+    pub fn apply_effects_chain_temporal(
+        &mut self,
+        effects: &[AppliedEffect],
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        frame_time: f64,
+        frame_provider: image_effect::FrameProviderFn,
+    ) -> Vec<u8> {
+        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, None, Some(frame_provider))
+    }
+
+    /// Apply a chain of effects with optional abort and temporal frame provider.
     pub fn apply_effects_chain_with_abort(
         &mut self,
         effects: &[AppliedEffect],
@@ -907,9 +926,33 @@ impl OfxHostRuntime {
         frame_time: f64,
         abort: Option<Arc<AtomicBool>>,
     ) -> Vec<u8> {
+        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, abort, None)
+    }
+
+    fn apply_effects_chain_full(
+        &mut self,
+        effects: &[AppliedEffect],
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        frame_time: f64,
+        abort: Option<Arc<AtomicBool>>,
+        frame_provider: Option<image_effect::FrameProviderFn>,
+    ) -> Vec<u8> {
         if effects.is_empty() || effects.iter().all(|e| !e.enabled) {
             return rgba.to_vec();
         }
+
+        // Store render dimensions for temporal access
+        self.render_width = width;
+        self.render_height = height;
+
+        // Set up frame provider for temporal clip access
+        let premult = self.plugins.first()
+            .map(|p| p.premult_string.clone())
+            .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
+        image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false);
+
         let mut current = rgba.to_vec();
         for effect in effects {
             if !effect.enabled {
@@ -919,14 +962,32 @@ impl OfxHostRuntime {
             if let Some(ref flag) = abort {
                 if flag.load(Ordering::Relaxed) {
                     debug!("OFX: effects chain aborted before '{}'", effect.plugin_name);
+                    image_effect::clear_render_context();
                     return current;
                 }
             }
+            // Update render context with needs_float for this specific plugin
+            if let Some(idx) = self.plugins.iter().position(|p| p.name == effect.plugin_name && p.initialized) {
+                let needs_float = self.plugins[idx].needs_float;
+                let premult = self.plugins[idx].premult_string.clone();
+                // Update context for this effect's float requirements
+                let mut ctx = image_effect::RENDER_CONTEXT.lock().unwrap();
+                if let Some(ref mut c) = *ctx {
+                    c.needs_float = needs_float;
+                    c.premult = premult;
+                }
+                drop(ctx);
+            }
+
             match self.apply_effect(effect, &current, width, height, frame_time, &abort) {
                 Ok(result) => current = result,
                 Err(e) => warn!("OFX: apply_effect '{}' failed: {e}", effect.plugin_name),
             }
         }
+
+        // Clean up temporal frame provider
+        image_effect::clear_render_context();
+
         current
     }
 

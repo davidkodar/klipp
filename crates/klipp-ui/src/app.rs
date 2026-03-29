@@ -2694,40 +2694,85 @@ impl KlippApp {
 
                 // Built-in effects
                 AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
+                    let mut is_speed_ramp = false;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.builtin_effects.push(effect.clone());
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    if self.state.playback != PlaybackState::Playing {
-                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    }
-                    continue;
-                }
-                AppCommand::RemoveBuiltinEffect { clip_id, index } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if *index < clip.builtin_effects.len() {
-                                clip.builtin_effects.remove(*index);
+                            // SpeedRamp: apply speed change on add
+                            if let klipp_effects::BuiltinEffect::SpeedRamp { speed, freeze, .. } = effect {
+                                is_speed_ramp = true;
+                                let new_speed = if *freeze { 0.001 } else { (*speed as f64).clamp(0.1, 16.0) };
+                                clip.speed = new_speed;
+                                let source_dur_secs = clip.source_duration().to_secs_f64();
+                                let new_dur_secs = source_dur_secs / new_speed;
+                                let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
+                                clip.timeline_out = clip.timeline_in + new_duration;
                             }
                             break;
                         }
                     }
                     self.sync_sequence_to_engine();
-                    if self.state.playback != PlaybackState::Playing {
+                    if is_speed_ramp {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    } else if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    continue;
+                }
+                AppCommand::RemoveBuiltinEffect { clip_id, index } => {
+                    let mut was_speed_ramp = false;
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *index < clip.builtin_effects.len() {
+                                // Check if we're removing a SpeedRamp — need to reset speed
+                                if matches!(clip.builtin_effects[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
+                                    was_speed_ramp = true;
+                                }
+                                clip.builtin_effects.remove(*index);
+                            }
+                            // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
+                            if was_speed_ramp && !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
+                                clip.speed = 1.0;
+                                let source_dur_secs = clip.source_duration().to_secs_f64();
+                                let new_duration = klipp_core::RationalTime::from_secs_f64(source_dur_secs, clip.timeline_in.rate);
+                                clip.timeline_out = clip.timeline_in + new_duration;
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    if was_speed_ramp {
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    } else if self.state.playback != PlaybackState::Playing {
                         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     }
                     continue;
                 }
                 AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
                     let mut old_effect = None;
+                    let mut is_speed_ramp = false;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(fx) = clip.builtin_effects.get_mut(*index) {
                                 old_effect = Some(fx.clone());
                                 *fx = effect.clone();
+                            }
+                            // SpeedRamp: use the same logic as SetClipSpeed
+                            if let klipp_effects::BuiltinEffect::SpeedRamp { speed, reverse, freeze, .. } = effect {
+                                is_speed_ramp = true;
+                                let new_speed = if *freeze {
+                                    0.001
+                                } else {
+                                    (*speed as f64).clamp(0.1, 16.0)
+                                };
+                                clip.speed = new_speed;
+                                // Adjust timeline_out exactly like SetClipSpeed
+                                let source_dur_secs = clip.source_duration().to_secs_f64();
+                                let new_dur_secs = source_dur_secs / new_speed;
+                                let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
+                                clip.timeline_out = clip.timeline_in + new_duration;
+                                tracing::debug!("SpeedRamp: speed={} freeze={} reverse={} → clip.speed={} dur={}s",
+                                    speed, freeze, reverse, new_speed, new_dur_secs);
                             }
                             break;
                         }
@@ -2748,8 +2793,10 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    if self.state.playback != PlaybackState::Playing {
-                        // Re-process cached frame with updated effects (instant, no re-decode)
+                    if is_speed_ramp {
+                        // Force engine to restart decoder at new speed
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    } else if self.state.playback != PlaybackState::Playing {
                         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     }
                     continue;
@@ -8989,6 +9036,12 @@ impl eframe::App for KlippApp {
         if self.state.playback == PlaybackState::Playing {
             let wall_elapsed = self.state.playhead_anchor_wall.elapsed().as_secs_f64();
             let anchor_secs = self.state.playhead_anchor.to_secs_f64();
+            // Account for clip speed in smooth interpolation — the master clock
+            // runs at clip_speed, so the playhead on the timeline advances at
+            // (clip_speed / clip_speed) = 1.0 timeline-seconds per wall-second,
+            // BUT the playhead moves through timeline space, not source space.
+            // The clip occupies (source_duration / clip_speed) timeline seconds,
+            // so the playhead advances at playback_speed in timeline space.
             let speed = self.state.playback_speed;
             let interpolated_secs = anchor_secs + wall_elapsed * speed;
             let dur_secs = self.state.sequence_duration().to_secs_f64();

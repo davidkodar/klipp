@@ -181,6 +181,17 @@ impl EffectRegistry {
                 source_label: "Built-in",
                 grouping: "Light".into(),
             },
+            EffectEntry {
+                name: "Speed Ramp".into(),
+                category: EffectCategory::Stylize,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::SpeedRamp {
+                    speed: 1.0, blend_mode: 1, ramp_curve: 0,
+                    ramp_start: 0.0, ramp_end: 1.0, reverse: false,
+                    freeze_at: 0.0, freeze: false,
+                }),
+                source_label: "Built-in",
+                grouping: "Stylize".into(),
+            },
         ];
 
         Self { effects, reference_frame: None }

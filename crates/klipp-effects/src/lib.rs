@@ -161,6 +161,26 @@ pub enum BuiltinEffect {
         /// Hue of the halation: 0.0=deep red, 0.5=orange, 1.0=warm yellow (default 0.2)
         hue: f32,
     },
+    /// Speed Ramp: GPU-accelerated retiming with frame blending.
+    /// Changes playback speed with smooth interpolation between frames.
+    SpeedRamp {
+        /// Playback speed multiplier (0.1=10% slow-mo, 1.0=normal, 4.0=4x fast)
+        speed: f32,
+        /// Blend mode: 0=nearest (no blend), 1=linear (smooth), 2=optical flow (best quality)
+        blend_mode: u32,
+        /// Ramp curve: 0=constant, 1=ease-in, 2=ease-out, 3=ease-in-out, 4=s-curve
+        ramp_curve: u32,
+        /// Ramp start position (0.0–1.0 of clip duration, only used with ramp curves)
+        ramp_start: f32,
+        /// Ramp end position (0.0–1.0 of clip duration)
+        ramp_end: f32,
+        /// Reverse playback
+        reverse: bool,
+        /// Freeze frame at this position (0.0–1.0, only active when freeze=true)
+        freeze_at: f32,
+        /// Enable freeze frame mode
+        freeze: bool,
+    },
 }
 
 /// Apply a chain of built-in effects to an RGBA frame.
@@ -218,6 +238,11 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
             light::apply_film_halation(rgba, width, height, *threshold, *radius, *intensity, *hue)
+        }
+        BuiltinEffect::SpeedRamp { .. } => {
+            // SpeedRamp is handled at the engine level (frame queue + GPU blend),
+            // not in the per-frame effects chain. If it reaches here, pass through.
+            rgba
         }
     }
 }

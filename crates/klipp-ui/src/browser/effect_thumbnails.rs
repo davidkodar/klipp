@@ -311,6 +311,11 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 threshold: 0.5, radius: 25.0, intensity: 0.6, hue: 0.2,
             }
         }
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => {
+            // SpeedRamp is a temporal effect — no visual preview on a single frame.
+            // Return identity (pass-through).
+            effect.clone()
+        }
     }
 }
 

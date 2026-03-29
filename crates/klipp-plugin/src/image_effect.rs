@@ -2,12 +2,72 @@
 //!
 //! When a plugin calls clipGetImage during render, we provide it with a
 //! pointer to the actual RGBA frame data via image property sets.
+//! Supports temporal clip access: plugins can request frames at arbitrary
+//! times via the frame provider callback.
 
 use crate::ffi::*;
 use crate::instance;
 use crate::property::{self, PropertySet};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr};
+
+// ── Temporal frame provider ─────────────────────────────────────────
+
+/// Frame provider for temporal clip access.
+/// Called when a plugin requests a frame at a time different from the current render time.
+/// Returns (rgba_bytes, width, height) or None if the frame is unavailable.
+pub type FrameProviderFn = Box<dyn Fn(f64) -> Option<(Vec<u8>, u32, u32)> + Send>;
+
+/// Current render context — stores the frame provider and render time.
+pub struct RenderContext {
+    frame_provider: Option<FrameProviderFn>,
+    current_time: f64,
+    #[allow(dead_code)]
+    width: u32,
+    #[allow(dead_code)]
+    height: u32,
+    pub premult: String,
+    pub needs_float: bool,
+    /// Cache of temporally-fetched images
+    temporal_images: Vec<OfxPropertySetHandle>,
+}
+
+// Safety: FrameProviderFn is Send. Raw pointers in temporal_images are
+// opaque keys into Mutex-protected global stores.
+unsafe impl Send for RenderContext {}
+
+pub static RENDER_CONTEXT: std::sync::LazyLock<std::sync::Mutex<Option<RenderContext>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Set the render context before calling the render action.
+pub fn set_render_context(
+    frame_provider: Option<FrameProviderFn>,
+    current_time: f64,
+    width: u32,
+    height: u32,
+    premult: &str,
+    needs_float: bool,
+) {
+    *RENDER_CONTEXT.lock().unwrap() = Some(RenderContext {
+        frame_provider,
+        current_time,
+        width,
+        height,
+        premult: premult.to_string(),
+        needs_float,
+        temporal_images: Vec::new(),
+    });
+}
+
+/// Clear the render context and clean up temporal images.
+pub fn clear_render_context() {
+    if let Some(ctx) = RENDER_CONTEXT.lock().unwrap().take() {
+        // Clean up any temporally-fetched images
+        for handle in ctx.temporal_images {
+            release_image(handle);
+        }
+    }
+}
 use std::sync::{LazyLock, Mutex};
 use tracing::warn;
 
@@ -302,7 +362,7 @@ unsafe extern "C" fn clip_get_property_set_fn(
 
 unsafe extern "C" fn clip_get_image_fn(
     clip: OfxImageClipHandle,
-    _time: c_double,
+    time: c_double,
     _region: *const OfxRectD,
     img_props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
@@ -311,20 +371,75 @@ unsafe extern "C" fn clip_get_image_fn(
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
 
-    // Get the current image handle from the clip
-    match instance::with_instance(inst_handle, |inst| {
+    // First try: return the pre-set current image for this clip
+    let current_img = instance::with_instance(inst_handle, |inst| {
         inst.clips.get(&clip_name).and_then(|c| c.current_image)
-    }) {
-        Some(Some(img_handle)) => {
+    }).flatten();
+
+    if let Some(img_handle) = current_img {
+        // Check if we need temporal access (plugin requesting a different time)
+        let mut ctx = RENDER_CONTEXT.lock().unwrap();
+        let is_temporal = if let Some(ref ctx) = *ctx {
+            (time - ctx.current_time).abs() > 0.001
+        } else {
+            false
+        };
+
+        if !is_temporal {
+            // Current time — return the pre-set image
             *img_props_out = img_handle;
-            K_OFX_STAT_OK
+            return K_OFX_STAT_OK;
         }
-        Some(None) => {
-            K_OFX_STAT_FAILED
+
+        // Temporal access: plugin wants a frame at a different time
+        if let Some(ref mut ctx) = *ctx {
+            if let Some(ref provider) = ctx.frame_provider {
+                if let Some((rgba, w, h)) = provider(time) {
+                    let premult = ctx.premult.clone();
+                    let needs_float = ctx.needs_float;
+
+                    // Create a temporary image from the decoded frame
+                    let temp_img = if needs_float {
+                        OfxImage::from_rgba_as_float(&rgba, w, h, time, &premult)
+                    } else {
+                        OfxImage::from_rgba(rgba, w, h, time, &premult)
+                    };
+                    let temp_handle = register_image(temp_img);
+                    ctx.temporal_images.push(temp_handle);
+
+                    *img_props_out = temp_handle;
+                    return K_OFX_STAT_OK;
+                }
+            }
         }
-        _ => {
-            K_OFX_STAT_FAILED
+
+        // Fallback: return current image even for temporal requests
+        *img_props_out = img_handle;
+        K_OFX_STAT_OK
+    } else {
+        // Clip exists but has no image (disconnected)
+        // Try temporal provider for disconnected clips too
+        let mut ctx = RENDER_CONTEXT.lock().unwrap();
+        if clip_name == "Source" || clip_name == "SourceFrom" || clip_name == "SourceTo" {
+            if let Some(ref mut ctx) = *ctx {
+                if let Some(ref provider) = ctx.frame_provider {
+                    if let Some((rgba, w, h)) = provider(time) {
+                        let premult = ctx.premult.clone();
+                        let needs_float = ctx.needs_float;
+                        let temp_img = if needs_float {
+                            OfxImage::from_rgba_as_float(&rgba, w, h, time, &premult)
+                        } else {
+                            OfxImage::from_rgba(rgba, w, h, time, &premult)
+                        };
+                        let temp_handle = register_image(temp_img);
+                        ctx.temporal_images.push(temp_handle);
+                        *img_props_out = temp_handle;
+                        return K_OFX_STAT_OK;
+                    }
+                }
+            }
         }
+        K_OFX_STAT_FAILED
     }
 }
 
@@ -384,8 +499,7 @@ unsafe extern "C" fn image_memory_alloc_fn(
 
 unsafe extern "C" fn image_memory_free_fn(handle: OfxImageMemoryHandle) -> OfxStatus {
     let key = handle as usize;
-    if let Some(buf) = IMG_MEM_STORE.lock().unwrap().remove(&key) {
-    }
+    IMG_MEM_STORE.lock().unwrap().remove(&key);
     K_OFX_STAT_OK
 }
 

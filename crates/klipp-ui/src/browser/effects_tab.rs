@@ -255,9 +255,12 @@ fn effect_card(
         }
     }
 
-    // OFX badge on the preview area (top-right corner)
-    if matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_)) {
-        let badge_text = "OFX";
+    // Source badge on the preview area (top-right corner)
+    let (badge_text, badge_color) = match &fx.source {
+        crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200)),
+        crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
+    };
+    {
         let badge_font = egui::FontId::monospace(8.0);
         let badge_galley = painter.layout_no_wrap(badge_text.to_string(), badge_font, egui::Color32::WHITE);
         let badge_w = badge_galley.size().x + 6.0;
@@ -266,7 +269,7 @@ fn effect_card(
             egui::pos2(card_rect.max.x - badge_w - 2.0, card_rect.min.y + 2.0),
             egui::vec2(badge_w, badge_h),
         );
-        painter.rect_filled(badge_rect, 2.0, egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200));
+        painter.rect_filled(badge_rect, 2.0, badge_color);
         painter.galley(
             egui::pos2(badge_rect.min.x + 3.0, badge_rect.min.y + 1.0),
             badge_galley,

@@ -1274,6 +1274,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
 
@@ -1404,6 +1405,53 @@ fn show_builtin_effect_params(
             track_slider!(ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")));
             track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=1.0).text("Intensity")));
             track_slider!(ui.add(egui::Slider::new(hue, 0.0..=1.0).text("Hue")));
+        }
+        klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
+            track_slider!(ui.add(egui::Slider::new(speed, 0.1..=4.0).step_by(0.05_f64).text("Speed")));
+
+            let blend_labels = ["Nearest", "Linear"];
+            let blend_sel = (*blend_mode as usize).min(blend_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label("Blend Mode");
+                let combo_id = ui.make_persistent_id(format!("sr_blend_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(blend_labels[blend_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in blend_labels.iter().enumerate() {
+                            if ui.selectable_value(blend_mode, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            let curve_labels = ["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"];
+            let curve_sel = (*ramp_curve as usize).min(curve_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label("Ramp Curve");
+                let combo_id = ui.make_persistent_id(format!("sr_curve_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(curve_labels[curve_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in curve_labels.iter().enumerate() {
+                            if ui.selectable_value(ramp_curve, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            track_slider!(ui.add(egui::Slider::new(ramp_start, 0.0..=1.0).text("Ramp Start")));
+            track_slider!(ui.add(egui::Slider::new(ramp_end, 0.0..=1.0).text("Ramp End")));
+            if ui.checkbox(reverse, "Reverse").changed() {
+                changed = true;
+            }
+            if ui.checkbox(freeze, "Freeze Frame").changed() {
+                changed = true;
+            }
+            if *freeze {
+                track_slider!(ui.add(egui::Slider::new(freeze_at, 0.0..=1.0).text("Freeze At")));
+            }
         }
     }
 

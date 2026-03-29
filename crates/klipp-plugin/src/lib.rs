@@ -19,3 +19,4 @@ pub use host::{
     PluginError,
 };
 pub use param::{ParamDescriptor, ParamType, ParamValue};
+pub use image_effect::FrameProviderFn;

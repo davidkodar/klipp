@@ -58,6 +58,7 @@ pub fn show(
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
             .show_header(ui, |ui| {
                 ui.label(egui::RichText::new(name).size(11.0).strong().color(theme.text_primary));
+                ui.label(egui::RichText::new("Built-in").size(8.0).color(egui::Color32::from_rgb(80, 180, 100)).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(egui::ImageButton::new(Icon::X.image(12.0).tint(theme.text_dim)).frame(false)).on_hover_text("Remove").clicked() {
                         builtin_remove = Some(i);
@@ -164,6 +165,19 @@ pub fn show(
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("CPU only").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)).strong());
                         ui.label(egui::RichText::new("— adjust while paused, apply on export").size(9.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
+                // Render-only notice for temporal plugins (Retime, SlitScan, timeOffset)
+                let is_temporal = effect.plugin_name.contains("Retime")
+                    || effect.plugin_name.contains("SlitScan")
+                    || effect.plugin_name.contains("timeOffset")
+                    || effect.plugin_name.contains("TimeOffset");
+                if is_temporal {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Render only").size(9.0).color(egui::Color32::from_rgb(200, 100, 100)).strong());
+                        ui.label(egui::RichText::new("— not real-time, applied on export").size(9.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
                 }
@@ -583,6 +597,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
 
@@ -630,6 +645,11 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::FilmHalation { .. } => BuiltinEffect::FilmHalation {
             threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
         },
+        BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
+            speed: 1.0, blend_mode: 1, ramp_curve: 0,
+            ramp_start: 0.0, ramp_end: 1.0, reverse: false,
+            freeze_at: 0.0, freeze: false,
+        },
     }
 }
 
@@ -638,7 +658,8 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
     use klipp_effects::BuiltinEffect;
     matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. } | BuiltinEffect::Diffusion { .. } | BuiltinEffect::LensFlare { .. }
-        | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. })
+        | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
+        | BuiltinEffect::SpeedRamp { .. })
 }
 
 /// Returns true if the effect is at its default values.
@@ -1133,6 +1154,70 @@ fn show_builtin_effect_params(
             track_scrubby!("intensity", r_i, *intensity);
             let r_h = scrubby_param_row(ui, "Hue", hue, 0.0..=1.0, 0.2, 0.005, 2, "", ks_h);
             track_scrubby!("hue", r_h, *hue);
+        }
+        klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
+            *speed = eval_effect_kf(clip, effect_index, "speed", clip_time_secs, *speed);
+            *ramp_start = eval_effect_kf(clip, effect_index, "ramp_start", clip_time_secs, *ramp_start);
+            *ramp_end = eval_effect_kf(clip, effect_index, "ramp_end", clip_time_secs, *ramp_end);
+            *freeze_at = eval_effect_kf(clip, effect_index, "freeze_at", clip_time_secs, *freeze_at);
+
+            let ks_sp = Some(effect_keyframe_state(clip, effect_index, "speed", clip_time_secs));
+            let ks_rs = Some(effect_keyframe_state(clip, effect_index, "ramp_start", clip_time_secs));
+            let ks_re = Some(effect_keyframe_state(clip, effect_index, "ramp_end", clip_time_secs));
+
+            let r_sp = scrubby_param_row(ui, "Speed", speed, 0.1..=4.0, 1.0, 0.05, 2, "\u{00d7}", ks_sp);
+            track_scrubby!("speed", r_sp, *speed);
+
+            // Blend Mode dropdown
+            let blend_labels = ["Nearest", "Linear"];
+            let blend_sel = (*blend_mode as usize).min(blend_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Blend Mode").size(10.0));
+                let combo_id = ui.make_persistent_id(format!("sr_blend_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(blend_labels[blend_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in blend_labels.iter().enumerate() {
+                            if ui.selectable_value(blend_mode, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            // Ramp Curve dropdown
+            let curve_labels = ["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"];
+            let curve_sel = (*ramp_curve as usize).min(curve_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Ramp Curve").size(10.0));
+                let combo_id = ui.make_persistent_id(format!("sr_curve_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(curve_labels[curve_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in curve_labels.iter().enumerate() {
+                            if ui.selectable_value(ramp_curve, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            let r_rs = scrubby_param_row(ui, "Ramp Start", ramp_start, 0.0..=1.0, 0.0, 0.005, 3, "", ks_rs);
+            track_scrubby!("ramp_start", r_rs, *ramp_start);
+            let r_re = scrubby_param_row(ui, "Ramp End", ramp_end, 0.0..=1.0, 1.0, 0.005, 3, "", ks_re);
+            track_scrubby!("ramp_end", r_re, *ramp_end);
+
+            if ui.checkbox(reverse, "Reverse").changed() {
+                changed = true;
+            }
+            if ui.checkbox(freeze, "Freeze Frame").changed() {
+                changed = true;
+            }
+            if *freeze {
+                let ks_fa = Some(effect_keyframe_state(clip, effect_index, "freeze_at", clip_time_secs));
+                let r_fa = scrubby_param_row(ui, "Freeze At", freeze_at, 0.0..=1.0, 0.5, 0.005, 3, "", ks_fa);
+                track_scrubby!("freeze_at", r_fa, *freeze_at);
+            }
         }
     }
 

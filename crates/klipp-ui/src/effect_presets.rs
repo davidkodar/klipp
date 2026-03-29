@@ -222,6 +222,26 @@ impl PresetManager {
         self.bi("opacity", "75%", "Three-quarter opacity",
             klipp_effects::BuiltinEffect::Opacity { value: 0.75 });
 
+        // ── Speed Ramp ─────────────────────────────────────────
+        self.bi("speed_ramp", "Slow-Mo 50%", "Half-speed playback",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Slow-Mo 25%", "Quarter-speed playback",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.25, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Speed Up 2x", "Double-speed playback",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 2.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Speed Up 4x", "Quadruple-speed playback",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 4.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Smooth Slow-Mo", "Slow-mo with ease-in-out ramp",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 3, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Speed Ramp In", "Accelerate with ease-in",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 2.0, blend_mode: 1, ramp_curve: 1, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Speed Ramp Out", "Decelerate with ease-out",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 2, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Reverse", "Reverse playback",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: true, freeze_at: 0.0, freeze: false });
+        self.bi("speed_ramp", "Freeze Frame", "Freeze at midpoint",
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.5, freeze: true });
+
         // ── Chroma Key ─────────────────────────────────────────
         self.bi("chroma_key", "Green Screen", "Standard green screen key",
             klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 177, 64], tolerance: 0.25, spill_suppression: 0.15 });
@@ -261,6 +281,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::LightWrap { .. } => "light_wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "anamorphic_streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "film_halation",
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
     }
 }
 
