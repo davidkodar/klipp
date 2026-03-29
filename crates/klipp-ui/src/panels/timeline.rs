@@ -938,6 +938,64 @@ impl TimelinePanel {
                 }
             }
 
+            // Effect drag-and-drop: highlight clip when dragging effect over it
+            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })) {
+                let hover_pos = ui.input(|i| i.pointer.hover_pos());
+                let any_down = ui.input(|i| i.pointer.any_down());
+                if let Some(pos) = hover_pos {
+                    if track_rect.contains(pos) {
+                        let zoom = state.timeline_zoom;
+                        let scroll = state.timeline_scroll_x;
+                        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                        let mut hit_clip_id = None;
+                        for clip in clips {
+                            let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+                            let clip_rect = egui::Rect::from_min_size(
+                                egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
+                                egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                            );
+                            if clip_rect.contains(pos) {
+                                hit_clip_id = Some(clip.id);
+                                // Draw purple highlight border on the hovered clip
+                                painter.rect_stroke(
+                                    clip_rect,
+                                    3.0,
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(160, 100, 220)),
+                                );
+                                break;
+                            }
+                        }
+
+                        if !any_down {
+                            if let Some(clip_id) = hit_clip_id {
+                                if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
+                                    if is_builtin {
+                                        // Look up default builtin effect from the registry by name
+                                        let effect = state.effect_registry.effects.iter()
+                                            .find(|e| e.name == name)
+                                            .and_then(|e| match &e.source {
+                                                crate::browser::effect_registry::EffectSource::Builtin(eff) => Some(eff.clone()),
+                                                _ => None,
+                                            });
+                                        if let Some(effect) = effect {
+                                            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
+                                            state.toast.show(format!("\"{}\" applied to clip", name));
+                                        }
+                                    } else {
+                                        cmds.push(AppCommand::AddEffect { clip_id, plugin_name: plugin_id });
+                                        state.toast.show(format!("\"{}\" applied to clip", name));
+                                    }
+                                }
+                            } else {
+                                // Dropped on track but not on a clip — just end the drag
+                                state.drag_drop.end();
+                            }
+                        }
+                    }
+                }
+            }
+
             // Title template drag-and-drop: highlight text/video track when dragging title over it
             if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
                 let hover_pos = ui.input(|i| i.pointer.hover_pos());
@@ -4322,6 +4380,36 @@ impl TimelinePanel {
                 3.0,
                 egui::Stroke::new(border_width, border_color),
             );
+
+            // FX badge — show if clip has non-Transform effects applied
+            if clip_rect.width() > 40.0 {
+                let has_fx = !clip.effects.is_empty()
+                    || clip.builtin_effects.iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
+                if has_fx {
+                    let fx_font = egui::FontId::proportional(8.0);
+                    let fx_galley = painter.layout_no_wrap(
+                        "FX".to_string(),
+                        fx_font,
+                        egui::Color32::WHITE,
+                    );
+                    let pill_w = fx_galley.size().x + 6.0;
+                    let pill_h = fx_galley.size().y + 2.0;
+                    let pill_rect = egui::Rect::from_min_size(
+                        egui::pos2(clip_rect.right() - pill_w - 4.0, clip_rect.top() + 4.0),
+                        egui::vec2(pill_w, pill_h),
+                    );
+                    painter.rect_filled(
+                        pill_rect,
+                        pill_h / 2.0,
+                        egui::Color32::from_rgba_unmultiplied(140, 80, 200, 180),
+                    );
+                    painter.galley(
+                        egui::pos2(pill_rect.left() + 3.0, pill_rect.top() + 1.0),
+                        fx_galley,
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
 
             // Linked-clip indicator — subtle lock icon at top-right corner
             if clip.linked_clip_id.is_some() && clip_rect.width() > 20.0 {
