@@ -1046,6 +1046,8 @@ impl OfxHostRuntime {
                                     }
                                 }
                                 if let Some(ref d) = depth {
+                                    // Don't let ClipPreferences downgrade Float to Byte
+                                    // for plugins that need Float
                                     if !d.is_empty() {
                                         ps.set_string("OfxImageEffectPropPixelDepth", 0, d);
                                     }
@@ -1381,6 +1383,8 @@ impl OfxHostRuntime {
             std::ptr::null_mut(),
         );
         let render_ms = render_t0.elapsed().as_secs_f64() * 1000.0;
+
+        // Debug: read output via raw pointer AND via Vec to compare
         if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
             debug!(
                 "OFX render action returned status={} for '{}' ({:.1}ms)",

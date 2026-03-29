@@ -26,6 +26,7 @@ unsafe extern "C" fn multithread_fn(
     // Single-threaded dispatch: call once with threadIndex=0, threadMax=1.
     // OFX spec OfxThreadFunctionV1: func(threadIndex, threadMax, customArg)
     let _ = n_threads;
+
     func(0, 1, custom_arg);
     K_OFX_STAT_OK
 }

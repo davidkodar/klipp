@@ -150,6 +150,24 @@ pub fn show(
                 });
             })
             .body(|ui| {
+                // CPU-only notice for float-only plugins (CImg, keyers, etc.)
+                // These plugins process in 32-bit float internally and can't use GPU acceleration
+                let is_float_plugin = effect.plugin_name.contains("cimg")
+                    || effect.plugin_name.contains("CImg")
+                    || effect.plugin_name.contains("PIK")
+                    || effect.plugin_name.contains("Keyer")
+                    || effect.plugin_name.contains("IDistort")
+                    || effect.plugin_name.contains("STMap")
+                    || effect.plugin_name.contains("VectorToColor")
+                    || effect.plugin_name.contains("ContactSheet");
+                if is_float_plugin {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("CPU only").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)).strong());
+                        ui.label(egui::RichText::new("— adjust while paused, apply on export").size(9.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
                 // Show parameter controls if plugin has declared params
                 if let Some(plugin_info) = state.available_plugins.iter().find(|p| p.name == effect.plugin_name) {
                     for desc in &plugin_info.parameters {
@@ -430,6 +448,110 @@ fn show_ofx_param(
                             color.g() as f64 / 255.0,
                             color.b() as f64 / 255.0,
                         ),
+                    });
+                }
+            }
+            klipp_plugin::ParamType::Double2 => {
+                let (mut v0, mut v1) = match current_value {
+                    Some(klipp_plugin::OfxValue::Double2(a, b)) => (*a as f32, *b as f32),
+                    _ => match &desc.default {
+                        klipp_plugin::ParamValue::Double2(a, b) => (*a as f32, *b as f32),
+                        _ => (0.0, 0.0),
+                    },
+                };
+                let dmin = desc.display_min.as_ref()
+                    .and_then(|m| match m { klipp_plugin::ParamValue::Double2(a, _) => Some(*a as f32), klipp_plugin::ParamValue::Double(a) => Some(*a as f32), _ => None })
+                    .unwrap_or(0.0);
+                let dmax = desc.display_max.as_ref()
+                    .and_then(|m| match m { klipp_plugin::ParamValue::Double2(a, _) => Some(*a as f32), klipp_plugin::ParamValue::Double(a) => Some(*a as f32), _ => None })
+                    .unwrap_or(1000.0);
+                ui.horizontal(|ui| {
+                    let changed0 = ui.add(egui::DragValue::new(&mut v0).range(dmin..=dmax).speed(0.1).prefix("x: ")).changed();
+                    let changed1 = ui.add(egui::DragValue::new(&mut v1).range(dmin..=dmax).speed(0.1).prefix("y: ")).changed();
+                    if changed0 || changed1 {
+                        cmds.push(AppCommand::SetEffectParam {
+                            clip_id, effect_index,
+                            param_name: desc.name.clone(),
+                            value: klipp_plugin::OfxValue::Double2(v0 as f64, v1 as f64),
+                        });
+                    }
+                });
+            }
+            klipp_plugin::ParamType::Double3 => {
+                let (mut v0, mut v1, mut v2) = match current_value {
+                    Some(klipp_plugin::OfxValue::Double3(a, b, c)) => (*a as f32, *b as f32, *c as f32),
+                    _ => match &desc.default {
+                        klipp_plugin::ParamValue::Double3(a, b, c) => (*a as f32, *b as f32, *c as f32),
+                        _ => (0.0, 0.0, 0.0),
+                    },
+                };
+                ui.horizontal(|ui| {
+                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(0.1).prefix("x: ")).changed();
+                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(0.1).prefix("y: ")).changed();
+                    let c2 = ui.add(egui::DragValue::new(&mut v2).speed(0.1).prefix("z: ")).changed();
+                    if c0 || c1 || c2 {
+                        cmds.push(AppCommand::SetEffectParam {
+                            clip_id, effect_index,
+                            param_name: desc.name.clone(),
+                            value: klipp_plugin::OfxValue::Double3(v0 as f64, v1 as f64, v2 as f64),
+                        });
+                    }
+                });
+            }
+            klipp_plugin::ParamType::Int2 => {
+                let (mut v0, mut v1) = match current_value {
+                    Some(klipp_plugin::OfxValue::Int2(a, b)) => (*a, *b),
+                    _ => match &desc.default {
+                        klipp_plugin::ParamValue::Int2(a, b) => (*a, *b),
+                        _ => (0, 0),
+                    },
+                };
+                ui.horizontal(|ui| {
+                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(1).prefix("x: ")).changed();
+                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(1).prefix("y: ")).changed();
+                    if c0 || c1 {
+                        cmds.push(AppCommand::SetEffectParam {
+                            clip_id, effect_index,
+                            param_name: desc.name.clone(),
+                            value: klipp_plugin::OfxValue::Int2(v0, v1),
+                        });
+                    }
+                });
+            }
+            klipp_plugin::ParamType::Int3 => {
+                let (mut v0, mut v1, mut v2) = match current_value {
+                    Some(klipp_plugin::OfxValue::Int3(a, b, c)) => (*a, *b, *c),
+                    _ => match &desc.default {
+                        klipp_plugin::ParamValue::Int3(a, b, c) => (*a, *b, *c),
+                        _ => (0, 0, 0),
+                    },
+                };
+                ui.horizontal(|ui| {
+                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(1).prefix("x: ")).changed();
+                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(1).prefix("y: ")).changed();
+                    let c2 = ui.add(egui::DragValue::new(&mut v2).speed(1).prefix("z: ")).changed();
+                    if c0 || c1 || c2 {
+                        cmds.push(AppCommand::SetEffectParam {
+                            clip_id, effect_index,
+                            param_name: desc.name.clone(),
+                            value: klipp_plugin::OfxValue::Int3(v0, v1, v2),
+                        });
+                    }
+                });
+            }
+            klipp_plugin::ParamType::String => {
+                let mut v = match current_value {
+                    Some(klipp_plugin::OfxValue::String(s)) => s.clone(),
+                    _ => match &desc.default {
+                        klipp_plugin::ParamValue::String(s) => s.clone(),
+                        _ => String::new(),
+                    },
+                };
+                if ui.text_edit_singleline(&mut v).changed() {
+                    cmds.push(AppCommand::SetEffectParam {
+                        clip_id, effect_index,
+                        param_name: desc.name.clone(),
+                        value: klipp_plugin::OfxValue::String(v),
                     });
                 }
             }

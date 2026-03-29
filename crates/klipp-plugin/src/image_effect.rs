@@ -383,7 +383,9 @@ unsafe extern "C" fn image_memory_alloc_fn(
 }
 
 unsafe extern "C" fn image_memory_free_fn(handle: OfxImageMemoryHandle) -> OfxStatus {
-    IMG_MEM_STORE.lock().unwrap().remove(&(handle as usize));
+    let key = handle as usize;
+    if let Some(buf) = IMG_MEM_STORE.lock().unwrap().remove(&key) {
+    }
     K_OFX_STAT_OK
 }
 
