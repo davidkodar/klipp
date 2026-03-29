@@ -310,7 +310,10 @@ impl OpenClRuntime {
     }
 
     /// Free a cl_mem buffer.
-    pub fn free(&self, mem: ClMem) {
+    ///
+    /// # Safety
+    /// `mem` must be a valid cl_mem handle returned by `alloc` or `alloc_copy`.
+    pub unsafe fn free(&self, mem: ClMem) {
         let r = unsafe { (self.api.cl_release_mem_object)(mem) };
         if r != CL_SUCCESS {
             warn!("OpenCL: clReleaseMemObject failed (err={r})");
@@ -318,7 +321,10 @@ impl OpenClRuntime {
     }
 
     /// Write host data to a cl_mem buffer (blocking).
-    pub fn write_buffer(&self, mem: ClMem, data: &[u8]) -> bool {
+    ///
+    /// # Safety
+    /// `mem` must be a valid cl_mem handle with sufficient size for `data`.
+    pub unsafe fn write_buffer(&self, mem: ClMem, data: &[u8]) -> bool {
         let r = unsafe {
             (self.api.cl_enqueue_write_buffer)(
                 self.queue, mem, 1, // blocking
@@ -334,7 +340,10 @@ impl OpenClRuntime {
     }
 
     /// Read cl_mem buffer to host (blocking).
-    pub fn read_buffer(&self, mem: ClMem, dst: &mut [u8]) -> bool {
+    ///
+    /// # Safety
+    /// `mem` must be a valid cl_mem handle with at least `dst.len()` bytes.
+    pub unsafe fn read_buffer(&self, mem: ClMem, dst: &mut [u8]) -> bool {
         let r = unsafe {
             (self.api.cl_enqueue_read_buffer)(
                 self.queue, mem, 1, // blocking
@@ -426,16 +435,16 @@ mod tests {
 
         // Write pattern
         let src: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
-        assert!(rt.write_buffer(mem, &src));
+        assert!(unsafe { rt.write_buffer(mem, &src) });
 
         // Read back
         let mut dst = vec![0u8; 1024];
-        assert!(rt.read_buffer(mem, &mut dst));
+        assert!(unsafe { rt.read_buffer(mem, &mut dst) });
 
         // Verify round-trip
         assert_eq!(src, dst, "OpenCL host→device→host round-trip data mismatch");
 
-        rt.free(mem);
+        unsafe { rt.free(mem); }
         println!("OpenCL round-trip test passed");
     }
 
@@ -450,10 +459,10 @@ mod tests {
         let mem = rt.alloc_with_data(&src).expect("alloc_with_data should succeed");
 
         let mut dst = vec![0u8; 512];
-        assert!(rt.read_buffer(mem, &mut dst));
+        assert!(unsafe { rt.read_buffer(mem, &mut dst) });
         assert_eq!(src, dst, "alloc_with_data round-trip mismatch");
 
-        rt.free(mem);
+        unsafe { rt.free(mem); }
     }
 
     #[test]
@@ -484,16 +493,16 @@ mod tests {
         }
 
         // Upload
-        assert!(rt.write_buffer(input_mem, &src_frame));
+        assert!(unsafe { rt.write_buffer(input_mem, &src_frame) });
 
         // Simulate plugin: read input, process, write output
         let mut temp = vec![0u8; frame_bytes];
-        assert!(rt.read_buffer(input_mem, &mut temp));
-        assert!(rt.write_buffer(output_mem, &temp));
+        assert!(unsafe { rt.read_buffer(input_mem, &mut temp) });
+        assert!(unsafe { rt.write_buffer(output_mem, &temp) });
 
         // Download result
         let mut result = vec![0u8; frame_bytes];
-        assert!(rt.read_buffer(output_mem, &mut result));
+        assert!(unsafe { rt.read_buffer(output_mem, &mut result) });
 
         assert_eq!(src_frame, result, "OpenCL OFX frame simulation failed");
         println!(
@@ -501,7 +510,7 @@ mod tests {
             width, height, rt.device_name()
         );
 
-        rt.free(input_mem);
-        rt.free(output_mem);
+        unsafe { rt.free(input_mem); }
+        unsafe { rt.free(output_mem); }
     }
 }

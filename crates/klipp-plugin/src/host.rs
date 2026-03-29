@@ -1182,7 +1182,7 @@ impl OfxHostRuntime {
                     } else {
                         warn!("OpenCL: buffer alloc failed, falling back to CPU");
                         for &m in &opencl_buffers {
-                            cl.free(m);
+                            unsafe { cl.free(m); }
                         }
                         opencl_buffers.clear();
                         opencl_active = false;
@@ -1467,7 +1467,7 @@ impl OfxHostRuntime {
             if opencl_active {
                 if let Some(ref cl) = self.opencl {
                     for &m in &opencl_buffers {
-                        cl.free(m);
+                        unsafe { cl.free(m); }
                     }
                 }
             }
@@ -1554,14 +1554,14 @@ impl OfxHostRuntime {
                 let output_mem = *opencl_buffers.last().unwrap();
 
                 if status == ffi::K_OFX_STAT_OK || status == ffi::K_OFX_STAT_REPLY_DEFAULT {
-                    cl.read_buffer(output_mem, &mut output_cpu);
+                    unsafe { cl.read_buffer(output_mem, &mut output_cpu); }
                 } else {
                     output_cpu = input.to_vec();
                 }
 
                 // Free all cl_mem buffers
                 for &m in &opencl_buffers {
-                    cl.free(m);
+                    unsafe { cl.free(m); }
                 }
 
                 // Clean up CPU image objects
