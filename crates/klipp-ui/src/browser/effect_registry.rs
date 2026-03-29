@@ -95,6 +95,36 @@ impl EffectRegistry {
                 source_label: "Built-in",
                 grouping: "Keying".into(),
             },
+            // Light effects
+            EffectEntry {
+                name: "Bloom".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Bloom {
+                    threshold: 0.7, radius: 20.0, intensity: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Glow".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Glow {
+                    radius: 30.0, intensity: 0.4,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
+            EffectEntry {
+                name: "Light Rays".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LightRays {
+                    center_x: 0.5, center_y: 0.3,
+                    threshold: 0.6, samples: 64,
+                    decay: 0.3, intensity: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Light".into(),
+            },
         ];
 
         Self { effects, reference_frame: None }
