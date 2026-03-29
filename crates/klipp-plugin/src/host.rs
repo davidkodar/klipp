@@ -97,6 +97,8 @@ pub struct OfxPlugin {
     pub premult_string: String,
     /// Contexts this plugin supports.
     pub supported_contexts: Vec<OfxCategory>,
+    /// Whether this plugin requires float pixel depth (e.g. CImg plugins).
+    pub needs_float: bool,
     /// Whether this plugin supports CUDA rendering.
     pub supports_cuda: bool,
     /// Whether this plugin supports OpenCL rendering.
@@ -356,6 +358,7 @@ impl OfxHostRuntime {
                 grouping: String::new(),
                 premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
                 supported_contexts: Vec::new(),
+                needs_float: false,
                 supports_cuda: false,
                 supports_opencl: false,
                 supports_opengl: false,
@@ -397,6 +400,7 @@ impl OfxHostRuntime {
             grouping: String::new(),
             premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
             supported_contexts: Vec::new(),
+            needs_float: false,
             supports_cuda: false,
             supports_opencl: false,
             supports_opengl: false,
@@ -526,7 +530,12 @@ impl OfxHostRuntime {
         }
 
         // 6. Read back param descriptors (after both Describe and DescribeInContext)
-        let descriptors = param::read_param_descriptors(desc_param_set);
+        // Deduplicate by name — multi-context DescribeInContext can define the same params twice
+        let mut descriptors = param::read_param_descriptors(desc_param_set);
+        {
+            let mut seen = std::collections::HashSet::new();
+            descriptors.retain(|d| seen.insert(d.name.clone()));
+        }
         info!(
             "OFX: '{}' declared {} parameter(s)",
             self.plugins[plugin_idx].name,
@@ -580,10 +589,31 @@ impl OfxHostRuntime {
             info!("OFX: '{}' supports OpenGL rendering", self.plugins[plugin_idx].name);
         }
 
+        // Detect if plugin requires float pixel depth (e.g. CImg plugins)
+        let needs_float = instance::with_instance(desc_handle, |inst| {
+            property::with_propset(inst.props_handle, |ps| {
+                let dim = ps.dimension("OfxImageEffectPropSupportedPixelDepths");
+                if dim == 0 { return false; }
+                let mut has_byte = false;
+                let mut has_float = false;
+                for i in 0..dim as usize {
+                    if let Some(d) = ps.get_string_lossy("OfxImageEffectPropSupportedPixelDepths", i) {
+                        if d == crate::constants::kOfxBitDepthByte { has_byte = true; }
+                        if d == crate::constants::kOfxBitDepthFloat { has_float = true; }
+                    }
+                }
+                has_float && !has_byte
+            })
+        }).flatten().unwrap_or(false);
+        if needs_float {
+            info!("OFX: '{}' requires float pixel depth", self.plugins[plugin_idx].name);
+        }
+
         let plugin = &mut self.plugins[plugin_idx];
         plugin.param_descriptors = descriptors;
         plugin.grouping = grouping;
         plugin.supported_contexts = supported_contexts;
+        plugin.needs_float = needs_float;
         plugin.supports_cuda = supports_cuda;
         plugin.supports_opencl = supports_opencl;
         plugin.supports_opengl = supports_opengl;
@@ -606,6 +636,9 @@ impl OfxHostRuntime {
     ) -> Result<ffi::OfxImageEffectHandle, PluginError> {
         let mut inst = PluginInstance::new(plugin_idx);
         inst.premult_string = self.plugins[plugin_idx].premult_string.clone();
+        if self.plugins[plugin_idx].needs_float {
+            inst.bit_depth = crate::constants::kOfxBitDepthFloat.to_string();
+        }
 
         // Set up clips based on context
         match context {
@@ -633,7 +666,8 @@ impl OfxHostRuntime {
         // the OFX C++ support library reads them in the ImageEffect constructor.
         property::with_propset(inst.props_handle, |ps| {
             ps.set_string("OfxImageEffectPropContext", 0, context_str);
-            ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+            let depth = if self.plugins[plugin_idx].needs_float { crate::constants::kOfxBitDepthFloat } else { crate::constants::kOfxBitDepthByte };
+            ps.set_string("OfxImageEffectPropPixelDepth", 0, depth);
             ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
             // Project properties — needed by ImageEffect constructor
             ps.set_double("OfxImageEffectPropProjectSize", 0, 1920.0);
@@ -672,12 +706,13 @@ impl OfxHostRuntime {
             instance::register_clip_mapping(clip.handle, inst.handle, clip_name);
             let is_connected = connected_clips.contains(clip_name);
             let is_required = connected_clips.contains(clip_name);
+            let depth = if self.plugins[plugin_idx].needs_float { crate::constants::kOfxBitDepthFloat } else { crate::constants::kOfxBitDepthByte };
             property::with_propset(clip.props_handle, |ps| {
-                ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                ps.set_string("OfxImageEffectPropPixelDepth", 0, depth);
                 ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageEffectPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
                 ps.set_string("OfxImageClipPropSupportedComponents", 0, crate::constants::kOfxImageComponentRGBA);
-                ps.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
+                ps.set_string("OfxImageEffectPropSupportedPixelDepths", 0, depth);
                 ps.set_int("OfxImageClipPropConnected", 0, if is_connected { 1 } else { 0 });
                 ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
                 ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
@@ -690,9 +725,8 @@ impl OfxHostRuntime {
                 ps.set_int("OfxImageClipPropContinuousSamples", 0, 0);
                 ps.set_int("OfxImageClipPropIsMask", 0, if clip_name == "Mask" { 1 } else { 0 });
                 ps.set_int("OfxImageClipPropOptional", 0, if is_required { 0 } else { 1 });
-                // Unmapped (pre-negotiation) format — required by OFX C++ support library
                 ps.set_string("OfxImageClipPropUnmappedComponents", 0, crate::constants::kOfxImageComponentRGBA);
-                ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, depth);
             });
         }
 
@@ -955,10 +989,11 @@ impl OfxHostRuntime {
                 OfxCategory::Transition => vec!["SourceFrom", "SourceTo", "Output"],
                 OfxCategory::Generator => vec!["Output"],
             };
+            let depth = if self.plugins[plugin_idx].needs_float { crate::constants::kOfxBitDepthFloat } else { crate::constants::kOfxBitDepthByte };
             for (clip_name, clip) in &inst.clips {
                 let is_connected = connected.contains(&clip_name.as_str());
                 property::with_propset(clip.props_handle, |ps| {
-                    ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageEffectPropPixelDepth", 0, depth);
                     ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                     ps.set_int("OfxImageClipPropConnected", 0, if is_connected { 1 } else { 0 });
                     ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
@@ -1081,11 +1116,15 @@ impl OfxHostRuntime {
             }
             _ => {
                 // Filter: Source + Output
-                let input_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
-                // Initialize output with input data — plugins only write to unmasked pixels,
-                // leaving masked pixels unchanged. A zero-filled buffer causes black output
-                // when no mask is connected (all pixels treated as masked).
-                let output_image = OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult);
+                let needs_float = self.plugins[plugin_idx].needs_float;
+                let (input_image, output_image) = if needs_float {
+                    (OfxImage::from_rgba_as_float(input, width, height, frame_time, &premult),
+                     OfxImage::from_rgba_as_float(input, width, height, frame_time, &premult))
+                } else {
+                    (OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult),
+                     // Initialize output with input data — plugins only write to unmasked pixels
+                     OfxImage::from_rgba(input.to_vec(), width, height, frame_time, &premult))
+                };
 
                 let input_img_handle = image_effect::register_image(input_image);
                 let output_img_handle = image_effect::register_image(output_image);
@@ -1541,7 +1580,13 @@ impl OfxHostRuntime {
                         image_effect::take_image(h);
                     }
                 }
-                output_data.map(|o| o.data).unwrap_or_else(|| input.to_vec())
+                output_data.map(|o| {
+                    if self.plugins[plugin_idx].needs_float {
+                        OfxImage::float_data_to_bytes(&o.data, o.width, o.height)
+                    } else {
+                        o.data
+                    }
+                }).unwrap_or_else(|| input.to_vec())
             } else {
                 debug!(
                     "OFX render returned {status} for '{}'",

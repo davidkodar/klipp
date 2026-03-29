@@ -125,7 +125,7 @@ opt-level = 3          # Per-pixel math must be fast even in debug builds
 [profile.release]
 opt-level = 3
 lto = "thin"           # Link-time optimization for smaller/faster binary
-codegen-units = 1      # Single codegen unit for best optimization
+codegen-units = 4      # Reduced from 1 to avoid LLVM SIGSEGV during LTO
 strip = true           # Strip debug symbols from release binary
 panic = "abort"        # Smaller binary, no unwinding overhead
 

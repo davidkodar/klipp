@@ -565,8 +565,9 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     props.set_int("OfxParamHostPropMaxParameters", 0, -1); // unlimited
     props.set_int("OfxParamHostPropMaxPages", 0, 0);
 
-    // Supported pixel depths: 8-bit only
+    // Supported pixel depths: byte and float
     props.set_string("OfxImageEffectPropSupportedPixelDepths", 0, crate::constants::kOfxBitDepthByte);
+    props.set_string("OfxImageEffectPropSupportedPixelDepths", 1, crate::constants::kOfxBitDepthFloat);
 
     // Supported contexts: filter, transition, generator
     props.set_string("OfxImageEffectPropSupportedContexts", 0, crate::constants::kOfxImageEffectContextFilter);

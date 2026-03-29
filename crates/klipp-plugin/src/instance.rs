@@ -29,6 +29,8 @@ pub struct PluginInstance {
     pub clip_prefs_fetched: bool,
     /// The premultiplication string this plugin expects.
     pub premult_string: String,
+    /// Pixel depth string for this instance ("OfxBitDepthByte" or "OfxBitDepthFloat").
+    pub bit_depth: String,
     /// Plugin index in OfxHostRuntime.plugins.
     pub plugin_idx: usize,
     /// Abort flag — set to true by the host to signal the plugin should stop rendering.
@@ -72,6 +74,7 @@ impl PluginInstance {
             created: false,
             clip_prefs_fetched: false,
             premult_string: crate::constants::kOfxImageAlphaUnPremultiplied.to_string(),
+            bit_depth: crate::constants::kOfxBitDepthByte.to_string(),
             plugin_idx,
             abort_flag: Arc::new(AtomicBool::new(false)),
         }

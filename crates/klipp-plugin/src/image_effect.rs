@@ -29,8 +29,48 @@ unsafe impl Send for OfxImage {}
 impl OfxImage {
     /// Create an image from an RGBA buffer, registering all required OFX properties.
     pub fn from_rgba(data: Vec<u8>, width: u32, height: u32, frame_time: f64, premult: &str) -> Self {
+        let pixel_bytes = width as usize * 4;
+        let row_bytes = pixel_bytes as i32;
+        Self::from_data(data, width, height, row_bytes, frame_time, premult, crate::constants::kOfxBitDepthByte)
+    }
+
+    /// Create a float (32-bit per channel) image from byte RGBA data.
+    /// Converts each byte channel (0–255) to float (0.0–1.0).
+    /// Required by CImg and other plugins that only support OfxBitDepthFloat.
+    pub fn from_rgba_as_float(data: &[u8], width: u32, height: u32, frame_time: f64, premult: &str) -> Self {
+        let pixel_count = (width * height) as usize;
+        let float_count = pixel_count * 4;
+        let mut float_data = vec![0u8; float_count * 4]; // 4 bytes per f32
+
+        // Convert u8 RGBA to f32 RGBA
+        for i in 0..float_count {
+            let byte_val = data.get(i).copied().unwrap_or(0);
+            let float_val = byte_val as f32 / 255.0;
+            let offset = i * 4;
+            float_data[offset..offset + 4].copy_from_slice(&float_val.to_ne_bytes());
+        }
+
+        let row_bytes = (width as i32) * 4 * 4; // 4 components * 4 bytes per float
+        Self::from_data(float_data, width, height, row_bytes, frame_time, premult, crate::constants::kOfxBitDepthFloat)
+    }
+
+    /// Read float image data back to byte RGBA.
+    pub fn float_data_to_bytes(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let pixel_count = (width * height) as usize;
+        let float_count = pixel_count * 4;
+        let mut bytes = vec![0u8; float_count];
+        for i in 0..float_count {
+            let offset = i * 4;
+            if offset + 4 <= data.len() {
+                let float_val = f32::from_ne_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+                bytes[i] = (float_val * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
+        bytes
+    }
+
+    fn from_data(data: Vec<u8>, width: u32, height: u32, row_bytes: i32, frame_time: f64, premult: &str, bit_depth: &str) -> Self {
         let mut props = PropertySet::default();
-        let row_bytes = width as i32 * 4;
 
         // Required by OFX C++ support library's validateImageBaseProperties()
         props.set_string("OfxPropType", 0, "OfxTypeImage");
@@ -49,7 +89,7 @@ impl OfxImage {
         props.set_int("OfxImagePropRegionOfDefinition", 2, width as i32);
         props.set_int("OfxImagePropRegionOfDefinition", 3, height as i32);
         props.set_int("OfxImagePropRowBytes", 0, row_bytes);
-        props.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+        props.set_string("OfxImageEffectPropPixelDepth", 0, bit_depth);
         props.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
         props.set_string("OfxImageEffectPropPreMultiplication", 0, premult);
         props.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
@@ -205,13 +245,15 @@ unsafe extern "C" fn clip_get_handle_fn(
                 let clip = inst.clips.get(&*name_str).unwrap();
                 instance::register_clip_mapping(clip.handle, effect, &name_str);
                 // Mark as disconnected
+                // Use the instance's bit depth for consistent pixel format
+                let bit_depth = inst.bit_depth.clone();
                 crate::property::with_propset(clip.props_handle, |ps| {
                     ps.set_int("OfxImageClipPropConnected", 0, 0);
-                    ps.set_string("OfxImageEffectPropPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageEffectPropPixelDepth", 0, &bit_depth);
                     ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                     ps.set_int("OfxImageClipPropOptional", 0, 1);
                     ps.set_string("OfxImageClipPropUnmappedComponents", 0, crate::constants::kOfxImageComponentRGBA);
-                    ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, crate::constants::kOfxBitDepthByte);
+                    ps.set_string("OfxImageClipPropUnmappedPixelDepth", 0, &bit_depth);
                     ps.set_string("OfxImageClipPropFieldOrder", 0, crate::constants::kOfxFieldNone);
                     ps.set_string("OfxImageEffectPropPreMultiplication", 0, crate::constants::kOfxImageAlphaUnPremultiplied);
                     ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
