@@ -50,6 +50,50 @@ pub fn show(
 
     ui.add_space(4.0);
 
+    show_content(ui, theme, clip_id, audio_effects, cmds);
+}
+
+/// Show the audio effects content without the section header.
+/// Used when the header is provided by a section_card wrapper.
+pub fn show_content(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    audio_effects: &[AudioEffectInstance],
+    cmds: &mut Vec<AppCommand>,
+) {
+    // "+ Add Effect" button
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let btn = ui.add(
+                egui::Button::new(
+                    egui::RichText::new("+ Add Effect")
+                        .size(10.0)
+                        .color(theme.text_accent),
+                )
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.0, theme.accent.linear_multiply(0.5))),
+            );
+            let popup_id = ui.id().with("add_audio_fx_popup_card");
+            if btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
+            }
+            egui::popup_below_widget(ui, popup_id, &btn, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                ui.set_min_width(160.0);
+                for (type_id, name) in klipp_audio::dsp::available_effects() {
+                    if ui.button(name).clicked() {
+                        cmds.push(AppCommand::AddAudioEffect {
+                            clip_id,
+                            effect_type: type_id.to_string(),
+                        });
+                    }
+                }
+            });
+        });
+    });
+
+    ui.add_space(4.0);
+
     if audio_effects.is_empty() {
         ui.label(
             egui::RichText::new("No audio effects")

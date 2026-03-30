@@ -35,6 +35,33 @@ pub fn show_behaviors_section(
 
     // For each parameter, show its modifier stack and add dropdown
     for param in params {
+        show_behavior_for_param(ui, theme, clip_id, clip, param, cmds);
+    }
+}
+
+/// Render behaviors content without the section header (for use inside a section_card).
+pub fn show_behaviors_content(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip: &klipp_timeline::Clip,
+    params: &[ParamId],
+    cmds: &mut Vec<AppCommand>,
+) {
+    let clip_id = clip.id;
+    for param in params {
+        show_behavior_for_param(ui, theme, clip_id, clip, param, cmds);
+    }
+}
+
+fn show_behavior_for_param(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    clip: &klipp_timeline::Clip,
+    param: &ParamId,
+    cmds: &mut Vec<AppCommand>,
+) {
+    {
         let stack = clip.param_modifiers.get(param);
         let count = stack.map_or(0, |s| s.modifiers.len());
 

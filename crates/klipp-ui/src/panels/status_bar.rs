@@ -108,8 +108,25 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             let proxy_label = if state.use_proxies { "Active" } else { "None" };
             status_label_value(ui, theme, "Proxy:", proxy_label);
 
-            // Audio info
-            status_item(ui, theme, "PipeWire \u{00b7} 48kHz");
+            // Audio backend status
+            let (audio_dot_rect, _) = ui.allocate_exact_size(egui::vec2(5.0, 5.0), egui::Sense::hover());
+            if state.audio_backend_ok {
+                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, egui::Color32::from_rgb(80, 200, 80));
+            } else {
+                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, egui::Color32::from_rgb(210, 50, 50));
+            }
+            let sr_khz = state.audio_sample_rate as f32 / 1000.0;
+            let sr_label = if sr_khz == sr_khz.floor() {
+                format!("{}kHz", sr_khz as u32)
+            } else {
+                format!("{:.1}kHz", sr_khz)
+            };
+            let audio_label = if state.audio_backend_ok {
+                format!("PipeWire \u{00b7} {sr_label}")
+            } else {
+                format!("Audio \u{00b7} No Device")
+            };
+            status_item(ui, theme, &audio_label);
 
             // Filmstrip generation progress
             if state.filmstrip_generating {

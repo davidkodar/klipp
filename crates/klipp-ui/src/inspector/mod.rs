@@ -193,9 +193,10 @@ impl NewInspectorPanel {
                                 name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
                             })
                             .collect();
-                        audio_tab::show(ui, theme, clip, &mut cmds, peak, peaks_slice, source_channels, clip_time_secs, &mut self.duck, &track_infos);
+                        let is_timeline = true; // clip_info comes from timeline selection
+                        audio_tab::show(ui, theme, state, Some((clip, track_idx, is_timeline)), &mut cmds, peak, peaks_slice, source_channels, clip_time_secs, &mut self.duck, &track_infos);
                     } else {
-                        no_selection(ui, theme);
+                        audio_tab::show(ui, theme, state, None, &mut cmds, (0.0, 0.0), None, None, 0.0, &mut self.duck, &[]);
                     }
                 }
                 InspectorTab::Effects => {

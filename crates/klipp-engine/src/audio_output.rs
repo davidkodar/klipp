@@ -35,6 +35,13 @@ pub fn probe_sample_rate() -> u32 {
         .unwrap_or(48000)
 }
 
+/// Check if an audio output device is available.
+pub fn probe_audio_available() -> bool {
+    use cpal::traits::HostTrait;
+    let host = cpal::default_host();
+    host.default_output_device().is_some()
+}
+
 pub struct AudioOutput {
     _stream: cpal::Stream,
     pub sample_rate: u32,

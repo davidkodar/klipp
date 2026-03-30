@@ -83,6 +83,12 @@ pub struct GeneralPrefs {
     /// Most-recent first, max 20 entries.
     #[serde(deserialize_with = "deserialize_recent_projects")]
     pub recent_projects: Vec<RecentProject>,
+    /// Remember which inspector sections are collapsed across restarts.
+    #[serde(default = "default_true")]
+    pub remember_inspector_layout: bool,
+    /// Names of inspector sections that are collapsed (persisted when remember_inspector_layout is true).
+    #[serde(default)]
+    pub collapsed_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +212,8 @@ impl Default for GeneralPrefs {
             auto_save_interval_secs: 300,
             default_project_dir: None,
             recent_projects: Vec::new(),
+            remember_inspector_layout: true,
+            collapsed_sections: Vec::new(),
         }
     }
 }

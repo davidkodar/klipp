@@ -227,7 +227,23 @@ impl KlippApp {
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
         };
+        // Probe audio backend status
+        app.state.audio_sample_rate = app.cpal_sample_rate;
+        app.state.audio_backend_ok = klipp_engine::audio_output::probe_audio_available();
+
         // Sync preferences to state
+        app.state.remember_inspector_layout = app.prefs.general.remember_inspector_layout;
+        if app.state.remember_inspector_layout {
+            app.state.collapsed_sections = app.prefs.general.collapsed_sections.iter().cloned().collect();
+            // Seed egui's persistent data with collapsed sections
+            let collapsed_key = egui::Id::new("klipp_collapsed_sections");
+            cc.egui_ctx.data_mut(|d| {
+                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+                for name in &app.prefs.general.collapsed_sections {
+                    set.insert(name.clone());
+                }
+            });
+        }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
@@ -8829,15 +8845,23 @@ impl KlippApp {
                 }
             }
 
-            // Escape — clear active range drag OR return Range tool to Select
+            // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 if let Some(drag) = self.state.range_drag.take() {
                     self.state.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
                     self.state.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
+                } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
+                    self.state.selected_clips.clear();
+                    cmds.push(AppCommand::SelectClip(None));
                 } else if self.state.active_tool == Tool::Range {
                     cmds.push(AppCommand::SetActiveTool(Tool::Select));
                 }
                 self.state.ruler_press_origin = None;
+            }
+            // Ctrl+Shift+A — Deselect All
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::A) {
+                self.state.selected_clips.clear();
+                cmds.push(AppCommand::SelectClip(None));
             }
             // , or F10 — Insert edit (ripple)
             if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ","))
@@ -9228,6 +9252,17 @@ impl eframe::App for KlippApp {
             self.state.audio_anti_click_fade = self.prefs.audio.anti_click_fade;
             self.state.audio_show_crossfade_indicators = self.prefs.audio.show_crossfade_indicators;
             let _ = self.cmd_tx.send(AppCommand::SetAntiClickFade(self.state.audio_anti_click_fade));
+            // Sync collapsed inspector sections to prefs
+            if self.state.remember_inspector_layout {
+                let collapsed_key = egui::Id::new("klipp_collapsed_sections");
+                let sections: Vec<String> = ctx.data_mut(|d| {
+                    let set: &std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+                    set.iter().cloned().collect()
+                });
+                self.prefs.general.collapsed_sections = sections;
+            } else {
+                self.prefs.general.collapsed_sections.clear();
+            }
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }

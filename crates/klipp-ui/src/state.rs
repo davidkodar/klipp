@@ -394,6 +394,18 @@ pub struct AppState {
     /// High-precision playhead for smooth display (not quantized to frame rate)
     pub playhead_smooth_secs: f64,
 
+    // Inspector section collapse state
+    /// Names of inspector sections that are currently collapsed.
+    pub collapsed_sections: std::collections::HashSet<String>,
+    /// Whether to persist collapsed sections across restarts.
+    pub remember_inspector_layout: bool,
+
+    // Audio backend status
+    /// True if the audio output device was successfully opened (cpal/PipeWire).
+    pub audio_backend_ok: bool,
+    /// Audio backend sample rate (probed at startup).
+    pub audio_sample_rate: u32,
+
     // Phase 6B: VU metering
     /// Per-track peak levels (display values with decay)
     pub track_peak_levels: Vec<(f32, f32)>,
@@ -780,6 +792,10 @@ impl Default for AppState {
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,
             playhead_smooth_secs: 0.0,
+            collapsed_sections: std::collections::HashSet::new(),
+            remember_inspector_layout: true,
+            audio_backend_ok: false,
+            audio_sample_rate: 48000,
             track_peak_levels: Vec::new(),
             master_peak_left: 0.0,
             master_peak_right: 0.0,

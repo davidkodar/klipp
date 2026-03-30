@@ -61,11 +61,29 @@ impl PreferencesPanel {
         let mut open = true;
         let mut cmds = Vec::new();
 
+        // Modal backdrop — block interaction with background
+        egui::Area::new(egui::Id::new("prefs_modal_backdrop"))
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .order(egui::Order::PanelResizeLine)
+            .show(ctx, |ui| {
+                let screen = ctx.screen_rect();
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+                if resp.clicked() {
+                    open = false;
+                }
+            });
+
+        let screen = ctx.screen_rect();
         egui::Window::new("Preferences")
             .open(&mut open)
             .default_width(550.0)
-            .default_height(400.0)
+            .default_height(500.0)
+            .min_width(400.0)
+            .min_height(300.0)
             .resizable(true)
+            .collapsible(false)
+            .default_pos(egui::pos2(screen.center().x - 275.0, screen.center().y - 250.0))
             .show(ctx, |ui| {
                 // Tab bar
                 ui.horizontal(|ui| {
@@ -79,10 +97,11 @@ impl PreferencesPanel {
                     ] {
                         let style = if self.active_tab == tab {
                             egui::RichText::new(label).strong().size(13.0)
+                                .color(egui::Color32::from_rgb(0x0a, 0x0a, 0x0c))
                         } else {
                             egui::RichText::new(label)
                                 .size(13.0)
-                                .color(egui::Color32::from_rgb(140, 140, 150))
+                                .color(egui::Color32::from_rgb(190, 190, 200))
                         };
                         if ui.selectable_label(self.active_tab == tab, style).clicked() {
                             self.active_tab = tab;
@@ -188,6 +207,17 @@ impl PreferencesPanel {
                 prefs.general.recent_projects.clear();
                 *dirty = true;
             }
+        }
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Inspector").strong().size(12.0));
+        ui.add_space(4.0);
+
+        if ui.checkbox(&mut prefs.general.remember_inspector_layout, "Remember collapsed sections")
+            .on_hover_text("When enabled, inspector sections you collapse stay collapsed across restarts. When disabled, all sections open fresh each launch.")
+            .changed()
+        {
+            *dirty = true;
         }
     }
 

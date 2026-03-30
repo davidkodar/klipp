@@ -475,9 +475,17 @@ fn section_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let w = ui.available_width();
+
+    // Use global collapsed sections set for persistence
+    let collapsed_key = egui::Id::new("klipp_collapsed_sections");
+    let is_collapsed: bool = ui.ctx().data_mut(|d| {
+        let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+        set.contains(title)
+    });
+
     let id = ui.id().with(title);
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-        ui.ctx(), id, true,
+        ui.ctx(), id, !is_collapsed,
     );
 
     // Header
@@ -536,6 +544,15 @@ fn section_card(
 
     if header_resp.clicked() {
         state.toggle(ui);
+        let now_open = state.is_open();
+        ui.ctx().data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+            if now_open {
+                set.remove(title);
+            } else {
+                set.insert(title.to_string());
+            }
+        });
     }
 
     // Body
