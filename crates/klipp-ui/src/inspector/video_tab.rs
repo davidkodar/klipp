@@ -135,184 +135,55 @@ pub fn show(
     }
 }
 
-/// State 2: Bin/media clip selected — show media properties + default clip controls
+/// State 2: Bin/media clip selected — create a temporary default Clip and show
+/// the same controls as State 3, minus Speed Ramp and amber banner.
 fn show_bin_media_video(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
-    _state: &AppState,
+    state: &AppState,
     media: &klipp_media::MediaItem,
     cmds: &mut Vec<AppCommand>,
 ) {
-    let pad = 14.0;
-    let row_h = 30.0;
-
-    // ── ROLE ──
-    section_card(ui, "ROLE", theme, |ui| {
-        ui.add_space(8.0);
-        egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    let current_role = media.color_label;
-                    for &role in klipp_core::ClipRole::all() {
-                        let color = theme.clip_role_color(role);
-                        // No active state for bin clips (role not set on media)
-                        if role_pill::role_pill(ui, theme, role.label(), color, false) {
-                            // Could set a default role for when this clip is placed on timeline
-                        }
-                    }
-                });
-            });
-        ui.add_space(8.0);
-    });
-
-    ui.add_space(8.0);
-
-    // ── MEDIA INFO ──
-    section_card(ui, "MEDIA INFO", theme, |ui| {
-        let w = ui.available_width();
-
-        info_row(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
-            let text = format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height);
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
-            let fps = media.fps.as_f64();
-            let text = if (fps - fps.round()).abs() < 0.01 {
-                format!("{}  fps", fps.round() as u32)
-            } else {
-                format!("{:.3}  fps", fps)
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Codec", |ui, rx, cy| {
-            let codec = if media.audio_codec.is_empty() {
-                media.video_codec.to_uppercase()
-            } else {
-                format!("{} / {}", media.video_codec.to_uppercase(), media.audio_codec.to_uppercase())
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                codec, egui::FontId::monospace(12.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                media.duration.to_timecode_string(),
-                egui::FontId::monospace(13.0), theme.accent,
-            );
-        });
-
-        // Colour space
-        info_row(ui, theme, pad, row_h, w, "Colour space", |ui, rx, cy| {
-            use klipp_media::ColourSpace;
-            let (badge_text, badge_color, sub_text) = match media.colour_space {
-                ColourSpace::Sdr => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
-                ColourSpace::Hdr10 => ("HDR10", egui::Color32::from_rgb(220, 140, 30), "BT.2020"),
-                ColourSpace::Hlg => ("HLG", egui::Color32::from_rgb(200, 100, 40), "BT.2020"),
-                ColourSpace::Unknown => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
-            };
-            let sub_galley = ui.painter().layout_no_wrap(
-                sub_text.to_string(), egui::FontId::proportional(12.0), theme.text_dim,
-            );
-            let sub_w = sub_galley.size().x;
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                sub_text, egui::FontId::proportional(12.0), theme.text_dim,
-            );
-            let badge_galley = ui.painter().layout_no_wrap(
-                badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE,
-            );
-            let bw = badge_galley.size().x + 10.0;
-            let bh = 18.0;
-            let badge_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0), egui::vec2(bw, bh),
-            );
-            ui.painter().rect_filled(badge_rect, 3.0, badge_color);
-            ui.painter().text(
-                badge_rect.center(), egui::Align2::CENTER_CENTER,
-                badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE,
-            );
-        });
-
-        // File size
-        info_row(ui, theme, pad, row_h, w, "File size", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format_bytes(media.file_size_bytes),
-                egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        // Audio
-        if media.has_audio {
-            info_row(ui, theme, pad, row_h, w, "Audio", |ui, rx, cy| {
-                let ch = media.audio_channels.unwrap_or(2);
-                let sr = media.sample_rate.unwrap_or(48000);
-                let ch_label = match ch {
-                    1 => "Mono", 2 => "Stereo", 6 => "5.1", 8 => "7.1", _ => "",
-                };
-                let sr_khz = sr as f64 / 1000.0;
-                let text = format!("{} \u{00B7} {} kHz \u{00B7} {}", media.audio_codec.to_uppercase(), sr_khz as u32, ch_label);
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    text, egui::FontId::proportional(12.0), theme.text_dim,
-                );
-            });
-        }
-    });
-
-    ui.add_space(8.0);
-
-    // ── COLOR ──
-    section_card(ui, "COLOR", theme, |ui| {
-        ui.add_space(6.0);
-        egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE)
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("No grade applied")
-                        .size(12.0)
-                        .italics()
-                        .color(theme.text_dim),
-                );
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let btn_w = ui.available_width() - 30.0;
-                    if ui.add_sized(
-                        egui::vec2(btn_w, 28.0),
-                        egui::Button::new(
-                            egui::RichText::new("Open Color Panel").size(11.0).color(theme.text_primary),
-                        ).fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border)).rounding(6.0),
-                    ).clicked() {
-                        cmds.push(AppCommand::ToggleColorPanel);
-                    }
-                    let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                    ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
-                    ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, "C", egui::FontId::monospace(10.0), theme.text_dim);
-                });
-            });
-        ui.add_space(8.0);
-    });
-
-    ui.add_space(8.0);
+    use std::collections::HashMap;
+    // Construct a temporary default Clip from the media item
+    let temp_clip = Clip {
+        id: klipp_core::ClipId::new(),
+        kind: klipp_timeline::ClipKind::Media { media_id: media.id },
+        timeline_in: Timecode { value: 0, rate: media.duration.rate },
+        timeline_out: media.duration,
+        source_in: Timecode { value: 0, rate: media.duration.rate },
+        source_out: media.duration,
+        node_graph: klipp_nodes::NodeGraph::default(),
+        effects: Vec::new(),
+        builtin_effects: Vec::new(),
+        linked_clip_id: None,
+        group_id: None,
+        magnetic_anchor: None,
+        gain: 1.0,
+        volume: 1.0,
+        pan: 0.0,
+        fade_in_secs: 0.0,
+        fade_out_secs: 0.0,
+        fade_in_curve: klipp_timeline::FadeCurve::default(),
+        fade_out_curve: klipp_timeline::FadeCurve::default(),
+        channel_config: klipp_timeline::ChannelConfig::default(),
+        volume_keyframes: Vec::new(),
+        pan_keyframes: Vec::new(),
+        gain_keyframes: Vec::new(),
+        opacity_keyframes: Vec::new(),
+        transform_pos_x_keyframes: Vec::new(),
+        transform_pos_y_keyframes: Vec::new(),
+        transform_scale_keyframes: Vec::new(),
+        transform_rotation_keyframes: Vec::new(),
+        clip_markers: Vec::new(),
+        effect_keyframes: HashMap::new(),
+        role: klipp_core::ClipRole::default(),
+        param_modifiers: HashMap::new(),
+        speed: 1.0,
+        audio_effects: Vec::new(),
+    };
+    // is_timeline = false → no Speed Ramp, no amber banner
+    show_clip_video(ui, theme, state, &temp_clip, cmds, 0.0, false);
 }
 
 fn show_clip_video(
@@ -1047,7 +918,7 @@ fn show_clip_video(
     // ── SPEED RAMP (timeline only) ──
     if is_timeline {
         ui.add_space(8.0);
-        // Custom header with "Timeline only" badge
+        // SPEED RAMP section (timeline clips only)
         {
             let w = ui.available_width();
             let collapsed_key = egui::Id::new("klipp_collapsed_sections");
@@ -1080,22 +951,6 @@ fn show_clip_video(
                 egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 title, egui::FontId::proportional(11.0), theme.text_dim,
-            );
-            // "Timeline only" badge
-            let badge_text = "Timeline only";
-            let badge_galley = ui.painter().layout_no_wrap(
-                badge_text.to_string(), egui::FontId::proportional(9.0), theme.accent,
-            );
-            let bw = badge_galley.size().x + 10.0;
-            let bh = 16.0;
-            let badge_rect = egui::Rect::from_min_size(
-                egui::pos2(header_rect.max.x - 36.0 - bw, header_rect.center().y - bh / 2.0),
-                egui::vec2(bw, bh),
-            );
-            ui.painter().rect(badge_rect, 3.0, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, theme.accent));
-            ui.painter().text(
-                badge_rect.center(), egui::Align2::CENTER_CENTER,
-                badge_text, egui::FontId::proportional(9.0), theme.accent,
             );
             // Collapse icon
             let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
@@ -1536,6 +1391,20 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let w = ui.available_width();
         let project_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
 
+        // Compute cache size from ~/.cache/klipp
+        let cache_bytes: u64 = dirs::cache_dir()
+            .map(|d| d.join("klipp"))
+            .and_then(|p| dir_size_bytes(&p))
+            .unwrap_or(0);
+
+        // Compute free disk space using statvfs on the project or home directory
+        let home = dirs::home_dir();
+        let free_path = state.project_path.as_deref()
+            .or(home.as_deref());
+        let free_bytes: u64 = free_path
+            .and_then(|p| disk_free_bytes(p))
+            .unwrap_or(0);
+
         info_row(ui, theme, pad, row_h, w, "Project size", |ui, rx, cy| {
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
@@ -1546,18 +1415,29 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         info_row(ui, theme, pad, row_h, w, "Cache size", |ui, rx, cy| {
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "N/A", egui::FontId::proportional(13.0), theme.text_secondary,
+                format_bytes(cache_bytes), egui::FontId::proportional(13.0), theme.text_primary,
             );
         });
 
+        let free_color = if free_bytes < 1_000_000_000 {
+            egui::Color32::from_rgb(210, 60, 60) // red if < 1GB
+        } else if free_bytes < 10_000_000_000 {
+            theme.accent // amber if < 10GB
+        } else {
+            egui::Color32::from_rgb(80, 200, 120) // green
+        };
         info_row(ui, theme, pad, row_h, w, "Free space", |ui, rx, cy| {
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "N/A", egui::FontId::proportional(13.0), theme.text_secondary,
+                format_bytes(free_bytes), egui::FontId::proportional(13.0), free_color,
             );
         });
 
-        // Colored bar
+        // Colored proportion bar
+        let total = project_bytes + cache_bytes + free_bytes;
+        let project_frac = if total > 0 { project_bytes as f32 / total as f32 } else { 0.0 };
+        let cache_frac = if total > 0 { cache_bytes as f32 / total as f32 } else { 0.0 };
+
         ui.add_space(4.0);
         let bar_h = 8.0;
         let bar_w = w - pad * 2.0;
@@ -1567,12 +1447,21 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let full_bar = egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bar_w, bar_h));
         ui.painter().rect_filled(full_bar, 3.0, egui::Color32::from_rgb(60, 60, 65));
         // Project portion (blue)
-        let project_frac = if project_bytes > 0 { (bar_w * 0.3).min(bar_w) } else { 0.0 };
-        if project_frac > 0.0 {
+        let pw = (bar_w * project_frac).max(if project_bytes > 0 { 2.0 } else { 0.0 });
+        if pw > 0.0 {
             ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(project_frac, bar_h)),
+                egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(pw, bar_h)),
                 egui::Rounding { nw: 3.0, ne: 0.0, sw: 3.0, se: 0.0 },
                 egui::Color32::from_rgb(60, 120, 200),
+            );
+        }
+        // Cache portion (orange)
+        let cw = (bar_w * cache_frac).max(if cache_bytes > 0 { 2.0 } else { 0.0 });
+        if cw > 0.0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::pos2(bx + pw, by), egui::vec2(cw, bar_h)),
+                0.0,
+                egui::Color32::from_rgb(200, 150, 60),
             );
         }
 
@@ -1747,5 +1636,38 @@ fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Col
         ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
     } else {
         ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5, color)));
+    }
+}
+
+/// Recursively compute total size of a directory in bytes.
+fn dir_size_bytes(path: &std::path::Path) -> Option<u64> {
+    if !path.is_dir() {
+        return None;
+    }
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let meta = entry.metadata().ok()?;
+            if meta.is_file() {
+                total += meta.len();
+            } else if meta.is_dir() {
+                total += dir_size_bytes(&entry.path()).unwrap_or(0);
+            }
+        }
+    }
+    Some(total)
+}
+
+/// Get free disk space on the filesystem containing the given path.
+fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::ffi::CString;
+    let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+        } else {
+            None
+        }
     }
 }

@@ -123,20 +123,22 @@ impl NewInspectorPanel {
                 let role_color = theme.clip_role_color(clip.role);
                 ui.painter().rect_filled(bar_rect, 0.0, role_color);
 
-                // Text
+                // Text — dark colors for readability on amber background
+                let banner_text = egui::Color32::from_rgb(180, 120, 20);
+                let banner_tc = egui::Color32::from_rgb(140, 100, 30);
                 ui.painter().text(
                     egui::pos2(banner_rect.min.x + 12.0, banner_rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     format!("Timeline clip \u{00B7} {track_name}"),
                     egui::FontId::proportional(10.0),
-                    theme.accent,
+                    banner_text,
                 );
                 ui.painter().text(
                     egui::pos2(banner_rect.max.x - 10.0, banner_rect.center().y),
                     egui::Align2::RIGHT_CENTER,
                     &tc,
                     egui::FontId::monospace(10.0),
-                    theme.text_dim,
+                    banner_tc,
                 );
             });
             ui.advance_cursor_after_rect(banner_rect);

@@ -2304,6 +2304,7 @@ dependencies = [
  "klipp-project",
  "klipp-timeline",
  "klipp-title",
+ "libc",
  "notify",
  "png 0.17.16",
  "rfd",

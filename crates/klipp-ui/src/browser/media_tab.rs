@@ -347,6 +347,9 @@ fn render_list_view(
                     &mut state.selected_media_ids,
                     &mut state.last_clicked_media_id,
                 );
+                // Clear timeline clip selection so inspector shows bin media (State 2)
+                state.selected_clips.clear();
+                cmds.push(AppCommand::SelectClip(None));
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
@@ -554,6 +557,9 @@ fn render_grid_view(
                     &mut state.selected_media_ids,
                     &mut state.last_clicked_media_id,
                 );
+                // Clear timeline clip selection so inspector shows bin media (State 2)
+                state.selected_clips.clear();
+                cmds.push(AppCommand::SelectClip(None));
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if card_resp.double_clicked() {

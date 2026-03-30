@@ -31,3 +31,4 @@ walkdir = { workspace = true }
 notify = { workspace = true }
 egui_extras = { workspace = true }
 chrono = { workspace = true }
+libc = "0.2"

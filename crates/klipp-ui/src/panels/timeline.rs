@@ -5820,6 +5820,8 @@ impl TimelinePanel {
                             }
                         }
                         cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
+                        // Clear media browser selection so inspector shows timeline clip (State 3)
+                        state.selected_media_ids.clear();
                     }
                 } else {
                     // Clicked empty area — move playhead and deselect
