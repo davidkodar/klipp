@@ -609,9 +609,10 @@ impl KlippApp {
         let seek_secs = duration_secs * 0.1;
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         std::thread::spawn(move || {
-            // Try loading from disk cache first
+            // Try loading from disk cache first (skip if file has rotation — regenerate to apply it)
+            let has_rotation = klipp_engine::detect_rotation_from_path(&path) != 0;
             if let Some(ref key) = cache_key {
-                if klipp_media::disk_cache::thumbnail_cache_exists(key) {
+                if !has_rotation && klipp_media::disk_cache::thumbnail_cache_exists(key) {
                     match klipp_media::disk_cache::load_thumbnail_cache(key) {
                         Ok((rgba, w, h)) => {
                             tracing::info!("Thumbnail loaded from cache for {:?}", path);
@@ -2625,7 +2626,7 @@ impl KlippApp {
                 }
                 AppCommand::ShowEffectsBrowser => {
                     self.state.show_browser_panel = true;
-                    self.layout.active_browser_tab = crate::layout_state::BrowserTab::Effects;
+                    self.layout.active_browser_tab = crate::layout_state::BrowserTab::Library;
                     continue;
                 }
                 AppCommand::ToggleBeforeAfter => {
@@ -8076,6 +8077,30 @@ impl KlippApp {
                 self.state.created_at = created_at;
                 self.state.media_pool = media_pool;
 
+                // Fix media resolutions for rotated videos (phone portrait clips)
+                // Older projects may have stored raw codec dimensions without rotation
+                {
+                    let mut fixes = Vec::new();
+                    for item in self.state.media_pool.all() {
+                        if item.path.exists() && !item.video_codec.is_empty() {
+                            let rotation = klipp_engine::detect_rotation_from_path(&item.path);
+                            if rotation == 90 || rotation == 270 {
+                                // Check if dimensions need swapping (width > height = landscape encoded)
+                                if item.resolution.width > item.resolution.height {
+                                    fixes.push((item.id, item.resolution.height, item.resolution.width));
+                                }
+                            }
+                        }
+                    }
+                    for (id, new_w, new_h) in fixes {
+                        if let Some(item) = self.state.media_pool.get_mut(&id) {
+                            item.resolution.width = new_w;
+                            item.resolution.height = new_h;
+                            tracing::info!("Fixed rotation-aware resolution for {:?}: {}x{}", item.filename, new_w, new_h);
+                        }
+                    }
+                }
+
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
                 if let Some(ref lut_path) = color_settings.global_lut_path {
@@ -8176,7 +8201,9 @@ impl KlippApp {
                     }
                     self.state.pending_skim_transcodes.push(id);
                 }
-                self.state.filmstrip_generating = true;
+                if !self.state.filmstrip_queue.is_empty() || !self.state.filmstrip_in_progress.is_empty() {
+                    self.state.filmstrip_generating = true;
+                }
 
                 tracing::info!("Project loaded from {:?}", path);
 
@@ -9186,6 +9213,51 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Handle OS-level file drag-and-drop ──
+        let dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw.dropped_files.iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if !dropped_files.is_empty() {
+            let media_exts = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts",
+                "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
+                "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr"];
+            for path in dropped_files {
+                let ext = path.extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if media_exts.contains(&ext.as_str()) {
+                    let media_id = klipp_core::MediaId::new();
+                    let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path: path.clone(), media_id });
+                    tracing::info!("Dropped file: {:?}", path);
+                } else if ext == "klipp" {
+                    let _ = self.cmd_tx.send(AppCommand::OpenProject { path });
+                }
+            }
+        }
+
+        // Also show visual feedback when files are being hovered over the window
+        if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            // Paint a subtle overlay to indicate drop target
+            let screen = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("drop_overlay"))
+                .fixed_pos(screen.min)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 20));
+                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)));
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Drop media files to import",
+                        egui::FontId::proportional(18.0),
+                        egui::Color32::from_rgba_unmultiplied(232, 160, 32, 200),
+                    );
+                });
+        }
+
         // Check if any popup/menu/combobox/foreground layer is active (blocks background interaction)
         let popup_open = ctx.memory(|m| m.any_popup_open());
         // Also check if pointer is over a foreground layer (menus, context menus)

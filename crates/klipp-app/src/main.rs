@@ -87,7 +87,8 @@ fn main() -> Result<()> {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0])
             .with_icon(std::sync::Arc::new(icon_data))
-            .with_app_id("klipp"),
+            .with_app_id("klipp")
+            .with_drag_and_drop(true),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

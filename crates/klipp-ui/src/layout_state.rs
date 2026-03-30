@@ -81,8 +81,15 @@ impl LayoutState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowserTab {
+    Files,
     Media,
-    Effects,
+    Library,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LibraryCategory {
+    #[default]
+    VideoFx,
     AudioFx,
     Titles,
     Transitions,

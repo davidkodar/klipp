@@ -3744,6 +3744,12 @@ impl PlaybackEngine {
                     }
                 }
 
+                // Detect rotation and swap dimensions for display if needed (phone videos)
+                let source_rotation = detect_rotation_from_path(&path);
+                if source_rotation == 90 || source_rotation == 270 {
+                    std::mem::swap(&mut video_w, &mut video_h);
+                }
+
                 // Detect still images: has video, no audio, near-zero duration,
                 // and file extension matches common image formats.
                 let is_still = !video_codec.is_empty()
@@ -4144,6 +4150,110 @@ fn open_sw_decoder(
     Ok((decoder, stream_index))
 }
 
+/// Extract rotation angle from video stream metadata.
+/// Returns 0, 90, 180, or 270 degrees.
+fn detect_rotation(format_ctx: &ffmpeg_next::format::context::Input, stream_index: usize) -> i32 {
+    // Check stream metadata for "rotate" tag (older containers)
+    for stream in format_ctx.streams() {
+        if stream.index() == stream_index {
+            if let Some(rotate_str) = stream.metadata().get("rotate") {
+                if let Ok(angle) = rotate_str.parse::<i32>() {
+                    return ((angle % 360) + 360) % 360;
+                }
+            }
+            break;
+        }
+    }
+    // Check container-level metadata
+    if let Some(rotate_str) = format_ctx.metadata().get("rotate") {
+        if let Ok(angle) = rotate_str.parse::<i32>() {
+            return ((angle % 360) + 360) % 360;
+        }
+    }
+    0
+}
+
+/// Detect rotation from a file path using ffprobe (catches display matrix side data
+/// which ffmpeg-next doesn't expose directly). Falls back to 0 on error.
+pub fn detect_rotation_from_path(path: &std::path::Path) -> i32 {
+    // First try ffprobe for side_data rotation (most reliable for modern files)
+    if let Ok(output) = std::process::Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream_side_data=rotation",
+            "-of", "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Parse first valid rotation value
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if let Ok(angle) = trimmed.parse::<f64>() {
+                let int_angle = angle.round() as i32;
+                if int_angle != 0 {
+                    return ((int_angle % 360) + 360) % 360;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Rotate RGBA pixel buffer by 90, 180, or 270 degrees.
+/// Returns (new_rgba, new_width, new_height).
+fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32) {
+    match degrees {
+        90 => {
+            // 90° clockwise: new dimensions are (h, w)
+            let nw = h;
+            let nh = w;
+            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = h - 1 - y;
+                    let dy = x;
+                    let dst = ((dy * nw + dx) * 4) as usize;
+                    out[dst..dst+4].copy_from_slice(&rgba[src..src+4]);
+                }
+            }
+            (out, nw, nh)
+        }
+        180 => {
+            let mut out = vec![0u8; rgba.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = w - 1 - x;
+                    let dy = h - 1 - y;
+                    let dst = ((dy * w + dx) * 4) as usize;
+                    out[dst..dst+4].copy_from_slice(&rgba[src..src+4]);
+                }
+            }
+            (out, w, h)
+        }
+        270 => {
+            let nw = h;
+            let nh = w;
+            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = y;
+                    let dy = w - 1 - x;
+                    let dst = ((dy * nw + dx) * 4) as usize;
+                    out[dst..dst+4].copy_from_slice(&rgba[src..src+4]);
+                }
+            }
+            (out, nw, nh)
+        }
+        _ => (rgba.to_vec(), w, h),
+    }
+}
+
 /// Generate a thumbnail for a media file. Uses software decode (CPU) — thumbnails
 /// are single small frames, not worth GPU context creation overhead.
 pub fn generate_thumbnail(
@@ -4154,6 +4264,10 @@ pub fn generate_thumbnail(
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
+    let rotation = {
+        let r = detect_rotation(&format_ctx, stream_index);
+        if r != 0 { r } else { detect_rotation_from_path(path) }
+    };
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -4186,7 +4300,14 @@ pub fn generate_thumbnail(
 
     let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
         .ok_or("Failed to convert frame to RGBA")?;
-    Ok((rgba, dst_w, dst_h))
+
+    // Apply source rotation if needed (phone videos)
+    if rotation != 0 {
+        let (rotated, rw, rh) = rotate_rgba(&rgba, dst_w, dst_h, rotation);
+        Ok((rotated, rw, rh))
+    } else {
+        Ok((rgba, dst_w, dst_h))
+    }
 }
 
 /// Generate a thumbnail at a specific max width (for viewer-quality poster frames).
@@ -4200,6 +4321,10 @@ pub fn generate_thumbnail_at_size(
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
+    let rotation = {
+        let r = detect_rotation(&format_ctx, stream_index);
+        if r != 0 { r } else { detect_rotation_from_path(path) }
+    };
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
@@ -4226,13 +4351,28 @@ pub fn generate_thumbnail_at_size(
 
     let src_w = decoded_frame.width();
     let src_h = decoded_frame.height();
-    let scale = (max_width as f64 / src_w as f64).min(1.0);
+
+    // For rotated video (90/270), the effective dimensions are swapped
+    let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
+        (src_h, src_w)
+    } else {
+        (src_w, src_h)
+    };
+
+    let scale = (max_width as f64 / eff_w as f64).min(1.0);
     let dst_w = ((src_w as f64 * scale) as u32).max(1);
     let dst_h = ((src_h as f64 * scale) as u32).max(1);
 
     let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
         .ok_or("Failed to convert frame to RGBA")?;
-    Ok((rgba, dst_w, dst_h))
+
+    // Apply source rotation if needed (phone videos)
+    if rotation != 0 {
+        let (rotated, rw, rh) = rotate_rgba(&rgba, dst_w, dst_h, rotation);
+        Ok((rotated, rw, rh))
+    } else {
+        Ok((rgba, dst_w, dst_h))
+    }
 }
 
 /// Cached frame decoder — keeps the ffmpeg context open for fast temporal access.

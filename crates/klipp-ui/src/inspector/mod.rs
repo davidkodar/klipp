@@ -253,6 +253,47 @@ impl NewInspectorPanel {
                             .collect();
                         let is_timeline = true; // clip_info comes from timeline selection
                         audio_tab::show(ui, theme, state, Some((clip, track_idx, is_timeline)), &mut cmds, peak, peaks_slice, source_channels, clip_time_secs, &mut self.duck, &track_infos);
+                    } else if let Some(bm) = bin_media {
+                        // Bin media selected — show audio info for the media item
+                        let source_channels = bm.audio_channels;
+                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
+                            .map(|(i, t)| audio_tab::TrackInfo {
+                                index: i,
+                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
+                            })
+                            .collect();
+                        // Create a temporary clip for the bin media (same pattern as video tab)
+                        let temp_clip = klipp_timeline::Clip {
+                            id: klipp_core::ClipId::new(),
+                            kind: klipp_timeline::ClipKind::Media { media_id: bm.id },
+                            timeline_in: klipp_core::Timecode { value: 0, rate: bm.duration.rate },
+                            timeline_out: bm.duration,
+                            source_in: klipp_core::Timecode { value: 0, rate: bm.duration.rate },
+                            source_out: bm.duration,
+                            node_graph: klipp_nodes::NodeGraph::default(),
+                            effects: Vec::new(),
+                            builtin_effects: Vec::new(),
+                            builtin_effects_enabled: Vec::new(),
+                            linked_clip_id: None,
+                            group_id: None,
+                            magnetic_anchor: None,
+                            gain: 1.0, volume: 1.0, pan: 0.0,
+                            fade_in_secs: 0.0, fade_out_secs: 0.0,
+                            fade_in_curve: klipp_timeline::FadeCurve::default(),
+                            fade_out_curve: klipp_timeline::FadeCurve::default(),
+                            channel_config: klipp_timeline::ChannelConfig::default(),
+                            volume_keyframes: Vec::new(), pan_keyframes: Vec::new(), gain_keyframes: Vec::new(),
+                            opacity_keyframes: Vec::new(),
+                            transform_pos_x_keyframes: Vec::new(), transform_pos_y_keyframes: Vec::new(),
+                            transform_scale_keyframes: Vec::new(), transform_rotation_keyframes: Vec::new(),
+                            clip_markers: Vec::new(),
+                            effect_keyframes: std::collections::HashMap::new(),
+                            role: klipp_core::ClipRole::default(),
+                            param_modifiers: std::collections::HashMap::new(),
+                            speed: 1.0,
+                            audio_effects: Vec::new(),
+                        };
+                        audio_tab::show(ui, theme, state, Some((&temp_clip, 0, false)), &mut cmds, (0.0, 0.0), None, source_channels, 0.0, &mut self.duck, &track_infos);
                     } else {
                         audio_tab::show(ui, theme, state, None, &mut cmds, (0.0, 0.0), None, None, 0.0, &mut self.duck, &[]);
                     }

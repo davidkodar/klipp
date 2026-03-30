@@ -107,9 +107,6 @@ pub fn show(
         let (hint_rect, _) = ui.allocate_exact_size(egui::vec2(hint_w, 20.0), egui::Sense::hover());
         let center = hint_rect.center();
         // Up/down arrows + text
-        let arrow_rect = egui::Rect::from_center_size(
-            egui::pos2(center.x - 52.0, center.y), egui::vec2(10.0, 10.0),
-        );
         Icon::CaretUp.image(6.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
             egui::pos2(center.x - 52.0, center.y - 4.0), egui::vec2(8.0, 8.0),
         ));
@@ -126,7 +123,7 @@ pub fn show(
     // ── Built-in effects ──
     let mut builtin_remove = None;
     let mut builtin_move_to: Option<(usize, usize)> = None; // (from, to)
-    let mut builtin_reset: Option<(usize, klipp_effects::BuiltinEffect)> = None;
+    let builtin_reset: Option<(usize, klipp_effects::BuiltinEffect)> = None;
     let mut builtin_card_tops: Vec<f32> = Vec::new(); // y position of each card top
     let mut builtin_drag_info: Option<(usize, f32)> = None; // (dragged index, total_drag)
 
@@ -340,7 +337,7 @@ pub fn show(
                 } else {
                     ui.cursor().min.y - 4.0
                 };
-                let x_range = if let Some(&first_top) = builtin_card_tops.first() {
+                let x_range = if let Some(&_first_top) = builtin_card_tops.first() {
                     let w = ui.available_width();
                     (ui.min_rect().min.x)..=(ui.min_rect().min.x + w)
                 } else {
@@ -1014,6 +1011,8 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
 }
 
 /// Returns the default (identity) version of the same effect variant.
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effects::BuiltinEffect {
     use klipp_effects::BuiltinEffect;
     match effect {
@@ -1065,7 +1064,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
     }
 }
 
-/// Returns true if the effect has more than 1 adjustable parameter (worth a reset-all button).
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
     use klipp_effects::BuiltinEffect;
     matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
@@ -1074,7 +1074,8 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::SpeedRamp { .. })
 }
 
-/// Returns true if the effect is at its default values.
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
     let def = builtin_effect_default(effect);
     // Compare by debug string — simple and correct for all variants
