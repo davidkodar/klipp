@@ -4,7 +4,593 @@ use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
 
-pub fn show(
+/// State 1: Nothing selected — PROJECT, MEDIA, SEQUENCE, STORAGE
+pub fn show_no_selection(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+) {
+    let pad = 14.0;
+    let row_h = 30.0;
+    let seq = state.sequence();
+
+    // ── PROJECT ──
+    section_card(ui, "PROJECT", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+
+        let project_name = state.project_path.as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".into());
+        info_row_custom(ui, theme, pad, row_h, w, "Name", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                &project_name, egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        // Created date
+        let created_text = state.created_at.as_deref()
+            .map(|iso| {
+                let clean = iso.trim_end_matches('Z');
+                chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S%.f")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S"))
+                    .map(|dt| dt.format("%d %b %Y, %H:%M").to_string())
+                    .unwrap_or_else(|_| iso.to_string())
+            })
+            .unwrap_or_else(|| "Unknown".into());
+        info_row_custom(ui, theme, pad, row_h, w, "Created", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                &created_text, egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        // Last modified — use relative time from the most recent save
+        let last_modified = state.project_path.as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                let elapsed = t.elapsed().unwrap_or_default();
+                let secs = elapsed.as_secs();
+                if secs < 60 { "just now".into() }
+                else if secs < 3600 { format!("{} mins ago", secs / 60) }
+                else if secs < 86400 { format!("{} hours ago", secs / 3600) }
+                else { format!("{} days ago", secs / 86400) }
+            })
+            .unwrap_or_else(|| "Unknown".into());
+        info_row_custom(ui, theme, pad, row_h, w, "Last modified", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                &last_modified, egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Format version", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                "klipp-v2", egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Klipp version", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                "0.9.1", egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        // Project path (small, dim, padded)
+        if let Some(ref path) = state.project_path {
+            ui.add_space(4.0);
+            egui::Frame::default()
+                .outer_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .fill(theme.bg_raised)
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(path.to_string_lossy().as_ref())
+                            .size(10.0)
+                            .color(theme.text_dim),
+                    );
+                });
+            ui.add_space(4.0);
+        }
+    });
+
+    ui.add_space(8.0);
+
+    // ── MEDIA ──
+    section_card(ui, "MEDIA", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+
+        // Count media items
+        let all_media: Vec<_> = state.media_pool.all().collect();
+        let total_bin = all_media.len();
+        let video_count = all_media.iter().filter(|m| !m.video_codec.is_empty()).count();
+        let audio_count = all_media.iter().filter(|m| m.video_codec.is_empty() && m.has_audio).count();
+        let total_duration_secs: f64 = all_media.iter().map(|m| m.duration.to_secs_f64()).sum();
+        let dur_h = (total_duration_secs / 3600.0) as u32;
+        let dur_m = ((total_duration_secs % 3600.0) / 60.0) as u32;
+        let dur_s = (total_duration_secs % 60.0) as u32;
+        let dur_text = format!("{dur_h}:{dur_m:02}:{dur_s:02}");
+        let missing_count = state.offline_media_ids.len();
+        let offline_count = all_media.iter().filter(|m| m.offline).count();
+
+        // 2x2 stat grid
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .shadow(egui::Shadow::NONE)
+            .show(ui, |ui| {
+                let card_w = (w - pad * 2.0 - 8.0) / 2.0;
+                let card_h = 60.0;
+
+                // Row 1
+                ui.horizontal(|ui| {
+                    // CLIPS IN BIN
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
+                        "CLIPS IN BIN", egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
+                        format!("{total_bin}"), egui::FontId::proportional(18.0), theme.text_primary,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
+                        format!("{video_count} video \u{00B7} {audio_count} audio"), egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+
+                    ui.add_space(8.0);
+
+                    // TOTAL BIN DURATION
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
+                        "TOTAL BIN DURATION", egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
+                        &dur_text, egui::FontId::proportional(18.0), theme.text_primary,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
+                        "hh:mm:ss", egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+                });
+
+                ui.add_space(6.0);
+
+                // Row 2
+                ui.horizontal(|ui| {
+                    // MISSING MEDIA
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h - 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
+                        "MISSING MEDIA", egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+                    let mc = if missing_count == 0 { egui::Color32::from_rgb(80, 200, 120) } else { egui::Color32::from_rgb(210, 60, 60) };
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
+                        format!("{missing_count}"), egui::FontId::proportional(18.0), mc,
+                    );
+
+                    ui.add_space(8.0);
+
+                    // OFFLINE CLIPS
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h - 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
+                        "OFFLINE CLIPS", egui::FontId::proportional(9.0), theme.text_dim,
+                    );
+                    let oc = if offline_count == 0 { egui::Color32::from_rgb(80, 200, 120) } else { egui::Color32::from_rgb(210, 60, 60) };
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
+                        format!("{offline_count}"), egui::FontId::proportional(18.0), oc,
+                    );
+                });
+            });
+        ui.add_space(6.0);
+    });
+
+    ui.add_space(8.0);
+
+    // ── SEQUENCE ──
+    section_card(ui, "SEQUENCE", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+
+        info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
+            let text = format!("{} \u{00D7} {}", seq.resolution.width, seq.resolution.height);
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                text, egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
+            let fps = seq.fps.num as f64 / seq.fps.den.max(1) as f64;
+            let text = if (fps - fps.round()).abs() < 0.01 {
+                format!("{}  fps", fps.round() as u32)
+            } else {
+                format!("{:.3}  fps", fps)
+            };
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                text, egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                state.sequence_duration().to_timecode_string(),
+                egui::FontId::monospace(13.0), theme.accent,
+            );
+        });
+
+        let video_tracks = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+        let audio_tracks = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+        let total_clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+
+        info_row_custom(ui, theme, pad, row_h, w, "Video tracks", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format!("{video_tracks}"), egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Audio tracks", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format!("{audio_tracks}"), egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Total clips", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format!("{total_clips}"), egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // ── STORAGE ──
+    section_card(ui, "STORAGE", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+        let project_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
+
+        let cache_bytes: u64 = dirs::cache_dir()
+            .map(|d| d.join("klipp"))
+            .and_then(|p| dir_size_bytes(&p))
+            .unwrap_or(0);
+
+        let proxy_bytes: u64 = dirs::cache_dir()
+            .map(|d| d.join("klipp").join("proxies"))
+            .and_then(|p| dir_size_bytes(&p))
+            .unwrap_or(0);
+
+        let home = dirs::home_dir();
+        let free_bytes: u64 = state.project_path.as_deref()
+            .or(home.as_deref())
+            .and_then(|p| disk_free_bytes(p))
+            .unwrap_or(0);
+
+        info_row_custom(ui, theme, pad, row_h, w, "Project file", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format_size(project_bytes), egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Cache", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format_size(cache_bytes), egui::FontId::proportional(13.0), theme.text_primary,
+            );
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "Proxies", |ui, rx, cy| {
+            let text = if proxy_bytes > 0 { format_size(proxy_bytes) } else { "None generated".into() };
+            let color = if proxy_bytes > 0 { theme.text_primary } else { theme.text_dim };
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                text, egui::FontId::proportional(13.0), color,
+            );
+        });
+
+        let free_color = if free_bytes < 1_000_000_000 {
+            egui::Color32::from_rgb(210, 60, 60)
+        } else if free_bytes < 10_000_000_000 {
+            theme.accent
+        } else {
+            egui::Color32::from_rgb(80, 200, 120)
+        };
+        info_row_custom(ui, theme, pad, row_h, w, "Free disk space", |ui, rx, cy| {
+            ui.painter().text(
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                format_size(free_bytes), egui::FontId::proportional(13.0), free_color,
+            );
+        });
+    });
+
+    ui.add_space(16.0);
+}
+
+/// State 2: Bin media selected — CLIP INFO, TAGS, TIMELINE USAGE
+pub fn show_bin_media(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+    media: &klipp_media::MediaItem,
+    tag_input: &mut String,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let pad = 14.0;
+    let row_h = 30.0;
+    let accent = theme.accent;
+    let dim = theme.text_dim;
+
+    // ── CLIP INFO ──
+    section_card(ui, "CLIP INFO", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+
+        info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
+            let text = format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height);
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
+        });
+
+        if !media.is_still {
+            info_row_custom(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
+                let fps = media.fps.as_f64();
+                let text = if (fps - fps.round()).abs() < 0.01 { format!("{}  fps", fps.round() as u32) } else { format!("{:.3}  fps", fps) };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
+            });
+        }
+
+        // Codec pills
+        info_row_custom(ui, theme, pad, row_h, w, "Codec", |ui, rx, cy| {
+            let pill_h = 20.0;
+            let pill_bg = theme.bg_raised;
+            let pill_border = theme.border_light;
+            let mut x = rx;
+            if !media.audio_codec.is_empty() {
+                let codec = media.audio_codec.to_uppercase();
+                let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
+                let pw = galley.size().x + 12.0;
+                let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
+                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
+                x -= pw + 6.0;
+            }
+            if !media.video_codec.is_empty() {
+                let codec = media.video_codec.to_uppercase();
+                let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
+                let pw = galley.size().x + 12.0;
+                let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
+                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
+            }
+        });
+
+        // Audio
+        if media.has_audio {
+            info_row_custom(ui, theme, pad, row_h, w, "Audio", |ui, rx, cy| {
+                let channels = media.audio_channels.unwrap_or(2);
+                let sample_rate = media.sample_rate.unwrap_or(48000);
+                let ch_label = match channels { 1 => "Mono", 2 => "Stereo", 6 => "5.1", 8 => "7.1", _ => "" };
+                let sr_khz = sample_rate / 1000;
+                let label = format!("{ch_label} \u{00B7} {sr_khz} kHz");
+                let label_galley = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(12.0), dim);
+                let label_w = label_galley.size().x;
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, &label, egui::FontId::proportional(12.0), dim);
+                // Channel bars
+                let bar_heights: &[f32] = match channels { 1 => &[0.8], 2 => &[0.9, 0.7], 6 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5], 8 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5, 0.7, 0.6], _ => &[0.8, 0.7] };
+                let bar_w = 4.0; let bar_gap = 2.0; let max_bar_h = 14.0;
+                let total_bars_w = bar_heights.len() as f32 * (bar_w + bar_gap) - bar_gap;
+                let bx = rx - label_w - 10.0 - total_bars_w;
+                for (i, &h_frac) in bar_heights.iter().enumerate() {
+                    let bh = max_bar_h * h_frac;
+                    ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bx + i as f32 * (bar_w + bar_gap), cy - bh / 2.0), egui::vec2(bar_w, bh)), 1.0, accent);
+                }
+            });
+        }
+
+        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, media.duration.to_timecode_string(), egui::FontId::proportional(13.0), theme.text_primary);
+        });
+
+        info_row_custom(ui, theme, pad, row_h, w, "File size", |ui, rx, cy| {
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, format_size(media.file_size_bytes), egui::FontId::proportional(13.0), theme.text_primary);
+        });
+
+        // Colour
+        info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
+            use klipp_media::ColourSpace;
+            let (badge_text, badge_color, sub_text) = match media.colour_space {
+                ColourSpace::Sdr => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+                ColourSpace::Hdr10 => ("HDR10", egui::Color32::from_rgb(220, 140, 30), "BT.2020"),
+                ColourSpace::Hlg => ("HLG", egui::Color32::from_rgb(200, 100, 40), "BT.2020"),
+                ColourSpace::Unknown => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+            };
+            let sub_galley = ui.painter().layout_no_wrap(sub_text.to_string(), egui::FontId::proportional(12.0), dim);
+            let sub_w = sub_galley.size().x;
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, sub_text, egui::FontId::proportional(12.0), dim);
+            let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE);
+            let bw = badge_galley.size().x + 10.0;
+            let bh = 18.0;
+            let badge_rect = egui::Rect::from_min_size(egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0), egui::vec2(bw, bh));
+            ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+        });
+
+        // Shoot date
+        let shoot_date = media.media_created_at.or(media.file_modified_at);
+        if let Some(epoch_secs) = shoot_date.filter(|&t| t > 0) {
+            info_row_custom(ui, theme, pad, row_h, w, "Shoot date", |ui, rx, cy| {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, format_epoch_date(epoch_secs), egui::FontId::proportional(13.0), theme.text_primary);
+            });
+        }
+
+        // Proxy
+        info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
+            if media.proxy_ready {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "Ready", egui::FontId::proportional(13.0), egui::Color32::from_rgb(100, 200, 120));
+            } else {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "None", egui::FontId::proportional(13.0), dim);
+            }
+        });
+
+        // File path
+        ui.add_space(4.0);
+        egui::Frame::default()
+            .outer_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(media.path.to_string_lossy().as_ref()).size(10.0).color(dim));
+            });
+        ui.add_space(4.0);
+    });
+
+    ui.add_space(8.0);
+
+    // ── TAGS ──
+    let tag_count = media.tags.len();
+    section_card(ui, "TAGS", Some(format!("{tag_count}")), theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        if media.tags.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.label(egui::RichText::new("No tags added").italics().size(12.0).color(dim));
+            });
+            ui.add_space(6.0);
+        } else {
+            ui.add_space(4.0);
+            let mut tag_to_remove: Option<usize> = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(pad);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                for (i, tag) in media.tags.iter().enumerate() {
+                    egui::Frame::default()
+                        .fill(theme.bg_raised)
+                        .rounding(10.0)
+                        .inner_margin(egui::Margin { left: 8.0, right: 4.0, top: 3.0, bottom: 3.0 })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                ui.label(egui::RichText::new(tag.as_str()).size(11.0).color(theme.text_primary));
+                                if ui.add(egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(dim)).frame(false)).clicked() {
+                                    tag_to_remove = Some(i);
+                                }
+                            });
+                        });
+                }
+            });
+            if let Some(idx) = tag_to_remove {
+                let mut new_tags = media.tags.clone();
+                new_tags.remove(idx);
+                cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags: new_tags });
+            }
+            ui.add_space(6.0);
+        }
+
+        // Add tag input
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            let w = ui.available_width() - pad;
+            let resp = ui.add(
+                egui::TextEdit::singleline(tag_input)
+                    .hint_text("+  Add tag\u{2026}")
+                    .desired_width(w)
+                    .font(egui::TextStyle::Small),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !tag_input.trim().is_empty() {
+                let new_tag = tag_input.trim().to_lowercase();
+                if !media.tags.contains(&new_tag) {
+                    let mut new_tags = media.tags.clone();
+                    new_tags.push(new_tag);
+                    cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags: new_tags });
+                }
+                tag_input.clear();
+            }
+        });
+        ui.add_space(8.0);
+    });
+
+    ui.add_space(8.0);
+
+    // ── TIMELINE USAGE ──
+    // Find all clips on the timeline that reference this media
+    let mut usages: Vec<(String, String)> = Vec::new();
+    let mut total_used_secs = 0.0_f64;
+    for track in &state.sequence().tracks {
+        for clip in &track.clips {
+            if clip.media_id() == Some(media.id) {
+                let in_tc = clip.timeline_in.to_timecode_string();
+                let out_tc = clip.timeline_out.to_timecode_string();
+                let track_name = if track.name.is_empty() {
+                    format!("{:?} {}", track.kind, track.clips.iter().position(|c| c.id == clip.id).unwrap_or(0) + 1)
+                } else {
+                    track.name.clone()
+                };
+                usages.push((track_name, format!("{in_tc} \u{2013} {out_tc}")));
+                total_used_secs += clip.duration().to_secs_f64();
+            }
+        }
+    }
+    let usage_count = usages.len();
+    let total_used_tc = klipp_core::Timecode::from_secs_f64(total_used_secs, state.sequence().fps.num);
+
+    section_card(ui, "TIMELINE USAGE", Some(format!("{usage_count}")), theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+        let w = ui.available_width();
+
+        info_row_custom(ui, theme, pad, row_h, w, "Used in", |ui, rx, cy| {
+            let text = if usage_count == 0 { "Not used".into() } else { format!("{usage_count} place{}", if usage_count == 1 { "" } else { "s" }) };
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
+        });
+
+        if usage_count > 0 {
+            info_row_custom(ui, theme, pad, row_h, w, "Total used", |ui, rx, cy| {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, total_used_tc.to_timecode_string(), egui::FontId::monospace(13.0), theme.text_primary);
+            });
+
+            // Usage list
+            ui.add_space(4.0);
+            for (track_name, range) in &usages {
+                let (usage_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
+                ui.painter().hline(usage_rect.min.x + pad..=usage_rect.max.x - pad, usage_rect.max.y, egui::Stroke::new(0.5, theme.border));
+                // Colored dot
+                ui.painter().circle_filled(egui::pos2(usage_rect.min.x + pad + 4.0, usage_rect.center().y), 3.5, accent);
+                // Track name + range
+                ui.painter().text(
+                    egui::pos2(usage_rect.min.x + pad + 14.0, usage_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{track_name} \u{00B7} {range}"),
+                    egui::FontId::proportional(11.0), dim,
+                );
+            }
+        }
+        ui.add_space(4.0);
+    });
+
+    ui.add_space(16.0);
+}
+
+/// State 3: Timeline clip selected — full clip info
+pub fn show_clip(
     ui: &mut egui::Ui,
     state: &AppState,
     theme: &KlippTheme,
@@ -646,4 +1232,43 @@ fn format_epoch_date(epoch_secs: u64) -> String {
         mo += 1;
     }
     format!("{} {} {y}, {h:02}:{m:02}", d + 1, months[mo.min(11)])
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.0} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn dir_size_bytes(path: &std::path::Path) -> Option<u64> {
+    if !path.is_dir() { return None; }
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+            if meta.is_file() {
+                total += meta.len();
+            } else if meta.is_dir() {
+                total += dir_size_bytes(&entry.path()).unwrap_or(0);
+            }
+        }
+    }
+    Some(total)
+}
+
+fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::ffi::CString;
+    let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+        } else {
+            None
+        }
+    }
 }

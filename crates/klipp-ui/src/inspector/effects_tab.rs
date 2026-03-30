@@ -5,6 +5,80 @@ use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
 
+/// Empty state — no effects applied (shown for all selection states when no effects exist)
+pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
+    let available_h = ui.available_height();
+    ui.add_space((available_h * 0.15).max(20.0));
+
+    ui.vertical_centered(|ui| {
+        // Centered + icon in a rounded square
+        let icon_size = 40.0;
+        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::hover());
+        ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+        ui.painter().text(
+            icon_rect.center(), egui::Align2::CENTER_CENTER,
+            "+", egui::FontId::proportional(20.0), theme.text_dim,
+        );
+
+        ui.add_space(12.0);
+
+        ui.label(
+            egui::RichText::new("No effects applied")
+                .size(14.0)
+                .color(theme.text_primary),
+        );
+
+        ui.add_space(6.0);
+
+        ui.label(
+            egui::RichText::new("Add an effect from the Effects Browser or\nuse the button below")
+                .size(11.0)
+                .color(theme.text_dim),
+        );
+
+        ui.add_space(24.0);
+
+        // "+ Add Effect..." button with "E" shortcut badge
+        ui.horizontal(|ui| {
+            let total_w = ui.available_width();
+            let btn_w = total_w - 40.0;
+            ui.add_space(10.0);
+
+            let mut job = egui::text::LayoutJob::default();
+            job.append("+  ", 0.0, egui::TextFormat {
+                font_id: egui::FontId::proportional(12.0),
+                color: theme.accent,
+                ..Default::default()
+            });
+            job.append("Add Effect\u{2026}", 0.0, egui::TextFormat {
+                font_id: egui::FontId::proportional(12.0),
+                color: theme.text_secondary,
+                ..Default::default()
+            });
+
+            if ui.add_sized(
+                egui::vec2(btn_w, 30.0),
+                egui::Button::new(job)
+                    .fill(theme.bg_raised)
+                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .rounding(6.0),
+            ).clicked() {
+                cmds.push(AppCommand::ShowEffectsBrowser);
+            }
+
+            // "E" shortcut badge
+            let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+            ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
+            ui.painter().text(
+                badge_rect.center(), egui::Align2::CENTER_CENTER,
+                "E", egui::FontId::monospace(10.0), theme.text_dim,
+            );
+        });
+    });
+
+    ui.add_space(16.0);
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -17,33 +91,11 @@ pub fn show(
 ) {
     let clip_id = clip.id;
 
-    // ── Applied Effects (built-in + OFX combined) ──
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("APPLIED EFFECTS")
-                .size(10.0)
-                .strong()
-                .color(theme.text_dim),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new("drag to reorder")
-                    .size(9.0)
-                    .color(theme.text_dim),
-            );
-        });
-    });
-    ui.add_space(7.0);
-
     let has_any = !clip.builtin_effects.is_empty() || !clip.effects.is_empty();
 
     if !has_any {
-        ui.label(
-            egui::RichText::new("No effects applied")
-                .size(11.0)
-                .color(theme.text_dim),
-        );
-        ui.add_space(8.0);
+        show_empty(ui, theme, cmds);
+        return;
     }
 
     // ── Built-in effects ──

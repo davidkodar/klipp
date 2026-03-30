@@ -366,6 +366,7 @@ pub enum AppCommand {
     SetKeyframeInterpolation { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, interpolation: crate::keyframe::Interpolation },
     SetKeyframeTangents { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, tangent_in: (f64, f32), tangent_out: (f64, f32) },
     ToggleColorPanel,
+    ShowEffectsBrowser,
     ToggleBeforeAfter,
     SetMattePreview(bool),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },

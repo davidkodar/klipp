@@ -263,7 +263,7 @@ impl NewInspectorPanel {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
                     } else {
-                        no_selection(ui, theme);
+                        effects_tab::show_empty(ui, theme, &mut cmds);
                     }
                 }
                 InspectorTab::Title => {
@@ -279,9 +279,11 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Info => {
                     if let (Some((track_idx, clip)), Some(media)) = (clip_info, media) {
-                        info_tab::show(ui, state, theme, track_idx, clip, media, &mut self.tag_input, &mut cmds);
+                        info_tab::show_clip(ui, state, theme, track_idx, clip, media, &mut self.tag_input, &mut cmds);
+                    } else if let Some(bm) = bin_media {
+                        info_tab::show_bin_media(ui, state, theme, bm, &mut self.tag_input, &mut cmds);
                     } else {
-                        no_selection(ui, theme);
+                        info_tab::show_no_selection(ui, state, theme);
                     }
                 }
             }

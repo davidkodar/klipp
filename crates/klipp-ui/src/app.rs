@@ -2623,6 +2623,11 @@ impl KlippApp {
                     }
                     continue;
                 }
+                AppCommand::ShowEffectsBrowser => {
+                    self.state.show_browser_panel = true;
+                    self.layout.active_browser_tab = crate::layout_state::BrowserTab::Effects;
+                    continue;
+                }
                 AppCommand::ToggleBeforeAfter => {
                     self.state.before_after_active = !self.state.before_after_active;
                     // Fall through to forward to engine (sets bypass_color_grade)
