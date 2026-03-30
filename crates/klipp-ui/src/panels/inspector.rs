@@ -1,3 +1,4 @@
+use crate::app::format_size_brief;
 use crate::icons::Icon;
 use crate::state::AppState;
 use klipp_core::AppCommand;
@@ -14,6 +15,12 @@ pub struct InspectorPanel {
     active_tab: InspectorTab,
     show_add_effect: bool,
     show_add_builtin: bool,
+    // Collapsible section state for Info tab
+    info_clip_open: bool,
+    info_tags_open: bool,
+    info_timeline_open: bool,
+    // Tag input buffer
+    tag_input: String,
 }
 
 impl Default for InspectorPanel {
@@ -22,6 +29,10 @@ impl Default for InspectorPanel {
             active_tab: InspectorTab::Info,
             show_add_effect: false,
             show_add_builtin: false,
+            info_clip_open: true,
+            info_tags_open: true,
+            info_timeline_open: true,
+            tag_input: String::new(),
         }
     }
 }
@@ -149,7 +160,7 @@ impl InspectorPanel {
     }
 
     fn show_info_tab(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
         track_idx: usize,
@@ -157,219 +168,624 @@ impl InspectorPanel {
         media: &klipp_media::MediaItem,
         cmds: &mut Vec<AppCommand>,
     ) {
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Clip Info").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
+        let pad = 14.0;
+        let row_h = 30.0;
+        let value_color = egui::Color32::from_rgb(220, 220, 230);
+        let accent = egui::Color32::from_rgb(232, 160, 32);
+        let section_bg = egui::Color32::from_rgb(24, 24, 28);
+        let card_bg = egui::Color32::from_rgb(30, 30, 36);
+        let border = egui::Color32::from_rgb(44, 44, 52);
+        let dim = egui::Color32::from_rgb(100, 100, 115);
 
-        egui::Grid::new("inspector_clip_info")
-            .num_columns(2)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("File:");
-                ui.label(&media.filename);
-                ui.end_row();
-
-                ui.label("Duration:");
-                ui.label(media.duration.to_timecode_string());
-                ui.end_row();
-
-                ui.label("FPS:");
-                ui.label(format!("{:.3}", media.fps.as_f64()));
-                ui.end_row();
-
-                ui.label("Size:");
-                ui.label(format!(
-                    "{} \u{00d7} {}",
-                    media.resolution.width, media.resolution.height
-                ));
-                ui.end_row();
-
-                ui.label("Codec:");
-                let codec_str = if media.audio_codec.is_empty() {
-                    media.video_codec.clone()
-                } else {
-                    format!("{} / {}", media.video_codec, media.audio_codec)
-                };
-                ui.label(codec_str);
-                ui.end_row();
-            });
-
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Timeline").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
-
-        egui::Grid::new("inspector_timeline")
-            .num_columns(2)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("In:");
-                ui.label(clip.timeline_in.to_timecode_string());
-                ui.end_row();
-
-                ui.label("Out:");
-                ui.label(clip.timeline_out.to_timecode_string());
-                ui.end_row();
-
-                ui.label("Duration:");
-                ui.label(clip.duration().to_timecode_string());
-                ui.end_row();
-
-                ui.label("Track:");
-                if let Some(track) = state.sequence().tracks.get(track_idx) {
-                    ui.label(&track.name);
-                }
-                ui.end_row();
-            });
-
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Source").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
-
-        egui::Grid::new("inspector_source")
-            .num_columns(2)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("In:");
-                ui.label(clip.source_in.to_timecode_string());
-                ui.end_row();
-
-                ui.label("Out:");
-                ui.label(clip.source_out.to_timecode_string());
-                ui.end_row();
-            });
-
-        // Filmstrip
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Filmstrip").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
-
-        let filmstrip_count = clip.media_id()
-            .and_then(|mid| state.filmstrip_textures.get(&mid))
-            .map(|f| f.len())
-            .unwrap_or(0);
-        if filmstrip_count > 0 {
-            ui.colored_label(
-                egui::Color32::from_rgb(100, 200, 120),
-                format!("{} frames", filmstrip_count),
-            );
-        } else {
-            ui.label("Generating...");
-        }
-
-        // Proxy status
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Proxy").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
-
-        let is_generating = state.proxy_generating.contains(&media.id);
-
-        if media.proxy_ready {
-            ui.horizontal(|ui| {
-                ui.add(Icon::CheckCircle.image(14.0).tint(egui::Color32::from_rgb(100, 200, 120)));
-                ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Ready");
-            });
-            if let Some(proxy_path) = &media.proxy_path {
-                // Show proxy file details
-                let file_size = std::fs::metadata(proxy_path).map(|m| m.len()).unwrap_or(0);
-                egui::Grid::new("inspector_proxy_info")
-                    .num_columns(2)
-                    .spacing([12.0, 4.0])
-                    .show(ui, |ui| {
-                        ui.label("Size:");
-                        ui.label(format!("{:.1} MB", file_size as f64 / (1024.0 * 1024.0)));
-                        ui.end_row();
-
-                        ui.label("Path:");
-                        let path_str = proxy_path.to_string_lossy();
-                        ui.label(
-                            egui::RichText::new(path_str.as_ref())
-                                .size(10.0)
-                                .color(egui::Color32::from_rgb(100, 100, 110)),
-                        );
-                        ui.end_row();
-                    });
-
-                // Use proxies toggle status
-                ui.add_space(4.0);
-                if state.use_proxies {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(80, 160, 220),
-                        "Using proxy for playback",
-                    );
-                } else {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(100, 100, 110),
-                        "Proxy available (Use Proxies is off)",
-                    );
-                }
-            }
-        } else if is_generating {
-            let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
-            let eta_str = if progress > 0.01 {
-                if let Some(start) = state.proxy_start_times.get(&media.id) {
-                    let elapsed = start.elapsed().as_secs_f64();
-                    let remaining = (elapsed / progress as f64) - elapsed;
-                    let rem_secs = remaining as u64;
-                    if rem_secs >= 60 {
-                        format!(" — ~{}m {:02}s left", rem_secs / 60, rem_secs % 60)
-                    } else {
-                        format!(" — ~{}s left", rem_secs)
-                    }
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 180, 60),
-                    format!("Generating proxy — {:.0}%{}", progress * 100.0, eta_str),
-                );
-            });
-            ui.add_space(2.0);
-            let bar = egui::ProgressBar::new(progress)
-                .desired_width(ui.available_width());
-            ui.add(bar);
-            ui.add_space(4.0);
-            if ui.small_button("Cancel").clicked() {
-                cmds.push(AppCommand::CancelProxy { media_id: media.id });
-            }
-            ui.ctx().request_repaint();
-        } else {
-            ui.horizontal(|ui| {
-                ui.label("Not generated");
-                if ui.small_button("Generate Now").clicked() {
-                    cmds.push(AppCommand::GenerateProxy { media_id: media.id });
-                }
-            });
-        }
-
-        // Offline warning
-        if media.offline {
+        egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add(Icon::Warning.image(14.0).tint(egui::Color32::from_rgb(255, 160, 80)));
-                ui.colored_label(egui::Color32::from_rgb(255, 160, 80), "Media Offline");
-            });
-            ui.label(format!("Path: {}", media.path.display()));
-            if ui.small_button("Relink...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Relink media file")
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::RelinkMedia {
-                        media_id: media.id,
-                        new_path: path,
+
+            // ════════════════════════════════════════
+            // CLIP INFO section
+            // ════════════════════════════════════════
+            self.info_clip_open = Self::section_card(
+                ui, "CLIP INFO", self.info_clip_open, None,
+                section_bg, card_bg, border, pad, |ui| {
+                    let w = ui.available_width();
+
+                    // Resolution
+                    Self::info_row(ui, pad, row_h, w, border, "Resolution", |ui, right_x, cy| {
+                        let text = format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height);
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            text, egui::FontId::proportional(13.0), value_color,
+                        );
                     });
+
+                    // Frame rate
+                    Self::info_row(ui, pad, row_h, w, border, "Frame rate", |ui, right_x, cy| {
+                        let fps_val = media.fps.as_f64();
+                        let fps_text = if (fps_val - fps_val.round()).abs() < 0.01 {
+                            format!("{}  fps", fps_val.round() as u32)
+                        } else {
+                            format!("{:.3}  fps", fps_val)
+                        };
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            fps_text, egui::FontId::proportional(13.0), value_color,
+                        );
+                    });
+
+                    // Codec (pill badges)
+                    Self::info_row(ui, pad, row_h, w, border, "Codec", |ui, right_x, cy| {
+                        let mut x = right_x;
+                        let pill_h = 20.0;
+                        let pill_bg = egui::Color32::from_rgb(40, 40, 48);
+                        let pill_border = egui::Color32::from_rgb(60, 60, 70);
+
+                        // Audio codec pill
+                        if !media.audio_codec.is_empty() {
+                            let codec = media.audio_codec.to_uppercase();
+                            let galley = ui.painter().layout_no_wrap(
+                                codec.clone(), egui::FontId::monospace(11.0), value_color,
+                            );
+                            let pw = galley.size().x + 12.0;
+                            let pill_rect = egui::Rect::from_min_size(
+                                egui::pos2(x - pw, cy - pill_h / 2.0),
+                                egui::vec2(pw, pill_h),
+                            );
+                            ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                            ui.painter().text(
+                                pill_rect.center(), egui::Align2::CENTER_CENTER,
+                                codec, egui::FontId::monospace(11.0), value_color,
+                            );
+                            x -= pw + 6.0;
+                        }
+
+                        // Video codec pill
+                        if !media.video_codec.is_empty() {
+                            let codec = media.video_codec.to_uppercase();
+                            let galley = ui.painter().layout_no_wrap(
+                                codec.clone(), egui::FontId::monospace(11.0), value_color,
+                            );
+                            let pw = galley.size().x + 12.0;
+                            let pill_rect = egui::Rect::from_min_size(
+                                egui::pos2(x - pw, cy - pill_h / 2.0),
+                                egui::vec2(pw, pill_h),
+                            );
+                            ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                            ui.painter().text(
+                                pill_rect.center(), egui::Align2::CENTER_CENTER,
+                                codec, egui::FontId::monospace(11.0), value_color,
+                            );
+                        }
+                    });
+
+                    // Audio (channel bars + label)
+                    if media.has_audio {
+                        Self::info_row(ui, pad, row_h, w, border, "Audio", |ui, right_x, cy| {
+                            let channels = media.audio_channels.unwrap_or(2);
+                            let sample_rate = media.sample_rate.unwrap_or(48000);
+                            let ch_label = match channels {
+                                1 => "Mono",
+                                2 => "Stereo",
+                                6 => "5.1",
+                                8 => "7.1",
+                                _ => "",
+                            };
+                            let sr_khz = sample_rate as f64 / 1000.0;
+                            let sr_text = if sr_khz == sr_khz.floor() {
+                                format!("{} kHz", sr_khz as u32)
+                            } else {
+                                format!("{:.1} kHz", sr_khz)
+                            };
+                            let label = format!("{ch_label} \u{00B7} {sr_text}");
+
+                            let label_galley = ui.painter().layout_no_wrap(
+                                label.clone(), egui::FontId::proportional(12.0), dim,
+                            );
+                            let label_w = label_galley.size().x;
+
+                            // Draw text
+                            ui.painter().text(
+                                egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                                label, egui::FontId::proportional(12.0), dim,
+                            );
+
+                            // Draw channel bars
+                            let bars_x = right_x - label_w - 10.0;
+                            let bar_w = 4.0;
+                            let bar_gap = 2.0;
+                            let max_bar_h = 14.0;
+                            let bar_heights: &[f32] = match channels {
+                                1 => &[0.8],
+                                2 => &[0.9, 0.7],
+                                6 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5],
+                                8 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5, 0.7, 0.6],
+                                _ => &[0.8, 0.7],
+                            };
+                            let total_bars_w = bar_heights.len() as f32 * (bar_w + bar_gap) - bar_gap;
+                            let bx = bars_x - total_bars_w;
+                            for (i, &h_frac) in bar_heights.iter().enumerate() {
+                                let bh = max_bar_h * h_frac;
+                                let bar_rect = egui::Rect::from_min_size(
+                                    egui::pos2(bx + i as f32 * (bar_w + bar_gap), cy - bh / 2.0),
+                                    egui::vec2(bar_w, bh),
+                                );
+                                ui.painter().rect_filled(bar_rect, 1.0, accent);
+                            }
+                        });
+                    }
+
+                    // Duration
+                    Self::info_row(ui, pad, row_h, w, border, "Duration", |ui, right_x, cy| {
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            media.duration.to_timecode_string(),
+                            egui::FontId::proportional(13.0), value_color,
+                        );
+                    });
+
+                    // File size
+                    Self::info_row(ui, pad, row_h, w, border, "File size", |ui, right_x, cy| {
+                        let size_str = format_size_brief(media.file_size_bytes);
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            size_str, egui::FontId::proportional(13.0), value_color,
+                        );
+                    });
+
+                    // Colour space
+                    Self::info_row(ui, pad, row_h, w, border, "Colour", |ui, right_x, cy| {
+                        use klipp_media::ColourSpace;
+                        let (badge_text, badge_color, sub_text) = match media.colour_space {
+                            ColourSpace::Sdr => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+                            ColourSpace::Hdr10 => ("HDR10", egui::Color32::from_rgb(220, 140, 30), "BT.2020"),
+                            ColourSpace::Hlg => ("HLG", egui::Color32::from_rgb(200, 100, 40), "BT.2020"),
+                            ColourSpace::Unknown => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+                        };
+
+                        // Sub-text
+                        let sub_galley = ui.painter().layout_no_wrap(
+                            sub_text.to_string(), egui::FontId::proportional(12.0), dim,
+                        );
+                        let sub_w = sub_galley.size().x;
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            sub_text, egui::FontId::proportional(12.0), dim,
+                        );
+
+                        // Badge
+                        let badge_galley = ui.painter().layout_no_wrap(
+                            badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE,
+                        );
+                        let bw = badge_galley.size().x + 10.0;
+                        let bh = 18.0;
+                        let badge_rect = egui::Rect::from_min_size(
+                            egui::pos2(right_x - sub_w - 8.0 - bw, cy - bh / 2.0),
+                            egui::vec2(bw, bh),
+                        );
+                        ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+                        ui.painter().text(
+                            badge_rect.center(), egui::Align2::CENTER_CENTER,
+                            badge_text, egui::FontId::proportional(11.0),
+                            egui::Color32::WHITE,
+                        );
+                    });
+
+                    // Shoot date
+                    if let Some(created) = media.media_created_at.filter(|&t| t > 0) {
+                        Self::info_row(ui, pad, row_h, w, border, "Shoot date", |ui, right_x, cy| {
+                            let dt = chrono::DateTime::from_timestamp(created as i64, 0);
+                            let text = dt.map(|d| d.format("%d %b %Y, %H:%M").to_string())
+                                .unwrap_or_else(|| "Unknown".into());
+                            ui.painter().text(
+                                egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                                text, egui::FontId::proportional(13.0), value_color,
+                            );
+                        });
+                    }
+
+                    // Proxy status
+                    Self::info_row(ui, pad, row_h, w, border, "Proxy", |ui, right_x, cy| {
+                        let is_generating = state.proxy_generating.contains(&media.id);
+                        if media.proxy_ready {
+                            ui.painter().text(
+                                egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                                "Ready", egui::FontId::proportional(13.0),
+                                egui::Color32::from_rgb(100, 200, 120),
+                            );
+                        } else if is_generating {
+                            let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
+                            ui.painter().text(
+                                egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                                format!("{:.0}%", progress * 100.0),
+                                egui::FontId::proportional(13.0),
+                                egui::Color32::from_rgb(220, 180, 60),
+                            );
+                            ui.ctx().request_repaint();
+                        } else {
+                            ui.painter().text(
+                                egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                                "None", egui::FontId::proportional(13.0), dim,
+                            );
+                        }
+                    });
+                },
+            );
+
+            ui.add_space(8.0);
+
+            // ════════════════════════════════════════
+            // TAGS section
+            // ════════════════════════════════════════
+            let tag_count = media.tags.len();
+            self.info_tags_open = Self::section_card(
+                ui, "TAGS", self.info_tags_open,
+                Some(format!("{tag_count}")),
+                section_bg, card_bg, border, pad, |ui| {
+                    if media.tags.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("No tags added")
+                                .italics()
+                                .size(12.0)
+                                .color(dim),
+                        );
+                        ui.add_space(6.0);
+                    } else {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            let mut remove_tag = None;
+                            for (i, tag) in media.tags.iter().enumerate() {
+                                let tag_resp = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new(tag).size(11.0)
+                                    )
+                                    .rounding(10.0)
+                                    .fill(egui::Color32::from_rgb(50, 50, 60))
+                                );
+                                if tag_resp.secondary_clicked() {
+                                    remove_tag = Some(i);
+                                }
+                                tag_resp.on_hover_text("Right-click to remove");
+                            }
+                            if let Some(idx) = remove_tag {
+                                cmds.push(AppCommand::RemoveMediaTag {
+                                    media_id: media.id,
+                                    tag_index: idx,
+                                });
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+
+                    // Add tag input
+                    let w = ui.available_width() - pad * 2.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(pad);
+                        let add_rect = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(w, 28.0),
+                        );
+                        let resp = ui.allocate_rect(add_rect, egui::Sense::click());
+                        ui.painter().rect(
+                            add_rect, 6.0,
+                            egui::Color32::from_rgb(34, 34, 40),
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(52, 52, 60)),
+                        );
+                        ui.painter().text(
+                            egui::pos2(add_rect.min.x + 10.0, add_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "+  Add tag\u{2026}",
+                            egui::FontId::proportional(12.0),
+                            dim,
+                        );
+                        if resp.clicked() {
+                            // We'll use a simple popup for tag input
+                            ui.memory_mut(|mem| mem.open_popup(egui::Id::new("add_tag_popup")));
+                        }
+                    });
+                    ui.add_space(8.0);
+                },
+            );
+
+            // Tag input popup
+            let popup_id = egui::Id::new("add_tag_popup");
+            if ui.memory(|mem| mem.is_popup_open(popup_id)) {
+                egui::Area::new(popup_id)
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(ui.cursor().min + egui::vec2(pad, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let resp = ui.text_edit_singleline(&mut self.tag_input);
+                                resp.request_focus();
+                                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    let tag = self.tag_input.trim().to_string();
+                                    if !tag.is_empty() {
+                                        cmds.push(AppCommand::AddMediaTag {
+                                            media_id: media.id,
+                                            tag,
+                                        });
+                                    }
+                                    self.tag_input.clear();
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    self.tag_input.clear();
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            });
+                        });
+                    });
+            }
+
+            ui.add_space(8.0);
+
+            // ════════════════════════════════════════
+            // TIMELINE section
+            // ════════════════════════════════════════
+            self.info_timeline_open = Self::section_card(
+                ui, "TIMELINE", self.info_timeline_open, None,
+                section_bg, card_bg, border, pad, |ui| {
+                    let w = ui.available_width();
+
+                    // Progress bar — clip position in sequence
+                    let seq_dur = state.sequence_duration().to_secs_f64();
+                    let clip_in = clip.timeline_in.to_secs_f64();
+                    let clip_out = clip.timeline_out.to_secs_f64();
+                    if seq_dur > 0.0 {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(w - pad * 2.0, 6.0), egui::Sense::hover(),
+                        );
+                        // Background bar
+                        ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(40, 40, 48));
+                        // Clip range highlight
+                        let start_frac = (clip_in / seq_dur).clamp(0.0, 1.0) as f32;
+                        let end_frac = (clip_out / seq_dur).clamp(0.0, 1.0) as f32;
+                        let highlight = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x + rect.width() * start_frac, rect.min.y),
+                            egui::pos2(rect.min.x + rect.width() * end_frac, rect.max.y),
+                        );
+                        ui.painter().rect_filled(highlight, 2.0, accent);
+
+                        // Timecode labels under bar
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad);
+                            ui.colored_label(dim,
+                                egui::RichText::new(clip.timeline_in.to_timecode_string()).monospace().size(10.0));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(pad);
+                                ui.colored_label(dim,
+                                    egui::RichText::new(clip.timeline_out.to_timecode_string()).monospace().size(10.0));
+                            });
+                        });
+                    }
+                    ui.add_space(4.0);
+
+                    // In
+                    Self::info_row(ui, pad, row_h, w, border, "In", |ui, right_x, cy| {
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            clip.timeline_in.to_timecode_string(),
+                            egui::FontId::monospace(13.0), value_color,
+                        );
+                    });
+
+                    // Out
+                    Self::info_row(ui, pad, row_h, w, border, "Out", |ui, right_x, cy| {
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            clip.timeline_out.to_timecode_string(),
+                            egui::FontId::monospace(13.0), value_color,
+                        );
+                    });
+
+                    // Duration (accent color)
+                    Self::info_row(ui, pad, row_h, w, border, "Duration", |ui, right_x, cy| {
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            clip.duration().to_timecode_string(),
+                            egui::FontId::monospace(13.0), accent,
+                        );
+                    });
+
+                    // Track
+                    Self::info_row(ui, pad, row_h, w, border, "Track", |ui, right_x, cy| {
+                        let track_name = state.sequence().tracks.get(track_idx)
+                            .map(|t| t.name.clone())
+                            .unwrap_or_default();
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            track_name,
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_rgb(80, 160, 220),
+                        );
+                    });
+
+                    // Speed
+                    Self::info_row(ui, pad, row_h, w, border, "Speed", |ui, right_x, cy| {
+                        let speed = clip.speed;
+                        let color = if (speed - 1.0).abs() < 0.001 {
+                            egui::Color32::from_rgb(100, 200, 120) // green = normal
+                        } else if speed > 1.0 {
+                            egui::Color32::from_rgb(220, 180, 60) // amber = fast
+                        } else {
+                            egui::Color32::from_rgb(200, 80, 80) // red = slow
+                        };
+                        ui.painter().text(
+                            egui::pos2(right_x, cy), egui::Align2::RIGHT_CENTER,
+                            format!("{:.0}%", speed * 100.0),
+                            egui::FontId::proportional(13.0), color,
+                        );
+                    });
+                },
+            );
+
+            // Offline warning (outside cards)
+            if media.offline {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add(Icon::Warning.image(14.0).tint(egui::Color32::from_rgb(255, 160, 80)));
+                    ui.colored_label(egui::Color32::from_rgb(255, 160, 80), "Media Offline");
+                });
+                ui.label(format!("Path: {}", media.path.display()));
+                if ui.small_button("Relink...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Relink media file")
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::RelinkMedia {
+                            media_id: media.id,
+                            new_path: path,
+                        });
+                    }
                 }
             }
+
+            ui.add_space(16.0);
+        });
+    }
+
+    /// Draw a collapsible section card. Returns the new open state.
+    fn section_card(
+        ui: &mut egui::Ui,
+        title: &str,
+        open: bool,
+        badge: Option<String>,
+        header_bg: egui::Color32,
+        card_bg: egui::Color32,
+        border_color: egui::Color32,
+        pad: f32,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        let mut is_open = open;
+        let w = ui.available_width();
+        let header_h = 30.0;
+        let dim = egui::Color32::from_rgb(100, 100, 115);
+
+        // Card outer frame
+        let outer_start = ui.cursor().min;
+
+        // Header
+        let (header_rect, header_resp) = ui.allocate_exact_size(
+            egui::vec2(w, header_h), egui::Sense::click(),
+        );
+        ui.painter().rect_filled(header_rect, egui::Rounding { nw: 6.0, ne: 6.0, sw: if is_open { 0.0 } else { 6.0 }, se: if is_open { 0.0 } else { 6.0 }}, header_bg);
+
+        // Left border accent
+        let accent_rect = egui::Rect::from_min_size(
+            header_rect.min,
+            egui::vec2(3.0, header_h),
+        );
+        ui.painter().rect_filled(accent_rect, egui::Rounding { nw: 6.0, ne: 0.0, sw: if is_open { 0.0 } else { 6.0 }, se: 0.0 }, border_color);
+
+        // Title
+        ui.painter().text(
+            egui::pos2(header_rect.min.x + pad + 4.0, header_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgb(140, 140, 155),
+        );
+
+        // Badge (tag count etc.)
+        if let Some(ref badge_text) = badge {
+            ui.painter().text(
+                egui::pos2(header_rect.max.x - pad - 16.0, header_rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                badge_text,
+                egui::FontId::proportional(11.0),
+                dim,
+            );
         }
+
+        // Collapse arrow
+        let arrow = if is_open { "\u{25BE}" } else { "\u{25B8}" };
+        ui.painter().text(
+            egui::pos2(header_rect.max.x - pad, header_rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            arrow,
+            egui::FontId::proportional(11.0),
+            dim,
+        );
+
+        if header_resp.clicked() {
+            is_open = !is_open;
+        }
+
+        // Body
+        if is_open {
+            let body_start = ui.cursor().min;
+            // Draw card body background (will be sized after contents)
+            let frame = egui::Frame::default()
+                .fill(card_bg)
+                .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 })
+                .stroke(egui::Stroke::NONE)
+                .shadow(egui::Shadow::NONE);
+
+            frame.show(ui, |ui| {
+                add_contents(ui);
+            });
+
+            // Bottom border
+            let body_end_y = ui.cursor().min.y;
+            let body_rect = egui::Rect::from_min_max(
+                body_start,
+                egui::pos2(body_start.x + w, body_end_y),
+            );
+            // Left border on body
+            let body_accent = egui::Rect::from_min_size(
+                body_rect.min,
+                egui::vec2(3.0, body_rect.height()),
+            );
+            ui.painter().rect_filled(body_accent, 0.0, border_color);
+
+            // Card outline
+            let full_card = egui::Rect::from_min_max(
+                outer_start,
+                egui::pos2(outer_start.x + w, body_end_y),
+            );
+            ui.painter().rect_stroke(full_card, 6.0, egui::Stroke::new(0.5, border_color));
+        } else {
+            // Outline for collapsed header
+            ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, border_color));
+        }
+
+        is_open
+    }
+
+    /// Draw a single key-value row in a section.
+    fn info_row(
+        ui: &mut egui::Ui,
+        pad: f32,
+        row_h: f32,
+        total_w: f32,
+        border: egui::Color32,
+        label: &str,
+        draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
+    ) {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(total_w, row_h), egui::Sense::hover(),
+        );
+
+        // Subtle separator line at bottom
+        ui.painter().hline(
+            rect.min.x + pad..=rect.max.x - pad,
+            rect.max.y,
+            egui::Stroke::new(0.5, border),
+        );
+
+        // Label (left)
+        ui.painter().text(
+            egui::pos2(rect.min.x + pad, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_rgb(160, 160, 170),
+        );
+
+        // Value (right) — callback
+        let right_x = rect.max.x - pad;
+        let cy = rect.center().y;
+        draw_value(ui, right_x, cy);
     }
 
     fn show_color_tab_redirect(

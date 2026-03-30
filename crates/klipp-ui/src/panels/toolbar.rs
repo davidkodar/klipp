@@ -234,7 +234,7 @@ impl ToolbarPanel {
                 for (tool, tip, key) in &tools {
                     let active = *layout_tool == *tool;
                     let (bg, fg) = if active {
-                        (theme.accent_subtle, theme.accent)
+                        (theme.accent, theme.bg_void)
                     } else {
                         (egui::Color32::TRANSPARENT, theme.text_secondary)
                     };
@@ -317,6 +317,9 @@ impl ToolbarPanel {
         ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
             if ui.button("New Project").clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.button("Open Project...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
+            if state.project_path.is_some() {
+                if ui.button("Project Manager").clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
+            }
             if !recent.is_empty() {
                 ui.menu_button("Recent Projects", |ui| {
                     for rp in recent {
@@ -378,6 +381,25 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
             if ui.button("Project Info...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            if state.project_path.is_some() {
+                ui.menu_button("Set Project Thumbnail", |ui| {
+                    if ui.button("From Current Frame").clicked() {
+                        cmds.push(AppCommand::SetProjectThumbnailFromViewer);
+                        ui.close_menu();
+                    }
+                    if ui.button("From Image File\u{2026}").clicked() {
+                        ui.close_menu();
+                        if let Some(p) = rfd::FileDialog::new()
+                            .set_title("Choose Thumbnail Image")
+                            .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"])
+                            .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm"])
+                            .pick_file()
+                        {
+                            cmds.push(AppCommand::SetProjectThumbnailFromFile { path: p });
+                        }
+                    }
+                });
+            }
             if ui.button("Consolidate Project...").clicked() { state.show_consolidate_dialog = true; ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
@@ -568,13 +590,13 @@ fn alloc_btn(ui: &mut egui::Ui, pos: egui::Pos2, size: f32) -> egui::Response {
 }
 
 fn icon_color(resp: &egui::Response, active: bool) -> egui::Color32 {
-    if active { egui::Color32::from_rgb(0xe8, 0xa0, 0x20) }
+    if active { egui::Color32::from_rgb(0x0a, 0x0a, 0x0c) } // dark on bright bg
     else if resp.hovered() { egui::Color32::from_rgb(0xe8, 0xe8, 0xee) }
     else { egui::Color32::from_rgb(0x90, 0x90, 0xa0) }
 }
 
 fn icon_bg(resp: &egui::Response, active: bool) -> egui::Color32 {
-    if active { egui::Color32::from_rgba_premultiplied(232, 160, 32, 23) }
+    if active { egui::Color32::from_rgb(0xe8, 0xa0, 0x20) } // solid accent fill
     else if resp.hovered() { egui::Color32::from_rgb(0x2a, 0x2a, 0x32) }
     else { egui::Color32::TRANSPARENT }
 }

@@ -258,6 +258,7 @@ pub enum AppCommand {
 
     // Project
     NewProject,
+    CloseProject,
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },
@@ -273,6 +274,10 @@ pub enum AppCommand {
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
     RenameProjectOnDisk { old_path: PathBuf, new_name: String },
+    /// Set project thumbnail from the current viewer frame.
+    SetProjectThumbnailFromViewer,
+    /// Set project thumbnail from an external image file.
+    SetProjectThumbnailFromFile { path: PathBuf },
 
     // Sequences
     AddSequence { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
@@ -338,6 +343,8 @@ pub enum AppCommand {
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    AddMediaTag { media_id: MediaId, tag: String },
+    RemoveMediaTag { media_id: MediaId, tag_index: usize },
 
     // Node graph (color grading)
     AddNode { clip_id: ClipId, kind: String, position: (f32, f32) },

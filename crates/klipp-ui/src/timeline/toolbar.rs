@@ -23,7 +23,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
                 egui::Sense::click(),
             );
             let (bg, fg) = if active {
-                (theme.accent_subtle, theme.accent)
+                (theme.accent, theme.bg_void)
             } else if resp.hovered() {
                 (theme.bg_hover, theme.text_secondary)
             } else {
@@ -42,7 +42,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
         // ── Snap toggle ──
         let snap_active = state.snap_enabled;
         let (snap_bg, snap_fg) = if snap_active {
-            (theme.accent_subtle, theme.accent)
+            (theme.accent, theme.bg_void)
         } else {
             (egui::Color32::TRANSPARENT, theme.text_dim)
         };
@@ -56,7 +56,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
         // ── Skimming toggle ──
         let skim_active = state.skimming_enabled;
         let (skim_bg, skim_fg) = if skim_active {
-            (theme.accent_subtle, theme.accent)
+            (theme.accent, theme.bg_void)
         } else {
             (egui::Color32::TRANSPARENT, theme.text_dim)
         };

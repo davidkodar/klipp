@@ -5941,6 +5941,24 @@ impl KlippApp {
                     self.state.offline_media_ids.retain(|id| id != media_id);
                     continue;
                 }
+                AppCommand::AddMediaTag { media_id, tag } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        if !item.tags.contains(tag) {
+                            item.tags.push(tag.clone());
+                            self.state.dirty = true;
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::RemoveMediaTag { media_id, tag_index } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        if *tag_index < item.tags.len() {
+                            item.tags.remove(*tag_index);
+                            self.state.dirty = true;
+                        }
+                    }
+                    continue;
+                }
                 // Media pool management
                 AppCommand::RemoveFromPool { media_id } => {
                     let usage = media_usage_count(*media_id, &self.state.sequences);
@@ -6439,6 +6457,18 @@ impl KlippApp {
                     self.state.show_new_project_dialog = true;
                     continue;
                 }
+                AppCommand::CloseProject => {
+                    if self.state.project_path.is_none() {
+                        continue; // Already on launch screen
+                    }
+                    if self.state.dirty {
+                        self.state.show_unsaved_dialog = true;
+                        self.state.unsaved_dialog_action = UnsavedAction::CloseProject;
+                        continue;
+                    }
+                    self.do_close_project();
+                    continue;
+                }
                 AppCommand::SaveProject => {
                     if let Some(ref path) = self.state.project_path.clone() {
                         self.do_save_project(path);
@@ -6509,6 +6539,50 @@ impl KlippApp {
                                 self.state.project_path = Some(new_path);
                             }
                             self.prefs_dirty = true;
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::SetProjectThumbnailFromViewer => {
+                    if let Some(ref project_path) = self.state.project_path.clone() {
+                        if let Some(thumb_path) = capture_viewer_frame_as_thumbnail(&self.frame_buffer, project_path) {
+                            // Update recent project entry
+                            for rp in &mut self.prefs.general.recent_projects {
+                                if rp.path == *project_path {
+                                    // Clear cached texture so it reloads
+                                    if let Some(old) = rp.thumbnail_path.as_ref() {
+                                        self.launch_screen.invalidate_thumbnail(old);
+                                    }
+                                    rp.thumbnail_path = Some(thumb_path.clone());
+                                    break;
+                                }
+                            }
+                            self.prefs_dirty = true;
+                            self.state.toast.show("Project thumbnail set from current frame");
+                            tracing::info!("Set project thumbnail from viewer: {:?}", thumb_path);
+                        } else {
+                            self.state.toast.show("No frame available in viewer");
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::SetProjectThumbnailFromFile { path } => {
+                    if let Some(ref project_path) = self.state.project_path.clone() {
+                        if let Some(thumb_path) = set_thumbnail_from_image_file(path, project_path) {
+                            for rp in &mut self.prefs.general.recent_projects {
+                                if rp.path == *project_path {
+                                    if let Some(old) = rp.thumbnail_path.as_ref() {
+                                        self.launch_screen.invalidate_thumbnail(old);
+                                    }
+                                    rp.thumbnail_path = Some(thumb_path.clone());
+                                    break;
+                                }
+                            }
+                            self.prefs_dirty = true;
+                            self.state.toast.show("Project thumbnail updated");
+                            tracing::info!("Set project thumbnail from file: {:?}", thumb_path);
+                        } else {
+                            self.state.toast.show("Failed to load image for thumbnail");
                         }
                     }
                     continue;
@@ -6981,6 +7055,32 @@ impl KlippApp {
         self.state.filmstrip_textures.clear();
         self.state.filmstrip_in_progress.clear();
         self.state.filmstrip_queue.clear();
+        self.sync_sequence_to_engine();
+    }
+
+    /// Close the current project and return to the Project Manager (launch screen).
+    fn do_close_project(&mut self) {
+        // Stop playback
+        let _ = self.cmd_tx.send(AppCommand::Stop);
+        // Drop file watcher
+        self.media_watcher = None;
+        // Reset state to return to launch screen
+        self.state.sequences = vec![Sequence::new_default()];
+        self.state.active_sequence_idx = 0;
+        self.state.media_pool = klipp_media::MediaPool::new();
+        self.state.project_path = None;
+        self.state.dirty = false;
+        self.state.selected_clip = None;
+        self.state.selected_clips.clear();
+        self.state.hovered_clip = None;
+        self.state.playback = PlaybackState::Idle;
+        self.state.playhead = Timecode::zero();
+        self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
+        self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
+        self.state.filmstrip_in_progress.clear();
+        self.state.filmstrip_queue.clear();
+        self.state.fullscreen_viewer = false;
         self.sync_sequence_to_engine();
     }
 
@@ -7883,7 +7983,7 @@ impl KlippApp {
                         self.state.sequences[self.state.active_sequence_idx].resolution.width,
                         self.state.sequences[self.state.active_sequence_idx].resolution.height
                     )),
-                    thumbnail_path: generate_poster_frame(&self.frame_buffer, path),
+                    thumbnail_path: generate_poster_frame(&self.frame_buffer, path, &self.state.media_pool, self.state.sequence_duration().to_secs_f64()),
                     total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
                 };
                 self.prefs.add_recent_project(rp);
@@ -7956,10 +8056,18 @@ impl KlippApp {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.selected_clip = None;
+                // Preserve existing thumbnail and last_saved when re-opening
+                let existing = self.prefs.general.recent_projects.iter()
+                    .find(|rp| rp.path == path);
+                let existing_thumb = existing
+                    .and_then(|rp| rp.thumbnail_path.clone())
+                    .filter(|p| p.exists());
+                let existing_saved = existing
+                    .and_then(|rp| rp.last_saved.clone());
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
                     name: self.state.sequences[self.state.active_sequence_idx].name.clone(),
-                    last_saved: None,
+                    last_saved: existing_saved,
                     duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
                     fps: {
                         let f = self.state.sequences[self.state.active_sequence_idx].fps;
@@ -7974,7 +8082,7 @@ impl KlippApp {
                         self.state.sequences[self.state.active_sequence_idx].resolution.width,
                         self.state.sequences[self.state.active_sequence_idx].resolution.height
                     )),
-                    thumbnail_path: None,
+                    thumbnail_path: existing_thumb,
                     total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
                 };
                 self.prefs.add_recent_project(rp);
@@ -8095,6 +8203,7 @@ impl KlippApp {
                                 self.state.show_new_project_dialog = true;
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
+                            UnsavedAction::CloseProject => self.do_close_project(),
                             UnsavedAction::Quit => cmds.push(AppCommand::Quit),
                             UnsavedAction::None => {}
                         }
@@ -8117,6 +8226,7 @@ impl KlippApp {
                                 self.state.show_new_project_dialog = true;
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
+                            UnsavedAction::CloseProject => self.do_close_project(),
                             UnsavedAction::Quit => cmds.push(AppCommand::Quit),
                             UnsavedAction::None => {}
                         }
@@ -11342,18 +11452,118 @@ fn save_rgba_as_png(rgba: &[u8], width: u32, height: u32, path: &std::path::Path
 fn generate_poster_frame(
     frame_buffer: &klipp_engine::SharedFrameBuffer,
     project_path: &std::path::Path,
+    media_pool: &klipp_media::MediaPool,
+    duration_secs: f64,
+) -> Option<PathBuf> {
+    let cache_dir = dirs::cache_dir()?.join("klipp").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let stem = project_path.file_stem()?.to_string_lossy();
+    let out_path = cache_dir.join(format!("{stem}.png"));
+
+    // Strategy 1: Use current viewer frame if non-black
+    if let Some(path) = try_poster_from_frame_buffer(frame_buffer, &out_path) {
+        return Some(path);
+    }
+
+    // Strategy 2: Extract first non-black frame from the first media file
+    if let Some(path) = try_poster_from_media(media_pool, duration_secs, &out_path) {
+        return Some(path);
+    }
+
+    None
+}
+
+/// Try to generate a poster frame from the current viewer frame buffer.
+/// Returns None if the frame is empty or all-black.
+fn try_poster_from_frame_buffer(
+    frame_buffer: &klipp_engine::SharedFrameBuffer,
+    out_path: &std::path::Path,
+) -> Option<PathBuf> {
+    let fb = frame_buffer.lock().ok()?;
+    if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+        return None;
+    }
+    if klipp_engine::is_frame_black(&fb.data, fb.width, fb.height) {
+        return None;
+    }
+
+    let rgb = downsample_rgba_to_rgb(&fb.data, fb.width, fb.height, 320);
+    save_rgb_as_png(&rgb.0, rgb.1, rgb.2, out_path).then(|| out_path.to_path_buf())
+}
+
+/// Try to generate a poster frame by decoding the first media file in the pool.
+fn try_poster_from_media(
+    media_pool: &klipp_media::MediaPool,
+    duration_secs: f64,
+    out_path: &std::path::Path,
+) -> Option<PathBuf> {
+    // Find first video media file
+    let first_media = media_pool.all()
+        .find(|m| m.path.exists() && is_video_ext(&m.path))?;
+
+    let est_dur = if duration_secs > 0.0 { duration_secs } else { 60.0 };
+    let (rgba, w, h) = klipp_engine::generate_thumbnail_at_size_non_black(
+        &first_media.path, 1.0, est_dur, 320,
+    ).ok()?;
+
+    save_rgba_as_png(&rgba, w, h, out_path).then(|| out_path.to_path_buf())
+}
+
+/// Force-capture the current viewer frame as project thumbnail (for custom thumbnail).
+fn capture_viewer_frame_as_thumbnail(
+    frame_buffer: &klipp_engine::SharedFrameBuffer,
+    project_path: &std::path::Path,
 ) -> Option<PathBuf> {
     let fb = frame_buffer.lock().ok()?;
     if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
         return None;
     }
 
-    // Downsample to 320×180 using nearest neighbor
-    let dst_w: u32 = 320;
-    let dst_h: u32 = 180;
-    let src_w = fb.width;
-    let src_h = fb.height;
-    let mut rgb_data = vec![0u8; (dst_w * dst_h * 3) as usize];
+    let cache_dir = dirs::cache_dir()?.join("klipp").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let stem = project_path.file_stem()?.to_string_lossy();
+    let out_path = cache_dir.join(format!("{stem}.png"));
+
+    let rgb = downsample_rgba_to_rgb(&fb.data, fb.width, fb.height, 320);
+    save_rgb_as_png(&rgb.0, rgb.1, rgb.2, &out_path).then(|| out_path)
+}
+
+/// Set project thumbnail from an external image file (PNG, JPEG, etc.).
+fn set_thumbnail_from_image_file(
+    image_path: &std::path::Path,
+    project_path: &std::path::Path,
+) -> Option<PathBuf> {
+    let cache_dir = dirs::cache_dir()?.join("klipp").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let stem = project_path.file_stem()?.to_string_lossy();
+    let out_path = cache_dir.join(format!("{stem}.png"));
+
+    // Read and decode with the image crate-style approach using ffmpeg
+    // Use generate_thumbnail_at_size for images (seeks to 0.0s, which works for stills)
+    let ext = image_path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "webp" || ext == "tiff" || ext == "tif" {
+        // For images, use ffmpeg to decode and resize
+        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(image_path, 0.0, 320) {
+            return save_rgba_as_png(&rgba, w, h, &out_path).then(|| out_path);
+        }
+    }
+
+    // For video files, extract a non-black frame
+    if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(image_path, 1.0, 60.0, 320) {
+        return save_rgba_as_png(&rgba, w, h, &out_path).then(|| out_path);
+    }
+
+    None
+}
+
+/// Downsample RGBA frame data to RGB at a target width (maintaining aspect ratio).
+fn downsample_rgba_to_rgb(rgba: &[u8], src_w: u32, src_h: u32, target_w: u32) -> (Vec<u8>, u32, u32) {
+    let dst_w = target_w.min(src_w);
+    let dst_h = (src_h as u64 * dst_w as u64 / src_w as u64) as u32;
+    let mut rgb = vec![0u8; (dst_w * dst_h * 3) as usize];
 
     for dy in 0..dst_h {
         for dx in 0..dst_w {
@@ -11361,33 +11571,35 @@ fn generate_poster_frame(
             let sy = (dy as u64 * src_h as u64 / dst_h as u64) as u32;
             let src_idx = ((sy * src_w + sx) * 4) as usize;
             let dst_idx = ((dy * dst_w + dx) * 3) as usize;
-            if src_idx + 2 < fb.data.len() && dst_idx + 2 < rgb_data.len() {
-                rgb_data[dst_idx] = fb.data[src_idx];
-                rgb_data[dst_idx + 1] = fb.data[src_idx + 1];
-                rgb_data[dst_idx + 2] = fb.data[src_idx + 2];
+            if src_idx + 2 < rgba.len() && dst_idx + 2 < rgb.len() {
+                rgb[dst_idx] = rgba[src_idx];
+                rgb[dst_idx + 1] = rgba[src_idx + 1];
+                rgb[dst_idx + 2] = rgba[src_idx + 2];
             }
         }
     }
-
-    // Determine output path
-    let cache_dir = dirs::cache_dir()?.join("klipp").join("thumbnails");
-    std::fs::create_dir_all(&cache_dir).ok()?;
-    let stem = project_path.file_stem()?.to_string_lossy();
-    let out_path = cache_dir.join(format!("{stem}.png"));
-
-    // Write PNG
-    let file = std::fs::File::create(&out_path).ok()?;
-    let w = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(w, dst_w, dst_h);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().ok()?;
-    writer.write_image_data(&rgb_data).ok()?;
-
-    Some(out_path)
+    (rgb, dst_w, dst_h)
 }
 
-fn format_size_brief(bytes: u64) -> String {
+/// Write RGB pixel data as a PNG file.
+fn save_rgb_as_png(rgb: &[u8], width: u32, height: u32, path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::File::create(path) else { return false };
+    let w = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let Ok(mut writer) = encoder.write_header() else { return false };
+    writer.write_image_data(rgb).is_ok()
+}
+
+fn is_video_ext(path: &std::path::Path) -> bool {
+    let ext = path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "mts" | "ts")
+}
+
+pub(crate) fn format_size_brief(bytes: u64) -> String {
     if bytes < 1024 * 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {

@@ -638,6 +638,7 @@ pub enum UnsavedAction {
     NewProject,
     OpenNewProjectDialog,
     OpenProject(PathBuf),
+    CloseProject,
     Quit,
 }
 
