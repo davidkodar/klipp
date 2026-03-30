@@ -3,7 +3,7 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [env]
-RUST_MIN_STACK = "67108864"
+RUST_MIN_STACK = "134217728"
 
 [alias]
 r = "run -p klipp-app"

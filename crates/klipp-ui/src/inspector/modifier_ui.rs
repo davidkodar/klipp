@@ -181,12 +181,19 @@ fn show_add_dropdown(
 ) {
     let id_salt = format!("add_mod_{:?}_{:?}", clip_id, param_id);
     let mut add_cmd = None;
+    let mut job = egui::text::LayoutJob::default();
+    job.append("+ ", 0.0, egui::TextFormat {
+        font_id: egui::FontId::proportional(10.0),
+        color: theme.accent,
+        ..Default::default()
+    });
+    job.append("Add Behavior\u{2026}", 0.0, egui::TextFormat {
+        font_id: egui::FontId::proportional(10.0),
+        color: theme.text_secondary,
+        ..Default::default()
+    });
     egui::ComboBox::from_id_salt(&id_salt)
-        .selected_text(
-            egui::RichText::new("+ Add Behavior")
-                .size(10.0)
-                .color(theme.accent),
-        )
+        .selected_text(job)
         .width(ui.available_width().min(140.0))
         .show_ui(ui, |ui| {
             for label in MODIFIER_LABELS {

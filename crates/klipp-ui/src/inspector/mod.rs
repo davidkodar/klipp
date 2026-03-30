@@ -29,7 +29,7 @@ impl NewInspectorPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        // Resolve selected clip
+        // Resolve selected clip (timeline) or selected media (bin)
         let clip_id = state.selected_clip;
         let clip_info = clip_id.and_then(|cid| {
             state
@@ -41,6 +41,16 @@ impl NewInspectorPanel {
         });
         let media = clip_info
             .and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
+
+        // Fallback: if no timeline clip selected, check media browser selection
+        let bin_media = if clip_info.is_none() {
+            state.selected_media_ids.iter().next()
+                .and_then(|mid| state.media_pool.get(mid))
+        } else {
+            None
+        };
+        let is_timeline_clip = clip_info.is_some();
+        let is_bin_clip = bin_media.is_some();
 
         // ── Header ──
         let header_rect = egui::Rect::from_min_size(
@@ -72,8 +82,10 @@ impl NewInspectorPanel {
                         _ => media.map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into()),
                     };
                     (name, theme.text_primary)
+                } else if let Some(bm) = bin_media {
+                    (bm.filename.clone(), theme.text_primary)
                 } else {
-                    ("No selection".into(), theme.text_secondary)
+                    ("No clip selected".into(), theme.text_dim)
                 };
                 ui.label(
                     egui::RichText::new(clip_name)
@@ -84,6 +96,51 @@ impl NewInspectorPanel {
             });
         });
         ui.advance_cursor_after_rect(header_rect);
+
+        // ── Amber context banner (timeline clip only) ──
+        if let Some((track_idx, ref clip)) = clip_info {
+            let track_name = state.sequence().tracks.get(track_idx)
+                .map(|t| if t.name.is_empty() { format!("Track {}", track_idx + 1) } else { t.name.clone() })
+                .unwrap_or_default();
+            let tc = clip.timeline_in.to_timecode_string();
+
+            let banner_h = 24.0;
+            let banner_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), banner_h),
+            );
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
+                // Amber background
+                ui.painter().rect_filled(banner_rect, 0.0,
+                    egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
+                ui.painter().hline(banner_rect.x_range(), banner_rect.max.y,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(232, 160, 32, 60)));
+
+                // Color bar on left
+                let bar_rect = egui::Rect::from_min_size(
+                    banner_rect.min, egui::vec2(4.0, banner_h),
+                );
+                let role_color = theme.clip_role_color(clip.role);
+                ui.painter().rect_filled(bar_rect, 0.0, role_color);
+
+                // Text
+                ui.painter().text(
+                    egui::pos2(banner_rect.min.x + 12.0, banner_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("Timeline clip \u{00B7} {track_name}"),
+                    egui::FontId::proportional(10.0),
+                    theme.accent,
+                );
+                ui.painter().text(
+                    egui::pos2(banner_rect.max.x - 10.0, banner_rect.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &tc,
+                    egui::FontId::monospace(10.0),
+                    theme.text_dim,
+                );
+            });
+            ui.advance_cursor_after_rect(banner_rect);
+        }
 
         // ── Tab bar ──
         let tab_rect = egui::Rect::from_min_size(
@@ -170,9 +227,9 @@ impl NewInspectorPanel {
                 InspectorTab::Video => {
                     if let Some((_, ref clip)) = clip_info {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
-                        video_tab::show(ui, theme, clip, &mut cmds, clip_time_secs);
+                        video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
-                        no_selection(ui, theme);
+                        video_tab::show(ui, theme, state, None, bin_media, &mut cmds);
                     }
                 }
                 InspectorTab::Audio => {

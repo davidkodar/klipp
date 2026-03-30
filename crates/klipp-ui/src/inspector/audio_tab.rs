@@ -161,9 +161,15 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let w = ui.available_width();
 
         info_row(ui, theme, pad, row_h, w, "Sample rate", |ui, rx, cy| {
+            let sr_khz = state.audio_sample_rate as f32 / 1000.0;
+            let sr_text = if sr_khz == sr_khz.floor() {
+                format!("{}  kHz", sr_khz as u32)
+            } else {
+                format!("{:.1}  kHz", sr_khz)
+            };
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "48  kHz", egui::FontId::proportional(13.0), theme.text_primary,
+                sr_text, egui::FontId::proportional(13.0), theme.text_primary,
             );
         });
 
@@ -188,8 +194,10 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let knob_center = egui::pos2(knob_row.min.x + pad + 24.0, knob_row.center().y);
         let knob_r = 20.0;
         ui.painter().circle_stroke(knob_center, knob_r, egui::Stroke::new(2.0, theme.border_light));
-        // Knob indicator
-        let angle = std::f32::consts::FRAC_PI_4 * 3.0;
+        // Knob indicator — maps master_volume (0.0–2.0) to angle range
+        let vol_frac = (state.master_volume / 2.0).clamp(0.0, 1.0);
+        // Sweep from 225° (min, bottom-left) to -45° (max, bottom-right) = 270° range
+        let angle = (std::f32::consts::PI * 1.25) - vol_frac * (std::f32::consts::PI * 1.5);
         let ind_end = egui::pos2(
             knob_center.x + knob_r * 0.7 * angle.cos(),
             knob_center.y - knob_r * 0.7 * angle.sin(),
@@ -204,7 +212,8 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         ui.painter().text(
             egui::pos2(knob_center.x + knob_r + 12.0, knob_row.center().y + 8.0),
             egui::Align2::LEFT_CENTER,
-            "0.0 dB", egui::FontId::proportional(15.0), theme.text_primary,
+            format!("{:.1} dB", 20.0 * state.master_volume.max(0.0001).log10()),
+            egui::FontId::proportional(15.0), theme.text_primary,
         );
         // Keyframe diamond
         let kf_pos = egui::pos2(knob_row.max.x - pad - 6.0, knob_row.center().y + 8.0);
@@ -217,55 +226,29 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
     section_card(ui, "RENDER SETTINGS", theme, |ui| {
         let w = ui.available_width();
 
-        // Format dropdown
-        info_row(ui, theme, pad, row_h + 4.0, w, "Format", |ui, rx, cy| {
-            let dd_w = 110.0;
-            let dd_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - dd_w, cy - 13.0), egui::vec2(dd_w, 26.0),
-            );
-            ui.painter().rect(dd_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+        // Format
+        info_row(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
             ui.painter().text(
-                egui::pos2(dd_rect.min.x + 10.0, dd_rect.center().y), egui::Align2::LEFT_CENTER,
-                "H.264 / AAC", egui::FontId::proportional(12.0), theme.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(dd_rect.max.x - 10.0, dd_rect.center().y), egui::Align2::RIGHT_CENTER,
-                "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                "H.264 / AAC", egui::FontId::proportional(13.0), theme.text_primary,
             );
         });
 
-        // Quality dropdown
-        info_row(ui, theme, pad, row_h + 4.0, w, "Quality", |ui, rx, cy| {
-            let dd_w = 110.0;
-            let dd_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - dd_w, cy - 13.0), egui::vec2(dd_w, 26.0),
-            );
-            ui.painter().rect(dd_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+        // Quality (encoder preset)
+        info_row(ui, theme, pad, row_h, w, "Quality", |ui, rx, cy| {
             ui.painter().text(
-                egui::pos2(dd_rect.min.x + 10.0, dd_rect.center().y), egui::Align2::LEFT_CENTER,
-                "High", egui::FontId::proportional(12.0), theme.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(dd_rect.max.x - 10.0, dd_rect.center().y), egui::Align2::RIGHT_CENTER,
-                "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                "High", egui::FontId::proportional(13.0), theme.text_primary,
             );
         });
 
-        // Proxy dropdown
-        info_row(ui, theme, pad, row_h + 4.0, w, "Proxy", |ui, rx, cy| {
-            let dd_w = 110.0;
-            let dd_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - dd_w, cy - 13.0), egui::vec2(dd_w, 26.0),
-            );
-            ui.painter().rect(dd_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+        // Proxy
+        info_row(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
             let proxy_text = if state.use_proxies { "On" } else { "Off" };
+            let color = if state.use_proxies { egui::Color32::from_rgb(100, 200, 120) } else { theme.text_primary };
             ui.painter().text(
-                egui::pos2(dd_rect.min.x + 10.0, dd_rect.center().y), egui::Align2::LEFT_CENTER,
-                proxy_text, egui::FontId::proportional(12.0), theme.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(dd_rect.max.x - 10.0, dd_rect.center().y), egui::Align2::RIGHT_CENTER,
-                "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
+                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
+                proxy_text, egui::FontId::proportional(13.0), color,
             );
         });
     });
