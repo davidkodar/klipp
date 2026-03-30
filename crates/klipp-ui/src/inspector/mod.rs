@@ -49,8 +49,7 @@ impl NewInspectorPanel {
         } else {
             None
         };
-        let is_timeline_clip = clip_info.is_some();
-        let is_bin_clip = bin_media.is_some();
+
 
         // ── Header ──
         let header_rect = egui::Rect::from_min_size(

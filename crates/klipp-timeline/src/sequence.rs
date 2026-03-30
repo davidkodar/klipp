@@ -338,6 +338,7 @@ impl Track {
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
@@ -518,6 +519,7 @@ impl Track {
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
+            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: clip.magnetic_anchor.clone(),
@@ -554,6 +556,7 @@ impl Track {
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
+            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
             linked_clip_id: clip.linked_clip_id,
             group_id: clip.group_id,
             magnetic_anchor: None, // right half gets no anchor
@@ -642,6 +645,9 @@ pub struct Clip {
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     #[serde(default)]
     pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
+    /// Per-index enabled state for builtin effects (true = enabled). Grows lazily.
+    #[serde(default)]
+    pub builtin_effects_enabled: Vec<bool>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     #[serde(default)]
@@ -742,6 +748,7 @@ impl Clip {
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,
@@ -788,6 +795,7 @@ impl Clip {
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
             builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
             group_id: None,
             magnetic_anchor: None,

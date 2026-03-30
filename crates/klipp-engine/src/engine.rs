@@ -3425,7 +3425,12 @@ impl PlaybackEngine {
                 }
             }
 
-            fx
+            // Filter out disabled builtin effects
+            let enabled = &c.builtin_effects_enabled;
+            fx.into_iter().enumerate()
+                .filter(|(i, _)| enabled.get(*i).copied().unwrap_or(true))
+                .map(|(_, e)| e)
+                .collect()
         } else {
             Vec::new()
         };

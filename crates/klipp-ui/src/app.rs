@@ -2769,6 +2769,23 @@ impl KlippApp {
                     }
                     continue;
                 }
+                AppCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            // Grow enabled vec if needed (default = all enabled)
+                            while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
+                                clip.builtin_effects_enabled.push(true);
+                            }
+                            if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
+                                *val = !*val;
+                            }
+                            break;
+                        }
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
                     let mut old_effect = None;
                     let mut is_speed_ramp = false;
@@ -4850,6 +4867,7 @@ impl KlippApp {
                         source_out: duration,
                         node_graph: klipp_nodes::NodeGraph::default(),
                         builtin_effects: Vec::new(),
+                        builtin_effects_enabled: Vec::new(),
                         effects: Vec::new(),
                         linked_clip_id: None,
                         group_id: None,
@@ -5579,6 +5597,7 @@ impl KlippApp {
                                     node_graph: clip.node_graph.clone(),
                                     effects: clip.effects.clone(),
                                     builtin_effects: clip.builtin_effects.clone(),
+                                    builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
@@ -5704,6 +5723,7 @@ impl KlippApp {
                                     node_graph: klipp_nodes::NodeGraph::default(),
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
+                                    builtin_effects_enabled: Vec::new(),
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
@@ -5784,6 +5804,7 @@ impl KlippApp {
                                     node_graph: klipp_nodes::NodeGraph::default(),
                                     effects: Vec::new(),
                                     builtin_effects: Vec::new(),
+                                    builtin_effects_enabled: Vec::new(),
                                     linked_clip_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
@@ -7818,6 +7839,7 @@ impl KlippApp {
                 node_graph: clip.node_graph,
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
+                builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
@@ -7923,6 +7945,7 @@ impl KlippApp {
                 node_graph: clip.node_graph,
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
+                builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                 linked_clip_id: clip.linked_clip_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,

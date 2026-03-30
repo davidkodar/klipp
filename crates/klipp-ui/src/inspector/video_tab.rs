@@ -156,6 +156,7 @@ fn show_bin_media_video(
         node_graph: klipp_nodes::NodeGraph::default(),
         effects: Vec::new(),
         builtin_effects: Vec::new(),
+        builtin_effects_enabled: Vec::new(),
         linked_clip_id: None,
         group_id: None,
         magnetic_anchor: None,

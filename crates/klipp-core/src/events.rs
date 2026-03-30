@@ -386,6 +386,7 @@ pub enum AppCommand {
     // Built-in effects
     AddBuiltinEffect { clip_id: ClipId, effect: klipp_effects::BuiltinEffect },
     RemoveBuiltinEffect { clip_id: ClipId, index: usize },
+    ToggleBuiltinEffectEnabled { clip_id: ClipId, index: usize },
     UpdateBuiltinEffect { clip_id: ClipId, index: usize, effect: klipp_effects::BuiltinEffect },
     ReorderBuiltinEffect { clip_id: ClipId, from_index: usize, to_index: usize },
 

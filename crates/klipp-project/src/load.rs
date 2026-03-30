@@ -202,6 +202,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     builtin_effects: c.builtin_effects.as_ref()
                         .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())
                         .unwrap_or_default(),
+                    builtin_effects_enabled: Vec::new(),
                     effects: c.effects.iter().map(|e| {
                         klipp_plugin::AppliedEffect {
                             plugin_name: e.plugin_name.clone(),
