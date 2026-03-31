@@ -162,6 +162,153 @@ pub enum BuiltinEffect {
         /// Hue of the halation: 0.0=deep red, 0.5=orange, 1.0=warm yellow (default 0.2)
         hue: f32,
     },
+    /// Invert: invert RGB channels with adjustable mix.
+    Invert {
+        /// Mix amount (0.0 = original, 1.0 = fully inverted)
+        mix: f32,
+    },
+    /// Posterize: reduce color depth to discrete levels.
+    Posterize {
+        /// Number of levels per channel (2.0–256.0, default 8.0)
+        levels: f32,
+    },
+    /// Mosaic (Pixelate): block-based pixelation effect.
+    Mosaic {
+        /// Size of each block in pixels (1.0–100.0, default 10.0)
+        block_size: f32,
+    },
+    /// EdgeDetect: Sobel edge detection blended with original.
+    EdgeDetect {
+        /// Edge strength multiplier (0.0–5.0, default 1.0)
+        strength: f32,
+        /// Blend with original (0.0 = original, 1.0 = edges only)
+        mix: f32,
+    },
+    /// ChannelMixer: 3x3 matrix multiplication on RGB channels.
+    ChannelMixer {
+        /// Output red = red_red * R + red_green * G + red_blue * B
+        red_red: f32,
+        red_green: f32,
+        red_blue: f32,
+        /// Output green = green_red * R + green_green * G + green_blue * B
+        green_red: f32,
+        green_green: f32,
+        green_blue: f32,
+        /// Output blue = blue_red * R + blue_green * G + blue_blue * B
+        blue_red: f32,
+        blue_green: f32,
+        blue_blue: f32,
+    },
+    /// DirectionalBlur: motion blur along a specified angle.
+    DirectionalBlur {
+        /// Direction angle in degrees (0–360)
+        angle: f32,
+        /// Blur distance in pixels (0–100)
+        distance: f32,
+        /// Number of samples (3–32, default 8)
+        samples: u32,
+    },
+    /// Emboss/Stamp: 3D relief effect using directional convolution.
+    Emboss {
+        /// Light direction angle in degrees (0–360, default 135 = top-left)
+        angle: f32,
+        /// Effect strength (0.0–5.0, default 1.0)
+        strength: f32,
+        /// Blend with original (0.0 = original, 1.0 = emboss only)
+        mix: f32,
+    },
+    /// Mirror: flip image horizontally and/or vertically.
+    Mirror {
+        /// Flip horizontally (0 or 1, default 1)
+        horizontal: u32,
+        /// Flip vertically (0 or 1, default 0)
+        vertical: u32,
+    },
+    /// LensDistortion: barrel/pincushion lens distortion.
+    LensDistortion {
+        /// Distortion amount (-1.0 barrel to 1.0 pincushion, default 0.0)
+        distortion: f32,
+        /// Scale factor (0.5-2.0, default 1.0)
+        scale: f32,
+    },
+    /// Dilate: morphological dilation — expand bright areas.
+    Dilate {
+        /// Neighborhood radius (1-10, default 1)
+        radius: u32,
+    },
+    /// Erode: morphological erosion — expand dark areas.
+    Erode {
+        /// Neighborhood radius (1-10, default 1)
+        radius: u32,
+    },
+    /// Denoise: edge-preserving bilateral filter.
+    Denoise {
+        /// Spatial sigma for distance weighting (1.0-20.0, default 5.0)
+        spatial_sigma: f32,
+        /// Color sigma for intensity weighting (0.01-1.0, default 0.1)
+        color_sigma: f32,
+        /// Number of filter iterations (1-3, default 1)
+        iterations: u32,
+    },
+    /// Gamma: per-channel gamma correction.
+    Gamma {
+        /// Gamma value (0.1-5.0, default 1.0)
+        gamma: f32,
+    },
+    /// HSV Adjust: hue shift, saturation and value multiplier.
+    HSVAdjust {
+        /// Hue shift in degrees (-180..180, default 0)
+        hue_shift: f32,
+        /// Saturation multiplier (0..3, default 1.0)
+        saturation: f32,
+        /// Value/brightness multiplier (0..3, default 1.0)
+        value: f32,
+    },
+    /// Noise Generator: add random noise to the image.
+    NoiseGenerator {
+        /// Noise amount (0..1, default 0.1)
+        amount: f32,
+        /// Monochrome noise (0 = color, 1 = grayscale)
+        monochrome: u32,
+        /// Random seed for noise pattern
+        seed: u32,
+    },
+    /// Median Filter: edge-preserving noise removal via median of neighborhood.
+    MedianFilter {
+        /// Neighborhood radius (1-5, clamped to 2 on GPU, default 1)
+        radius: u32,
+    },
+    /// Radial Blur: zoom or spin blur from a center point.
+    RadialBlur {
+        /// Center X position (0-1, default 0.5)
+        center_x: f32,
+        /// Center Y position (0-1, default 0.5)
+        center_y: f32,
+        /// Blur amount (0-50, default 10)
+        amount: f32,
+        /// Number of samples (4-32, default 12)
+        samples: u32,
+        /// Mode: 0=zoom, 1=spin
+        mode: u32,
+    },
+    /// Levels: input/output remapping with gamma correction.
+    Levels {
+        /// Input black point (0-1, default 0)
+        in_black: f32,
+        /// Input white point (0-1, default 1)
+        in_white: f32,
+        /// Gamma (0.1-5, default 1)
+        gamma: f32,
+        /// Output black point (0-1, default 0)
+        out_black: f32,
+        /// Output white point (0-1, default 1)
+        out_white: f32,
+    },
+    /// Equalize: histogram equalization for automatic contrast enhancement.
+    Equalize {
+        /// Strength of equalization (0-1, default 1.0)
+        strength: f32,
+    },
     /// Speed Ramp: GPU-accelerated retiming with frame blending.
     /// Changes playback speed with smooth interpolation between frames.
     SpeedRamp {
@@ -240,10 +387,930 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
             light::apply_film_halation(rgba, width, height, *threshold, *radius, *intensity, *hue)
         }
+        BuiltinEffect::Invert { mix } => {
+            apply_invert(rgba, *mix)
+        }
+        BuiltinEffect::Posterize { levels } => {
+            apply_posterize(rgba, *levels)
+        }
+        BuiltinEffect::Mosaic { block_size } => {
+            apply_mosaic(rgba, width, height, *block_size)
+        }
+        BuiltinEffect::EdgeDetect { strength, mix } => {
+            apply_edge_detect(rgba, width, height, *strength, *mix)
+        }
+        BuiltinEffect::ChannelMixer {
+            red_red, red_green, red_blue,
+            green_red, green_green, green_blue,
+            blue_red, blue_green, blue_blue,
+        } => {
+            apply_channel_mixer(rgba, *red_red, *red_green, *red_blue,
+                *green_red, *green_green, *green_blue,
+                *blue_red, *blue_green, *blue_blue)
+        }
+        BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
+            apply_directional_blur(rgba, width, height, *angle, *distance, *samples)
+        }
+        BuiltinEffect::Emboss { angle, strength, mix } => {
+            apply_emboss(rgba, width, height, *angle, *strength, *mix)
+        }
+        BuiltinEffect::Mirror { horizontal, vertical } => {
+            apply_mirror(rgba, width, height, *horizontal, *vertical)
+        }
+        BuiltinEffect::LensDistortion { distortion, scale } => {
+            apply_lens_distortion(rgba, width, height, *distortion, *scale)
+        }
+        BuiltinEffect::Dilate { radius } => {
+            apply_dilate(rgba, width, height, *radius)
+        }
+        BuiltinEffect::Erode { radius } => {
+            apply_erode(rgba, width, height, *radius)
+        }
+        BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
+            apply_denoise(rgba, width, height, *spatial_sigma, *color_sigma, *iterations)
+        }
+        BuiltinEffect::Gamma { gamma } => {
+            apply_gamma(rgba, *gamma)
+        }
+        BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
+            apply_hsv_adjust(rgba, *hue_shift, *saturation, *value)
+        }
+        BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
+            apply_noise_generator(rgba, *amount, *monochrome, *seed)
+        }
+        BuiltinEffect::MedianFilter { radius } => {
+            apply_median_filter(rgba, width, height, *radius)
+        }
+        BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
+            apply_radial_blur(rgba, width, height, *center_x, *center_y, *amount, *samples, *mode)
+        }
+        BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
+            apply_levels(rgba, *in_black, *in_white, *gamma, *out_black, *out_white)
+        }
+        BuiltinEffect::Equalize { strength } => {
+            apply_equalize(rgba, *strength)
+        }
         BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is handled at the engine level (frame queue + GPU blend),
             // not in the per-frame effects chain. If it reaches here, pass through.
             rgba
         }
+    }
+}
+
+// ─── CPU fallback implementations for new effects ───────────────────────────
+
+fn apply_invert(mut rgba: Vec<u8>, mix: f32) -> Vec<u8> {
+    let mix = mix.clamp(0.0, 1.0);
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        chunk[0] = ((r + (1.0 - r - r) * mix) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[1] = ((g + (1.0 - g - g) * mix) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[2] = ((b + (1.0 - b - b) * mix) * 255.0).clamp(0.0, 255.0) as u8;
+        // alpha unchanged
+    }
+    rgba
+}
+
+fn apply_posterize(mut rgba: Vec<u8>, levels: f32) -> Vec<u8> {
+    let levels = levels.clamp(2.0, 256.0);
+    let divisor = levels - 1.0;
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        chunk[0] = ((r * levels).floor() / divisor * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[1] = ((g * levels).floor() / divisor * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[2] = ((b * levels).floor() / divisor * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    rgba
+}
+
+fn apply_mosaic(rgba: Vec<u8>, width: u32, height: u32, block_size: f32) -> Vec<u8> {
+    let block_size = block_size.max(1.0);
+    let mut out = rgba.clone();
+    for y in 0..height {
+        for x in 0..width {
+            let bx = ((x as f32 / block_size).floor() * block_size) as u32;
+            let by = ((y as f32 / block_size).floor() * block_size) as u32;
+            let bx = bx.min(width - 1);
+            let by = by.min(height - 1);
+            let src_idx = (by * width + bx) as usize * 4;
+            let dst_idx = (y * width + x) as usize * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+        }
+    }
+    out
+}
+
+fn apply_edge_detect(rgba: Vec<u8>, width: u32, height: u32, strength: f32, mix: f32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let mix = mix.clamp(0.0, 1.0);
+    let mut out = rgba.clone();
+
+    for y in 0..h {
+        for x in 0..w {
+            let mut gx = 0.0f32;
+            let mut gy = 0.0f32;
+            let sobel_x: [[f32; 3]; 3] = [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]];
+            let sobel_y: [[f32; 3]; 3] = [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]];
+
+            for ky in 0..3i32 {
+                for kx in 0..3i32 {
+                    let sx = (x as i32 + kx - 1).clamp(0, w as i32 - 1) as usize;
+                    let sy = (y as i32 + ky - 1).clamp(0, h as i32 - 1) as usize;
+                    let idx = (sy * w + sx) * 4;
+                    let r = rgba[idx] as f32 / 255.0;
+                    let g = rgba[idx + 1] as f32 / 255.0;
+                    let b = rgba[idx + 2] as f32 / 255.0;
+                    let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                    gx += lum * sobel_x[ky as usize][kx as usize];
+                    gy += lum * sobel_y[ky as usize][kx as usize];
+                }
+            }
+
+            let edge = (gx * gx + gy * gy).sqrt() * strength;
+            let edge = edge.clamp(0.0, 1.0);
+
+            let dst_idx = (y * w + x) * 4;
+            let orig_r = rgba[dst_idx] as f32 / 255.0;
+            let orig_g = rgba[dst_idx + 1] as f32 / 255.0;
+            let orig_b = rgba[dst_idx + 2] as f32 / 255.0;
+            out[dst_idx] = ((orig_r * (1.0 - mix) + edge * mix) * 255.0).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 1] = ((orig_g * (1.0 - mix) + edge * mix) * 255.0).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 2] = ((orig_b * (1.0 - mix) + edge * mix) * 255.0).clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+fn apply_channel_mixer(
+    mut rgba: Vec<u8>,
+    rr: f32, rg: f32, rb: f32,
+    gr: f32, gg: f32, gb: f32,
+    br: f32, bg: f32, bb: f32,
+) -> Vec<u8> {
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        chunk[0] = ((rr * r + rg * g + rb * b) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[1] = ((gr * r + gg * g + gb * b) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[2] = ((br * r + bg * g + bb * b) * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    rgba
+}
+
+fn apply_directional_blur(rgba: Vec<u8>, width: u32, height: u32, angle: f32, distance: f32, samples: u32) -> Vec<u8> {
+    let samples = samples.clamp(3, 32);
+    if distance < 0.5 || samples < 2 {
+        return rgba;
+    }
+    let w = width as i32;
+    let h = height as i32;
+    let angle_rad = angle.to_radians();
+    let dx = angle_rad.cos() * distance / samples as f32;
+    let dy = angle_rad.sin() * distance / samples as f32;
+
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum_r = 0.0f32;
+            let mut sum_g = 0.0f32;
+            let mut sum_b = 0.0f32;
+            let mut sum_a = 0.0f32;
+            for i in 0..samples as i32 {
+                let sx = (x as f32 + dx * i as f32).round() as i32;
+                let sy = (y as f32 + dy * i as f32).round() as i32;
+                let sx = sx.clamp(0, w - 1);
+                let sy = sy.clamp(0, h - 1);
+                let idx = (sy * w + sx) as usize * 4;
+                sum_r += rgba[idx] as f32;
+                sum_g += rgba[idx + 1] as f32;
+                sum_b += rgba[idx + 2] as f32;
+                sum_a += rgba[idx + 3] as f32;
+            }
+            let inv = 1.0 / samples as f32;
+            let dst_idx = (y * w + x) as usize * 4;
+            out[dst_idx] = (sum_r * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 1] = (sum_g * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 2] = (sum_b * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 3] = (sum_a * inv).clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+fn apply_emboss(rgba: Vec<u8>, width: u32, height: u32, angle: f32, strength: f32, mix: f32) -> Vec<u8> {
+    let w = width as i32;
+    let h = height as i32;
+    let mix = mix.clamp(0.0, 1.0);
+    let strength = strength.clamp(0.0, 5.0);
+    let angle_rad = angle.to_radians();
+    let dx = angle_rad.cos();
+    let dy = angle_rad.sin();
+
+    let mut out = rgba.clone();
+    for y in 1..(h - 1) {
+        for x in 1..(w - 1) {
+            let idx = (y * w + x) as usize * 4;
+            // Sample in light direction and opposite
+            let sx1 = (x as f32 + dx).round().clamp(0.0, (w - 1) as f32) as usize;
+            let sy1 = (y as f32 + dy).round().clamp(0.0, (h - 1) as f32) as usize;
+            let sx2 = (x as f32 - dx).round().clamp(0.0, (w - 1) as f32) as usize;
+            let sy2 = (y as f32 - dy).round().clamp(0.0, (h - 1) as f32) as usize;
+            let i1 = (sy1 * w as usize + sx1) * 4;
+            let i2 = (sy2 * w as usize + sx2) * 4;
+
+            for ch in 0..3 {
+                let diff = (rgba[i1 + ch] as f32 - rgba[i2 + ch] as f32) * strength;
+                let emboss = (128.0 + diff).clamp(0.0, 255.0);
+                let orig = rgba[idx + ch] as f32;
+                out[idx + ch] = (orig + (emboss - orig) * mix).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+fn apply_mirror(rgba: Vec<u8>, width: u32, height: u32, horizontal: u32, vertical: u32) -> Vec<u8> {
+    if horizontal == 0 && vertical == 0 {
+        return rgba;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let sx = if horizontal != 0 { w - 1 - x } else { x };
+            let sy = if vertical != 0 { h - 1 - y } else { y };
+            let src_idx = (sy * w + sx) * 4;
+            let dst_idx = (y * w + x) * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+        }
+    }
+    out
+}
+
+fn apply_lens_distortion(rgba: Vec<u8>, width: u32, height: u32, distortion: f32, scale: f32) -> Vec<u8> {
+    if distortion.abs() < f32::EPSILON && (scale - 1.0).abs() < f32::EPSILON {
+        return rgba;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let nx = (x as f32 - cx) / cx;
+            let ny = (y as f32 - cy) / cy;
+            let r2 = nx * nx + ny * ny;
+            let factor = 1.0 + distortion * r2;
+            let sx = (nx * factor / scale) * cx + cx;
+            let sy = (ny * factor / scale) * cy + cy;
+            // Bilinear interpolation
+            let x0 = sx.floor() as i32;
+            let y0 = sy.floor() as i32;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+            let fx = sx - x0 as f32;
+            let fy = sy - y0 as f32;
+            let x0c = x0.clamp(0, w as i32 - 1) as usize;
+            let y0c = y0.clamp(0, h as i32 - 1) as usize;
+            let x1c = x1.clamp(0, w as i32 - 1) as usize;
+            let y1c = y1.clamp(0, h as i32 - 1) as usize;
+            let dst_idx = (y * w + x) * 4;
+            for ch in 0..4 {
+                let p00 = rgba[(y0c * w + x0c) * 4 + ch] as f32;
+                let p10 = rgba[(y0c * w + x1c) * 4 + ch] as f32;
+                let p01 = rgba[(y1c * w + x0c) * 4 + ch] as f32;
+                let p11 = rgba[(y1c * w + x1c) * 4 + ch] as f32;
+                let top = p00 + (p10 - p00) * fx;
+                let bot = p01 + (p11 - p01) * fx;
+                out[dst_idx + ch] = (top + (bot - top) * fy).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+fn apply_dilate(rgba: Vec<u8>, width: u32, height: u32, radius: u32) -> Vec<u8> {
+    let w = width as i32;
+    let h = height as i32;
+    let r = radius.clamp(1, 10) as i32;
+    let mut out = rgba.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let mut max_r = 0u8;
+            let mut max_g = 0u8;
+            let mut max_b = 0u8;
+            let mut max_a = 0u8;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let sx = (x + dx).clamp(0, w - 1) as usize;
+                    let sy = (y + dy).clamp(0, h - 1) as usize;
+                    let idx = (sy * width as usize + sx) * 4;
+                    max_r = max_r.max(rgba[idx]);
+                    max_g = max_g.max(rgba[idx + 1]);
+                    max_b = max_b.max(rgba[idx + 2]);
+                    max_a = max_a.max(rgba[idx + 3]);
+                }
+            }
+            let dst_idx = (y as usize * width as usize + x as usize) * 4;
+            out[dst_idx] = max_r;
+            out[dst_idx + 1] = max_g;
+            out[dst_idx + 2] = max_b;
+            out[dst_idx + 3] = max_a;
+        }
+    }
+    out
+}
+
+fn apply_erode(rgba: Vec<u8>, width: u32, height: u32, radius: u32) -> Vec<u8> {
+    let w = width as i32;
+    let h = height as i32;
+    let r = radius.clamp(1, 10) as i32;
+    let mut out = rgba.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let mut min_r = 255u8;
+            let mut min_g = 255u8;
+            let mut min_b = 255u8;
+            let mut min_a = 255u8;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let sx = (x + dx).clamp(0, w - 1) as usize;
+                    let sy = (y + dy).clamp(0, h - 1) as usize;
+                    let idx = (sy * width as usize + sx) * 4;
+                    min_r = min_r.min(rgba[idx]);
+                    min_g = min_g.min(rgba[idx + 1]);
+                    min_b = min_b.min(rgba[idx + 2]);
+                    min_a = min_a.min(rgba[idx + 3]);
+                }
+            }
+            let dst_idx = (y as usize * width as usize + x as usize) * 4;
+            out[dst_idx] = min_r;
+            out[dst_idx + 1] = min_g;
+            out[dst_idx + 2] = min_b;
+            out[dst_idx + 3] = min_a;
+        }
+    }
+    out
+}
+
+fn apply_denoise(rgba: Vec<u8>, width: u32, height: u32, spatial_sigma: f32, color_sigma: f32, iterations: u32) -> Vec<u8> {
+    let w = width as i32;
+    let h = height as i32;
+    let iterations = iterations.clamp(1, 3);
+    let spatial_sigma = spatial_sigma.clamp(1.0, 20.0);
+    let color_sigma = color_sigma.clamp(0.01, 1.0);
+    let kernel_size = (spatial_sigma * 2.0).ceil() as i32;
+    let kernel_size = kernel_size.min(10);
+    let spatial_denom = 2.0 * spatial_sigma * spatial_sigma;
+    let color_denom = 2.0 * color_sigma * color_sigma;
+
+    let mut current = rgba;
+    for _ in 0..iterations {
+        let mut out = vec![0u8; current.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let cidx = (y as usize * width as usize + x as usize) * 4;
+                let cr = current[cidx] as f32 / 255.0;
+                let cg = current[cidx + 1] as f32 / 255.0;
+                let cb = current[cidx + 2] as f32 / 255.0;
+                let center_luma = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+
+                let mut sum_r = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_b = 0.0f32;
+                let mut total_weight = 0.0f32;
+
+                for dy in -kernel_size..=kernel_size {
+                    for dx in -kernel_size..=kernel_size {
+                        let sx = (x + dx).clamp(0, w - 1) as usize;
+                        let sy = (y + dy).clamp(0, h - 1) as usize;
+                        let idx = (sy * width as usize + sx) * 4;
+                        let nr = current[idx] as f32 / 255.0;
+                        let ng = current[idx + 1] as f32 / 255.0;
+                        let nb = current[idx + 2] as f32 / 255.0;
+                        let n_luma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+
+                        let spatial_dist = (dx * dx + dy * dy) as f32;
+                        let spatial_w = (-spatial_dist / spatial_denom).exp();
+                        let color_diff = center_luma - n_luma;
+                        let color_w = (-color_diff * color_diff / color_denom).exp();
+                        let weight = spatial_w * color_w;
+
+                        sum_r += nr * weight;
+                        sum_g += ng * weight;
+                        sum_b += nb * weight;
+                        total_weight += weight;
+                    }
+                }
+
+                let inv = 1.0 / total_weight;
+                out[cidx] = (sum_r * inv * 255.0).clamp(0.0, 255.0) as u8;
+                out[cidx + 1] = (sum_g * inv * 255.0).clamp(0.0, 255.0) as u8;
+                out[cidx + 2] = (sum_b * inv * 255.0).clamp(0.0, 255.0) as u8;
+                out[cidx + 3] = current[cidx + 3]; // preserve alpha
+            }
+        }
+        current = out;
+    }
+    current
+}
+
+fn apply_hsv_adjust(mut rgba: Vec<u8>, hue_shift: f32, saturation: f32, value: f32) -> Vec<u8> {
+    if hue_shift.abs() < f32::EPSILON && (saturation - 1.0).abs() < f32::EPSILON && (value - 1.0).abs() < f32::EPSILON {
+        return rgba;
+    }
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+
+        let cmax = r.max(g).max(b);
+        let cmin = r.min(g).min(b);
+        let delta = cmax - cmin;
+
+        let mut h = 0.0f32;
+        if delta > 0.001 {
+            if (cmax - r).abs() < f32::EPSILON {
+                h = ((g - b) / delta) % 6.0;
+            } else if (cmax - g).abs() < f32::EPSILON {
+                h = (b - r) / delta + 2.0;
+            } else {
+                h = (r - g) / delta + 4.0;
+            }
+            h *= 60.0;
+            if h < 0.0 { h += 360.0; }
+        }
+        let s = if cmax > 0.001 { delta / cmax } else { 0.0 };
+        let v = cmax;
+
+        // Apply adjustments
+        h = (h + hue_shift + 360.0) % 360.0;
+        let new_s = (s * saturation).clamp(0.0, 1.0);
+        let new_v = (v * value).clamp(0.0, 1.0);
+
+        // HSV to RGB
+        let c = new_v * new_s;
+        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+        let m = new_v - c;
+        let (rr, gg, bb) = if h < 60.0 { (c, x, 0.0) }
+            else if h < 120.0 { (x, c, 0.0) }
+            else if h < 180.0 { (0.0, c, x) }
+            else if h < 240.0 { (0.0, x, c) }
+            else if h < 300.0 { (x, 0.0, c) }
+            else { (c, 0.0, x) };
+
+        chunk[0] = ((rr + m) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[1] = ((gg + m) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[2] = ((bb + m) * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    rgba
+}
+
+fn apply_noise_generator(mut rgba: Vec<u8>, amount: f32, monochrome: u32, seed: u32) -> Vec<u8> {
+    if amount < f32::EPSILON {
+        return rgba;
+    }
+    fn hash(p: u32) -> f32 {
+        let mut x = p;
+        x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
+        x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
+        x = (x >> 16) ^ x;
+        x as f32 / 4294967295.0
+    }
+    for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+        let noise_seed = (i as u32).wrapping_mul(7919).wrapping_add(seed);
+        if monochrome != 0 {
+            let n = (hash(noise_seed) - 0.5) * 2.0 * amount;
+            let nv = (n * 255.0) as i32;
+            chunk[0] = (chunk[0] as i32 + nv).clamp(0, 255) as u8;
+            chunk[1] = (chunk[1] as i32 + nv).clamp(0, 255) as u8;
+            chunk[2] = (chunk[2] as i32 + nv).clamp(0, 255) as u8;
+        } else {
+            let nr = (hash(noise_seed) - 0.5) * 2.0 * amount;
+            let ng = (hash(noise_seed.wrapping_add(1)) - 0.5) * 2.0 * amount;
+            let nb = (hash(noise_seed.wrapping_add(2)) - 0.5) * 2.0 * amount;
+            chunk[0] = (chunk[0] as i32 + (nr * 255.0) as i32).clamp(0, 255) as u8;
+            chunk[1] = (chunk[1] as i32 + (ng * 255.0) as i32).clamp(0, 255) as u8;
+            chunk[2] = (chunk[2] as i32 + (nb * 255.0) as i32).clamp(0, 255) as u8;
+        }
+    }
+    rgba
+}
+
+fn apply_median_filter(rgba: Vec<u8>, width: u32, height: u32, radius: u32) -> Vec<u8> {
+    let r = radius.clamp(1, 5) as i32;
+    let w = width as i32;
+    let h = height as i32;
+    let mut out = rgba.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let mut vals_r: Vec<u8> = Vec::new();
+            let mut vals_g: Vec<u8> = Vec::new();
+            let mut vals_b: Vec<u8> = Vec::new();
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let sx = (x + dx).clamp(0, w - 1) as usize;
+                    let sy = (y + dy).clamp(0, h - 1) as usize;
+                    let idx = (sy * width as usize + sx) * 4;
+                    vals_r.push(rgba[idx]);
+                    vals_g.push(rgba[idx + 1]);
+                    vals_b.push(rgba[idx + 2]);
+                }
+            }
+            vals_r.sort_unstable();
+            vals_g.sort_unstable();
+            vals_b.sort_unstable();
+            let mid = vals_r.len() / 2;
+            let dst_idx = (y as usize * width as usize + x as usize) * 4;
+            out[dst_idx] = vals_r[mid];
+            out[dst_idx + 1] = vals_g[mid];
+            out[dst_idx + 2] = vals_b[mid];
+            // alpha unchanged
+        }
+    }
+    out
+}
+
+fn apply_radial_blur(rgba: Vec<u8>, width: u32, height: u32, center_x: f32, center_y: f32, amount: f32, samples: u32, mode: u32) -> Vec<u8> {
+    let samples = samples.clamp(4, 32);
+    if amount < 0.01 || samples < 2 {
+        return rgba;
+    }
+    let w = width as i32;
+    let h = height as i32;
+    let cx = center_x * width as f32;
+    let cy = center_y * height as f32;
+    let mut out = vec![0u8; rgba.len()];
+
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let mut sum_r = 0.0f32;
+            let mut sum_g = 0.0f32;
+            let mut sum_b = 0.0f32;
+            let mut sum_a = 0.0f32;
+
+            if mode == 0 {
+                // Zoom blur
+                let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+                let scale = amount / samples as f32 / dist;
+                for i in 0..samples {
+                    let t = (i as f32 / samples as f32 - 0.5) * 2.0;
+                    let sx = (x as f32 + dx * t * scale).round().clamp(0.0, (w - 1) as f32) as usize;
+                    let sy = (y as f32 + dy * t * scale).round().clamp(0.0, (h - 1) as f32) as usize;
+                    let idx = (sy * width as usize + sx) * 4;
+                    sum_r += rgba[idx] as f32;
+                    sum_g += rgba[idx + 1] as f32;
+                    sum_b += rgba[idx + 2] as f32;
+                    sum_a += rgba[idx + 3] as f32;
+                }
+            } else {
+                // Spin blur
+                let angle_step = amount * std::f32::consts::PI / 180.0 / samples as f32;
+                for i in 0..samples {
+                    let t = (i as f32 / samples as f32 - 0.5) * 2.0;
+                    let a = t * angle_step;
+                    let cos_a = a.cos();
+                    let sin_a = a.sin();
+                    let sx = (cx + dx * cos_a - dy * sin_a).round().clamp(0.0, (w - 1) as f32) as usize;
+                    let sy = (cy + dx * sin_a + dy * cos_a).round().clamp(0.0, (h - 1) as f32) as usize;
+                    let idx = (sy * width as usize + sx) * 4;
+                    sum_r += rgba[idx] as f32;
+                    sum_g += rgba[idx + 1] as f32;
+                    sum_b += rgba[idx + 2] as f32;
+                    sum_a += rgba[idx + 3] as f32;
+                }
+            }
+
+            let inv = 1.0 / samples as f32;
+            let dst_idx = (y as usize * width as usize + x as usize) * 4;
+            out[dst_idx] = (sum_r * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 1] = (sum_g * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 2] = (sum_b * inv).clamp(0.0, 255.0) as u8;
+            out[dst_idx + 3] = (sum_a * inv).clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+fn apply_levels(mut rgba: Vec<u8>, in_black: f32, in_white: f32, gamma: f32, out_black: f32, out_white: f32) -> Vec<u8> {
+    let in_range = (in_white - in_black).max(0.001);
+    let inv_gamma = if gamma.abs() > f32::EPSILON { 1.0 / gamma } else { 1.0 };
+    for chunk in rgba.chunks_exact_mut(4) {
+        for ch in 0..3 {
+            let v = chunk[ch] as f32 / 255.0;
+            let mapped = ((v - in_black) / in_range).clamp(0.0, 1.0);
+            let gamma_corrected = mapped.powf(inv_gamma);
+            let result = out_black + gamma_corrected * (out_white - out_black);
+            chunk[ch] = (result * 255.0).clamp(0.0, 255.0) as u8;
+        }
+    }
+    rgba
+}
+
+fn apply_equalize(rgba: Vec<u8>, strength: f32) -> Vec<u8> {
+    if strength < f32::EPSILON {
+        return rgba;
+    }
+    let pixel_count = rgba.len() / 4;
+    if pixel_count == 0 {
+        return rgba;
+    }
+
+    // Build luminance histogram (256 bins)
+    let mut hist = [0u32; 256];
+    for chunk in rgba.chunks_exact(4) {
+        let r = chunk[0] as f32;
+        let g = chunk[1] as f32;
+        let b = chunk[2] as f32;
+        let lum = (0.299 * r + 0.587 * g + 0.114 * b).clamp(0.0, 255.0) as u8;
+        hist[lum as usize] += 1;
+    }
+
+    // Build CDF
+    let mut cdf = [0.0f32; 256];
+    let mut cumulative = 0u32;
+    let first_nonzero = hist.iter().position(|&v| v > 0).unwrap_or(0);
+    let cdf_min = hist[first_nonzero] as f32;
+    let denom = pixel_count as f32 - cdf_min;
+    if denom < 1.0 {
+        // All pixels have the same luminance — nothing to equalize
+        return rgba;
+    }
+    for i in 0..256 {
+        cumulative += hist[i];
+        cdf[i] = ((cumulative as f32 - cdf_min) / denom * 255.0).clamp(0.0, 255.0);
+    }
+
+    // Remap pixels: scale RGB proportionally based on luminance remapping
+    let mut out = rgba;
+    for chunk in out.chunks_exact_mut(4) {
+        let r = chunk[0] as f32;
+        let g = chunk[1] as f32;
+        let b = chunk[2] as f32;
+        let lum = (0.299 * r + 0.587 * g + 0.114 * b).clamp(0.0, 255.0) as u8;
+        let eq_lum = cdf[lum as usize];
+        let scale = if lum > 0 { eq_lum / lum as f32 } else { 1.0 };
+        // Blend with strength
+        let s = strength;
+        chunk[0] = (r + (r * scale - r) * s).clamp(0.0, 255.0) as u8;
+        chunk[1] = (g + (g * scale - g) * s).clamp(0.0, 255.0) as u8;
+        chunk[2] = (b + (b * scale - b) * s).clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+fn apply_gamma(mut rgba: Vec<u8>, gamma: f32) -> Vec<u8> {
+    if (gamma - 1.0).abs() < f32::EPSILON {
+        return rgba;
+    }
+    let inv_gamma = 1.0 / gamma;
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        chunk[0] = (r.powf(inv_gamma) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[1] = (g.powf(inv_gamma) * 255.0).clamp(0.0, 255.0) as u8;
+        chunk[2] = (b.powf(inv_gamma) * 255.0).clamp(0.0, 255.0) as u8;
+        // alpha unchanged
+    }
+    rgba
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invert_full() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_invert(rgba, 1.0);
+        // Allow +/-1 for floating point rounding
+        assert!((result[0] as i32 - 155).abs() <= 1, "r={}", result[0]);
+        assert!((result[1] as i32 - 105).abs() <= 1, "g={}", result[1]);
+        assert!((result[2] as i32 - 55).abs() <= 1, "b={}", result[2]);
+        assert_eq!(result[3], 255);
+    }
+
+    #[test]
+    fn test_invert_zero_mix() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_invert(rgba, 0.0);
+        assert_eq!(result, vec![100, 150, 200, 255]);
+    }
+
+    #[test]
+    fn test_posterize() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_posterize(rgba, 4.0);
+        // r = floor(100/255 * 4) / 3 * 255 = floor(1.568) / 3 * 255 = 1/3*255 = 85
+        // g = floor(150/255 * 4) / 3 * 255 = floor(2.352) / 3 * 255 = 2/3*255 = 170
+        // b = floor(200/255 * 4) / 3 * 255 = floor(3.137) / 3 * 255 = 3/3*255 = 255
+        assert_eq!(result[0], 85);
+        assert_eq!(result[1], 170);
+        assert_eq!(result[2], 255);
+        assert_eq!(result[3], 255);
+    }
+
+    #[test]
+    fn test_mosaic_block() {
+        // 4x4 image, each pixel has unique value
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                let idx = (y * 4 + x) as usize * 4;
+                rgba[idx] = (y * 4 + x) as u8 * 10;
+                rgba[idx + 1] = 0;
+                rgba[idx + 2] = 0;
+                rgba[idx + 3] = 255;
+            }
+        }
+        let result = apply_mosaic(rgba, 4, 4, 2.0);
+        // Pixels (0,0), (1,0), (0,1), (1,1) should all equal pixel (0,0)
+        let tl = result[0]; // pixel (0,0).r = 0
+        assert_eq!(result[1 * 4], tl); // pixel (1,0).r
+        assert_eq!(result[4 * 4], tl); // pixel (0,1).r
+        assert_eq!(result[5 * 4], tl); // pixel (1,1).r
+        // Pixels (2,0), (3,0), (2,1), (3,1) should all equal pixel (2,0)
+        let tr = result[2 * 4]; // pixel (2,0).r = 20
+        assert_eq!(tr, 20);
+        assert_eq!(result[3 * 4], tr);
+        assert_eq!(result[6 * 4], tr);
+        assert_eq!(result[7 * 4], tr);
+    }
+
+    #[test]
+    fn test_channel_mixer_identity() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_channel_mixer(rgba.clone(),
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_edge_detect_uniform() {
+        // A uniform 4x4 image should produce no edges
+        let rgba = vec![128, 128, 128, 255].repeat(16);
+        let result = apply_edge_detect(rgba, 4, 4, 1.0, 1.0);
+        // All edge values should be 0 (black)
+        for chunk in result.chunks(4) {
+            assert_eq!(chunk[0], 0);
+            assert_eq!(chunk[1], 0);
+            assert_eq!(chunk[2], 0);
+        }
+    }
+
+    #[test]
+    fn test_emboss_uniform() {
+        // Uniform image: all differences are 0, emboss → neutral gray (128)
+        let rgba = vec![100, 100, 100, 255].repeat(16);
+        let result = apply_emboss(rgba, 4, 4, 135.0, 1.0, 1.0);
+        // Interior pixels should be ~128 (neutral gray) since no edges
+        let mid = &result[5 * 4..6 * 4]; // pixel (1,1)
+        assert!((mid[0] as i32 - 128).unsigned_abs() <= 1);
+        assert!((mid[1] as i32 - 128).unsigned_abs() <= 1);
+        assert!((mid[2] as i32 - 128).unsigned_abs() <= 1);
+    }
+
+    #[test]
+    fn test_emboss_mix_zero() {
+        // mix=0 should return original
+        let rgba = vec![100, 150, 200, 255].repeat(16);
+        let result = apply_emboss(rgba.clone(), 4, 4, 135.0, 1.0, 0.0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_mirror_horizontal() {
+        // 2x2 image: [A, B, C, D] → horizontal mirror → [B, A, D, C]
+        let rgba = vec![
+            10, 20, 30, 255,  50, 60, 70, 255,   // row 0: A, B
+            80, 90, 100, 255, 110, 120, 130, 255, // row 1: C, D
+        ];
+        let result = apply_mirror(rgba, 2, 2, 1, 0);
+        // (0,0) should now be B, (1,0) should be A
+        assert_eq!(&result[0..4], &[50, 60, 70, 255]);
+        assert_eq!(&result[4..8], &[10, 20, 30, 255]);
+        // (0,1) should be D, (1,1) should be C
+        assert_eq!(&result[8..12], &[110, 120, 130, 255]);
+        assert_eq!(&result[12..16], &[80, 90, 100, 255]);
+    }
+
+    #[test]
+    fn test_lens_distortion_passthrough() {
+        // distortion=0, scale=1 should be identity
+        let rgba = vec![100, 150, 200, 255].repeat(16);
+        let result = apply_lens_distortion(rgba.clone(), 4, 4, 0.0, 1.0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_dilate_bright_pixel() {
+        // 4x4 dark image with one bright pixel at (1,1)
+        let mut rgba = vec![0, 0, 0, 255].repeat(16);
+        let idx = (1 * 4 + 1) * 4;
+        rgba[idx] = 200; rgba[idx + 1] = 200; rgba[idx + 2] = 200;
+        let result = apply_dilate(rgba, 4, 4, 1);
+        // Neighboring pixels should have picked up the bright value
+        let neighbor_idx = (0 * 4 + 0) * 4; // (0,0) is in radius of (1,1)
+        assert_eq!(result[neighbor_idx], 200);
+    }
+
+    #[test]
+    fn test_erode_dark_pixel() {
+        // 4x4 bright image with one dark pixel at (1,1)
+        let mut rgba = vec![200, 200, 200, 255].repeat(16);
+        let idx = (1 * 4 + 1) * 4;
+        rgba[idx] = 10; rgba[idx + 1] = 10; rgba[idx + 2] = 10;
+        let result = apply_erode(rgba, 4, 4, 1);
+        // Neighboring pixels should have picked up the dark value
+        let neighbor_idx = (0 * 4 + 0) * 4;
+        assert_eq!(result[neighbor_idx], 10);
+    }
+
+    #[test]
+    fn test_denoise_uniform() {
+        // Uniform image should be unchanged by bilateral filter
+        let rgba = vec![128, 128, 128, 255].repeat(16);
+        let result = apply_denoise(rgba.clone(), 4, 4, 5.0, 0.1, 1);
+        for (a, b) in rgba.iter().zip(result.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 1, "expected ~{a}, got {b}");
+        }
+    }
+
+    #[test]
+    fn test_gamma_passthrough() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_gamma(rgba.clone(), 1.0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_hsv_adjust_passthrough() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_hsv_adjust(rgba.clone(), 0.0, 1.0, 1.0);
+        for (a, b) in rgba.iter().zip(result.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 1, "expected ~{a}, got {b}");
+        }
+    }
+
+    #[test]
+    fn test_noise_generator_passthrough() {
+        let rgba = vec![128, 128, 128, 255];
+        let result = apply_noise_generator(rgba.clone(), 0.0, 0, 42);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_median_filter_uniform() {
+        // Uniform image should be unchanged
+        let rgba = vec![128, 128, 128, 255].repeat(16);
+        let result = apply_median_filter(rgba.clone(), 4, 4, 1);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_radial_blur_passthrough() {
+        let rgba = vec![100, 150, 200, 255].repeat(16);
+        let result = apply_radial_blur(rgba.clone(), 4, 4, 0.5, 0.5, 0.0, 12, 0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_levels_passthrough() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_levels(rgba.clone(), 0.0, 1.0, 1.0, 0.0, 1.0);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_equalize_uniform() {
+        // All same pixels → equalize should not change anything meaningfully
+        let rgba = vec![128, 128, 128, 255].repeat(16);
+        let result = apply_equalize(rgba.clone(), 1.0);
+        for (a, b) in rgba.iter().zip(result.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 1, "expected ~{a}, got {b}");
+        }
+    }
+
+    #[test]
+    fn test_gamma_brighten() {
+        let rgba = vec![128, 128, 128, 255];
+        let result = apply_gamma(rgba, 2.0);
+        // gamma=2.0 → pow(0.502, 0.5) ≈ 0.708 → ~181
+        assert!(result[0] > 170 && result[0] < 190, "r={}", result[0]);
+        assert_eq!(result[3], 255);
     }
 }

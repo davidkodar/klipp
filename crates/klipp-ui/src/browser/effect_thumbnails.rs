@@ -315,6 +315,72 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 threshold: 0.5, radius: 25.0, intensity: 0.6, hue: 0.2,
             }
         }
+        klipp_effects::BuiltinEffect::Invert { .. } => {
+            klipp_effects::BuiltinEffect::Invert { mix: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::Posterize { .. } => {
+            klipp_effects::BuiltinEffect::Posterize { levels: 4.0 }
+        }
+        klipp_effects::BuiltinEffect::Mosaic { .. } => {
+            klipp_effects::BuiltinEffect::Mosaic { block_size: 8.0 }
+        }
+        klipp_effects::BuiltinEffect::EdgeDetect { .. } => {
+            klipp_effects::BuiltinEffect::EdgeDetect { strength: 2.0, mix: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::ChannelMixer { .. } => {
+            // Swap red and blue for a visible thumbnail
+            klipp_effects::BuiltinEffect::ChannelMixer {
+                red_red: 0.0, red_green: 0.0, red_blue: 1.0,
+                green_red: 0.0, green_green: 1.0, green_blue: 0.0,
+                blue_red: 1.0, blue_green: 0.0, blue_blue: 0.0,
+            }
+        }
+        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => {
+            klipp_effects::BuiltinEffect::DirectionalBlur {
+                angle: 0.0, distance: 30.0, samples: 12,
+            }
+        }
+        klipp_effects::BuiltinEffect::Emboss { .. } => {
+            klipp_effects::BuiltinEffect::Emboss {
+                angle: 135.0, strength: 2.0, mix: 1.0,
+            }
+        }
+        klipp_effects::BuiltinEffect::Mirror { .. } => {
+            klipp_effects::BuiltinEffect::Mirror { horizontal: 1, vertical: 0 }
+        }
+        klipp_effects::BuiltinEffect::LensDistortion { .. } => {
+            klipp_effects::BuiltinEffect::LensDistortion { distortion: -0.5, scale: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::Dilate { .. } => {
+            klipp_effects::BuiltinEffect::Dilate { radius: 3 }
+        }
+        klipp_effects::BuiltinEffect::Erode { .. } => {
+            klipp_effects::BuiltinEffect::Erode { radius: 3 }
+        }
+        klipp_effects::BuiltinEffect::Denoise { .. } => {
+            klipp_effects::BuiltinEffect::Denoise { spatial_sigma: 10.0, color_sigma: 0.3, iterations: 2 }
+        }
+        klipp_effects::BuiltinEffect::Gamma { .. } => {
+            klipp_effects::BuiltinEffect::Gamma { gamma: 2.0 }
+        }
+        klipp_effects::BuiltinEffect::HSVAdjust { .. } => {
+            klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.5, value: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => {
+            klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.3, monochrome: 0, seed: 42 }
+        }
+        klipp_effects::BuiltinEffect::MedianFilter { .. } => {
+            klipp_effects::BuiltinEffect::MedianFilter { radius: 2 }
+        }
+        klipp_effects::BuiltinEffect::RadialBlur { .. } => {
+            klipp_effects::BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 20.0, samples: 16, mode: 0 }
+        }
+        klipp_effects::BuiltinEffect::Levels { .. } => {
+            klipp_effects::BuiltinEffect::Levels { in_black: 0.1, in_white: 0.8, gamma: 1.5, out_black: 0.0, out_white: 1.0 }
+        }
+        klipp_effects::BuiltinEffect::Equalize { .. } => {
+            klipp_effects::BuiltinEffect::Equalize { strength: 1.0 }
+        }
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is a temporal effect — no visual preview on a single frame.
             // Return identity (pass-through).

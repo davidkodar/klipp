@@ -1990,6 +1990,25 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
+        klipp_effects::BuiltinEffect::Invert { .. } => "Invert",
+        klipp_effects::BuiltinEffect::Posterize { .. } => "Posterize",
+        klipp_effects::BuiltinEffect::Mosaic { .. } => "Mosaic",
+        klipp_effects::BuiltinEffect::EdgeDetect { .. } => "Edge Detect",
+        klipp_effects::BuiltinEffect::ChannelMixer { .. } => "Channel Mixer",
+        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => "Directional Blur",
+        klipp_effects::BuiltinEffect::Emboss { .. } => "Emboss",
+        klipp_effects::BuiltinEffect::Mirror { .. } => "Mirror",
+        klipp_effects::BuiltinEffect::LensDistortion { .. } => "Lens Distortion",
+        klipp_effects::BuiltinEffect::Dilate { .. } => "Dilate",
+        klipp_effects::BuiltinEffect::Erode { .. } => "Erode",
+        klipp_effects::BuiltinEffect::Denoise { .. } => "Denoise",
+        klipp_effects::BuiltinEffect::Gamma { .. } => "Gamma",
+        klipp_effects::BuiltinEffect::HSVAdjust { .. } => "HSV Adjust",
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "Noise Generator",
+        klipp_effects::BuiltinEffect::MedianFilter { .. } => "Median Filter",
+        klipp_effects::BuiltinEffect::RadialBlur { .. } => "Radial Blur",
+        klipp_effects::BuiltinEffect::Levels { .. } => "Levels",
+        klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -2168,6 +2187,161 @@ fn show_builtin_effect_params(
             if *freeze {
                 track_slider!(ui.add(egui::Slider::new(freeze_at, 0.0..=1.0).text("Freeze At")));
             }
+        }
+        klipp_effects::BuiltinEffect::Invert { mix } => {
+            track_slider!(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")));
+        }
+        klipp_effects::BuiltinEffect::Posterize { levels } => {
+            track_slider!(ui.add(egui::Slider::new(levels, 2.0..=256.0).text("Levels")));
+        }
+        klipp_effects::BuiltinEffect::Mosaic { block_size } => {
+            track_slider!(ui.add(egui::Slider::new(block_size, 1.0..=100.0).text("Block Size")));
+        }
+        klipp_effects::BuiltinEffect::EdgeDetect { strength, mix } => {
+            track_slider!(ui.add(egui::Slider::new(strength, 0.0..=5.0).text("Strength")));
+            track_slider!(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")));
+        }
+        klipp_effects::BuiltinEffect::ChannelMixer {
+            red_red, red_green, red_blue,
+            green_red, green_green, green_blue,
+            blue_red, blue_green, blue_blue,
+        } => {
+            ui.label("Red Output");
+            track_slider!(ui.add(egui::Slider::new(red_red, -1.0..=2.0).text("Red")));
+            track_slider!(ui.add(egui::Slider::new(red_green, -1.0..=2.0).text("Green")));
+            track_slider!(ui.add(egui::Slider::new(red_blue, -1.0..=2.0).text("Blue")));
+            ui.label("Green Output");
+            track_slider!(ui.add(egui::Slider::new(green_red, -1.0..=2.0).text("Red")));
+            track_slider!(ui.add(egui::Slider::new(green_green, -1.0..=2.0).text("Green")));
+            track_slider!(ui.add(egui::Slider::new(green_blue, -1.0..=2.0).text("Blue")));
+            ui.label("Blue Output");
+            track_slider!(ui.add(egui::Slider::new(blue_red, -1.0..=2.0).text("Red")));
+            track_slider!(ui.add(egui::Slider::new(blue_green, -1.0..=2.0).text("Green")));
+            track_slider!(ui.add(egui::Slider::new(blue_blue, -1.0..=2.0).text("Blue")));
+        }
+        klipp_effects::BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
+            track_slider!(ui.add(egui::Slider::new(angle, 0.0..=360.0).text("Angle")));
+            track_slider!(ui.add(egui::Slider::new(distance, 0.0..=100.0).text("Distance")));
+            let mut s_f = *samples as f32;
+            let r = ui.add(egui::Slider::new(&mut s_f, 3.0..=32.0).text("Samples"));
+            *samples = s_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::Emboss { angle, strength, mix } => {
+            track_slider!(ui.add(egui::Slider::new(angle, 0.0..=360.0).text("Angle")));
+            track_slider!(ui.add(egui::Slider::new(strength, 0.0..=5.0).text("Strength")));
+            track_slider!(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")));
+        }
+        klipp_effects::BuiltinEffect::Mirror { horizontal, vertical } => {
+            let mut h_bool = *horizontal != 0;
+            let mut v_bool = *vertical != 0;
+            if ui.checkbox(&mut h_bool, "Horizontal").changed() {
+                *horizontal = if h_bool { 1 } else { 0 };
+                changed = true;
+            }
+            if ui.checkbox(&mut v_bool, "Vertical").changed() {
+                *vertical = if v_bool { 1 } else { 0 };
+                changed = true;
+            }
+        }
+        klipp_effects::BuiltinEffect::LensDistortion { distortion, scale } => {
+            track_slider!(ui.add(egui::Slider::new(distortion, -1.0..=1.0).text("Distortion")));
+            track_slider!(ui.add(egui::Slider::new(scale, 0.5..=2.0).text("Scale")));
+        }
+        klipp_effects::BuiltinEffect::Dilate { radius } => {
+            let mut r_f = *radius as f32;
+            let r = ui.add(egui::Slider::new(&mut r_f, 1.0..=10.0).text("Radius"));
+            *radius = r_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::Erode { radius } => {
+            let mut r_f = *radius as f32;
+            let r = ui.add(egui::Slider::new(&mut r_f, 1.0..=10.0).text("Radius"));
+            *radius = r_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
+            track_slider!(ui.add(egui::Slider::new(spatial_sigma, 1.0..=20.0).text("Spatial Sigma")));
+            track_slider!(ui.add(egui::Slider::new(color_sigma, 0.01..=1.0).text("Color Sigma")));
+            let mut iter_f = *iterations as f32;
+            let r = ui.add(egui::Slider::new(&mut iter_f, 1.0..=3.0).text("Iterations"));
+            *iterations = iter_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::Gamma { gamma } => {
+            track_slider!(ui.add(egui::Slider::new(gamma, 0.1..=5.0).text("Gamma")));
+        }
+        klipp_effects::BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
+            track_slider!(ui.add(egui::Slider::new(hue_shift, -180.0..=180.0).text("Hue Shift")));
+            track_slider!(ui.add(egui::Slider::new(saturation, 0.0..=3.0).text("Saturation")));
+            track_slider!(ui.add(egui::Slider::new(value, 0.0..=3.0).text("Value")));
+        }
+        klipp_effects::BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
+            track_slider!(ui.add(egui::Slider::new(amount, 0.0..=1.0).text("Amount")));
+            let mut mono_f = *monochrome as f32;
+            let r = ui.add(egui::Slider::new(&mut mono_f, 0.0..=1.0).step_by(1.0_f64).text("Monochrome"));
+            *monochrome = mono_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+            let mut seed_f = *seed as f32;
+            let r = ui.add(egui::Slider::new(&mut seed_f, 0.0..=10000.0).text("Seed"));
+            *seed = seed_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::MedianFilter { radius } => {
+            let mut r_f = *radius as f32;
+            let r = ui.add(egui::Slider::new(&mut r_f, 1.0..=5.0).text("Radius"));
+            *radius = r_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+        }
+        klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
+            track_slider!(ui.add(egui::Slider::new(center_x, 0.0..=1.0).text("Center X")));
+            track_slider!(ui.add(egui::Slider::new(center_y, 0.0..=1.0).text("Center Y")));
+            track_slider!(ui.add(egui::Slider::new(amount, 0.0..=50.0).text("Amount")));
+            let mut s_f = *samples as f32;
+            let r = ui.add(egui::Slider::new(&mut s_f, 4.0..=32.0).text("Samples"));
+            *samples = s_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+            let mode_labels = ["Zoom", "Spin"];
+            let mode_sel = (*mode as usize).min(mode_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label("Mode");
+                let combo_id = ui.make_persistent_id(format!("rb_mode_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(mode_labels[mode_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in mode_labels.iter().enumerate() {
+                            if ui.selectable_value(mode, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+        }
+        klipp_effects::BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
+            track_slider!(ui.add(egui::Slider::new(in_black, 0.0..=1.0).text("In Black")));
+            track_slider!(ui.add(egui::Slider::new(in_white, 0.0..=1.0).text("In White")));
+            track_slider!(ui.add(egui::Slider::new(gamma, 0.1..=5.0).text("Gamma")));
+            track_slider!(ui.add(egui::Slider::new(out_black, 0.0..=1.0).text("Out Black")));
+            track_slider!(ui.add(egui::Slider::new(out_white, 0.0..=1.0).text("Out White")));
+        }
+        klipp_effects::BuiltinEffect::Equalize { strength } => {
+            track_slider!(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("Strength")));
         }
     }
 

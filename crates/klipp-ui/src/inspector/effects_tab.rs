@@ -1006,6 +1006,25 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
+        klipp_effects::BuiltinEffect::Invert { .. } => "Invert",
+        klipp_effects::BuiltinEffect::Posterize { .. } => "Posterize",
+        klipp_effects::BuiltinEffect::Mosaic { .. } => "Mosaic",
+        klipp_effects::BuiltinEffect::EdgeDetect { .. } => "Edge Detect",
+        klipp_effects::BuiltinEffect::ChannelMixer { .. } => "Channel Mixer",
+        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => "Directional Blur",
+        klipp_effects::BuiltinEffect::Emboss { .. } => "Emboss",
+        klipp_effects::BuiltinEffect::Mirror { .. } => "Mirror",
+        klipp_effects::BuiltinEffect::LensDistortion { .. } => "Lens Distortion",
+        klipp_effects::BuiltinEffect::Dilate { .. } => "Dilate",
+        klipp_effects::BuiltinEffect::Erode { .. } => "Erode",
+        klipp_effects::BuiltinEffect::Denoise { .. } => "Denoise",
+        klipp_effects::BuiltinEffect::Gamma { .. } => "Gamma",
+        klipp_effects::BuiltinEffect::HSVAdjust { .. } => "HSV Adjust",
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "Noise Generator",
+        klipp_effects::BuiltinEffect::MedianFilter { .. } => "Median Filter",
+        klipp_effects::BuiltinEffect::RadialBlur { .. } => "Radial Blur",
+        klipp_effects::BuiltinEffect::Levels { .. } => "Levels",
+        klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -1056,6 +1075,47 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::FilmHalation { .. } => BuiltinEffect::FilmHalation {
             threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
         },
+        BuiltinEffect::Invert { .. } => BuiltinEffect::Invert { mix: 1.0 },
+        BuiltinEffect::Posterize { .. } => BuiltinEffect::Posterize { levels: 8.0 },
+        BuiltinEffect::Mosaic { .. } => BuiltinEffect::Mosaic { block_size: 10.0 },
+        BuiltinEffect::EdgeDetect { .. } => BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 },
+        BuiltinEffect::ChannelMixer { .. } => BuiltinEffect::ChannelMixer {
+            red_red: 1.0, red_green: 0.0, red_blue: 0.0,
+            green_red: 0.0, green_green: 1.0, green_blue: 0.0,
+            blue_red: 0.0, blue_green: 0.0, blue_blue: 1.0,
+        },
+        BuiltinEffect::DirectionalBlur { .. } => BuiltinEffect::DirectionalBlur {
+            angle: 0.0, distance: 20.0, samples: 8,
+        },
+        BuiltinEffect::Emboss { .. } => BuiltinEffect::Emboss {
+            angle: 135.0, strength: 1.0, mix: 1.0,
+        },
+        BuiltinEffect::Mirror { .. } => BuiltinEffect::Mirror {
+            horizontal: 1, vertical: 0,
+        },
+        BuiltinEffect::LensDistortion { .. } => BuiltinEffect::LensDistortion {
+            distortion: 0.0, scale: 1.0,
+        },
+        BuiltinEffect::Dilate { .. } => BuiltinEffect::Dilate { radius: 1 },
+        BuiltinEffect::Erode { .. } => BuiltinEffect::Erode { radius: 1 },
+        BuiltinEffect::Denoise { .. } => BuiltinEffect::Denoise {
+            spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1,
+        },
+        BuiltinEffect::Gamma { .. } => BuiltinEffect::Gamma { gamma: 1.0 },
+        BuiltinEffect::HSVAdjust { .. } => BuiltinEffect::HSVAdjust {
+            hue_shift: 0.0, saturation: 1.0, value: 1.0,
+        },
+        BuiltinEffect::NoiseGenerator { .. } => BuiltinEffect::NoiseGenerator {
+            amount: 0.1, monochrome: 0, seed: 0,
+        },
+        BuiltinEffect::MedianFilter { .. } => BuiltinEffect::MedianFilter { radius: 1 },
+        BuiltinEffect::RadialBlur { .. } => BuiltinEffect::RadialBlur {
+            center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0,
+        },
+        BuiltinEffect::Levels { .. } => BuiltinEffect::Levels {
+            in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
+        },
+        BuiltinEffect::Equalize { .. } => BuiltinEffect::Equalize { strength: 1.0 },
         BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
             speed: 1.0, blend_mode: 1, ramp_curve: 0,
             ramp_start: 0.0, ramp_end: 1.0, reverse: false,
@@ -1071,7 +1131,11 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
     matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. } | BuiltinEffect::Diffusion { .. } | BuiltinEffect::LensFlare { .. }
         | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
-        | BuiltinEffect::SpeedRamp { .. })
+        | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
+        | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
+        | BuiltinEffect::Denoise { .. } | BuiltinEffect::SpeedRamp { .. }
+        | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
+        | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. })
 }
 
 #[allow(dead_code)]
@@ -1631,6 +1695,271 @@ fn show_builtin_effect_params(
                 let r_fa = scrubby_param_row(ui, "Freeze At", freeze_at, 0.0..=1.0, 0.5, 0.005, 3, "", ks_fa);
                 track_scrubby!("freeze_at", r_fa, *freeze_at);
             }
+        }
+        klipp_effects::BuiltinEffect::Invert { mix } => {
+            *mix = eval_effect_kf(clip, effect_index, "mix", clip_time_secs, *mix);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "mix", clip_time_secs));
+            let r = scrubby_param_row(ui, "Mix", mix, 0.0..=1.0, 1.0, 0.005, 2, "", ks);
+            track_scrubby!("mix", r, *mix);
+        }
+        klipp_effects::BuiltinEffect::Posterize { levels } => {
+            *levels = eval_effect_kf(clip, effect_index, "levels", clip_time_secs, *levels);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "levels", clip_time_secs));
+            let r = scrubby_param_row(ui, "Levels", levels, 2.0..=256.0, 8.0, 1.0, 0, "", ks);
+            track_scrubby!("levels", r, *levels);
+        }
+        klipp_effects::BuiltinEffect::Mosaic { block_size } => {
+            *block_size = eval_effect_kf(clip, effect_index, "block_size", clip_time_secs, *block_size);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "block_size", clip_time_secs));
+            let r = scrubby_param_row(ui, "Block Size", block_size, 1.0..=100.0, 10.0, 0.5, 1, " px", ks);
+            track_scrubby!("block_size", r, *block_size);
+        }
+        klipp_effects::BuiltinEffect::EdgeDetect { strength, mix } => {
+            *strength = eval_effect_kf(clip, effect_index, "strength", clip_time_secs, *strength);
+            *mix = eval_effect_kf(clip, effect_index, "mix", clip_time_secs, *mix);
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let ks_m = Some(effect_keyframe_state(clip, effect_index, "mix", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=5.0, 1.0, 0.05, 2, "", ks_s);
+            track_scrubby!("strength", r_s, *strength);
+            let r_m = scrubby_param_row(ui, "Mix", mix, 0.0..=1.0, 1.0, 0.005, 2, "", ks_m);
+            track_scrubby!("mix", r_m, *mix);
+        }
+        klipp_effects::BuiltinEffect::ChannelMixer {
+            red_red, red_green, red_blue,
+            green_red, green_green, green_blue,
+            blue_red, blue_green, blue_blue,
+        } => {
+            *red_red = eval_effect_kf(clip, effect_index, "red_red", clip_time_secs, *red_red);
+            *red_green = eval_effect_kf(clip, effect_index, "red_green", clip_time_secs, *red_green);
+            *red_blue = eval_effect_kf(clip, effect_index, "red_blue", clip_time_secs, *red_blue);
+            *green_red = eval_effect_kf(clip, effect_index, "green_red", clip_time_secs, *green_red);
+            *green_green = eval_effect_kf(clip, effect_index, "green_green", clip_time_secs, *green_green);
+            *green_blue = eval_effect_kf(clip, effect_index, "green_blue", clip_time_secs, *green_blue);
+            *blue_red = eval_effect_kf(clip, effect_index, "blue_red", clip_time_secs, *blue_red);
+            *blue_green = eval_effect_kf(clip, effect_index, "blue_green", clip_time_secs, *blue_green);
+            *blue_blue = eval_effect_kf(clip, effect_index, "blue_blue", clip_time_secs, *blue_blue);
+
+            ui.label(egui::RichText::new("Red Output").size(10.0).strong());
+            let ks = Some(effect_keyframe_state(clip, effect_index, "red_red", clip_time_secs));
+            let r = scrubby_param_row(ui, "Red", red_red, -1.0..=2.0, 1.0, 0.01, 2, "", ks);
+            track_scrubby!("red_red", r, *red_red);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "red_green", clip_time_secs));
+            let r = scrubby_param_row(ui, "Green", red_green, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("red_green", r, *red_green);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "red_blue", clip_time_secs));
+            let r = scrubby_param_row(ui, "Blue", red_blue, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("red_blue", r, *red_blue);
+
+            ui.label(egui::RichText::new("Green Output").size(10.0).strong());
+            let ks = Some(effect_keyframe_state(clip, effect_index, "green_red", clip_time_secs));
+            let r = scrubby_param_row(ui, "Red", green_red, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("green_red", r, *green_red);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "green_green", clip_time_secs));
+            let r = scrubby_param_row(ui, "Green", green_green, -1.0..=2.0, 1.0, 0.01, 2, "", ks);
+            track_scrubby!("green_green", r, *green_green);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "green_blue", clip_time_secs));
+            let r = scrubby_param_row(ui, "Blue", green_blue, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("green_blue", r, *green_blue);
+
+            ui.label(egui::RichText::new("Blue Output").size(10.0).strong());
+            let ks = Some(effect_keyframe_state(clip, effect_index, "blue_red", clip_time_secs));
+            let r = scrubby_param_row(ui, "Red", blue_red, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("blue_red", r, *blue_red);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "blue_green", clip_time_secs));
+            let r = scrubby_param_row(ui, "Green", blue_green, -1.0..=2.0, 0.0, 0.01, 2, "", ks);
+            track_scrubby!("blue_green", r, *blue_green);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "blue_blue", clip_time_secs));
+            let r = scrubby_param_row(ui, "Blue", blue_blue, -1.0..=2.0, 1.0, 0.01, 2, "", ks);
+            track_scrubby!("blue_blue", r, *blue_blue);
+        }
+        klipp_effects::BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
+            *angle = eval_effect_kf(clip, effect_index, "angle", clip_time_secs, *angle);
+            *distance = eval_effect_kf(clip, effect_index, "distance", clip_time_secs, *distance);
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "angle", clip_time_secs));
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "distance", clip_time_secs));
+            let r_a = scrubby_param_row(ui, "Angle", angle, 0.0..=360.0, 0.0, 1.0, 1, "\u{00b0}", ks_a);
+            track_scrubby!("angle", r_a, *angle);
+            let r_d = scrubby_param_row(ui, "Distance", distance, 0.0..=100.0, 20.0, 0.5, 1, " px", ks_d);
+            track_scrubby!("distance", r_d, *distance);
+            // Samples: integer, use a simple slider
+            let mut s_f = *samples as f32;
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "samples", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Samples", &mut s_f, 3.0..=32.0, 8.0, 1.0, 0, "", ks_s);
+            *samples = s_f as u32;
+            track_scrubby!("samples", r_s, s_f);
+        }
+        klipp_effects::BuiltinEffect::Emboss { angle, strength, mix } => {
+            *angle = eval_effect_kf(clip, effect_index, "angle", clip_time_secs, *angle);
+            *strength = eval_effect_kf(clip, effect_index, "strength", clip_time_secs, *strength);
+            *mix = eval_effect_kf(clip, effect_index, "mix", clip_time_secs, *mix);
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "angle", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let ks_m = Some(effect_keyframe_state(clip, effect_index, "mix", clip_time_secs));
+            let r_a = scrubby_param_row(ui, "Angle", angle, 0.0..=360.0, 135.0, 1.0, 1, "\u{00b0}", ks_a);
+            track_scrubby!("angle", r_a, *angle);
+            let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=5.0, 1.0, 0.05, 2, "", ks_s);
+            track_scrubby!("strength", r_s, *strength);
+            let r_m = scrubby_param_row(ui, "Mix", mix, 0.0..=1.0, 1.0, 0.005, 2, "", ks_m);
+            track_scrubby!("mix", r_m, *mix);
+        }
+        klipp_effects::BuiltinEffect::Mirror { horizontal, vertical } => {
+            let mut h_bool = *horizontal != 0;
+            let mut v_bool = *vertical != 0;
+            if ui.checkbox(&mut h_bool, "Horizontal").changed() {
+                *horizontal = if h_bool { 1 } else { 0 };
+                changed = true;
+            }
+            if ui.checkbox(&mut v_bool, "Vertical").changed() {
+                *vertical = if v_bool { 1 } else { 0 };
+                changed = true;
+            }
+        }
+        klipp_effects::BuiltinEffect::LensDistortion { distortion, scale } => {
+            *distortion = eval_effect_kf(clip, effect_index, "distortion", clip_time_secs, *distortion);
+            *scale = eval_effect_kf(clip, effect_index, "scale", clip_time_secs, *scale);
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "distortion", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "scale", clip_time_secs));
+            let r_d = scrubby_param_row(ui, "Distortion", distortion, -1.0..=1.0, 0.0, 0.01, 2, "", ks_d);
+            track_scrubby!("distortion", r_d, *distortion);
+            let r_s = scrubby_param_row(ui, "Scale", scale, 0.5..=2.0, 1.0, 0.01, 2, "", ks_s);
+            track_scrubby!("scale", r_s, *scale);
+        }
+        klipp_effects::BuiltinEffect::Dilate { radius } => {
+            let mut r_f = *radius as f32;
+            let ks = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let r = scrubby_param_row(ui, "Radius", &mut r_f, 1.0..=10.0, 1.0, 1.0, 0, " px", ks);
+            *radius = r_f as u32;
+            track_scrubby!("radius", r, r_f);
+        }
+        klipp_effects::BuiltinEffect::Erode { radius } => {
+            let mut r_f = *radius as f32;
+            let ks = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let r = scrubby_param_row(ui, "Radius", &mut r_f, 1.0..=10.0, 1.0, 1.0, 0, " px", ks);
+            *radius = r_f as u32;
+            track_scrubby!("radius", r, r_f);
+        }
+        klipp_effects::BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
+            *spatial_sigma = eval_effect_kf(clip, effect_index, "spatial_sigma", clip_time_secs, *spatial_sigma);
+            *color_sigma = eval_effect_kf(clip, effect_index, "color_sigma", clip_time_secs, *color_sigma);
+            let ks_sp = Some(effect_keyframe_state(clip, effect_index, "spatial_sigma", clip_time_secs));
+            let ks_co = Some(effect_keyframe_state(clip, effect_index, "color_sigma", clip_time_secs));
+            let r_sp = scrubby_param_row(ui, "Spatial Sigma", spatial_sigma, 1.0..=20.0, 5.0, 0.5, 1, "", ks_sp);
+            track_scrubby!("spatial_sigma", r_sp, *spatial_sigma);
+            let r_co = scrubby_param_row(ui, "Color Sigma", color_sigma, 0.01..=1.0, 0.1, 0.01, 2, "", ks_co);
+            track_scrubby!("color_sigma", r_co, *color_sigma);
+            let mut iter_f = *iterations as f32;
+            let ks_it = Some(effect_keyframe_state(clip, effect_index, "iterations", clip_time_secs));
+            let r_it = scrubby_param_row(ui, "Iterations", &mut iter_f, 1.0..=3.0, 1.0, 1.0, 0, "", ks_it);
+            *iterations = iter_f as u32;
+            track_scrubby!("iterations", r_it, iter_f);
+        }
+        klipp_effects::BuiltinEffect::Gamma { gamma } => {
+            *gamma = eval_effect_kf(clip, effect_index, "gamma", clip_time_secs, *gamma);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "gamma", clip_time_secs));
+            let r = scrubby_param_row(ui, "Gamma", gamma, 0.1..=5.0, 1.0, 0.05, 2, "", ks);
+            track_scrubby!("gamma", r, *gamma);
+        }
+        klipp_effects::BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
+            *hue_shift = eval_effect_kf(clip, effect_index, "hue_shift", clip_time_secs, *hue_shift);
+            *saturation = eval_effect_kf(clip, effect_index, "saturation", clip_time_secs, *saturation);
+            *value = eval_effect_kf(clip, effect_index, "value", clip_time_secs, *value);
+            let ks_h = Some(effect_keyframe_state(clip, effect_index, "hue_shift", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "saturation", clip_time_secs));
+            let ks_v = Some(effect_keyframe_state(clip, effect_index, "value", clip_time_secs));
+            let r_h = scrubby_param_row(ui, "Hue Shift", hue_shift, -180.0..=180.0, 0.0, 1.0, 1, "\u{00b0}", ks_h);
+            track_scrubby!("hue_shift", r_h, *hue_shift);
+            let r_s = scrubby_param_row(ui, "Saturation", saturation, 0.0..=3.0, 1.0, 0.01, 2, "", ks_s);
+            track_scrubby!("saturation", r_s, *saturation);
+            let r_v = scrubby_param_row(ui, "Value", value, 0.0..=3.0, 1.0, 0.01, 2, "", ks_v);
+            track_scrubby!("value", r_v, *value);
+        }
+        klipp_effects::BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=1.0, 0.1, 0.005, 3, "", ks_a);
+            track_scrubby!("amount", r_a, *amount);
+            let mut mono_f = *monochrome as f32;
+            let r_m = ui.add(egui::Slider::new(&mut mono_f, 0.0..=1.0).step_by(1.0_f64).text("Monochrome"));
+            *monochrome = mono_f as u32;
+            if r_m.drag_started() { any_drag_started = true; }
+            if r_m.drag_stopped() { any_drag_stopped = true; }
+            changed |= r_m.changed();
+            let mut seed_f = *seed as f32;
+            let r_s = ui.add(egui::Slider::new(&mut seed_f, 0.0..=10000.0).text("Seed"));
+            *seed = seed_f as u32;
+            if r_s.drag_started() { any_drag_started = true; }
+            if r_s.drag_stopped() { any_drag_stopped = true; }
+            changed |= r_s.changed();
+        }
+        klipp_effects::BuiltinEffect::MedianFilter { radius } => {
+            let mut r_f = *radius as f32;
+            let r = scrubby_param_row(ui, "Radius", &mut r_f, 1.0..=5.0, 1.0, 1.0, 0, " px", None);
+            *radius = r_f as u32;
+            track_scrubby!("radius", r, r_f);
+        }
+        klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
+            *center_x = eval_effect_kf(clip, effect_index, "center_x", clip_time_secs, *center_x);
+            *center_y = eval_effect_kf(clip, effect_index, "center_y", clip_time_secs, *center_y);
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            let ks_cx = Some(effect_keyframe_state(clip, effect_index, "center_x", clip_time_secs));
+            let ks_cy = Some(effect_keyframe_state(clip, effect_index, "center_y", clip_time_secs));
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let r_cx = scrubby_param_row(ui, "Center X", center_x, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cx);
+            track_scrubby!("center_x", r_cx, *center_x);
+            let r_cy = scrubby_param_row(ui, "Center Y", center_y, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cy);
+            track_scrubby!("center_y", r_cy, *center_y);
+            let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=50.0, 10.0, 0.5, 1, "", ks_a);
+            track_scrubby!("amount", r_a, *amount);
+            let mut s_f = *samples as f32;
+            let r_s = ui.add(egui::Slider::new(&mut s_f, 4.0..=32.0).text("Samples"));
+            *samples = s_f as u32;
+            if r_s.drag_started() { any_drag_started = true; }
+            if r_s.drag_stopped() { any_drag_stopped = true; }
+            changed |= r_s.changed();
+            // Mode dropdown
+            let mode_labels = ["Zoom", "Spin"];
+            let mode_sel = (*mode as usize).min(mode_labels.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mode").size(10.0));
+                let combo_id = ui.make_persistent_id(format!("rb_mode_{clip_id:?}_{effect_index}"));
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(mode_labels[mode_sel])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in mode_labels.iter().enumerate() {
+                            if ui.selectable_value(mode, i as u32, *label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+        }
+        klipp_effects::BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
+            *in_black = eval_effect_kf(clip, effect_index, "in_black", clip_time_secs, *in_black);
+            *in_white = eval_effect_kf(clip, effect_index, "in_white", clip_time_secs, *in_white);
+            *gamma = eval_effect_kf(clip, effect_index, "gamma", clip_time_secs, *gamma);
+            *out_black = eval_effect_kf(clip, effect_index, "out_black", clip_time_secs, *out_black);
+            *out_white = eval_effect_kf(clip, effect_index, "out_white", clip_time_secs, *out_white);
+            let ks_ib = Some(effect_keyframe_state(clip, effect_index, "in_black", clip_time_secs));
+            let ks_iw = Some(effect_keyframe_state(clip, effect_index, "in_white", clip_time_secs));
+            let ks_g = Some(effect_keyframe_state(clip, effect_index, "gamma", clip_time_secs));
+            let ks_ob = Some(effect_keyframe_state(clip, effect_index, "out_black", clip_time_secs));
+            let ks_ow = Some(effect_keyframe_state(clip, effect_index, "out_white", clip_time_secs));
+            let r_ib = scrubby_param_row(ui, "In Black", in_black, 0.0..=1.0, 0.0, 0.005, 3, "", ks_ib);
+            track_scrubby!("in_black", r_ib, *in_black);
+            let r_iw = scrubby_param_row(ui, "In White", in_white, 0.0..=1.0, 1.0, 0.005, 3, "", ks_iw);
+            track_scrubby!("in_white", r_iw, *in_white);
+            let r_g = scrubby_param_row(ui, "Gamma", gamma, 0.1..=5.0, 1.0, 0.05, 2, "", ks_g);
+            track_scrubby!("gamma", r_g, *gamma);
+            let r_ob = scrubby_param_row(ui, "Out Black", out_black, 0.0..=1.0, 0.0, 0.005, 3, "", ks_ob);
+            track_scrubby!("out_black", r_ob, *out_black);
+            let r_ow = scrubby_param_row(ui, "Out White", out_white, 0.0..=1.0, 1.0, 0.005, 3, "", ks_ow);
+            track_scrubby!("out_white", r_ow, *out_white);
+        }
+        klipp_effects::BuiltinEffect::Equalize { strength } => {
+            *strength = eval_effect_kf(clip, effect_index, "strength", clip_time_secs, *strength);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let r = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 1.0, 0.005, 2, "", ks);
+            track_scrubby!("strength", r, *strength);
         }
     }
 

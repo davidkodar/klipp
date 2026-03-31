@@ -28,6 +28,26 @@ pub struct GpuEffectsPipeline {
     lens_flare_pipeline: wgpu::ComputePipeline,
     anamorphic_streak_pipeline: wgpu::ComputePipeline,
     film_halation_blend_pipeline: wgpu::ComputePipeline,
+    // Compute pipelines — new effects
+    invert_pipeline: wgpu::ComputePipeline,
+    posterize_pipeline: wgpu::ComputePipeline,
+    mosaic_pipeline: wgpu::ComputePipeline,
+    edge_detect_pipeline: wgpu::ComputePipeline,
+    channel_mixer_pipeline: wgpu::ComputePipeline,
+    directional_blur_pipeline: wgpu::ComputePipeline,
+    emboss_pipeline: wgpu::ComputePipeline,
+    mirror_pipeline: wgpu::ComputePipeline,
+    lens_distortion_pipeline: wgpu::ComputePipeline,
+    dilate_pipeline: wgpu::ComputePipeline,
+    erode_pipeline: wgpu::ComputePipeline,
+    denoise_pipeline: wgpu::ComputePipeline,
+    gamma_pipeline: wgpu::ComputePipeline,
+    hsv_adjust_pipeline: wgpu::ComputePipeline,
+    noise_generator_pipeline: wgpu::ComputePipeline,
+    median_filter_pipeline: wgpu::ComputePipeline,
+    radial_blur_pipeline: wgpu::ComputePipeline,
+    levels_pipeline: wgpu::ComputePipeline,
+    equalize_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
@@ -249,6 +269,24 @@ impl GpuEffectsPipeline {
         let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE);
         let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK);
         let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION);
+        let invert_pipeline = create_pipeline(&device, &pipeline_layout, "invert", SHADER_INVERT);
+        let posterize_pipeline = create_pipeline(&device, &pipeline_layout, "posterize", SHADER_POSTERIZE);
+        let mosaic_pipeline = create_pipeline(&device, &pipeline_layout, "mosaic", SHADER_MOSAIC);
+        let edge_detect_pipeline = create_pipeline(&device, &pipeline_layout, "edge_detect", SHADER_EDGE_DETECT);
+        let channel_mixer_pipeline = create_pipeline(&device, &pipeline_layout, "channel_mixer", SHADER_CHANNEL_MIXER);
+        let directional_blur_pipeline = create_pipeline(&device, &pipeline_layout, "directional_blur", SHADER_DIRECTIONAL_BLUR);
+        let emboss_pipeline = create_pipeline(&device, &pipeline_layout, "emboss", SHADER_EMBOSS);
+        let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR);
+        let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
+        let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
+        let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
+        let denoise_pipeline = create_pipeline(&device, &pipeline_layout, "denoise", SHADER_DENOISE);
+        let gamma_pipeline = create_pipeline(&device, &pipeline_layout, "gamma", SHADER_GAMMA);
+        let hsv_adjust_pipeline = create_pipeline(&device, &pipeline_layout, "hsv_adjust", SHADER_HSV_ADJUST);
+        let noise_generator_pipeline = create_pipeline(&device, &pipeline_layout, "noise_generator", SHADER_NOISE_GENERATOR);
+        let median_filter_pipeline = create_pipeline(&device, &pipeline_layout, "median_filter", SHADER_MEDIAN_FILTER);
+        let radial_blur_pipeline = create_pipeline(&device, &pipeline_layout, "radial_blur", SHADER_RADIAL_BLUR);
+        let levels_pipeline = create_pipeline(&device, &pipeline_layout, "levels", SHADER_LEVELS);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
@@ -300,6 +338,7 @@ impl GpuEffectsPipeline {
         });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
+        let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
@@ -349,6 +388,25 @@ impl GpuEffectsPipeline {
             lens_flare_pipeline,
             anamorphic_streak_pipeline,
             film_halation_blend_pipeline,
+            invert_pipeline,
+            posterize_pipeline,
+            mosaic_pipeline,
+            edge_detect_pipeline,
+            channel_mixer_pipeline,
+            directional_blur_pipeline,
+            emboss_pipeline,
+            mirror_pipeline,
+            lens_distortion_pipeline,
+            dilate_pipeline,
+            erode_pipeline,
+            denoise_pipeline,
+            gamma_pipeline,
+            hsv_adjust_pipeline,
+            noise_generator_pipeline,
+            median_filter_pipeline,
+            radial_blur_pipeline,
+            levels_pipeline,
+            equalize_pipeline,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
@@ -1086,6 +1144,310 @@ impl GpuEffectsPipeline {
                     self.queue.submit(Some(enc.finish()));
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Invert { mix } => {
+                    if (*mix).abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&InvertParams {
+                        width, height,
+                        mix: *mix,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.invert_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Posterize { levels } => {
+                    self.write_params(&PosterizeParams {
+                        width, height,
+                        levels: *levels,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.posterize_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Mosaic { block_size } => {
+                    if *block_size <= 1.0 {
+                        continue;
+                    }
+                    self.write_params(&MosaicParams {
+                        width, height,
+                        block_size: *block_size,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.mosaic_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::EdgeDetect { strength, mix } => {
+                    self.write_params(&EdgeDetectParams {
+                        width, height,
+                        strength: *strength,
+                        mix: *mix,
+                    });
+                    self.dispatch(&self.edge_detect_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::ChannelMixer {
+                    red_red, red_green, red_blue,
+                    green_red, green_green, green_blue,
+                    blue_red, blue_green, blue_blue,
+                } => {
+                    self.write_params(&ChannelMixerParams {
+                        width, height,
+                        rr: *red_red, rg: *red_green, rb: *red_blue,
+                        gr: *green_red, gg: *green_green, gb: *green_blue,
+                        br: *blue_red, bg: *blue_green, bb: *blue_blue,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.channel_mixer_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
+                    if *distance < 0.5 {
+                        continue;
+                    }
+                    let samples_clamped = (*samples).clamp(3, 32);
+                    let angle_rad = angle.to_radians();
+                    self.write_params(&DirectionalBlurParams {
+                        width, height,
+                        dx: angle_rad.cos() * *distance / samples_clamped as f32,
+                        dy: angle_rad.sin() * *distance / samples_clamped as f32,
+                        samples: samples_clamped,
+                        _pad: 0, _pad2: 0, _pad3: 0,
+                    });
+                    self.dispatch(&self.directional_blur_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Emboss { angle, strength, mix } => {
+                    let angle_rad = angle.to_radians();
+                    self.write_params(&EmbossParams {
+                        width, height,
+                        dx: angle_rad.cos(),
+                        dy: angle_rad.sin(),
+                        strength: *strength,
+                        mix: *mix,
+                        _pad0: 0, _pad1: 0,
+                    });
+                    self.dispatch(&self.emboss_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Mirror { horizontal, vertical } => {
+                    if *horizontal == 0 && *vertical == 0 {
+                        continue;
+                    }
+                    self.write_params(&MirrorParams {
+                        width, height,
+                        horizontal: *horizontal,
+                        vertical: *vertical,
+                    });
+                    self.dispatch(&self.mirror_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::LensDistortion { distortion, scale } => {
+                    if distortion.abs() < f32::EPSILON && (*scale - 1.0).abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&LensDistortionParams {
+                        width, height,
+                        distortion: *distortion,
+                        scale: *scale,
+                    });
+                    self.dispatch(&self.lens_distortion_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Dilate { radius } => {
+                    self.write_params(&DilateErodeParams {
+                        width, height,
+                        radius: (*radius).clamp(1, 10),
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.dilate_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Erode { radius } => {
+                    self.write_params(&DilateErodeParams {
+                        width, height,
+                        radius: (*radius).clamp(1, 10),
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.erode_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
+                    let iters = (*iterations).clamp(1, 3);
+                    self.write_params(&DenoiseParams {
+                        width, height,
+                        spatial_sigma: *spatial_sigma,
+                        color_sigma: *color_sigma,
+                    });
+                    // Multi-pass: ping-pong between buffers
+                    for _iter in 0..iters {
+                        let (inp, out) = if current_in_a {
+                            (buf_a, buf_b)
+                        } else {
+                            (buf_b, buf_a)
+                        };
+                        self.dispatch(&self.denoise_pipeline, inp, out, workgroups);
+                        current_in_a = !current_in_a;
+                    }
+                }
+                BuiltinEffect::Gamma { gamma } => {
+                    if (*gamma - 1.0).abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&GammaParams {
+                        width, height,
+                        inv_gamma: 1.0 / *gamma,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.gamma_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
+                    if hue_shift.abs() < f32::EPSILON && (*saturation - 1.0).abs() < f32::EPSILON && (*value - 1.0).abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&HSVAdjustParams {
+                        width, height,
+                        hue_shift: *hue_shift,
+                        saturation: *saturation,
+                        value: *value,
+                        _pad: 0, _pad2: 0, _pad3: 0,
+                    });
+                    self.dispatch(&self.hsv_adjust_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
+                    if *amount < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&NoiseGeneratorParams {
+                        width, height,
+                        amount: *amount,
+                        monochrome: *monochrome,
+                        seed: *seed,
+                        _pad: 0, _pad2: 0, _pad3: 0,
+                    });
+                    self.dispatch(&self.noise_generator_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::MedianFilter { radius } => {
+                    let r = (*radius).clamp(1, 2); // clamp to 2 on GPU for performance
+                    self.write_params(&MedianFilterParams {
+                        width, height,
+                        radius: r,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.median_filter_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
+                    if *amount < 0.01 {
+                        continue;
+                    }
+                    let s = (*samples).clamp(4, 32);
+                    self.write_params(&RadialBlurParams {
+                        width, height,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        amount: *amount,
+                        samples: s,
+                        mode: *mode,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.radial_blur_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
+                    if *in_black <= 0.0 && (*in_white - 1.0).abs() < f32::EPSILON
+                        && (*gamma - 1.0).abs() < f32::EPSILON
+                        && *out_black <= 0.0 && (*out_white - 1.0).abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&LevelsParams {
+                        width, height,
+                        in_black: *in_black,
+                        in_white: *in_white,
+                        inv_gamma: if gamma.abs() > f32::EPSILON { 1.0 / *gamma } else { 1.0 },
+                        out_black: *out_black,
+                        out_white: *out_white,
+                        _pad: 0,
+                    });
+                    self.dispatch(&self.levels_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Equalize { strength } => {
+                    // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
+                    // Step 1: Download current frame to compute histogram
+                    let current_buf = if current_in_a { buf_a } else { buf_b };
+                    let frame_data = self.download(current_buf, byte_size);
+
+                    // Step 2: Build luminance histogram (256 bins)
+                    let mut histogram = [0u32; 256];
+                    let pixel_count = (width * height) as usize;
+                    for i in 0..pixel_count {
+                        let idx = i * 4;
+                        let r = frame_data[idx] as f32;
+                        let g = frame_data[idx + 1] as f32;
+                        let b = frame_data[idx + 2] as f32;
+                        let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) as u8;
+                        histogram[luma as usize] += 1;
+                    }
+
+                    // Step 3: Build CDF and normalize to 0.0-1.0
+                    let mut cdf = [0.0f32; 256];
+                    let mut cumulative = 0u32;
+                    let total = pixel_count as f32;
+                    // Find first non-zero bin for CDF normalization
+                    let cdf_min = histogram.iter().position(|&h| h > 0).unwrap_or(0);
+                    let min_cumulative = histogram[..=cdf_min].iter().sum::<u32>();
+                    for i in 0..256 {
+                        cumulative += histogram[i];
+                        // Standard histogram equalization formula
+                        cdf[i] = if total > min_cumulative as f32 {
+                            ((cumulative - min_cumulative) as f32 / (total - min_cumulative as f32)).clamp(0.0, 1.0)
+                        } else {
+                            i as f32 / 255.0
+                        };
+                    }
+
+                    // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
+                    let cdf_bytes = bytemuck::cast_slice(&cdf);
+                    // Reuse huesat_lut_buf (1024 bytes = 256 × 4 fits in 6144 byte huesat buf)
+                    self.queue.write_buffer(&self.huesat_lut_buf, 0, cdf_bytes);
+
+                    self.write_params(&EqualizeParams {
+                        width,
+                        height,
+                        strength: *strength,
+                        _pad0: 0,
+                    });
+
+                    let input = if current_in_a { buf_a } else { buf_b };
+                    let output = if current_in_a { buf_b } else { buf_a };
+
+                    // Create bind group with 4 bindings (like huesat)
+                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("equalize_bg"),
+                        layout: &self.huesat_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+                        ],
+                    });
+
+                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    {
+                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                        pass.set_pipeline(&self.equalize_pipeline);
+                        pass.set_bind_group(0, &bg, &[]);
+                        pass.dispatch_workgroups(workgroups, 1, 1);
+                    }
+                    self.queue.submit(std::iter::once(encoder.finish()));
+
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
@@ -1619,6 +1981,214 @@ struct AlphaDilateParams {
     radius: u32,
     _pad: u32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct InvertParams {
+    width: u32,
+    height: u32,
+    mix: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PosterizeParams {
+    width: u32,
+    height: u32,
+    levels: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MosaicParams {
+    width: u32,
+    height: u32,
+    block_size: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EdgeDetectParams {
+    width: u32,
+    height: u32,
+    strength: f32,
+    mix: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ChannelMixerParams {
+    width: u32,
+    height: u32,
+    rr: f32,
+    rg: f32,
+    rb: f32,
+    gr: f32,
+    gg: f32,
+    gb: f32,
+    br: f32,
+    bg: f32,
+    bb: f32,
+    _pad: u32,
+}
+// 12 fields × 4 bytes = 48 bytes (multiple of 16)
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DirectionalBlurParams {
+    width: u32,
+    height: u32,
+    dx: f32,
+    dy: f32,
+    samples: u32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+// 8 fields × 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EmbossParams {
+    width: u32,
+    height: u32,
+    dx: f32,
+    dy: f32,
+    strength: f32,
+    mix: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MirrorParams {
+    width: u32,
+    height: u32,
+    horizontal: u32,
+    vertical: u32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LensDistortionParams {
+    width: u32,
+    height: u32,
+    distortion: f32,
+    scale: f32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DilateErodeParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DenoiseParams {
+    width: u32,
+    height: u32,
+    spatial_sigma: f32,
+    color_sigma: f32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GammaParams {
+    width: u32,
+    height: u32,
+    inv_gamma: f32,
+    _pad: u32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HSVAdjustParams {
+    width: u32,
+    height: u32,
+    hue_shift: f32,
+    saturation: f32,
+    value: f32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct NoiseGeneratorParams {
+    width: u32,
+    height: u32,
+    amount: f32,
+    monochrome: u32,
+    seed: u32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MedianFilterParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+// 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RadialBlurParams {
+    width: u32,
+    height: u32,
+    center_x: f32,
+    center_y: f32,
+    amount: f32,
+    samples: u32,
+    mode: u32,
+    _pad: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LevelsParams {
+    width: u32,
+    height: u32,
+    in_black: f32,
+    in_white: f32,
+    inv_gamma: f32,
+    out_black: f32,
+    out_white: f32,
+    _pad: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EqualizeParams {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad0: u32,
+}
+// 4 fields x 4 bytes = 16 bytes
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -3086,5 +3656,955 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_g = u32(clamp(result.y * 255.0, 0.0, 255.0));
     let out_b = u32(clamp(result.z * 255.0, 0.0, 255.0));
     output[pixel_idx] = out_r | (out_g << 8u) | (out_b << 16u) | (a << 24u);
+}
+";
+
+// ─── New effect shaders ─────────────────────────────────────────────────────
+
+const SHADER_INVERT: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    mix_val: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+    let m = params.mix_val;
+    let or = r + (1.0 - r - r) * m;
+    let og = g + (1.0 - g - g) * m;
+    let ob = b + (1.0 - b - b) * m;
+    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_POSTERIZE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    levels: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+    let lvl = params.levels;
+    let div = lvl - 1.0;
+    let or = floor(r * lvl) / div;
+    let og = floor(g * lvl) / div;
+    let ob = floor(b * lvl) / div;
+    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_MOSAIC: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    block_size: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let bx = u32(floor(f32(x) / params.block_size) * params.block_size);
+    let by = u32(floor(f32(y) / params.block_size) * params.block_size);
+    let cbx = min(bx, params.width - 1u);
+    let cby = min(by, params.height - 1u);
+    let src_idx = cby * params.width + cbx;
+    output[idx] = input[src_idx];
+}
+";
+
+const SHADER_EDGE_DETECT: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    strength: f32,
+    mix_val: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn get_lum(x: i32, y: i32) -> f32 {
+    let cx = clamp(x, 0, i32(params.width) - 1);
+    let cy = clamp(y, 0, i32(params.height) - 1);
+    let v = input[u32(cy) * params.width + u32(cx)];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = i32(idx % params.width);
+    let y = i32(idx / params.width);
+
+    // Sobel Gx
+    let gx = -1.0 * get_lum(x - 1, y - 1) + 1.0 * get_lum(x + 1, y - 1)
+           + -2.0 * get_lum(x - 1, y)     + 2.0 * get_lum(x + 1, y)
+           + -1.0 * get_lum(x - 1, y + 1) + 1.0 * get_lum(x + 1, y + 1);
+    // Sobel Gy
+    let gy = -1.0 * get_lum(x - 1, y - 1) + -2.0 * get_lum(x, y - 1) + -1.0 * get_lum(x + 1, y - 1)
+           +  1.0 * get_lum(x - 1, y + 1) +  2.0 * get_lum(x, y + 1) +  1.0 * get_lum(x + 1, y + 1);
+
+    let edge = clamp(sqrt(gx * gx + gy * gy) * params.strength, 0.0, 1.0);
+
+    let v = input[idx];
+    let or = f32(v & 0xFFu) / 255.0;
+    let og = f32((v >> 8u) & 0xFFu) / 255.0;
+    let ob = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+    let m = params.mix_val;
+    let rr = u32(clamp((or * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
+    let rg = u32(clamp((og * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
+    let rb = u32(clamp((ob * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_CHANNEL_MIXER: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    rr: f32,
+    rg: f32,
+    rb: f32,
+    gr: f32,
+    gg: f32,
+    gb: f32,
+    br: f32,
+    bg: f32,
+    bb: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+    let out_r = params.rr * r + params.rg * g + params.rb * b;
+    let out_g = params.gr * r + params.gg * g + params.gb * b;
+    let out_b = params.br * r + params.bg * g + params.bb * b;
+    let cr = u32(clamp(out_r * 255.0, 0.0, 255.0));
+    let cg = u32(clamp(out_g * 255.0, 0.0, 255.0));
+    let cb = u32(clamp(out_b * 255.0, 0.0, 255.0));
+    output[idx] = cr | (cg << 8u) | (cb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_DIRECTIONAL_BLUR: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    dx: f32,
+    dy: f32,
+    samples: u32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = f32(idx % params.width);
+    let y = f32(idx / params.width);
+    var sum_r = 0.0;
+    var sum_g = 0.0;
+    var sum_b = 0.0;
+    var sum_a = 0.0;
+    let w = i32(params.width);
+    let h = i32(params.height);
+    for (var i = 0u; i < params.samples; i = i + 1u) {
+        let sx = clamp(i32(round(x + params.dx * f32(i))), 0, w - 1);
+        let sy = clamp(i32(round(y + params.dy * f32(i))), 0, h - 1);
+        let si = u32(sy) * params.width + u32(sx);
+        let v = input[si];
+        sum_r += f32(v & 0xFFu);
+        sum_g += f32((v >> 8u) & 0xFFu);
+        sum_b += f32((v >> 16u) & 0xFFu);
+        sum_a += f32(v >> 24u);
+    }
+    let inv = 1.0 / f32(params.samples);
+    let rr = u32(clamp(sum_r * inv, 0.0, 255.0));
+    let rg = u32(clamp(sum_g * inv, 0.0, 255.0));
+    let rb = u32(clamp(sum_b * inv, 0.0, 255.0));
+    let ra = u32(clamp(sum_a * inv, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ra << 24u);
+}
+";
+
+const SHADER_EMBOSS: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    dx: f32,
+    dy: f32,
+    strength: f32,
+    mix: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+
+    let x = idx % w;
+    let y = idx / w;
+
+    let pixel = input[idx];
+    let orig_r = f32(pixel & 0xFFu) / 255.0;
+    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    // Skip border pixels
+    if x == 0u || y == 0u || x >= w - 1u || y >= h - 1u {
+        output[idx] = pixel;
+        return;
+    }
+
+    // Sample in light direction and opposite direction
+    let sx1 = clamp(i32(round(f32(x) + params.dx)), 0, i32(w) - 1);
+    let sy1 = clamp(i32(round(f32(y) + params.dy)), 0, i32(h) - 1);
+    let sx2 = clamp(i32(round(f32(x) - params.dx)), 0, i32(w) - 1);
+    let sy2 = clamp(i32(round(f32(y) - params.dy)), 0, i32(h) - 1);
+
+    let p1 = input[u32(sy1) * w + u32(sx1)];
+    let p2 = input[u32(sy2) * w + u32(sx2)];
+
+    let r1 = f32(p1 & 0xFFu) / 255.0;
+    let g1 = f32((p1 >> 8u) & 0xFFu) / 255.0;
+    let b1 = f32((p1 >> 16u) & 0xFFu) / 255.0;
+
+    let r2 = f32(p2 & 0xFFu) / 255.0;
+    let g2 = f32((p2 >> 8u) & 0xFFu) / 255.0;
+    let b2 = f32((p2 >> 16u) & 0xFFu) / 255.0;
+
+    // Emboss: difference scaled around 0.5 (neutral gray)
+    let er = clamp(0.5 + (r1 - r2) * params.strength, 0.0, 1.0);
+    let eg = clamp(0.5 + (g1 - g2) * params.strength, 0.0, 1.0);
+    let eb = clamp(0.5 + (b1 - b2) * params.strength, 0.0, 1.0);
+
+    // Mix with original
+    let rr = orig_r + (er - orig_r) * params.mix;
+    let rg = orig_g + (eg - orig_g) * params.mix;
+    let rb = orig_b + (eb - orig_b) * params.mix;
+
+    let ro = u32(clamp(rr, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(rg, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(rb, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_MIRROR: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    horizontal: u32,
+    vertical: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    var sx = x;
+    var sy = y;
+    if params.horizontal != 0u {
+        sx = params.width - 1u - x;
+    }
+    if params.vertical != 0u {
+        sy = params.height - 1u - y;
+    }
+    output[idx] = input[sy * params.width + sx];
+}
+";
+
+const SHADER_LENS_DISTORTION: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    distortion: f32,
+    scale: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn sample_pixel(sx: f32, sy: f32, w: u32, h: u32) -> vec4<f32> {
+    let x0 = i32(floor(sx));
+    let y0 = i32(floor(sy));
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
+    let fx = sx - f32(x0);
+    let fy = sy - f32(y0);
+    let cx0 = u32(clamp(x0, 0, i32(w) - 1));
+    let cy0 = u32(clamp(y0, 0, i32(h) - 1));
+    let cx1 = u32(clamp(x1, 0, i32(w) - 1));
+    let cy1 = u32(clamp(y1, 0, i32(h) - 1));
+    let p00 = input[cy0 * w + cx0];
+    let p10 = input[cy0 * w + cx1];
+    let p01 = input[cy1 * w + cx0];
+    let p11 = input[cy1 * w + cx1];
+    let c00 = vec4<f32>(f32(p00 & 0xFFu), f32((p00 >> 8u) & 0xFFu), f32((p00 >> 16u) & 0xFFu), f32((p00 >> 24u) & 0xFFu));
+    let c10 = vec4<f32>(f32(p10 & 0xFFu), f32((p10 >> 8u) & 0xFFu), f32((p10 >> 16u) & 0xFFu), f32((p10 >> 24u) & 0xFFu));
+    let c01 = vec4<f32>(f32(p01 & 0xFFu), f32((p01 >> 8u) & 0xFFu), f32((p01 >> 16u) & 0xFFu), f32((p01 >> 24u) & 0xFFu));
+    let c11 = vec4<f32>(f32(p11 & 0xFFu), f32((p11 >> 8u) & 0xFFu), f32((p11 >> 16u) & 0xFFu), f32((p11 >> 24u) & 0xFFu));
+    let top = mix(c00, c10, fx);
+    let bot = mix(c01, c11, fx);
+    return mix(top, bot, fy);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = idx % w;
+    let y = idx / w;
+    let cx = f32(w) / 2.0;
+    let cy = f32(h) / 2.0;
+    let nx = (f32(x) - cx) / cx;
+    let ny = (f32(y) - cy) / cy;
+    let r2 = nx * nx + ny * ny;
+    let factor = 1.0 + params.distortion * r2;
+    let sx = (nx * factor / params.scale) * cx + cx;
+    let sy = (ny * factor / params.scale) * cy + cy;
+    let c = sample_pixel(sx, sy, w, h);
+    let rr = u32(clamp(c.x, 0.0, 255.0));
+    let rg = u32(clamp(c.y, 0.0, 255.0));
+    let rb = u32(clamp(c.z, 0.0, 255.0));
+    let ra = u32(clamp(c.w, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ra << 24u);
+}
+";
+
+const SHADER_DILATE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = i32(idx % w);
+    let y = i32(idx / w);
+    let r = i32(params.radius);
+    var max_r = 0u;
+    var max_g = 0u;
+    var max_b = 0u;
+    var max_a = 0u;
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        for (var dx = -r; dx <= r; dx = dx + 1) {
+            let sx = u32(clamp(x + dx, 0, i32(w) - 1));
+            let sy = u32(clamp(y + dy, 0, i32(h) - 1));
+            let v = input[sy * w + sx];
+            max_r = max(max_r, v & 0xFFu);
+            max_g = max(max_g, (v >> 8u) & 0xFFu);
+            max_b = max(max_b, (v >> 16u) & 0xFFu);
+            max_a = max(max_a, (v >> 24u) & 0xFFu);
+        }
+    }
+    output[idx] = max_r | (max_g << 8u) | (max_b << 16u) | (max_a << 24u);
+}
+";
+
+const SHADER_ERODE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = i32(idx % w);
+    let y = i32(idx / w);
+    let r = i32(params.radius);
+    var min_r = 255u;
+    var min_g = 255u;
+    var min_b = 255u;
+    var min_a = 255u;
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        for (var dx = -r; dx <= r; dx = dx + 1) {
+            let sx = u32(clamp(x + dx, 0, i32(w) - 1));
+            let sy = u32(clamp(y + dy, 0, i32(h) - 1));
+            let v = input[sy * w + sx];
+            min_r = min(min_r, v & 0xFFu);
+            min_g = min(min_g, (v >> 8u) & 0xFFu);
+            min_b = min(min_b, (v >> 16u) & 0xFFu);
+            min_a = min(min_a, (v >> 24u) & 0xFFu);
+        }
+    }
+    output[idx] = min_r | (min_g << 8u) | (min_b << 16u) | (min_a << 24u);
+}
+";
+
+const SHADER_DENOISE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    spatial_sigma: f32,
+    color_sigma: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = i32(idx % w);
+    let y = i32(idx / w);
+
+    let cv = input[idx];
+    let cr = f32(cv & 0xFFu) / 255.0;
+    let cg = f32((cv >> 8u) & 0xFFu) / 255.0;
+    let cb = f32((cv >> 16u) & 0xFFu) / 255.0;
+    let ca = (cv >> 24u) & 0xFFu;
+    let center_luma = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+
+    let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), 10);
+    let spatial_denom = 2.0 * params.spatial_sigma * params.spatial_sigma;
+    let color_denom = 2.0 * params.color_sigma * params.color_sigma;
+
+    var sum_r = 0.0;
+    var sum_g = 0.0;
+    var sum_b = 0.0;
+    var total_weight = 0.0;
+
+    for (var dy = -kernel_size; dy <= kernel_size; dy = dy + 1) {
+        for (var dx = -kernel_size; dx <= kernel_size; dx = dx + 1) {
+            let sx = u32(clamp(x + dx, 0, i32(w) - 1));
+            let sy = u32(clamp(y + dy, 0, i32(h) - 1));
+            let nv = input[sy * w + sx];
+            let nr = f32(nv & 0xFFu) / 255.0;
+            let ng = f32((nv >> 8u) & 0xFFu) / 255.0;
+            let nb = f32((nv >> 16u) & 0xFFu) / 255.0;
+            let n_luma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+
+            let spatial_dist = f32(dx * dx + dy * dy);
+            let spatial_w = exp(-spatial_dist / spatial_denom);
+            let color_diff = center_luma - n_luma;
+            let color_w = exp(-color_diff * color_diff / color_denom);
+            let weight = spatial_w * color_w;
+
+            sum_r += nr * weight;
+            sum_g += ng * weight;
+            sum_b += nb * weight;
+            total_weight += weight;
+        }
+    }
+
+    let inv = 1.0 / total_weight;
+    let rr = u32(clamp(sum_r * inv * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(sum_g * inv * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(sum_b * inv * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ca << 24u);
+}
+";
+
+const SHADER_GAMMA: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    inv_gamma: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+    let or = pow(r, params.inv_gamma);
+    let og = pow(g, params.inv_gamma);
+    let ob = pow(b, params.inv_gamma);
+    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
+    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
+    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
+    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+}
+";
+
+const SHADER_HSV_ADJUST: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    hue_shift: f32,
+    saturation: f32,
+    value_mult: f32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+
+    // RGB to HSV
+    let cmax = max(r, max(g, b));
+    let cmin = min(r, min(g, b));
+    let delta = cmax - cmin;
+
+    var h = 0.0;
+    if delta > 0.001 {
+        if abs(cmax - r) < 0.001 {
+            h = ((g - b) / delta) % 6.0;
+        } else if abs(cmax - g) < 0.001 {
+            h = (b - r) / delta + 2.0;
+        } else {
+            h = (r - g) / delta + 4.0;
+        }
+        h = h * 60.0;
+        if h < 0.0 { h += 360.0; }
+    }
+    let s = select(0.0, delta / cmax, cmax > 0.001);
+    let val = cmax;
+
+    // Apply adjustments
+    h = (h + params.hue_shift + 360.0) % 360.0;
+    let new_s = clamp(s * params.saturation, 0.0, 1.0);
+    let new_v = clamp(val * params.value_mult, 0.0, 1.0);
+
+    // HSV to RGB
+    let c = new_v * new_s;
+    let x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0));
+    let m = new_v - c;
+
+    var rr = 0.0;
+    var gg = 0.0;
+    var bb = 0.0;
+    if h < 60.0 { rr = c; gg = x; bb = 0.0; }
+    else if h < 120.0 { rr = x; gg = c; bb = 0.0; }
+    else if h < 180.0 { rr = 0.0; gg = c; bb = x; }
+    else if h < 240.0 { rr = 0.0; gg = x; bb = c; }
+    else if h < 300.0 { rr = x; gg = 0.0; bb = c; }
+    else { rr = c; gg = 0.0; bb = x; }
+
+    let ro = u32(clamp((rr + m) * 255.0, 0.0, 255.0));
+    let go = u32(clamp((gg + m) * 255.0, 0.0, 255.0));
+    let bo = u32(clamp((bb + m) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_NOISE_GENERATOR: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    amount: f32,
+    monochrome: u32,
+    seed: u32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn hash(p: u32) -> f32 {
+    var x = p;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = (x >> 16u) ^ x;
+    return f32(x) / 4294967295.0;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    var r = f32(v & 0xFFu) / 255.0;
+    var g = f32((v >> 8u) & 0xFFu) / 255.0;
+    var b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+
+    let noise_seed = idx * 7919u + params.seed;
+    if params.monochrome != 0u {
+        let n = (hash(noise_seed) - 0.5) * 2.0 * params.amount;
+        r = r + n;
+        g = g + n;
+        b = b + n;
+    } else {
+        r = r + (hash(noise_seed) - 0.5) * 2.0 * params.amount;
+        g = g + (hash(noise_seed + 1u) - 0.5) * 2.0 * params.amount;
+        b = b + (hash(noise_seed + 2u) - 0.5) * 2.0 * params.amount;
+    }
+
+    let ro = u32(clamp(r * 255.0, 0.0, 255.0));
+    let go = u32(clamp(g * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(b * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_MEDIAN_FILTER: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = i32(idx % w);
+    let y = i32(idx / w);
+    let r = i32(min(params.radius, 2u));
+
+    // Collect neighborhood values (max 5x5 = 25)
+    var vals_r: array<f32, 25>;
+    var vals_g: array<f32, 25>;
+    var vals_b: array<f32, 25>;
+    var n = 0u;
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        for (var dx = -r; dx <= r; dx = dx + 1) {
+            let sx = u32(clamp(x + dx, 0, i32(w) - 1));
+            let sy = u32(clamp(y + dy, 0, i32(h) - 1));
+            let p = input[sy * w + sx];
+            vals_r[n] = f32(p & 0xFFu);
+            vals_g[n] = f32((p >> 8u) & 0xFFu);
+            vals_b[n] = f32((p >> 16u) & 0xFFu);
+            n = n + 1u;
+        }
+    }
+
+    // Partial selection sort to find median
+    let mid = n / 2u;
+    for (var i = 0u; i <= mid; i = i + 1u) {
+        var min_idx = i;
+        for (var j = i + 1u; j < n; j = j + 1u) {
+            if vals_r[j] < vals_r[min_idx] { min_idx = j; }
+        }
+        if min_idx != i {
+            let tmp = vals_r[i]; vals_r[i] = vals_r[min_idx]; vals_r[min_idx] = tmp;
+        }
+    }
+    for (var i = 0u; i <= mid; i = i + 1u) {
+        var min_idx = i;
+        for (var j = i + 1u; j < n; j = j + 1u) {
+            if vals_g[j] < vals_g[min_idx] { min_idx = j; }
+        }
+        if min_idx != i {
+            let tmp = vals_g[i]; vals_g[i] = vals_g[min_idx]; vals_g[min_idx] = tmp;
+        }
+    }
+    for (var i = 0u; i <= mid; i = i + 1u) {
+        var min_idx = i;
+        for (var j = i + 1u; j < n; j = j + 1u) {
+            if vals_b[j] < vals_b[min_idx] { min_idx = j; }
+        }
+        if min_idx != i {
+            let tmp = vals_b[i]; vals_b[i] = vals_b[min_idx]; vals_b[min_idx] = tmp;
+        }
+    }
+
+    let orig = input[idx];
+    let a = orig >> 24u;
+    let ro = u32(clamp(vals_r[mid], 0.0, 255.0));
+    let go = u32(clamp(vals_g[mid], 0.0, 255.0));
+    let bo = u32(clamp(vals_b[mid], 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_RADIAL_BLUR: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    center_x: f32,
+    center_y: f32,
+    amount: f32,
+    samples: u32,
+    mode: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn sample_pixel(sx: i32, sy: i32, w: u32, h: u32) -> vec3<f32> {
+    let cx = u32(clamp(sx, 0, i32(w) - 1));
+    let cy = u32(clamp(sy, 0, i32(h) - 1));
+    let p = input[cy * w + cx];
+    return vec3<f32>(
+        f32(p & 0xFFu) / 255.0,
+        f32((p >> 8u) & 0xFFu) / 255.0,
+        f32((p >> 16u) & 0xFFu) / 255.0
+    );
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = f32(idx % w);
+    let y = f32(idx / w);
+
+    let cx = params.center_x * f32(w);
+    let cy = params.center_y * f32(h);
+    let dx = x - cx;
+    let dy = y - cy;
+    let s = params.samples;
+
+    var sum = vec3<f32>(0.0, 0.0, 0.0);
+
+    if params.mode == 0u {
+        // Zoom blur
+        let dist = max(sqrt(dx * dx + dy * dy), 1.0);
+        let scale = params.amount / f32(s) / dist;
+        for (var i = 0u; i < s; i = i + 1u) {
+            let t = (f32(i) / f32(s) - 0.5) * 2.0;
+            let sx = i32(round(x + dx * t * scale));
+            let sy = i32(round(y + dy * t * scale));
+            sum = sum + sample_pixel(sx, sy, w, h);
+        }
+    } else {
+        // Spin blur
+        let angle_step = params.amount * 3.14159265 / 180.0 / f32(s);
+        for (var i = 0u; i < s; i = i + 1u) {
+            let t = (f32(i) / f32(s) - 0.5) * 2.0;
+            let ang = t * angle_step;
+            let cos_a = cos(ang);
+            let sin_a = sin(ang);
+            let sx = i32(round(cx + dx * cos_a - dy * sin_a));
+            let sy = i32(round(cy + dx * sin_a + dy * cos_a));
+            sum = sum + sample_pixel(sx, sy, w, h);
+        }
+    }
+
+    let inv = 1.0 / f32(s);
+    let orig = input[idx];
+    let a = orig >> 24u;
+    let ro = u32(clamp(sum.x * inv * 255.0, 0.0, 255.0));
+    let go = u32(clamp(sum.y * inv * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(sum.z * inv * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_LEVELS: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    in_black: f32,
+    in_white: f32,
+    inv_gamma: f32,
+    out_black: f32,
+    out_white: f32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+
+    let in_range = max(params.in_white - params.in_black, 0.001);
+
+    let mr = clamp((r - params.in_black) / in_range, 0.0, 1.0);
+    let mg = clamp((g - params.in_black) / in_range, 0.0, 1.0);
+    let mb = clamp((b - params.in_black) / in_range, 0.0, 1.0);
+
+    let gr = pow(mr, params.inv_gamma);
+    let gg = pow(mg, params.inv_gamma);
+    let gb = pow(mb, params.inv_gamma);
+
+    let fr = params.out_black + gr * (params.out_white - params.out_black);
+    let fg = params.out_black + gg * (params.out_white - params.out_black);
+    let fb = params.out_black + gb * (params.out_white - params.out_black);
+
+    let ro = u32(clamp(fr * 255.0, 0.0, 255.0));
+    let go = u32(clamp(fg * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(fb * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_EQUALIZE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad0: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> cdf: array<f32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let v = input[idx];
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = v >> 24u;
+
+    // Compute luminance and look up equalized value from CDF
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let luma_idx = u32(clamp(luma * 255.0, 0.0, 255.0));
+    let eq_luma = cdf[luma_idx];
+
+    // Scale RGB proportionally to match new luminance
+    let scale = select(eq_luma / luma, 1.0, luma < 0.001);
+    let eq_r = clamp(r * scale, 0.0, 1.0);
+    let eq_g = clamp(g * scale, 0.0, 1.0);
+    let eq_b = clamp(b * scale, 0.0, 1.0);
+
+    // Blend with original based on strength
+    let fr = r + (eq_r - r) * params.strength;
+    let fg = g + (eq_g - g) * params.strength;
+    let fb = b + (eq_b - b) * params.strength;
+
+    let ro = u32(clamp(fr * 255.0, 0.0, 255.0));
+    let go = u32(clamp(fg * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(fb * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
 }
 ";

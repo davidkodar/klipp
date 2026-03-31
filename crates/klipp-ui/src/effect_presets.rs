@@ -249,6 +249,130 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 71, 187], tolerance: 0.25, spill_suppression: 0.15 });
         self.bi("chroma_key", "Green Screen (Tight)", "Clean green screen with tight key",
             klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 177, 64], tolerance: 0.15, spill_suppression: 0.25 });
+
+        // ── Posterize ─────────────────────────────────────────
+        self.bi("posterize", "Pop Art", "Bold 4-level poster look",
+            klipp_effects::BuiltinEffect::Posterize { levels: 4.0 });
+        self.bi("posterize", "Retro Game", "8-bit game palette",
+            klipp_effects::BuiltinEffect::Posterize { levels: 8.0 });
+        self.bi("posterize", "Subtle", "Gentle banding (16 levels)",
+            klipp_effects::BuiltinEffect::Posterize { levels: 16.0 });
+
+        // ── Mosaic ────────────────────────────────────────────
+        self.bi("mosaic", "Privacy", "Face/plate obscuring",
+            klipp_effects::BuiltinEffect::Mosaic { block_size: 20.0 });
+        self.bi("mosaic", "Pixel Art", "Retro pixel look",
+            klipp_effects::BuiltinEffect::Mosaic { block_size: 8.0 });
+        self.bi("mosaic", "Extreme", "Very coarse pixelation",
+            klipp_effects::BuiltinEffect::Mosaic { block_size: 50.0 });
+
+        // ── Edge Detect ───────────────────────────────────────
+        self.bi("edge_detect", "Sketch", "Clean edge outline",
+            klipp_effects::BuiltinEffect::EdgeDetect { strength: 2.0, mix: 1.0 });
+        self.bi("edge_detect", "Overlay Edges", "Subtle edge enhancement",
+            klipp_effects::BuiltinEffect::EdgeDetect { strength: 1.5, mix: 0.3 });
+
+        // ── Emboss ────────────────────────────────────────────
+        self.bi("emboss", "Stamp", "Classic stamp/relief look",
+            klipp_effects::BuiltinEffect::Emboss { angle: 135.0, strength: 1.5, mix: 1.0 });
+        self.bi("emboss", "Subtle Relief", "Gentle 3D texture",
+            klipp_effects::BuiltinEffect::Emboss { angle: 135.0, strength: 0.8, mix: 0.4 });
+        self.bi("emboss", "Side Light", "Lit from the right",
+            klipp_effects::BuiltinEffect::Emboss { angle: 0.0, strength: 1.5, mix: 1.0 });
+
+        // ── Directional Blur ──────────────────────────────────
+        self.bi("directional_blur", "Horizontal Sweep", "Horizontal motion blur",
+            klipp_effects::BuiltinEffect::DirectionalBlur { angle: 0.0, distance: 15.0, samples: 12 });
+        self.bi("directional_blur", "Vertical Rain", "Vertical streak blur",
+            klipp_effects::BuiltinEffect::DirectionalBlur { angle: 90.0, distance: 20.0, samples: 16 });
+        self.bi("directional_blur", "Diagonal Speed", "Dynamic diagonal motion",
+            klipp_effects::BuiltinEffect::DirectionalBlur { angle: 45.0, distance: 25.0, samples: 12 });
+
+        // ── Lens Distortion ───────────────────────────────────
+        self.bi("lens_distortion", "GoPro Fix", "Correct action cam barrel distortion",
+            klipp_effects::BuiltinEffect::LensDistortion { distortion: -0.3, scale: 1.1 });
+        self.bi("lens_distortion", "Fisheye", "Extreme barrel distortion",
+            klipp_effects::BuiltinEffect::LensDistortion { distortion: -0.8, scale: 0.7 });
+        self.bi("lens_distortion", "Pincushion", "Inward pinch distortion",
+            klipp_effects::BuiltinEffect::LensDistortion { distortion: 0.5, scale: 1.0 });
+
+        // ── Denoise ───────────────────────────────────────────
+        self.bi("denoise", "Light", "Subtle noise reduction for well-lit scenes",
+            klipp_effects::BuiltinEffect::Denoise { spatial_sigma: 3.0, color_sigma: 0.08, iterations: 1 });
+        self.bi("denoise", "Standard", "General-purpose denoising",
+            klipp_effects::BuiltinEffect::Denoise { spatial_sigma: 5.0, color_sigma: 0.12, iterations: 1 });
+        self.bi("denoise", "Heavy", "Strong noise reduction for phone/low-light footage",
+            klipp_effects::BuiltinEffect::Denoise { spatial_sigma: 8.0, color_sigma: 0.2, iterations: 2 });
+
+        // ── Gamma ─────────────────────────────────────────────
+        self.bi("gamma", "Brighten", "Lift midtones",
+            klipp_effects::BuiltinEffect::Gamma { gamma: 1.5 });
+        self.bi("gamma", "Darken", "Crush midtones",
+            klipp_effects::BuiltinEffect::Gamma { gamma: 0.7 });
+        self.bi("gamma", "High Contrast", "Strong S-curve via gamma",
+            klipp_effects::BuiltinEffect::Gamma { gamma: 0.5 });
+
+        // ── Invert ────────────────────────────────────────────
+        self.bi("invert", "Full Invert", "Complete color inversion",
+            klipp_effects::BuiltinEffect::Invert { mix: 1.0 });
+        self.bi("invert", "Partial Invert", "50% inverted blend",
+            klipp_effects::BuiltinEffect::Invert { mix: 0.5 });
+
+        // ── Mirror ────────────────────────────────────────────
+        self.bi("mirror", "Horizontal Flip", "Flip left to right",
+            klipp_effects::BuiltinEffect::Mirror { horizontal: 1, vertical: 0 });
+        self.bi("mirror", "Vertical Flip", "Flip top to bottom",
+            klipp_effects::BuiltinEffect::Mirror { horizontal: 0, vertical: 1 });
+        self.bi("mirror", "Both", "Rotate 180 degrees",
+            klipp_effects::BuiltinEffect::Mirror { horizontal: 1, vertical: 1 });
+
+        // ── HSV Adjust ────────────────────────────────────────
+        self.bi("hsv_adjust", "Hue Shift 30\u{00b0}", "Subtle warm shift",
+            klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.0, value: 1.0 });
+        self.bi("hsv_adjust", "Desaturate", "Remove all color",
+            klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 });
+        self.bi("hsv_adjust", "Boost Saturation", "Vivid colors",
+            klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.8, value: 1.0 });
+        self.bi("hsv_adjust", "Warm Shift", "Orange/warm tone shift",
+            klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: -15.0, saturation: 1.2, value: 1.05 });
+
+        // ── Noise Generator ───────────────────────────────────
+        self.bi("noise_generator", "Subtle Grain", "Light film grain texture",
+            klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.05, monochrome: 1, seed: 0 });
+        self.bi("noise_generator", "Heavy Noise", "Strong noise overlay",
+            klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.3, monochrome: 0, seed: 0 });
+        self.bi("noise_generator", "B&W Grain", "Classic monochrome film grain",
+            klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.15, monochrome: 1, seed: 0 });
+
+        // ── Median Filter ─────────────────────────────────────
+        self.bi("median_filter", "Light Smooth", "Gentle noise removal",
+            klipp_effects::BuiltinEffect::MedianFilter { radius: 1 });
+        self.bi("median_filter", "Strong Smooth", "Aggressive noise removal",
+            klipp_effects::BuiltinEffect::MedianFilter { radius: 2 });
+
+        // ── Radial Blur ───────────────────────────────────────
+        self.bi("radial_blur", "Zoom Blur", "Zoom-in motion blur from center",
+            klipp_effects::BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 15.0, samples: 16, mode: 0 });
+        self.bi("radial_blur", "Spin Blur", "Rotational motion blur",
+            klipp_effects::BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 16, mode: 1 });
+        self.bi("radial_blur", "Subtle Zoom", "Gentle zoom blur",
+            klipp_effects::BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 5.0, samples: 12, mode: 0 });
+
+        // ── Levels ────────────────────────────────────────────
+        self.bi("levels", "Crush Blacks", "Lift input black point for contrast",
+            klipp_effects::BuiltinEffect::Levels { in_black: 0.15, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 });
+        self.bi("levels", "Expand Range", "Stretch histogram to full range",
+            klipp_effects::BuiltinEffect::Levels { in_black: 0.05, in_white: 0.95, gamma: 1.0, out_black: 0.0, out_white: 1.0 });
+        self.bi("levels", "Faded Film", "Lift output blacks for a faded look",
+            klipp_effects::BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.1, out_black: 0.1, out_white: 0.9 });
+
+        // ── Equalize ──────────────────────────────────────────
+        self.bi("equalize", "Auto Levels", "Full histogram equalization",
+            klipp_effects::BuiltinEffect::Equalize { strength: 1.0 });
+        self.bi("equalize", "Subtle", "Gentle contrast enhancement",
+            klipp_effects::BuiltinEffect::Equalize { strength: 0.3 });
+        self.bi("equalize", "Strong", "Strong contrast enhancement",
+            klipp_effects::BuiltinEffect::Equalize { strength: 0.7 });
     }
 
     fn bi(&mut self, key: &str, name: &str, desc: &str, effect: klipp_effects::BuiltinEffect) {
@@ -281,6 +405,25 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::LightWrap { .. } => "light_wrap",
         klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "anamorphic_streak",
         klipp_effects::BuiltinEffect::FilmHalation { .. } => "film_halation",
+        klipp_effects::BuiltinEffect::Invert { .. } => "invert",
+        klipp_effects::BuiltinEffect::Posterize { .. } => "posterize",
+        klipp_effects::BuiltinEffect::Mosaic { .. } => "mosaic",
+        klipp_effects::BuiltinEffect::EdgeDetect { .. } => "edge_detect",
+        klipp_effects::BuiltinEffect::ChannelMixer { .. } => "channel_mixer",
+        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => "directional_blur",
+        klipp_effects::BuiltinEffect::Emboss { .. } => "emboss",
+        klipp_effects::BuiltinEffect::Mirror { .. } => "mirror",
+        klipp_effects::BuiltinEffect::LensDistortion { .. } => "lens_distortion",
+        klipp_effects::BuiltinEffect::Dilate { .. } => "dilate",
+        klipp_effects::BuiltinEffect::Erode { .. } => "erode",
+        klipp_effects::BuiltinEffect::Denoise { .. } => "denoise",
+        klipp_effects::BuiltinEffect::Gamma { .. } => "gamma",
+        klipp_effects::BuiltinEffect::HSVAdjust { .. } => "hsv_adjust",
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "noise_generator",
+        klipp_effects::BuiltinEffect::MedianFilter { .. } => "median_filter",
+        klipp_effects::BuiltinEffect::RadialBlur { .. } => "radial_blur",
+        klipp_effects::BuiltinEffect::Levels { .. } => "levels",
+        klipp_effects::BuiltinEffect::Equalize { .. } => "equalize",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
     }
 }
