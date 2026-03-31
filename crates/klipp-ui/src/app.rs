@@ -673,6 +673,35 @@ impl KlippApp {
         if self.state.thumbnail_cache.filmstrip(&media_id).is_some_and(|f| !f.is_empty()) {
             return;
         }
+        // Already have filmstrip on disk? Load it directly without showing the spinner.
+        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        if let Some(ref key) = cache_key {
+            if klipp_media::disk_cache::filmstrip_cache_exists(key) {
+                // Load from disk cache on a background thread, skip the generating indicator
+                let tx = self.filmstrip_tx.clone();
+                let key_clone = key.clone();
+                let path_clone = path.clone();
+                std::thread::Builder::new()
+                    .name("klipp-filmstrip-cache".into())
+                    .spawn(move || {
+                        match klipp_media::disk_cache::load_filmstrip_cache(&key_clone) {
+                            Ok(frames) => {
+                                tracing::info!("Filmstrip loaded from disk cache: {} frames for {:?}", frames.len(), path_clone);
+                                for frame in frames {
+                                    let _ = tx.send(FilmstripResult::Frame { media_id, frame });
+                                }
+                                let _ = tx.send(FilmstripResult::Done { media_id });
+                            }
+                            Err(e) => {
+                                tracing::warn!("Filmstrip disk cache load failed: {e}");
+                                let _ = tx.send(FilmstripResult::Done { media_id });
+                            }
+                        }
+                    })
+                    .ok();
+                return;
+            }
+        }
 
         self.state.filmstrip_queue.push((media_id, path, duration));
         self.state.filmstrip_total_queued += 1;

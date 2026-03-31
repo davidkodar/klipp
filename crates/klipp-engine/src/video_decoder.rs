@@ -314,6 +314,14 @@ unsafe fn download_hw_frame(
     let (out_w, out_h) = playback_dimensions(src_w, src_h);
 
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
+    // Temporary diagnostic — log first frame only
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, gpu_available={}", sw_fmt, src_w, src_h, out_w, out_h, gpu_converter.is_some());
+        }
+    }
     if sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
         if let Some(converter) = gpu_converter {
             let y_stride = (*sw_frame).linesize[0] as u32;
