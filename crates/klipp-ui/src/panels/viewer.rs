@@ -661,6 +661,7 @@ impl ViewerPanel {
             let overlay_label = match state.viewer_overlay {
                 ViewerOverlay::Zebra => Some("ZEBRA"),
                 ViewerOverlay::FalseColor => Some("FALSE COLOR"),
+                ViewerOverlay::SafeAreas => Some("SAFE AREAS"),
                 ViewerOverlay::None => None,
             };
             if let Some(label) = overlay_label {
@@ -684,7 +685,30 @@ impl ViewerPanel {
             }
         }
 
-        // Safe area overlay removed — it looked like a viewer border
+        // Safe area overlay: title safe (80%) and action safe (90%)
+        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::SafeAreas) {
+            let center = image_rect.center();
+            let w = image_rect.width();
+            let h = image_rect.height();
+            // 90% action safe
+            let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * 0.9, h * 0.9));
+            ui.painter().rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
+            ui.painter().text(
+                egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
+                egui::Align2::LEFT_TOP, "Action Safe",
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_rgba_premultiplied(255, 200, 0, 140),
+            );
+            // 80% title safe
+            let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * 0.8, h * 0.8));
+            ui.painter().rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
+            ui.painter().text(
+                egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
+                egui::Align2::LEFT_TOP, "Title Safe",
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_rgba_premultiplied(0, 180, 255, 140),
+            );
+        }
 
         // Timecode + zoom now shown in playbar below scrub bar
 
@@ -868,14 +892,42 @@ impl ViewerPanel {
         // Layout from right: zoom(44) gap(8) vol%(40) gap(6) slider(60) gap(6) mute(20) gap(8) transform(20)
         let rx = rect.max.x - 12.0;
 
-        // Zoom percentage
-        ui.painter().text(
-            egui::pos2(rx, cy),
-            egui::Align2::RIGHT_CENTER,
-            "100%",
-            egui::FontId::monospace(11.0),
-            egui::Color32::from_rgb(120, 120, 130),
-        );
+        // Zoom dropdown
+        {
+            let zoom_label = if state.viewer_zoom <= 0.0 {
+                "Fit".to_string()
+            } else {
+                format!("{}%", (state.viewer_zoom * 100.0) as u32)
+            };
+            let zoom_rect = egui::Rect::from_min_size(
+                egui::pos2(rx - 42.0, cy - 8.0),
+                egui::vec2(44.0, 16.0),
+            );
+            let zoom_resp = ui.allocate_rect(zoom_rect, egui::Sense::click());
+            ui.painter().text(
+                egui::pos2(rx, cy),
+                egui::Align2::RIGHT_CENTER,
+                &zoom_label,
+                egui::FontId::monospace(11.0),
+                if zoom_resp.hovered() {
+                    egui::Color32::from_rgb(200, 200, 220)
+                } else {
+                    egui::Color32::from_rgb(120, 120, 130)
+                },
+            );
+            zoom_resp.context_menu(|ui| {
+                for &(label, value) in &[("Fit", 0.0), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
+                    if ui.button(label).clicked() {
+                        state.viewer_zoom = value;
+                        ui.close_menu();
+                    }
+                }
+            });
+            if zoom_resp.clicked() {
+                // Toggle between fit and 100%
+                state.viewer_zoom = if state.viewer_zoom <= 0.0 { 1.0 } else { 0.0 };
+            }
+        }
 
         // Volume percentage
         let vol_pct = (state.master_volume * 100.0) as u32;

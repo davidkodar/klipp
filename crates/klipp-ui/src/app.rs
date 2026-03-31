@@ -250,6 +250,7 @@ impl KlippApp {
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
+        app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.history.set_max_size(app.prefs.editing.undo_limit);
         app.state.audio_fade_overlay_mode = app.prefs.audio.fade_overlay_mode;
         app.state.audio_show_rubber_band = app.prefs.audio.show_rubber_band;
@@ -1309,7 +1310,7 @@ impl KlippApp {
                     pixel[2] = b;
                 }
             }
-            crate::state::ViewerOverlay::None => {}
+            crate::state::ViewerOverlay::None | crate::state::ViewerOverlay::SafeAreas => {}
         }
 
         let t_convert = std::time::Instant::now();
@@ -5948,6 +5949,64 @@ impl KlippApp {
                         self.state.selected_clip = Some(first);
                     }
                     self.state.selected_clips = all_ids;
+                    continue;
+                }
+                // Select all clips that start after playhead
+                AppCommand::SelectClipsForward => {
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap) && c.timeline_in >= ph)
+                        .map(|c| c.id)
+                        .collect();
+                    if let Some(first) = ids.first().copied() {
+                        self.state.selected_clip = Some(first);
+                    }
+                    self.state.selected_clips = ids;
+                    continue;
+                }
+                // Select all clips that end before or at playhead
+                AppCommand::SelectClipsBackward => {
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap) && c.timeline_out <= ph)
+                        .map(|c| c.id)
+                        .collect();
+                    if let Some(first) = ids.first().copied() {
+                        self.state.selected_clip = Some(first);
+                    }
+                    self.state.selected_clips = ids;
+                    continue;
+                }
+                // Frame grab: save current viewer frame as PNG
+                AppCommand::FrameGrab => {
+                    let fb = self.frame_buffer.lock().unwrap();
+                    if !fb.data.is_empty() && fb.width > 0 && fb.height > 0 {
+                        let w = fb.width as u32;
+                        let h = fb.height as u32;
+                        // Convert RGBA to RGB
+                        let rgb: Vec<u8> = fb.data.chunks_exact(4)
+                            .flat_map(|px| [px[0], px[1], px[2]])
+                            .collect();
+                        drop(fb);
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Save Frame As")
+                            .add_filter("PNG Image", &["png"])
+                            .set_file_name("frame.png")
+                            .save_file()
+                        {
+                            if save_rgb_as_png(&rgb, w, h, &path) {
+                                self.state.toast.show(format!("Frame saved to {}", path.display()));
+                            } else {
+                                self.state.toast.show(format!("Failed to save frame"));
+                            }
+                        }
+                    } else {
+                        self.state.toast.show(format!("No frame available"));
+                    }
                     continue;
                 }
                 // Next edit point: jump playhead to the nearest clip boundary after current position

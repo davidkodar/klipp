@@ -67,7 +67,7 @@ pub fn show(
                                                 clip_a_id: clip_id,
                                                 clip_b_id: next_id,
                                                 kind_id: tr.kind_id,
-                                                duration_frames: 24,
+                                                duration_frames: state.default_transition_frames,
                                             });
                                             applied = true;
                                         }

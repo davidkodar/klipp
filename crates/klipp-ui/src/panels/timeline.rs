@@ -392,14 +392,34 @@ impl TimelinePanel {
         // Draw tracks: Video 2, Video 1, Audio 1
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
         let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
-        let mut track_y = tracks_start_y;
 
         let track_count = state.sequence().tracks.len();
+
+        // Vertical scroll: compute total track height and clamp scroll offset
+        let total_tracks_h: f32 = (0..track_count)
+            .map(|ti| effective_track_height(&state.sequence().tracks[ti]))
+            .sum();
+        let available_h = content_rect.bottom() - tracks_start_y;
+        let max_scroll_y = (total_tracks_h - available_h).max(0.0);
+        state.timeline_scroll_y = state.timeline_scroll_y.clamp(0.0, max_scroll_y);
+
+        // Handle vertical scroll via Shift+wheel (horizontal scroll is plain wheel)
+        if let Some(pointer) = ui.input(|i| i.pointer.latest_pos()) {
+            if pointer.y >= tracks_start_y && pointer.x >= content_rect.left() {
+                let (scroll_delta, shift) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
+                if shift && scroll_delta.abs() > 0.1 {
+                    state.timeline_scroll_y = (state.timeline_scroll_y - scroll_delta).clamp(0.0, max_scroll_y);
+                }
+            }
+        }
+
+        let scroll_y = state.timeline_scroll_y;
+        let mut track_y = tracks_start_y - scroll_y;
 
         // Pre-compute all track rects so cross-track drag can find any track
         self.track_rects.clear();
         {
-            let mut pre_y = tracks_start_y;
+            let mut pre_y = tracks_start_y - scroll_y;
             for ti in 0..track_count {
                 let tk = state.sequence().tracks[ti].kind;
                 let th = effective_track_height(&state.sequence().tracks[ti]);
@@ -5665,7 +5685,7 @@ impl TimelinePanel {
                                                 clip_a_id: clip_id,
                                                 clip_b_id: next_id,
                                                 kind_id,
-                                                duration_frames: 24,
+                                                duration_frames: state.default_transition_frames,
                                             });
                                             ui.close_menu();
                                         }
@@ -5702,7 +5722,7 @@ impl TimelinePanel {
                                                 clip_a_id: prev_id,
                                                 clip_b_id: clip_id,
                                                 kind_id,
-                                                duration_frames: 24,
+                                                duration_frames: state.default_transition_frames,
                                             });
                                             ui.close_menu();
                                         }

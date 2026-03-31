@@ -175,10 +175,17 @@ pub struct EditingPrefs {
     /// Maximum number of undo steps (0 = unlimited).
     #[serde(default = "default_undo_limit")]
     pub undo_limit: usize,
+    /// Default transition duration in frames (e.g. 24 frames = 1 second at 24fps).
+    #[serde(default = "default_transition_frames")]
+    pub default_transition_frames: u32,
 }
 
 fn default_undo_limit() -> usize {
     100
+}
+
+fn default_transition_frames() -> u32 {
+    24
 }
 
 fn default_still_duration() -> f64 {
@@ -194,6 +201,7 @@ impl Default for EditingPrefs {
             default_still_duration_secs: default_still_duration(),
             undo_limit: default_undo_limit(),
             media_browser_view_mode: Default::default(),
+            default_transition_frames: default_transition_frames(),
         }
     }
 }

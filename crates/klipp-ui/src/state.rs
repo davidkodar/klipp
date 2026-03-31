@@ -184,8 +184,11 @@ pub struct AppState {
     pub upper_timeline_split: f32,
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
+    pub timeline_scroll_y: f32,
     pub playhead_follow: PlayheadFollow,
     pub track_header_width: f32,
+    /// Viewer zoom level (1.0 = fit, 0.25/0.5/2.0/4.0 for pixel-level zoom).
+    pub viewer_zoom: f32,
     pub last_timeline_content_width: f32,
     pub show_overview_bar: bool,
 
@@ -213,6 +216,8 @@ pub struct AppState {
     pub viewer_mode: ViewerMode,
     pub snap_enabled: bool,
     pub ripple_enabled: bool,
+    /// Default transition duration in frames (synced from prefs).
+    pub default_transition_frames: u32,
     /// Magnetic timeline edit mode: Insert (ripple) or Overwrite (replace)
     pub edit_mode: klipp_timeline::magnetic::EditMode,
     pub fullscreen_viewer: bool,
@@ -595,6 +600,7 @@ pub enum ViewerOverlay {
     None,
     Zebra,
     FalseColor,
+    SafeAreas,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -724,8 +730,10 @@ impl Default for AppState {
             upper_timeline_split: 0.65,
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
+            timeline_scroll_y: 0.0,
             playhead_follow: PlayheadFollow::default(),
             track_header_width: 160.0,
+            viewer_zoom: 0.0, // 0.0 = fit-to-window mode
             last_timeline_content_width: 800.0,
             show_overview_bar: true,
             selected_clip: None,
@@ -742,6 +750,7 @@ impl Default for AppState {
             viewer_mode: ViewerMode::Program,
             snap_enabled: true,
             ripple_enabled: true,
+            default_transition_frames: 24,
             edit_mode: klipp_timeline::magnetic::EditMode::default(),
             fullscreen_viewer: false,
             fullscreen_changed: false,

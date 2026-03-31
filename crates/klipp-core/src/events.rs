@@ -339,6 +339,12 @@ pub enum AppCommand {
     /// Toggle a clip's enabled state (disabled clips are dimmed and skipped in render).
     SetClipEnabled { clip_id: ClipId, enabled: bool },
     SelectAllClips,
+    /// Select all clips that start after the playhead.
+    SelectClipsForward,
+    /// Select all clips that end before or at the playhead.
+    SelectClipsBackward,
+    /// Save current viewer frame as PNG.
+    FrameGrab,
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.
