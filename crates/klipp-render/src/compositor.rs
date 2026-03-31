@@ -289,6 +289,67 @@ fn render_transition(
         TransitionKind::DipToWhite => {
             dip_transition(&mut output, from, to, p, 255);
         }
+        // Newer transitions: fallback to cross dissolve in export compositor
+        // (GPU pipeline handles these during playback; for export, the engine's
+        // transition renderer is used when available)
+        TransitionKind::PushLeft => {
+            let offset = (p * width as f32) as i32;
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let src_x = x as i32 + offset;
+                    if src_x < width as i32 {
+                        let si = (y as i32 * width as i32 + src_x) as usize * 4;
+                        output[idx..idx + 4].copy_from_slice(&from[si..si + 4]);
+                    } else {
+                        let si = (y as i32 * width as i32 + (src_x - width as i32)) as usize * 4;
+                        output[idx..idx + 4].copy_from_slice(&to[si..si + 4]);
+                    }
+                }
+            }
+        }
+        TransitionKind::FilmDissolve => {
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let f = from[i + c] as f32 / 255.0;
+                    let t = to[i + c] as f32 / 255.0;
+                    let blended = (f * f * (1.0 - p) + t * t * p).sqrt();
+                    output[i + c] = (blended * 255.0 + 0.5).min(255.0) as u8;
+                }
+                output[i + 3] = (from[i + 3] as f32 * (1.0 - p).sqrt() + to[i + 3] as f32 * p.sqrt() + 0.5) as u8;
+            }
+        }
+        TransitionKind::Flash => {
+            let white_i = if p < 0.3 { p / 0.3 } else if p < 0.5 { 1.0 } else if p < 0.7 { 1.0 - (p - 0.5) / 0.2 } else { 0.0 };
+            let blend_p = if p < 0.4 { 0.0 } else { ((p - 0.4) / 0.6).min(1.0) };
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let base = from[i + c] as f32 * (1.0 - blend_p) + to[i + c] as f32 * blend_p;
+                    output[i + c] = (base * (1.0 - white_i) + 255.0 * white_i + 0.5).min(255.0) as u8;
+                }
+                output[i + 3] = if p < 0.4 { from[i + 3] } else { to[i + 3] };
+            }
+        }
+        TransitionKind::LightLeak => {
+            let leak = (p * (1.0 - p) * 4.0).powf(0.7);
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let r = from[i] as f32 * inv + to[i] as f32 * p;
+                let g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                output[i] = (r + (255.0 - r) * leak * 0.7 + 0.5).min(255.0) as u8;
+                output[i + 1] = (g + (180.0 - g).max(0.0) * leak * 0.5 + 0.5).min(255.0) as u8;
+                output[i + 2] = (b + (60.0 - b).max(0.0) * leak * 0.3 + 0.5).min(255.0) as u8;
+                output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
+            }
+        }
+        // BlurDissolve and Spin are complex — fallback to cross dissolve in export
+        TransitionKind::BlurDissolve | TransitionKind::Spin => {
+            let inv = 1.0 - p;
+            for i in 0..byte_count {
+                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
+            }
+        }
     }
 
     output

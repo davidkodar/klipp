@@ -4876,6 +4876,7 @@ impl KlippApp {
                     let ti = *track_index;
                     let kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                    let dur_secs = *duration_frames as f32 / fps_rate as f32;
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                         let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
                         // Remove any existing transition between these two clips
@@ -4889,14 +4890,55 @@ impl KlippApp {
                             clip_a_id: *clip_a_id,
                             clip_b_id: *clip_b_id,
                         });
+                        // Set audio crossfade: fade_out on clip_a, fade_in on clip_b
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
+                            c.fade_out_secs = dur_secs;
+                        }
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_b_id) {
+                            c.fade_in_secs = dur_secs;
+                        }
+                    }
+                    // Also apply crossfade to linked audio clips
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let linked_a = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_a_id)
+                        .and_then(|c| c.linked_clip_id);
+                    let linked_b = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_b_id)
+                        .and_then(|c| c.linked_clip_id);
+                    if let Some(la) = linked_a {
+                        if let Some(c) = seq.all_clips_mut().find(|c| c.id == la) {
+                            c.fade_out_secs = dur_secs;
+                        }
+                    }
+                    if let Some(lb) = linked_b {
+                        if let Some(c) = seq.all_clips_mut().find(|c| c.id == lb) {
+                            c.fade_in_secs = dur_secs;
+                        }
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     continue;
                 }
                 AppCommand::RemoveTransition { track_index, transition_id } => {
+                    // Find the transition to get clip ids before removing
+                    let clip_ids = self.state.sequences[self.state.active_sequence_idx]
+                        .tracks.get(*track_index)
+                        .and_then(|t| t.transitions.iter().find(|t| t.id == *transition_id))
+                        .map(|t| (t.clip_a_id, t.clip_b_id));
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.transitions.retain(|t| t.id != *transition_id);
+                        // Clear audio crossfade on the clips
+                        if let Some((a_id, b_id)) = clip_ids {
+                            if let Some(c) = track.clips.iter_mut().find(|c| c.id == a_id) {
+                                c.fade_out_secs = 0.0;
+                            }
+                            if let Some(c) = track.clips.iter_mut().find(|c| c.id == b_id) {
+                                c.fade_in_secs = 0.0;
+                            }
+                        }
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;

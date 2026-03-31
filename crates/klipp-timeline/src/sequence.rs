@@ -636,6 +636,12 @@ pub enum TransitionKind {
     WipeDown,
     DipToBlack,
     DipToWhite,
+    PushLeft,
+    FilmDissolve,
+    BlurDissolve,
+    Flash,
+    Spin,
+    LightLeak,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

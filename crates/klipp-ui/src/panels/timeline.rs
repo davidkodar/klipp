@@ -5007,6 +5007,12 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::WipeDown => "Wipe D",
                                 klipp_timeline::TransitionKind::DipToBlack => "Dip Blk",
                                 klipp_timeline::TransitionKind::DipToWhite => "Dip Wht",
+                                klipp_timeline::TransitionKind::PushLeft => "Push L",
+                                klipp_timeline::TransitionKind::FilmDissolve => "Film",
+                                klipp_timeline::TransitionKind::BlurDissolve => "Blur",
+                                klipp_timeline::TransitionKind::Flash => "Flash",
+                                klipp_timeline::TransitionKind::Spin => "Spin",
+                                klipp_timeline::TransitionKind::LightLeak => "Leak",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

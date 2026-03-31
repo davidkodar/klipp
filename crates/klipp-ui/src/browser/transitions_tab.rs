@@ -4,19 +4,23 @@ use klipp_core::AppCommand;
 
 struct TransitionDef {
     name: &'static str,
+    kind_id: u8,
 }
 
 const TRANSITIONS: &[TransitionDef] = &[
-    TransitionDef { name: "Cross Dissolve" },
-    TransitionDef { name: "Dip to Black" },
-    TransitionDef { name: "Push Left" },
-    TransitionDef { name: "Zoom" },
-    TransitionDef { name: "Film Dissolve" },
-    TransitionDef { name: "Blur Dissolve" },
-    TransitionDef { name: "Dip to White" },
-    TransitionDef { name: "Flash" },
-    TransitionDef { name: "Spin" },
-    TransitionDef { name: "Light Leak" },
+    TransitionDef { name: "Cross Dissolve", kind_id: 0 },
+    TransitionDef { name: "Dip to Black", kind_id: 5 },
+    TransitionDef { name: "Dip to White", kind_id: 6 },
+    TransitionDef { name: "Push Left", kind_id: 7 },
+    TransitionDef { name: "Film Dissolve", kind_id: 8 },
+    TransitionDef { name: "Blur Dissolve", kind_id: 9 },
+    TransitionDef { name: "Flash", kind_id: 10 },
+    TransitionDef { name: "Spin", kind_id: 11 },
+    TransitionDef { name: "Light Leak", kind_id: 12 },
+    TransitionDef { name: "Wipe Left", kind_id: 1 },
+    TransitionDef { name: "Wipe Right", kind_id: 2 },
+    TransitionDef { name: "Wipe Up", kind_id: 3 },
+    TransitionDef { name: "Wipe Down", kind_id: 4 },
 ];
 
 pub fn show(
@@ -25,7 +29,7 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &str,
 ) -> Vec<AppCommand> {
-    let cmds = Vec::new();
+    let mut cmds = Vec::new();
     let search_lower = search_query.to_lowercase();
 
     let filtered: Vec<_> = TRANSITIONS
@@ -45,10 +49,40 @@ pub fn show(
                 for (i, tr) in filtered.iter().enumerate() {
                     let resp = transition_card(ui, theme, tr.name, card_w);
                     if resp.double_clicked() {
-                        state.toast.show(format!(
-                            "\"{}\" applied to selected cut point",
-                            tr.name
-                        ));
+                        // Find selected clip and apply transition at its nearest cut point
+                        if let Some(clip_id) = state.selected_clip {
+                            let seq = state.sequence();
+                            let mut applied = false;
+                            for (ti, track) in seq.tracks.iter().enumerate() {
+                                if let Some(pos) = track.clips.iter().position(|c| c.id == clip_id) {
+                                    // Try cut point after this clip
+                                    if pos + 1 < track.clips.len() {
+                                        let next_id = track.clips[pos + 1].id;
+                                        let already = track.transitions.iter().any(|t| {
+                                            t.clip_a_id == clip_id && t.clip_b_id == next_id
+                                        });
+                                        if !already {
+                                            cmds.push(AppCommand::AddTransition {
+                                                track_index: ti,
+                                                clip_a_id: clip_id,
+                                                clip_b_id: next_id,
+                                                kind_id: tr.kind_id,
+                                                duration_frames: 24,
+                                            });
+                                            applied = true;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            if applied {
+                                state.toast.show(format!("\"{}\" applied", tr.name));
+                            } else {
+                                state.toast.show(String::from("Select a clip with an adjacent cut point"));
+                            }
+                        } else {
+                            state.toast.show(String::from("Select a clip first"));
+                        }
                     }
                     if i % 2 == 1 {
                         ui.end_row();
@@ -146,20 +180,86 @@ fn paint_transition_preview(
             );
         }
         "Push Left" => {
-            // Arrow icon
+            let half = rect.width() / 2.0;
+            let blue = egui::Color32::from_rgb(60, 80, 120);
+            let orange = egui::Color32::from_rgb(120, 80, 60);
+            painter.rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(half * 0.6, rect.height())),
+                0.0, blue,
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + half * 0.6, rect.min.y),
+                    egui::vec2(half * 1.4, rect.height()),
+                ),
+                0.0, orange,
+            );
             painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{2192}",
-                egui::FontId::proportional(20.0),
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100),
+                rect.center(), egui::Align2::CENTER_CENTER,
+                "\u{2190}", egui::FontId::proportional(20.0),
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 140),
             );
         }
-        "Zoom" => {
-            painter.rect_stroke(
-                rect.shrink(12.0),
-                1.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
+        "Film Dissolve" => {
+            // Gradient blend preview
+            let steps = 8;
+            let step_w = rect.width() / steps as f32;
+            for i in 0..steps {
+                let t = i as f32 / (steps - 1) as f32;
+                let r = (60.0 * (1.0 - t) + 120.0 * t) as u8;
+                let g = (80.0 * (1.0 - t) + 80.0 * t) as u8;
+                let b = (120.0 * (1.0 - t) + 60.0 * t) as u8;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x + i as f32 * step_w, rect.min.y),
+                        egui::vec2(step_w + 1.0, rect.height()),
+                    ),
+                    0.0, egui::Color32::from_rgb(r, g, b),
+                );
+            }
+        }
+        "Blur Dissolve" => {
+            // Blurry gradient blend
+            let steps = 6;
+            let step_w = rect.width() / steps as f32;
+            for i in 0..steps {
+                let t = i as f32 / (steps - 1) as f32;
+                let alpha = if t < 0.5 { (180.0 - t * 200.0) as u8 } else { (80.0 + (t - 0.5) * 200.0) as u8 };
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x + i as f32 * step_w, rect.min.y),
+                        egui::vec2(step_w + 1.0, rect.height()),
+                    ),
+                    0.0, egui::Color32::from_rgba_premultiplied(100, 100, 120, alpha),
+                );
+            }
+        }
+        "Wipe Left" | "Wipe Right" => {
+            let split = rect.width() * 0.5;
+            painter.rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(split, rect.height())),
+                0.0, egui::Color32::from_rgb(60, 80, 120),
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + split, rect.min.y),
+                    egui::vec2(rect.width() - split, rect.height()),
+                ),
+                0.0, egui::Color32::from_rgb(120, 80, 60),
+            );
+        }
+        "Wipe Up" | "Wipe Down" => {
+            let split = rect.height() * 0.5;
+            painter.rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), split)),
+                0.0, egui::Color32::from_rgb(60, 80, 120),
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.min.y + split),
+                    egui::vec2(rect.width(), rect.height() - split),
+                ),
+                0.0, egui::Color32::from_rgb(120, 80, 60),
             );
         }
         "Dip to White" => {

@@ -12,6 +12,12 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::WipeDown => 4,
         TransitionKind::DipToBlack => 5,
         TransitionKind::DipToWhite => 6,
+        TransitionKind::PushLeft => 7,
+        TransitionKind::FilmDissolve => 8,
+        TransitionKind::BlurDissolve => 9,
+        TransitionKind::Flash => 10,
+        TransitionKind::Spin => 11,
+        TransitionKind::LightLeak => 12,
     }
 }
 
@@ -25,6 +31,12 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         4 => TransitionKind::WipeDown,
         5 => TransitionKind::DipToBlack,
         6 => TransitionKind::DipToWhite,
+        7 => TransitionKind::PushLeft,
+        8 => TransitionKind::FilmDissolve,
+        9 => TransitionKind::BlurDissolve,
+        10 => TransitionKind::Flash,
+        11 => TransitionKind::Spin,
+        12 => TransitionKind::LightLeak,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -39,6 +51,12 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (4, "Wipe Down"),
         (5, "Dip to Black"),
         (6, "Dip to White"),
+        (7, "Push Left"),
+        (8, "Film Dissolve"),
+        (9, "Blur Dissolve"),
+        (10, "Flash"),
+        (11, "Spin"),
+        (12, "Light Leak"),
     ]
 }
 
@@ -218,6 +236,148 @@ pub fn render_transition(
                     output[i + 2] = (255.0 * inv + to[i + 2] as f32 * t + 0.5) as u8;
                     output[i + 3] = to[i + 3];
                 }
+            }
+        }
+        TransitionKind::PushLeft => {
+            // Outgoing frame slides left, incoming frame enters from right
+            let offset = (p * width as f32) as i32;
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let src_x = x as i32 + offset;
+                    if src_x < width as i32 {
+                        // Still showing from-frame (shifted left)
+                        let src_idx = (y as i32 * width as i32 + src_x) as usize * 4;
+                        output[idx..idx + 4].copy_from_slice(&from[src_idx..src_idx + 4]);
+                    } else {
+                        // Incoming to-frame from right
+                        let src_x2 = src_x - width as i32;
+                        let src_idx = (y as i32 * width as i32 + src_x2) as usize * 4;
+                        output[idx..idx + 4].copy_from_slice(&to[src_idx..src_idx + 4]);
+                    }
+                }
+            }
+        }
+        TransitionKind::FilmDissolve => {
+            // Dissolve with perceptual gamma curve (looks more natural than linear)
+            // Uses sqrt blending for a film-like optical dissolve
+            let t_sqrt = p.sqrt();
+            let inv_sqrt = (1.0 - p).sqrt();
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let f = from[i + c] as f32 / 255.0;
+                    let t = to[i + c] as f32 / 255.0;
+                    let blended = (f * f * (1.0 - p) + t * t * p).sqrt();
+                    output[i + c] = (blended * 255.0 + 0.5).min(255.0) as u8;
+                }
+                output[i + 3] = (from[i + 3] as f32 * inv_sqrt + to[i + 3] as f32 * t_sqrt + 0.5) as u8;
+            }
+        }
+        TransitionKind::BlurDissolve => {
+            // Cross dissolve with simulated blur: blend + average with neighbors
+            // CPU approximation: box-blur-like blend weighted by progress
+            let inv = 1.0 - p;
+            // First pass: standard dissolve
+            for i in 0..byte_count {
+                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
+            }
+            // Second pass: horizontal box blur (radius proportional to progress)
+            let radius = ((p * (1.0 - p) * 4.0) * 16.0) as i32; // peaks at p=0.5
+            if radius > 0 {
+                let temp = output.clone();
+                for y in 0..height as i32 {
+                    for x in 0..width as i32 {
+                        let idx = (y * width as i32 + x) as usize * 4;
+                        let mut r = 0u32;
+                        let mut g = 0u32;
+                        let mut b = 0u32;
+                        let mut count = 0u32;
+                        for dx in -radius..=radius {
+                            let sx = (x + dx).clamp(0, width as i32 - 1);
+                            let si = (y * width as i32 + sx) as usize * 4;
+                            r += temp[si] as u32;
+                            g += temp[si + 1] as u32;
+                            b += temp[si + 2] as u32;
+                            count += 1;
+                        }
+                        output[idx] = (r / count) as u8;
+                        output[idx + 1] = (g / count) as u8;
+                        output[idx + 2] = (b / count) as u8;
+                        output[idx + 3] = temp[idx + 3];
+                    }
+                }
+            }
+        }
+        TransitionKind::Flash => {
+            // Quick flash to white at midpoint, then reveal incoming
+            let white_intensity = if p < 0.3 {
+                // Ramp to white
+                (p / 0.3).min(1.0)
+            } else if p < 0.5 {
+                // Hold white
+                1.0
+            } else if p < 0.7 {
+                // Fade from white to incoming
+                1.0 - ((p - 0.5) / 0.2).min(1.0)
+            } else {
+                0.0
+            };
+            let src = if p < 0.4 { from } else { to };
+            let blend_p = if p < 0.4 { 0.0 } else { ((p - 0.4) / 0.6).min(1.0) };
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let base = if p < 0.4 {
+                        from[i + c] as f32
+                    } else {
+                        from[i + c] as f32 * (1.0 - blend_p) + to[i + c] as f32 * blend_p
+                    };
+                    output[i + c] = (base * (1.0 - white_intensity) + 255.0 * white_intensity + 0.5).min(255.0) as u8;
+                }
+                output[i + 3] = src[i + 3];
+            }
+        }
+        TransitionKind::Spin => {
+            // Rotation dissolve: sample pixels with rotation transform
+            let angle = p * std::f32::consts::PI * 2.0; // full rotation
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+            let scale = 1.0 + (p * (1.0 - p) * 4.0) * 0.3; // slight zoom at midpoint
+            let inv_scale = 1.0 / scale;
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    // Rotate around center
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let rx = (dx * cos_a + dy * sin_a) * inv_scale + cx;
+                    let ry = (-dx * sin_a + dy * cos_a) * inv_scale + cy;
+                    let sx = rx.round().clamp(0.0, width as f32 - 1.0) as u32;
+                    let sy = ry.round().clamp(0.0, height as f32 - 1.0) as u32;
+                    let src_idx = (sy * width + sx) as usize * 4;
+                    // Blend rotated from with to
+                    let inv = 1.0 - p;
+                    for c in 0..4 {
+                        output[idx + c] = (from[src_idx + c] as f32 * inv + to[idx + c] as f32 * p + 0.5) as u8;
+                    }
+                }
+            }
+        }
+        TransitionKind::LightLeak => {
+            // Warm light leak: orange/amber glow that peaks at midpoint
+            let leak_intensity = (p * (1.0 - p) * 4.0).powf(0.7); // peaks at 0.5
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                // Base dissolve
+                let r = from[i] as f32 * inv + to[i] as f32 * p;
+                let g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                // Add warm light leak (amber: R=255, G=180, B=60)
+                output[i] = (r + (255.0 - r) * leak_intensity * 0.7 + 0.5).min(255.0) as u8;
+                output[i + 1] = (g + (180.0 - g).max(0.0) * leak_intensity * 0.5 + 0.5).min(255.0) as u8;
+                output[i + 2] = (b + (60.0 - b).max(0.0) * leak_intensity * 0.3 + 0.5).min(255.0) as u8;
+                output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
             }
         }
     }

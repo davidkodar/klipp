@@ -2904,6 +2904,91 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             result = lerp_pixel(white, to_px, (p - 0.5) * 2.0);
         }
+    } else if params.kind_id == 7u {
+        // Push Left: outgoing slides left, incoming enters from right
+        let offset = u32(p * f32(params.width));
+        let src_x = x + offset;
+        if src_x < params.width {
+            result = unpack(from_buf[y * params.width + src_x]);
+        } else {
+            let in_x = src_x - params.width;
+            result = unpack(to_buf[y * params.width + in_x]);
+        }
+    } else if params.kind_id == 8u {
+        // Film Dissolve: perceptual gamma-aware dissolve (sqrt blending)
+        let f_lin = from_px / 255.0;
+        let t_lin = to_px / 255.0;
+        let blended = sqrt(f_lin * f_lin * (1.0 - p) + t_lin * t_lin * p);
+        result = blended * 255.0;
+        result.w = from_px.w * (1.0 - p) + to_px.w * p;
+    } else if params.kind_id == 9u {
+        // Blur Dissolve: dissolve + horizontal box blur peaking at midpoint
+        // GPU approximation: sample 5 neighbors weighted by progress
+        let blur_r = i32(p * (1.0 - p) * 4.0 * 16.0);
+        var acc = vec4<f32>(0.0);
+        var count = 0.0;
+        let ix = i32(x);
+        let step_sz = max(blur_r / 4, 1);
+        for (var dx = -blur_r; dx <= blur_r; dx += step_sz) {
+            let sx = clamp(ix + dx, 0, i32(params.width) - 1);
+            let si = y * params.width + u32(sx);
+            let fpx = unpack(from_buf[si]);
+            let tpx = unpack(to_buf[si]);
+            acc += lerp_pixel(fpx, tpx, p);
+            count += 1.0;
+        }
+        if count > 0.0 {
+            result = acc / count;
+        } else {
+            result = lerp_pixel(from_px, to_px, p);
+        }
+    } else if params.kind_id == 10u {
+        // Flash: bright white flash at midpoint
+        var white_i: f32;
+        if p < 0.3 {
+            white_i = p / 0.3;
+        } else if p < 0.5 {
+            white_i = 1.0;
+        } else if p < 0.7 {
+            white_i = 1.0 - (p - 0.5) / 0.2;
+        } else {
+            white_i = 0.0;
+        }
+        var blend_p: f32;
+        if p < 0.4 { blend_p = 0.0; } else { blend_p = (p - 0.4) / 0.6; }
+        let base = lerp_pixel(from_px, to_px, blend_p);
+        result = vec4<f32>(
+            min(base.x * (1.0 - white_i) + 255.0 * white_i, 255.0),
+            min(base.y * (1.0 - white_i) + 255.0 * white_i, 255.0),
+            min(base.z * (1.0 - white_i) + 255.0 * white_i, 255.0),
+            base.w,
+        );
+    } else if params.kind_id == 11u {
+        // Spin: rotation dissolve around center
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let angle = p * 6.283185; // 2*PI
+        let scale = 1.0 + p * (1.0 - p) * 4.0 * 0.3;
+        let inv_s = 1.0 / scale;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let rx = (dx * cos(angle) + dy * sin(angle)) * inv_s + cx;
+        let ry = (-dx * sin(angle) + dy * cos(angle)) * inv_s + cy;
+        let sx = u32(clamp(rx, 0.0, f32(params.width) - 1.0));
+        let sy = u32(clamp(ry, 0.0, f32(params.height) - 1.0));
+        let src_idx = sy * params.width + sx;
+        let rotated_from = unpack(from_buf[src_idx]);
+        result = lerp_pixel(rotated_from, to_px, p);
+    } else if params.kind_id == 12u {
+        // Light Leak: warm amber glow peaking at midpoint
+        let leak = pow(p * (1.0 - p) * 4.0, 0.7);
+        let base = lerp_pixel(from_px, to_px, p);
+        result = vec4<f32>(
+            min(base.x + (255.0 - base.x) * leak * 0.7, 255.0),
+            min(base.y + max(180.0 - base.y, 0.0) * leak * 0.5, 255.0),
+            min(base.z + max(60.0 - base.z, 0.0) * leak * 0.3, 255.0),
+            base.w,
+        );
     } else {
         result = lerp_pixel(from_px, to_px, p);
     }
