@@ -8205,7 +8205,33 @@ impl KlippApp {
                 if let Ok(mut fb) = self.frame_buffer.lock() {
                     fb.clear();
                 }
+                // Pre-populate skim_file paths from disk cache before syncing to engine
+                {
+                    let mut skim_updates: Vec<(klipp_core::MediaId, std::path::PathBuf)> = Vec::new();
+                    for item in self.state.media_pool.all() {
+                        if item.skim_file.is_none() {
+                            if let Some(key) = klipp_media::disk_cache::compute_cache_key(&item.path) {
+                                let skim_dir = dirs::cache_dir()
+                                    .map(|d| d.join("klipp").join("skim"));
+                                if let Some(dir) = skim_dir {
+                                    let skim_path = dir.join(format!("{key}.mkv"));
+                                    if skim_path.exists() {
+                                        skim_updates.push((item.id, skim_path));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for (id, path) in skim_updates {
+                        if let Some(item) = self.state.media_pool.get_mut(&id) {
+                            item.skim_file = Some(path);
+                            tracing::info!("Pre-loaded skim path for {:?}", item.filename);
+                        }
+                    }
+                }
+
                 self.sync_sequence_to_engine();
+                self.sync_media_pool_to_engine();
 
                 // Detect offline media
                 self.state.offline_media_ids = self.state.media_pool.all()
