@@ -713,6 +713,10 @@ pub enum AppCommand {
         effect_index: usize,
         new_effect: klipp_effects::BuiltinEffect,
     },
+
+    // Video stabilization
+    AnalyzeStabilization { clip_id: ClipId },
+    CancelStabilization { clip_id: ClipId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -862,4 +866,9 @@ pub enum AppEvent {
 
     // Browser skim frame
     BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
+
+    // Video stabilization
+    StabilizationProgress { clip_id: ClipId, progress: f32 },
+    StabilizationComplete { clip_id: ClipId },
+    StabilizationFailed { clip_id: ClipId, error: String },
 }

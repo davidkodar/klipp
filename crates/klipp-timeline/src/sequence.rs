@@ -378,6 +378,8 @@ impl Track {
             speed: 1.0,
             audio_effects: Vec::new(),
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
         });
         clip_id
     }
@@ -560,6 +562,8 @@ impl Track {
             speed: clip.speed,
             source_rotation: clip.source_rotation,
             audio_effects: clip.audio_effects.clone(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -598,6 +602,8 @@ impl Track {
             speed: clip.speed,
             source_rotation: clip.source_rotation,
             audio_effects: clip.audio_effects.clone(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
         };
 
         self.clips.remove(pos);
@@ -725,6 +731,12 @@ pub struct Clip {
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
+    /// Pre-computed stabilization data. Not serialized — reanalysis needed on load.
+    #[serde(skip)]
+    pub stabilization_data: Option<klipp_effects::stabilization::StabilizationData>,
+    /// Current smoothed trajectory. Recomputed when smoothing parameter changes.
+    #[serde(skip)]
+    pub smoothed_trajectory: Option<klipp_effects::stabilization::SmoothedTrajectory>,
 }
 
 impl Clip {
@@ -795,6 +807,8 @@ impl Clip {
             speed: 1.0,
             source_rotation: 0,
             audio_effects: Vec::new(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
         }
     }
 
@@ -843,6 +857,8 @@ impl Clip {
             speed: 1.0,
             source_rotation: 0,
             audio_effects: Vec::new(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
         }
     }
 }

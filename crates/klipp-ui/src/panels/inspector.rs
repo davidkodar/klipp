@@ -2014,6 +2014,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
+        klipp_effects::BuiltinEffect::VideoStabilization { .. } => "Video Stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -2149,6 +2150,12 @@ fn show_builtin_effect_params(
         klipp_effects::BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } => {
             track_slider!(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("Strength")));
             track_slider!(ui.add(egui::Slider::new(readout_ratio, 0.0..=1.0).text("Readout Ratio")));
+        }
+        klipp_effects::BuiltinEffect::VideoStabilization { smoothing, crop_ratio, zoom } => {
+            track_slider!(ui.add(egui::Slider::new(smoothing, 0.0..=1.0).text("Smoothing")));
+            track_slider!(ui.add(egui::Slider::new(crop_ratio, 0.0..=0.2).text("Crop")));
+            let r = ui.checkbox(zoom, "Auto-zoom");
+            if r.changed() { changed = true; }
         }
         klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
             track_slider!(ui.add(egui::Slider::new(speed, 0.1..=4.0).step_by(0.05_f64).text("Speed")));

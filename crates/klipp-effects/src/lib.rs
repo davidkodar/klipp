@@ -6,6 +6,7 @@ mod light;
 pub mod nv12_gpu;
 mod opacity;
 pub mod rolling_shutter;
+pub mod stabilization;
 mod sharpen;
 pub mod transform;
 
@@ -337,6 +338,16 @@ pub enum BuiltinEffect {
         /// Sensor readout ratio: fraction of frame duration for full sensor readout
         readout_ratio: f32,
     },
+    /// Video Stabilization: smooths camera motion across a clip.
+    /// Requires pre-analysis (AnalyzeStabilization command).
+    VideoStabilization {
+        /// Smoothing strength: fraction of clip duration used as smoothing window (0.0-1.0)
+        smoothing: f32,
+        /// Crop ratio: fraction of frame cropped from edges (0.0-0.2)
+        crop_ratio: f32,
+        /// Auto-zoom to fill cropped area
+        zoom: bool,
+    },
     /// Speed Ramp: GPU-accelerated retiming with frame blending.
     /// Changes playback speed with smooth interpolation between frames.
     SpeedRamp {
@@ -486,6 +497,10 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::RollingShutterCorrection { .. } => {
             // RSC requires temporal frame access — handled at engine level.
+            rgba
+        }
+        BuiltinEffect::VideoStabilization { .. } => {
+            // Stabilization is handled at engine level (requires pre-analysis + GPU homography).
             rgba
         }
         BuiltinEffect::SpeedRamp { .. } => {

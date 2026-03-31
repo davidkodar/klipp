@@ -288,6 +288,10 @@ pub struct AppState {
     /// Time of last audio skim decode dispatch (throttle to prevent starvation).
     pub skim_last_audio_dispatch: std::time::Instant,
 
+    // Video stabilization analysis state
+    pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
+    pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
     pub browser_drag_start: Option<(egui::Pos2, std::time::Instant)>,
@@ -733,6 +737,8 @@ impl Default for AppState {
             skim_last_x: 0.0,
             skim_audio_session: None,
             skim_last_audio_dispatch: std::time::Instant::now(),
+            stabilization_in_progress: std::collections::HashSet::new(),
+            stabilization_progress: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,
             range_drag: None,

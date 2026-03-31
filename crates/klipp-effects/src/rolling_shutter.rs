@@ -55,7 +55,7 @@ pub struct MotionCache {
 // LCG RNG (no external rand crate)
 // ---------------------------------------------------------------------------
 
-fn lcg_next(state: &mut u64) -> u64 {
+pub fn lcg_next(state: &mut u64) -> u64 {
     *state = state
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407);
@@ -580,6 +580,19 @@ impl Homography {
                 res_row.iter_mut().zip(id_row.iter().zip(self_row.iter()))
             {
                 *res_elem = id_elem * (1.0 - t) + self_elem * t;
+            }
+        }
+        Homography { h: result }
+    }
+
+    /// Matrix multiplication: self * other (apply other first, then self).
+    pub fn multiply(&self, other: &Homography) -> Homography {
+        let mut result = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                result[i][j] = self.h[i][0] * other.h[0][j]
+                    + self.h[i][1] * other.h[1][j]
+                    + self.h[i][2] * other.h[2][j];
             }
         }
         Homography { h: result }

@@ -265,6 +265,15 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Video Stabilization".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::VideoStabilization {
+                    smoothing: 0.5, crop_ratio: 0.05, zoom: true,
+                }),
+                source_label: "Built-in",
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "Dilate".into(),
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Dilate { radius: 1 }),

@@ -1028,6 +1028,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
+        klipp_effects::BuiltinEffect::VideoStabilization { .. } => "Video Stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -1128,6 +1129,9 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::RollingShutterCorrection { .. } => BuiltinEffect::RollingShutterCorrection {
             strength: 0.5, readout_ratio: 0.5,
         },
+        BuiltinEffect::VideoStabilization { .. } => BuiltinEffect::VideoStabilization {
+            smoothing: 0.5, crop_ratio: 0.05, zoom: true,
+        },
         BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
             speed: 1.0, blend_mode: 1, ramp_curve: 0,
             ramp_start: 0.0, ramp_end: 1.0, reverse: false,
@@ -1145,7 +1149,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
-        | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::SpeedRamp { .. }
+        | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } | BuiltinEffect::SpeedRamp { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. })
@@ -1654,6 +1658,44 @@ fn show_builtin_effect_params(
             track_scrubby!("strength", r_s, *strength);
             let r_r = scrubby_param_row(ui, "Readout Ratio", readout_ratio, 0.0..=1.0, 0.5, 0.005, 2, "", ks_r);
             track_scrubby!("readout_ratio", r_r, *readout_ratio);
+        }
+        klipp_effects::BuiltinEffect::VideoStabilization { smoothing, crop_ratio, zoom } => {
+            // Analysis status
+            let has_data = clip.stabilization_data.is_some();
+            let is_analyzing = state.stabilization_in_progress.contains(&clip_id);
+
+            if is_analyzing {
+                let progress = state.stabilization_progress.get(&clip_id).copied().unwrap_or(0.0);
+                ui.add(egui::ProgressBar::new(progress).text(format!("Analyzing {:.0}%", progress * 100.0)));
+                if ui.small_button("Cancel").clicked() {
+                    cmds.push(AppCommand::CancelStabilization { clip_id });
+                }
+            } else if has_data {
+                ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Analysis complete");
+                if ui.small_button("Re-analyze").clicked() {
+                    cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+                }
+            } else {
+                if ui.button("Analyze Clip").clicked() {
+                    cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Parameter sliders
+            *smoothing = eval_effect_kf(clip, effect_index, "smoothing", clip_time_secs, *smoothing);
+            *crop_ratio = eval_effect_kf(clip, effect_index, "crop_ratio", clip_time_secs, *crop_ratio);
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "smoothing", clip_time_secs));
+            let ks_c = Some(effect_keyframe_state(clip, effect_index, "crop_ratio", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Smoothing", smoothing, 0.0..=1.0, 0.5, 0.005, 2, "", ks_s);
+            track_scrubby!("smoothing", r_s, *smoothing);
+            let r_c = scrubby_param_row(ui, "Crop", crop_ratio, 0.0..=0.2, 0.05, 0.002, 3, "", ks_c);
+            track_scrubby!("crop_ratio", r_c, *crop_ratio);
+
+            if ui.checkbox(zoom, "Auto-zoom to fill").changed() {
+                changed = true;
+            }
         }
         klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
             *speed = eval_effect_kf(clip, effect_index, "speed", clip_time_secs, *speed);

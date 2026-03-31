@@ -3453,6 +3453,27 @@ impl PlaybackEngine {
             Vec::new()
         };
 
+        // Extract stabilization homography while seq lock is held
+        let stab_homography: Option<[f32; 12]> = if builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. })) {
+            clip.and_then(|c| {
+                let smoothed = c.smoothed_trajectory.as_ref()?;
+                if smoothed.corrections.is_empty() { return None; }
+                let source_dur = (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()).max(0.001);
+                let source_fps = smoothed.corrections.len() as f64 / source_dur;
+                let frame_idx = (clip_time_secs * source_fps).round() as usize;
+                let frame_idx = frame_idx.min(smoothed.corrections.len() - 1);
+                let correction = &smoothed.corrections[frame_idx];
+                Some([
+                    correction.h[0][0] as f32, correction.h[0][1] as f32, correction.h[0][2] as f32,
+                    correction.h[1][0] as f32, correction.h[1][1] as f32, correction.h[1][2] as f32,
+                    correction.h[2][0] as f32, correction.h[2][1] as f32, correction.h[2][2] as f32,
+                    0.0, 0.0, 0.0,
+                ])
+            })
+        } else {
+            None
+        };
+
         drop(seq);
 
         // Save pre-grade frame for Before/After split view
@@ -3599,6 +3620,13 @@ impl PlaybackEngine {
             }
         } else { rgba };
         let t3 = std::time::Instant::now();
+
+        // 2.4. Video Stabilization: upload pre-extracted homography to GPU
+        if let Some(ref h_f32) = stab_homography {
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.upload_stabilization_homography(h_f32);
+            }
+        }
 
         // 2.5. Rolling Shutter Correction: compute per-row transforms from adjacent frames
         if let Some(rsc_effect) = builtin_fx.iter().find(|e| matches!(e, klipp_effects::BuiltinEffect::RollingShutterCorrection { .. })) {

@@ -232,6 +232,16 @@ impl PresetManager {
         self.bi("rolling_shutter_correction", "Drone (DJI)", "Slow readout ~30ms",
             klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.8, readout_ratio: 0.75 });
 
+        // ── Video Stabilization ────────────────────────────────
+        self.bi("video_stabilization", "Subtle", "Gentle smoothing for handheld footage",
+            klipp_effects::BuiltinEffect::VideoStabilization { smoothing: 0.3, crop_ratio: 0.03, zoom: true });
+        self.bi("video_stabilization", "Smooth Handheld", "Moderate smoothing for walking/handheld",
+            klipp_effects::BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true });
+        self.bi("video_stabilization", "Cinematic Glide", "Strong smoothing for a floaty look",
+            klipp_effects::BuiltinEffect::VideoStabilization { smoothing: 0.8, crop_ratio: 0.08, zoom: true });
+        self.bi("video_stabilization", "Locked Tripod", "Maximum smoothing for minor vibration",
+            klipp_effects::BuiltinEffect::VideoStabilization { smoothing: 1.0, crop_ratio: 0.03, zoom: false });
+
         // ── Speed Ramp ─────────────────────────────────────────
         self.bi("speed_ramp", "Slow-Mo 50%", "Half-speed playback",
             klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
@@ -461,6 +471,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Letterbox { .. } => "letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "chromatic_aberration",
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "rolling_shutter_correction",
+        klipp_effects::BuiltinEffect::VideoStabilization { .. } => "video_stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
     }
 }

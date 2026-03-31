@@ -593,12 +593,15 @@ impl KlippApp {
                     self.state.master_peak_left = self.state.master_peak_left.max(left);
                     self.state.master_peak_right = self.state.master_peak_right.max(right);
                 }
-                // Skim events come through proxy_event_rx, handled in drain_proxy_events
+                // Skim/stabilization events come through proxy_event_rx, handled in drain_proxy_events
                 AppEvent::SkimTranscodeProgress { .. }
                 | AppEvent::SkimTranscodeComplete { .. }
                 | AppEvent::SkimTranscodeFailed { .. }
                 | AppEvent::BrowserSkimFrameReady { .. }
-                | AppEvent::MediaFileChanged { .. } => {}
+                | AppEvent::MediaFileChanged { .. }
+                | AppEvent::StabilizationProgress { .. }
+                | AppEvent::StabilizationComplete { .. }
+                | AppEvent::StabilizationFailed { .. } => {}
             }
         }
     }
@@ -4970,6 +4973,8 @@ impl KlippApp {
                         speed: 1.0,
                         source_rotation: 0,
                         audio_effects: Vec::new(),
+                        stabilization_data: None,
+                        smoothed_trajectory: None,
                     };
                     // Apply baked-in title animation keyframes
                     if let Some(anim_str) = self.state.pending_title_animation.take() {
@@ -5700,6 +5705,8 @@ impl KlippApp {
                                     speed: clip.speed,
                                     source_rotation: clip.source_rotation,
                                     audio_effects: clip.audio_effects.clone(),
+                                    stabilization_data: None,
+                                    smoothed_trajectory: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -5827,6 +5834,8 @@ impl KlippApp {
                                     speed: 1.0,
                                     source_rotation: 0,
                                     audio_effects: Vec::new(),
+                                    stabilization_data: None,
+                                    smoothed_trajectory: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -5909,6 +5918,8 @@ impl KlippApp {
                                     speed: 1.0,
                                     source_rotation: 0,
                                     audio_effects: Vec::new(),
+                                    stabilization_data: None,
+                                    smoothed_trajectory: None,
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -7154,6 +7165,67 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::AnalyzeStabilization { clip_id } => {
+                    // Find clip -> get media_id -> get media path, fps, duration
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|c| {
+                            let mid = c.media_id()?;
+                            let item = self.state.media_pool.get(&mid)?;
+                            let fps = item.fps.as_f64();
+                            let dur_secs = item.duration.to_secs_f64();
+                            let frame_count = (dur_secs * fps).round() as usize;
+                            Some((item.path.clone(), fps, dur_secs, frame_count))
+                        });
+
+                    if let Some((path, fps, duration_secs, frame_count)) = clip_info {
+                        let clip_id = *clip_id;
+                        self.state.stabilization_in_progress.insert(clip_id);
+                        self.state.stabilization_progress.insert(clip_id, 0.0);
+                        let event_tx = self.proxy_event_tx.clone();
+                        let sequence = self.sequence.clone();
+
+                        std::thread::spawn(move || {
+                            let result = klipp_effects::stabilization::analyze_clip(
+                                fps,
+                                frame_count,
+                                &mut |time_secs| {
+                                    klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
+                                },
+                                &|progress| {
+                                    let _ = event_tx.send(AppEvent::StabilizationProgress { clip_id, progress });
+                                    true // no cancel support yet
+                                },
+                            );
+                            match result {
+                                Ok(data) => {
+                                    let smoothed = klipp_effects::stabilization::smooth_trajectory(&data, 0.5 * duration_secs);
+                                    if let Ok(mut seq) = sequence.write() {
+                                        for track in &mut seq.tracks {
+                                            if let Some(clip) = track.find_clip_mut(clip_id) {
+                                                clip.stabilization_data = Some(data);
+                                                clip.smoothed_trajectory = Some(smoothed);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let _ = event_tx.send(AppEvent::StabilizationComplete { clip_id });
+                                }
+                                Err(e) => {
+                                    let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error: e });
+                                }
+                            }
+                        });
+                    }
+                    continue;
+                }
+                AppCommand::CancelStabilization { clip_id } => {
+                    // Currently no cancel flag — just remove from in-progress
+                    self.state.stabilization_in_progress.remove(clip_id);
+                    self.state.stabilization_progress.remove(clip_id);
+                    continue;
+                }
                 _ => {}
             }
             let _ = self.cmd_tx.send(cmd);
@@ -7945,6 +8017,8 @@ impl KlippApp {
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
                 audio_effects: clip.audio_effects.clone(),
+                stabilization_data: None,
+                smoothed_trajectory: None,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -8052,6 +8126,8 @@ impl KlippApp {
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
                 audio_effects: clip.audio_effects.clone(),
+                stabilization_data: None,
+                smoothed_trajectory: None,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -10898,6 +10974,35 @@ impl KlippApp {
                             tracing::info!("Media file modified externally: {:?}", path);
                         }
                     }
+                }
+                AppEvent::StabilizationProgress { clip_id, progress } => {
+                    self.state.stabilization_progress.insert(clip_id, progress);
+                }
+                AppEvent::StabilizationComplete { clip_id } => {
+                    self.state.stabilization_in_progress.remove(&clip_id);
+                    self.state.stabilization_progress.remove(&clip_id);
+                    // Also update the local sequence copy from the shared Arc
+                    if let Ok(shared_seq) = self.sequence.read() {
+                        for (ti, track) in shared_seq.tracks.iter().enumerate() {
+                            for (ci, clip) in track.clips.iter().enumerate() {
+                                if clip.id == clip_id {
+                                    if let Some(local_track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
+                                        if let Some(local_clip) = local_track.clips.get_mut(ci) {
+                                            local_clip.stabilization_data = clip.stabilization_data.clone();
+                                            local_clip.smoothed_trajectory = clip.smoothed_trajectory.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.state.toast.show("Stabilization analysis complete");
+                }
+                AppEvent::StabilizationFailed { clip_id, error } => {
+                    self.state.stabilization_in_progress.remove(&clip_id);
+                    self.state.stabilization_progress.remove(&clip_id);
+                    tracing::warn!("Stabilization failed for {:?}: {}", clip_id, error);
+                    self.state.toast.show(format!("Stabilization failed: {error}"));
                 }
                 _ => {}
             }

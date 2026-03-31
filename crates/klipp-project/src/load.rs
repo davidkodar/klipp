@@ -275,6 +275,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     speed: c.speed.unwrap_or(1.0),
                     source_rotation: c.source_rotation.unwrap_or(0),
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
+                    stabilization_data: None,
+                    smoothed_trajectory: None,
                 }
             }).collect();
             track
