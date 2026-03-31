@@ -10,6 +10,7 @@ enum PrefsTab {
     Audio,
     Export,
     Proxy,
+    Keyboard,
 }
 
 pub struct PreferencesPanel {
@@ -18,6 +19,10 @@ pub struct PreferencesPanel {
     new_preset_name: String,
     show_new_preset: bool,
     editing_preset_id: Option<String>,
+    /// Action currently being remapped (waiting for key press). (action_name, combo_index)
+    remapping: Option<(String, usize)>,
+    /// Search filter for keyboard shortcuts
+    kb_search: String,
     // Editing preset fields
     edit_format: ExportFormat,
     edit_video_codec: ExportVideoCodec,
@@ -37,6 +42,8 @@ impl Default for PreferencesPanel {
             new_preset_name: String::new(),
             show_new_preset: false,
             editing_preset_id: None,
+            remapping: None,
+            kb_search: String::new(),
             edit_format: ExportFormat::Mp4,
             edit_video_codec: ExportVideoCodec::H264,
             edit_crf: 23,
@@ -57,6 +64,7 @@ impl PreferencesPanel {
         ctx: &egui::Context,
         prefs: &mut Preferences,
         prefs_dirty: &mut bool,
+        key_bindings: &mut crate::keybindings::KeyBindings,
     ) -> (bool, Vec<AppCommand>) {
         let mut open = true;
         let mut cmds = Vec::new();
@@ -94,6 +102,7 @@ impl PreferencesPanel {
                         (PrefsTab::Audio, "Audio"),
                         (PrefsTab::Export, "Export"),
                         (PrefsTab::Proxy, "Proxy"),
+                        (PrefsTab::Keyboard, "Keyboard"),
                     ] {
                         let style = if self.active_tab == tab {
                             egui::RichText::new(label).strong().size(13.0)
@@ -119,6 +128,7 @@ impl PreferencesPanel {
                         PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                         PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
+                        PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
                     }
                 });
             });
@@ -905,6 +915,117 @@ impl PreferencesPanel {
             } else {
                 tracing::info!("Proxy cache cleared: {}", cache_dir.display());
             }
+        }
+    }
+
+    fn show_keyboard(&mut self, ui: &mut egui::Ui, key_bindings: &mut crate::keybindings::KeyBindings) {
+        use crate::keybindings::{KeyBindings, KeyCombo, key_event_to_combo};
+
+        ui.heading("Keyboard Shortcuts");
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.add(egui::TextEdit::singleline(&mut self.kb_search).desired_width(200.0));
+            if ui.button("Reset All to Defaults").clicked() {
+                *key_bindings = KeyBindings::defaults();
+                let _ = key_bindings.save();
+            }
+        });
+        ui.add_space(6.0);
+
+        // Show conflicts
+        let conflicts = key_bindings.find_conflicts();
+        if !conflicts.is_empty() {
+            ui.colored_label(egui::Color32::from_rgb(255, 100, 80), format!(
+                "{} conflict(s) detected", conflicts.len()
+            ));
+            for (a, b, combo) in &conflicts {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 160, 80),
+                    format!("  {} and {} both use {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display()),
+                );
+            }
+            ui.add_space(4.0);
+        }
+
+        // If remapping, capture key press
+        if let Some((ref action_name, combo_idx)) = self.remapping.clone() {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 200, 60),
+                format!("Press a key combination for \"{}\" (Escape to cancel)...", KeyBindings::action_label(&action_name)),
+            );
+            ui.add_space(4.0);
+
+            let input = ui.input(|i| i.clone());
+            if input.key_pressed(egui::Key::Escape) {
+                self.remapping = None;
+            } else if let Some(combo) = key_event_to_combo(&input) {
+                if let Some(combos) = key_bindings.bindings.get_mut(action_name.as_str()) {
+                    if combo_idx < combos.len() {
+                        combos[combo_idx] = combo;
+                    } else {
+                        combos.push(combo);
+                    }
+                }
+                let _ = key_bindings.save();
+                self.remapping = None;
+            }
+        }
+
+        let search = self.kb_search.to_lowercase();
+
+        for (category, actions) in KeyBindings::categories() {
+            let filtered: Vec<_> = actions.iter().filter(|a| {
+                if search.is_empty() { return true; }
+                let label = KeyBindings::action_label(a).to_lowercase();
+                let binding_str = key_bindings.display_for(a).to_lowercase();
+                label.contains(&search) || binding_str.contains(&search) || a.to_lowercase().contains(&search)
+            }).collect();
+            if filtered.is_empty() { continue; }
+
+            ui.add_space(4.0);
+            ui.strong(*category);
+            ui.add_space(2.0);
+
+            egui::Grid::new(format!("kb_grid_{}", category))
+                .num_columns(4)
+                .spacing([8.0, 3.0])
+                .striped(true)
+                .min_col_width(0.0)
+                .show(ui, |ui| {
+                    for action in &filtered {
+                        let label = KeyBindings::action_label(action);
+                        let combos = key_bindings.bindings.get(**action).cloned().unwrap_or_default();
+                        let display = if combos.is_empty() {
+                            "—".to_string()
+                        } else {
+                            combos.iter().map(|c| c.display()).collect::<Vec<_>>().join(" / ")
+                        };
+
+                        ui.label(label);
+                        ui.monospace(&display);
+
+                        // Remap button
+                        let is_remapping = self.remapping.as_ref().is_some_and(|(a, _)| a == **action);
+                        let btn_label = if is_remapping { "..." } else { "Set" };
+                        if ui.small_button(btn_label).clicked() && !is_remapping {
+                            self.remapping = Some((action.to_string(), 0));
+                        }
+
+                        // Reset to default
+                        let defaults = KeyBindings::defaults();
+                        let is_default = defaults.bindings.get(**action) == key_bindings.bindings.get(**action);
+                        if ui.add_enabled(!is_default, egui::Button::new("Reset").small()).clicked() {
+                            if let Some(default_combos) = defaults.bindings.get(**action) {
+                                key_bindings.bindings.insert(action.to_string(), default_combos.clone());
+                                let _ = key_bindings.save();
+                            }
+                        }
+
+                        ui.end_row();
+                    }
+                });
         }
     }
 }

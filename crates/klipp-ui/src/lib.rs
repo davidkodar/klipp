@@ -4,6 +4,7 @@ pub mod drag_drop;
 pub mod history;
 pub mod icons;
 pub mod inspector;
+pub mod keybindings;
 pub mod layout_state;
 pub mod media_watcher;
 pub mod panels;

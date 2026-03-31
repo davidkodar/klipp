@@ -121,6 +121,8 @@ pub struct KlippApp {
     // Preferences
     prefs: crate::prefs::Preferences,
     prefs_dirty: bool,
+    // Keyboard shortcut bindings
+    key_bindings: crate::keybindings::KeyBindings,
     prefs_last_save: std::time::Instant,
     // Proxy progress channel: (media_id, progress 0.0..1.0)
     proxy_progress_tx: Sender<(MediaId, f32)>,
@@ -207,6 +209,7 @@ impl KlippApp {
             export_dialog: ExportDialogState::default(),
             prefs: crate::prefs::Preferences::load(),
             prefs_dirty: false,
+            key_bindings: crate::keybindings::KeyBindings::load(),
             prefs_last_save: std::time::Instant::now(),
             proxy_progress_tx,
             proxy_progress_rx,
@@ -8814,14 +8817,15 @@ impl KlippApp {
         // title text editor, timecode entry, rename fields, etc.).
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
         let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
+        let kb = self.key_bindings.clone();
 
         ctx.input(|i| {
             // Ctrl+S — Save
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
+            if kb.is_action_pressed("save_project", i) {
                 cmds.push(AppCommand::SaveProject);
             }
             // Ctrl+Shift+S — Save As
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S) {
+            if kb.is_action_pressed("save_project_as", i) {
                 if let Some(path) = rfd::FileDialog::new()
                     .set_title("Save Project As")
                     .add_filter("Klipp Project", &["klipp"])
@@ -8832,7 +8836,7 @@ impl KlippApp {
                 }
             }
             // Ctrl+O — Open Project
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
+            if kb.is_action_pressed("open_project", i) {
                 if let Some(path) = rfd::FileDialog::new()
                     .set_title("Open Project")
                     .pick_folder()
@@ -8841,7 +8845,7 @@ impl KlippApp {
                 }
             }
             // Ctrl+I — Import Media
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::I) {
+            if kb.is_action_pressed("import_media", i) {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter(
                         "Video",
@@ -8853,7 +8857,7 @@ impl KlippApp {
                 }
             }
             // Ctrl+E — Export
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::E) {
+            if kb.is_action_pressed("export", i) {
                 self.state.show_export_dialog = true;
                 if self.export_dialog.output_path.is_empty() {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
@@ -8861,21 +8865,19 @@ impl KlippApp {
                 }
             }
             // Ctrl+, — Preferences
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::Comma) {
+            if kb.is_action_pressed("preferences", i) {
                 self.state.show_preferences = true;
             }
             // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Z) {
+            if kb.is_action_pressed("undo", i) {
                 cmds.push(AppCommand::Undo);
             }
-            if i.modifiers.ctrl && (i.key_pressed(egui::Key::Y)
-                || (i.modifiers.shift && i.key_pressed(egui::Key::Z)))
-            {
+            if kb.is_action_pressed("redo", i) {
                 cmds.push(AppCommand::Redo);
             }
 
-            // Ctrl+G — Group selected clips
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::G) {
+            // Group selected clips
+            if kb.is_action_pressed("group_clips", i) {
                 let mut ids = self.state.selected_clips.clone();
                 if let Some(primary) = self.state.selected_clip {
                     if !ids.contains(&primary) {
@@ -8886,8 +8888,8 @@ impl KlippApp {
                     cmds.push(AppCommand::GroupClips { clip_ids: ids });
                 }
             }
-            // Ctrl+Shift+G — Ungroup
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::G) {
+            // Ungroup
+            if kb.is_action_pressed("ungroup_clips", i) {
                 if let Some(primary) = self.state.selected_clip {
                     let gid = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -9121,8 +9123,8 @@ impl KlippApp {
                     cmds.push(AppCommand::RippleTrimTail { clip_id });
                 }
             }
-            // Ctrl+X — Cut
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::X) {
+            // Cut clip
+            if kb.is_action_pressed("cut_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CutClip { clip_id });
                 }
@@ -9165,36 +9167,34 @@ impl KlippApp {
             {
                 self.state.show_scopes = !self.state.show_scopes;
             }
-            // Ctrl+C — Copy (Ctrl+Shift+C copies attributes)
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::C) {
+            // Copy / Copy Attributes
+            if kb.is_action_pressed("copy_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CopyClip { clip_id });
                 }
             }
-            // Ctrl+Shift+C — Copy Attributes
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::C) {
+            if kb.is_action_pressed("copy_attributes", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CopyAttributes { clip_id });
                 }
             }
-            // Ctrl+V — Paste (Ctrl+Shift+V opens Paste Attributes dialog)
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::V) {
+            // Paste / Paste Attributes
+            if kb.is_action_pressed("paste_clip", i) {
                 cmds.push(AppCommand::PasteClip);
             }
-            // Ctrl+Shift+V — Paste Attributes dialog
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::V) {
+            if kb.is_action_pressed("paste_attributes", i) {
                 if self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
                     self.state.show_paste_attributes_dialog = true;
                 }
             }
-            // Ctrl+D — Duplicate selected clip
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::D) {
+            // Duplicate clip
+            if kb.is_action_pressed("duplicate_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                 }
             }
-            // Ctrl+B — Split at playhead (all tracks with clips at playhead)
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
+            // Split at playhead
+            if kb.is_action_pressed("split_at_playhead", i) {
                 let ph = self.state.playhead;
                 for (track_index, track) in self.state.sequences[self.state.active_sequence_idx].tracks.iter().enumerate() {
                     if let Some((_, clip)) = track.clip_at_timecode(ph) {
@@ -9206,8 +9206,8 @@ impl KlippApp {
                     }
                 }
             }
-            // Ctrl+L — Toggle loop playback
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
+            // Toggle loop playback
+            if kb.is_action_pressed("toggle_loop", i) {
                 cmds.push(AppCommand::ToggleLoopPlayback);
             }
             // Ctrl+T — Create title clip at playhead on a free text track (or create new one)
@@ -9407,43 +9407,38 @@ impl KlippApp {
                 }
                 self.state.ruler_press_origin = None;
             }
-            // Ctrl+Shift+A — Deselect All
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::A) {
+            // Deselect All
+            if kb.is_action_pressed("deselect_all", i) {
                 self.state.selected_clips.clear();
                 cmds.push(AppCommand::SelectClip(None));
             }
-            // Ctrl+A — Select All clips on timeline
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::A) {
+            // Select All clips
+            if kb.is_action_pressed("select_all", i) {
                 cmds.push(AppCommand::SelectAllClips);
             }
-            // Up Arrow — Previous edit point
-            if !i.modifiers.ctrl && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp) {
+            // Previous edit point
+            if kb.is_action_pressed("prev_edit_point", i) {
                 cmds.push(AppCommand::PrevEditPoint);
             }
-            // Down Arrow — Next edit point
-            if !i.modifiers.ctrl && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowDown) {
+            // Next edit point
+            if kb.is_action_pressed("next_edit_point", i) {
                 cmds.push(AppCommand::NextEditPoint);
             }
-            // , or F10 — Insert edit (ripple)
-            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ","))
-                || i.key_pressed(egui::Key::F10)
+            // Insert edit (ripple)
+            if kb.is_action_pressed("insert_edit", i)
             {
                 cmds.push(AppCommand::InsertEdit);
             }
-            // . or F11 — Overwrite edit
-            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "."))
-                || i.key_pressed(egui::Key::F11)
-            {
+            // Overwrite edit
+            if kb.is_action_pressed("overwrite_edit", i) {
                 cmds.push(AppCommand::OverwriteEdit);
             }
-            // ; — Lift edit
-            if i.key_pressed(egui::Key::Semicolon)
-                || i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ";"))
-            {
+            // Lift edit
+            if kb.is_action_pressed("lift_edit", i) {
                 cmds.push(AppCommand::LiftEdit);
             }
-            // ' — Extract edit
-            if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "'")) {
+            // Extract edit
+            if kb.is_action_pressed("extract_edit", i) {
                 cmds.push(AppCommand::ExtractEdit);
             }
             // Alt+M — Toggle matte preview
@@ -10303,6 +10298,7 @@ impl eframe::App for KlippApp {
                 ctx,
                 &mut self.prefs,
                 &mut self.prefs_dirty,
+                &mut self.key_bindings,
             );
             all_cmds.extend(pref_cmds);
             // Sync skim_audio pref → state (checkbox may have changed)
