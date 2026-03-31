@@ -1,4 +1,4 @@
-use crate::events::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec};
+use crate::events::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec, RateControl};
 use crate::types::Resolution;
 use crate::time::Fps;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,12 @@ pub struct ExportPresetSettings {
     pub preset: EncoderPreset,
     pub audio_codec: ExportAudioCodec,
     pub audio_bitrate_kbps: Option<u32>,
+    /// Video bitrate in kbps (for CBR/VBR modes). None = use CRF instead.
+    #[serde(default)]
+    pub video_bitrate_kbps: Option<u32>,
+    /// Rate control mode: CRF (default), CBR, or VBR.
+    #[serde(default)]
+    pub rate_control: RateControl,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +78,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(192),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -87,6 +95,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(256),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -102,6 +112,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(256),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -117,6 +129,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(128),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -132,6 +146,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(192),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -147,6 +163,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(192),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -162,6 +180,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::default(),
                 audio_codec: ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None,
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -177,6 +197,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::default(),
                 audio_codec: ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None,
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -192,6 +214,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Medium,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(256),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -207,6 +231,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Slow,
                 audio_codec: ExportAudioCodec::Aac,
                 audio_bitrate_kbps: Some(256),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
         ExportPreset {
@@ -222,6 +248,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 preset: EncoderPreset::Fast,
                 audio_codec: ExportAudioCodec::Mp3,
                 audio_bitrate_kbps: Some(320),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
             },
         },
     ]

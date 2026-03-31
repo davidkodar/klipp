@@ -81,6 +81,16 @@ fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'s
         | ExportVideoCodec::ProRes422HQ
         | ExportVideoCodec::ProRes4444 => ("prores_ks", false),
         ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => ("dnxhd", false),
+        ExportVideoCodec::Av1 => {
+            // Try NVENC AV1 first, then SVT-AV1
+            if hw_eligible {
+                if ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
+                    return ("av1_nvenc", true);
+                }
+            }
+            ("libsvtav1", false)
+        }
+        ExportVideoCodec::Vp9 => ("libvpx-vp9", false),
     }
 }
 
@@ -153,14 +163,14 @@ impl Encoder {
             ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => {
                 ffmpeg_next::format::Pixel::YUV422P
             }
-            ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
+            ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1 => {
                 if is_hw_encoder {
-                    // NVENC/AMF prefer NV12 or P010
                     ffmpeg_next::format::Pixel::NV12
                 } else {
                     ffmpeg_next::format::Pixel::YUV420P
                 }
             }
+            ExportVideoCodec::Vp9 => ffmpeg_next::format::Pixel::YUV420P,
         };
         video_ctx.set_format(pix_fmt);
 
@@ -250,6 +260,57 @@ impl Encoder {
             ExportVideoCodec::DNxHD145 => {
                 video_ctx.set_bit_rate(145_000_000);
             }
+            ExportVideoCodec::Av1 if is_hw_encoder => {
+                video_opts.set("rc", "vbr");
+                video_opts.set("cq", &settings.crf.to_string());
+                video_ctx.set_bit_rate(0);
+            }
+            ExportVideoCodec::Av1 => {
+                // SVT-AV1 uses CRF
+                video_opts.set("crf", &settings.crf.to_string());
+                let svt_preset = match settings.preset {
+                    klipp_core::EncoderPreset::Fast => "8",
+                    klipp_core::EncoderPreset::Medium => "6",
+                    klipp_core::EncoderPreset::Slow => "4",
+                    klipp_core::EncoderPreset::VerySlow => "2",
+                };
+                video_opts.set("preset", svt_preset);
+            }
+            ExportVideoCodec::Vp9 => {
+                video_opts.set("crf", &settings.crf.to_string());
+                video_opts.set("b:v", "0"); // CRF mode for VP9
+                // VP9 speed/quality preset
+                let speed = match settings.preset {
+                    klipp_core::EncoderPreset::Fast => "4",
+                    klipp_core::EncoderPreset::Medium => "2",
+                    klipp_core::EncoderPreset::Slow => "1",
+                    klipp_core::EncoderPreset::VerySlow => "0",
+                };
+                video_opts.set("speed", speed);
+            }
+        }
+
+        // CBR/VBR override: if rate_control is not CRF and a video bitrate is set,
+        // override the CRF-based settings above.
+        match settings.rate_control {
+            klipp_core::RateControl::Cbr => {
+                if let Some(br_kbps) = settings.video_bitrate_kbps {
+                    video_ctx.set_bit_rate(br_kbps as usize * 1000);
+                    video_opts.set("maxrate", &format!("{}k", br_kbps));
+                    video_opts.set("minrate", &format!("{}k", br_kbps));
+                    video_opts.set("bufsize", &format!("{}k", br_kbps * 2));
+                    // Remove CRF if it was set
+                    video_opts.set("crf", "-1");
+                }
+            }
+            klipp_core::RateControl::Vbr => {
+                if let Some(br_kbps) = settings.video_bitrate_kbps {
+                    video_ctx.set_bit_rate(br_kbps as usize * 1000);
+                    video_opts.set("maxrate", &format!("{}k", br_kbps * 2));
+                    video_opts.set("bufsize", &format!("{}k", br_kbps * 4));
+                }
+            }
+            klipp_core::RateControl::Crf => {} // Already handled above
         }
 
         // Global header flag (needed for MP4/MOV containers)

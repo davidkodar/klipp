@@ -766,6 +766,8 @@ impl PreferencesPanel {
                         preset: self.edit_preset,
                         audio_codec: self.edit_audio_codec,
                         audio_bitrate_kbps: Some(self.edit_audio_bitrate),
+                        video_bitrate_kbps: None,
+                        rate_control: klipp_core::RateControl::Crf,
                     };
 
                     if let Some(ref edit_id) = self.editing_preset_id {

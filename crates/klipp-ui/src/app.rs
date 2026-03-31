@@ -74,6 +74,8 @@ struct ExportDialogState {
     custom_height: u32,
     /// Override frame rate (None = use sequence fps).
     fps_override: u8, // 0=Sequence, 1=24, 2=25, 3=29.97, 4=30, 5=60
+    rate_control: klipp_core::RateControl,
+    video_bitrate_kbps: u32,
 }
 
 impl Default for ExportDialogState {
@@ -95,6 +97,8 @@ impl Default for ExportDialogState {
             custom_width: 1920,
             custom_height: 1080,
             fps_override: 0,
+            rate_control: klipp_core::RateControl::default(),
+            video_bitrate_kbps: 10000,
         }
     }
 }
@@ -12205,10 +12209,14 @@ impl KlippApp {
                                 let codec_requires_mov = self.export_dialog.video_codec.requires_mov();
                                 if codec_requires_mov {
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                } else if self.export_dialog.video_codec.requires_webm() {
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
                                 } else {
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mp4, "MP4");
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
                                 }
                             });
                         // If format changed away from MOV, reset codec if it requires MOV
@@ -12235,14 +12243,17 @@ impl KlippApp {
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "\u{26A1} H.264 — GPU accelerated");
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "\u{26A1} H.265 — GPU accelerated, best quality/size");
+                                ui.separator();
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
                                 if self.export_dialog.format == ExportFormat::Mov {
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — CPU only, NLE interchange");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — CPU only, high quality");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — CPU only, alpha/mastering");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — alpha/mastering");
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — CPU only, Avid interchange");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — CPU only, Avid high bitrate");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — Avid interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — Avid high bitrate");
                                 }
                             });
                         ui.end_row();
@@ -12269,9 +12280,36 @@ impl KlippApp {
                         }
                         ui.end_row();
 
-                        ui.label("Quality (CRF):");
-                        ui.add(egui::Slider::new(&mut self.export_dialog.crf, 0..=51));
-                        ui.end_row();
+                        // Rate control mode
+                        if self.export_dialog.video_codec.uses_crf() {
+                            ui.label("Rate control:");
+                            egui::ComboBox::from_id_salt("export_rate_ctrl")
+                                .selected_text(self.export_dialog.rate_control.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Crf, "CRF (Quality)");
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Cbr, "CBR (Constant Bitrate)");
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Vbr, "VBR (Variable Bitrate)");
+                                });
+                            ui.end_row();
+
+                            match self.export_dialog.rate_control {
+                                klipp_core::RateControl::Crf => {
+                                    ui.label("Quality (CRF):");
+                                    ui.add(egui::Slider::new(&mut self.export_dialog.crf, 0..=51));
+                                    ui.end_row();
+                                }
+                                klipp_core::RateControl::Cbr | klipp_core::RateControl::Vbr => {
+                                    let mode_label = if self.export_dialog.rate_control == klipp_core::RateControl::Cbr {
+                                        "Bitrate (CBR):"
+                                    } else {
+                                        "Target bitrate (VBR):"
+                                    };
+                                    ui.label(mode_label);
+                                    ui.add(egui::Slider::new(&mut self.export_dialog.video_bitrate_kbps, 500..=100_000).suffix(" kbps").logarithmic(true));
+                                    ui.end_row();
+                                }
+                            }
+                        }
 
                         ui.label("Audio codec:");
                         egui::ComboBox::from_id_salt("export_acodec")
@@ -12279,7 +12317,12 @@ impl KlippApp {
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Aac, "AAC");
                                 ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Mp3, "MP3");
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Flac, "FLAC");
+                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Opus, "Opus");
+                                ui.separator();
+                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Flac, "FLAC (lossless)");
+                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)");
+                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)");
+                                ui.separator();
                                 ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, "Copy Source");
                             });
                         ui.end_row();
@@ -12367,6 +12410,8 @@ impl KlippApp {
                             preset: self.export_dialog.preset,
                             audio_codec: self.export_dialog.audio_codec,
                             audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
+                            video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
+                            rate_control: self.export_dialog.rate_control,
                         };
                         let snapshot = klipp_export::RenderSnapshot::from_sequence(
                             &self.state.sequences[self.state.active_sequence_idx],
@@ -12410,6 +12455,8 @@ impl KlippApp {
                                     preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
+                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
+                                    rate_control: self.export_dialog.rate_control,
                                 },
                             });
                         }
@@ -12454,6 +12501,8 @@ impl KlippApp {
                                     preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
+                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
+                                    rate_control: self.export_dialog.rate_control,
                                 },
                             });
                         }
@@ -12493,6 +12542,8 @@ impl KlippApp {
                                     preset: self.export_dialog.preset,
                                     audio_codec: self.export_dialog.audio_codec,
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
+                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
+                                    rate_control: self.export_dialog.rate_control,
                                 },
                             };
                             self.prefs.export.custom_presets.push(preset);

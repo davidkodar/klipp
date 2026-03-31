@@ -34,6 +34,8 @@ pub struct ExportSettings {
     pub preset: EncoderPreset,
     pub audio_codec: ExportAudioCodec,
     pub audio_bitrate_kbps: Option<u32>,
+    pub video_bitrate_kbps: Option<u32>,
+    pub rate_control: RateControl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -74,6 +76,7 @@ pub enum ExportFormat {
     Mp4,
     Mkv,
     Mov,
+    WebM,
 }
 
 impl ExportFormat {
@@ -82,6 +85,7 @@ impl ExportFormat {
             Self::Mp4 => "mp4",
             Self::Mkv => "mkv",
             Self::Mov => "mov",
+            Self::WebM => "webm",
         }
     }
 
@@ -90,6 +94,7 @@ impl ExportFormat {
             Self::Mp4 => "MP4",
             Self::Mkv => "MKV",
             Self::Mov => "MOV",
+            Self::WebM => "WebM",
         }
     }
 }
@@ -103,6 +108,8 @@ pub enum ExportVideoCodec {
     ProRes4444,
     DNxHD115,
     DNxHD145,
+    Av1,
+    Vp9,
 }
 
 impl ExportVideoCodec {
@@ -112,6 +119,8 @@ impl ExportVideoCodec {
             Self::H265 => "libx265",
             Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => "prores_ks",
             Self::DNxHD115 | Self::DNxHD145 => "dnxhd",
+            Self::Av1 => "libsvtav1",
+            Self::Vp9 => "libvpx-vp9",
         }
     }
 
@@ -124,10 +133,11 @@ impl ExportVideoCodec {
             Self::ProRes4444 => "ProRes 4444",
             Self::DNxHD115 => "DNxHD 115 Mbps",
             Self::DNxHD145 => "DNxHD 145 Mbps",
+            Self::Av1 => "AV1",
+            Self::Vp9 => "VP9",
         }
     }
 
-    /// Short description shown next to the codec in the export dialog.
     pub fn hint(&self) -> &'static str {
         match self {
             Self::H264 => "GPU accelerated \u{26A1} — fast, universal",
@@ -137,25 +147,29 @@ impl ExportVideoCodec {
             Self::ProRes4444 => "CPU only — alpha channel, mastering",
             Self::DNxHD115 => "CPU only — Avid interchange",
             Self::DNxHD145 => "CPU only — Avid interchange, high bitrate",
+            Self::Av1 => "CPU — next-gen, best compression, slow encode",
+            Self::Vp9 => "CPU — web video (YouTube, WebM)",
         }
     }
 
-    /// Whether this codec uses CRF-based quality (H.264/H.265) or fixed profile/bitrate.
     pub fn uses_crf(&self) -> bool {
-        matches!(self, Self::H264 | Self::H265)
+        matches!(self, Self::H264 | Self::H265 | Self::Av1 | Self::Vp9)
     }
 
-    /// Whether this codec supports encoder preset (fast/medium/slow/veryslow).
     pub fn supports_preset(&self) -> bool {
-        matches!(self, Self::H264 | Self::H265)
+        matches!(self, Self::H264 | Self::H265 | Self::Av1)
     }
 
-    /// Whether this codec requires a MOV container (not compatible with MP4/MKV).
     pub fn requires_mov(&self) -> bool {
         matches!(
             self,
             Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145
         )
+    }
+
+    /// Whether this codec requires a WebM container.
+    pub fn requires_webm(&self) -> bool {
+        matches!(self, Self::Vp9)
     }
 }
 
@@ -164,6 +178,9 @@ pub enum ExportAudioCodec {
     Aac,
     Mp3,
     Flac,
+    Opus,
+    Pcm16,
+    Pcm24,
     Copy,
 }
 
@@ -186,18 +203,30 @@ impl ExportAudioCodec {
                 }
                 args
             }
+            Self::Opus => {
+                let mut args = vec!["-c:a".into(), "libopus".into()];
+                if let Some(br) = bitrate_kbps {
+                    args.push("-b:a".into());
+                    args.push(format!("{br}k"));
+                }
+                args
+            }
             Self::Flac => vec!["-c:a".into(), "flac".into()],
+            Self::Pcm16 => vec!["-c:a".into(), "pcm_s16le".into()],
+            Self::Pcm24 => vec!["-c:a".into(), "pcm_s24le".into()],
             Self::Copy => vec!["-c:a".into(), "copy".into()],
         }
     }
 
-    /// ffmpeg-next codec name for in-process encoding.
     pub fn ffmpeg_codec(&self) -> &'static str {
         match self {
             Self::Aac => "aac",
             Self::Mp3 => "libmp3lame",
             Self::Flac => "flac",
-            Self::Copy => "pcm_s16le", // Copy doesn't apply to in-process; use PCM fallback
+            Self::Opus => "libopus",
+            Self::Pcm16 => "pcm_s16le",
+            Self::Pcm24 => "pcm_s24le",
+            Self::Copy => "pcm_s16le",
         }
     }
 
@@ -205,8 +234,38 @@ impl ExportAudioCodec {
         match self {
             Self::Aac => "AAC",
             Self::Mp3 => "MP3",
-            Self::Flac => "FLAC",
+            Self::Flac => "FLAC (lossless)",
+            Self::Opus => "Opus",
+            Self::Pcm16 => "PCM 16-bit (WAV)",
+            Self::Pcm24 => "PCM 24-bit (WAV)",
             Self::Copy => "Copy Source",
+        }
+    }
+
+    /// Whether this codec supports variable bitrate.
+    pub fn uses_bitrate(&self) -> bool {
+        matches!(self, Self::Aac | Self::Mp3 | Self::Opus)
+    }
+}
+
+/// Video rate control mode for export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum RateControl {
+    /// Constant Rate Factor — quality-based (default).
+    #[default]
+    Crf,
+    /// Constant Bitrate.
+    Cbr,
+    /// Variable Bitrate (target average).
+    Vbr,
+}
+
+impl RateControl {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Crf => "CRF (Quality)",
+            Self::Cbr => "CBR (Constant Bitrate)",
+            Self::Vbr => "VBR (Variable Bitrate)",
         }
     }
 }
