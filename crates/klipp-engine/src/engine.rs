@@ -3677,9 +3677,13 @@ impl PlaybackEngine {
                 // 2. Skim transcode (all-keyframe, fast seeking, auto-generated)
                 if let Some(ref skim_path) = item.skim_file {
                     if skim_path.exists() {
-                        tracing::trace!("resolve_media_path: using skim for {}", item.filename);
+                        tracing::info!("resolve_media_path: using SKIM for {} -> {:?}", item.filename, skim_path);
                         return skim_path.clone();
+                    } else {
+                        tracing::warn!("resolve_media_path: skim_file set but missing: {:?}", skim_path);
                     }
+                } else {
+                    tracing::info!("resolve_media_path: NO skim_file for {}, using source", item.filename);
                 }
                 // 3. Original source file
                 item.path.clone()

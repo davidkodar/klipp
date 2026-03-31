@@ -8248,18 +8248,25 @@ impl KlippApp {
                     .media_pool
                     .all()
                     .filter(|item| !item.offline)
-                    .map(|item| (item.id, item.path.clone(), item.duration, item.has_audio))
+                    .map(|item| {
+                        // Use skim file for engine decode if available (much lighter than 4K source)
+                        let engine_path = item.skim_file.as_ref()
+                            .filter(|p| p.exists())
+                            .cloned()
+                            .unwrap_or_else(|| item.path.clone());
+                        (item.id, item.path.clone(), engine_path, item.duration, item.has_audio)
+                    })
                     .collect();
-                for (id, path, duration, has_audio) in media_items {
-                    // Re-open decoders in the engine
+                for (id, source_path, engine_path, duration, has_audio) in media_items {
+                    // Re-open decoders in the engine using skim file when available
                     self.cmd_tx.send(AppCommand::LoadMediaFile {
-                        path: path.clone(),
+                        path: engine_path.clone(),
                         media_id: id,
                     }).ok();
-                    self.spawn_thumbnail(id, path.clone(), duration);
-                    self.spawn_filmstrip(id, path.clone(), duration);
+                    self.spawn_thumbnail(id, source_path.clone(), duration);
+                    self.spawn_filmstrip(id, source_path.clone(), duration);
                     if has_audio {
-                        self.spawn_audio_conform(id, path.clone());
+                        self.spawn_audio_conform(id, source_path.clone());
                     }
                     self.state.pending_skim_transcodes.push(id);
                 }
