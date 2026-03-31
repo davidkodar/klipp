@@ -1025,6 +1025,8 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::RadialBlur { .. } => "Radial Blur",
         klipp_effects::BuiltinEffect::Levels { .. } => "Levels",
         klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
+        klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
+        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -1116,6 +1118,12 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
         },
         BuiltinEffect::Equalize { .. } => BuiltinEffect::Equalize { strength: 1.0 },
+        BuiltinEffect::Letterbox { .. } => BuiltinEffect::Letterbox {
+            aspect_ratio: 2.39, bar_color: 0, opacity: 1.0,
+        },
+        BuiltinEffect::ChromaticAberration { .. } => BuiltinEffect::ChromaticAberration {
+            red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5,
+        },
         BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
             speed: 1.0, blend_mode: 1, ramp_curve: 0,
             ramp_start: 0.0, ramp_end: 1.0, reverse: false,
@@ -1135,7 +1143,8 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Denoise { .. } | BuiltinEffect::SpeedRamp { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
-        | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. })
+        | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
+        | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. })
 }
 
 #[allow(dead_code)]
@@ -1960,6 +1969,41 @@ fn show_builtin_effect_params(
             let ks = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
             let r = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 1.0, 0.005, 2, "", ks);
             track_scrubby!("strength", r, *strength);
+        }
+        klipp_effects::BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
+            *aspect_ratio = eval_effect_kf(clip, effect_index, "aspect_ratio", clip_time_secs, *aspect_ratio);
+            *opacity = eval_effect_kf(clip, effect_index, "opacity", clip_time_secs, *opacity);
+            let ks_ar = Some(effect_keyframe_state(clip, effect_index, "aspect_ratio", clip_time_secs));
+            let ks_op = Some(effect_keyframe_state(clip, effect_index, "opacity", clip_time_secs));
+            let r_ar = scrubby_param_row(ui, "Aspect Ratio", aspect_ratio, 0.5..=4.0, 2.39, 0.01, 2, ":1", ks_ar);
+            track_scrubby!("aspect_ratio", r_ar, *aspect_ratio);
+            // Bar color toggle
+            let mut bc_f = *bar_color as f32;
+            let r_bc = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Color (0=Black, 1=White)"));
+            *bar_color = bc_f as u32;
+            if r_bc.drag_started() { any_drag_started = true; }
+            if r_bc.drag_stopped() { any_drag_stopped = true; }
+            changed |= r_bc.changed();
+            let r_op = scrubby_param_row(ui, "Opacity", opacity, 0.0..=1.0, 1.0, 0.005, 2, "", ks_op);
+            track_scrubby!("opacity", r_op, *opacity);
+        }
+        klipp_effects::BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+            *red_shift = eval_effect_kf(clip, effect_index, "red_shift", clip_time_secs, *red_shift);
+            *blue_shift = eval_effect_kf(clip, effect_index, "blue_shift", clip_time_secs, *blue_shift);
+            *center_x = eval_effect_kf(clip, effect_index, "center_x", clip_time_secs, *center_x);
+            *center_y = eval_effect_kf(clip, effect_index, "center_y", clip_time_secs, *center_y);
+            let ks_rs = Some(effect_keyframe_state(clip, effect_index, "red_shift", clip_time_secs));
+            let ks_bs = Some(effect_keyframe_state(clip, effect_index, "blue_shift", clip_time_secs));
+            let ks_cx = Some(effect_keyframe_state(clip, effect_index, "center_x", clip_time_secs));
+            let ks_cy = Some(effect_keyframe_state(clip, effect_index, "center_y", clip_time_secs));
+            let r_rs = scrubby_param_row(ui, "Red Shift", red_shift, -20.0..=20.0, 2.0, 0.1, 1, " px", ks_rs);
+            track_scrubby!("red_shift", r_rs, *red_shift);
+            let r_bs = scrubby_param_row(ui, "Blue Shift", blue_shift, -20.0..=20.0, -2.0, 0.1, 1, " px", ks_bs);
+            track_scrubby!("blue_shift", r_bs, *blue_shift);
+            let r_cx = scrubby_param_row(ui, "Center X", center_x, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cx);
+            track_scrubby!("center_x", r_cx, *center_x);
+            let r_cy = scrubby_param_row(ui, "Center Y", center_y, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cy);
+            track_scrubby!("center_y", r_cy, *center_y);
         }
     }
 

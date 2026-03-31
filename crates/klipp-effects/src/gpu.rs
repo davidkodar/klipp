@@ -48,6 +48,8 @@ pub struct GpuEffectsPipeline {
     radial_blur_pipeline: wgpu::ComputePipeline,
     levels_pipeline: wgpu::ComputePipeline,
     equalize_pipeline: wgpu::ComputePipeline,
+    letterbox_pipeline: wgpu::ComputePipeline,
+    chromatic_aberration_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
@@ -287,6 +289,8 @@ impl GpuEffectsPipeline {
         let median_filter_pipeline = create_pipeline(&device, &pipeline_layout, "median_filter", SHADER_MEDIAN_FILTER);
         let radial_blur_pipeline = create_pipeline(&device, &pipeline_layout, "radial_blur", SHADER_RADIAL_BLUR);
         let levels_pipeline = create_pipeline(&device, &pipeline_layout, "levels", SHADER_LEVELS);
+        let letterbox_pipeline = create_pipeline(&device, &pipeline_layout, "letterbox", SHADER_LETTERBOX);
+        let chromatic_aberration_pipeline = create_pipeline(&device, &pipeline_layout, "chromatic_aberration", SHADER_CHROMATIC_ABERRATION);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
@@ -407,6 +411,8 @@ impl GpuEffectsPipeline {
             radial_blur_pipeline,
             levels_pipeline,
             equalize_pipeline,
+            letterbox_pipeline,
+            chromatic_aberration_pipeline,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
@@ -1448,6 +1454,35 @@ impl GpuEffectsPipeline {
 
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
+                    self.write_params(&LetterboxParams {
+                        width, height,
+                        aspect_ratio: *aspect_ratio,
+                        bar_color: *bar_color,
+                        opacity: *opacity,
+                        _pad0: 0,
+                        _pad1: 0,
+                        _pad2: 0,
+                    });
+                    self.dispatch(&self.letterbox_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+                    if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&ChromaticAberrationParams {
+                        width, height,
+                        red_shift: *red_shift,
+                        blue_shift: *blue_shift,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        _pad0: 0,
+                        _pad1: 0,
+                    });
+                    self.dispatch(&self.chromatic_aberration_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
@@ -2189,6 +2224,34 @@ struct EqualizeParams {
     _pad0: u32,
 }
 // 4 fields x 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LetterboxParams {
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    bar_color: u32,
+    opacity: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ChromaticAberrationParams {
+    width: u32,
+    height: u32,
+    red_shift: f32,
+    blue_shift: f32,
+    center_x: f32,
+    center_y: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
 
@@ -4606,5 +4669,122 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = u32(clamp(fg * 255.0, 0.0, 255.0));
     let bo = u32(clamp(fb * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+const SHADER_LETTERBOX: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    bar_color: u32,
+    opacity: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = idx % w;
+    let y = idx / w;
+
+    let frame_aspect = f32(w) / f32(h);
+    let target_aspect = params.aspect_ratio;
+
+    var bar_height = 0.0;
+    var bar_width = 0.0;
+    if frame_aspect > target_aspect {
+        let visible_w = f32(h) * target_aspect;
+        bar_width = (f32(w) - visible_w) / 2.0;
+    } else {
+        let visible_h = f32(w) / target_aspect;
+        bar_height = (f32(h) - visible_h) / 2.0;
+    }
+
+    let in_bar = f32(y) < bar_height || f32(y) >= f32(h) - bar_height
+              || f32(x) < bar_width || f32(x) >= f32(w) - bar_width;
+
+    let v = input[idx];
+    if in_bar {
+        let bar_val = select(0u, 255u, params.bar_color != 0u);
+        let orig_r = f32(v & 0xFFu);
+        let orig_g = f32((v >> 8u) & 0xFFu);
+        let orig_b = f32((v >> 16u) & 0xFFu);
+        let orig_a = f32(v >> 24u);
+        let op = params.opacity;
+        let bv = f32(bar_val);
+        let nr = u32(clamp(orig_r * (1.0 - op) + bv * op, 0.0, 255.0));
+        let ng = u32(clamp(orig_g * (1.0 - op) + bv * op, 0.0, 255.0));
+        let nb = u32(clamp(orig_b * (1.0 - op) + bv * op, 0.0, 255.0));
+        let na = u32(clamp(orig_a * (1.0 - op) + 255.0 * op, 0.0, 255.0));
+        output[idx] = nr | (ng << 8u) | (nb << 16u) | (na << 24u);
+    } else {
+        output[idx] = v;
+    }
+}
+";
+
+const SHADER_CHROMATIC_ABERRATION: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    red_shift: f32,
+    blue_shift: f32,
+    center_x: f32,
+    center_y: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = idx % w;
+    let y = idx / w;
+
+    let cx = params.center_x * f32(w);
+    let cy = params.center_y * f32(h);
+    let dx = f32(x) - cx;
+    let dy = f32(y) - cy;
+    let dist = sqrt(dx * dx + dy * dy);
+    let max_dist = max(sqrt(cx * cx + cy * cy), 1.0);
+    let norm_dist = dist / max_dist;
+
+    // Red channel: sample shifted
+    let r_scale = 1.0 + params.red_shift * norm_dist / max_dist;
+    let r_sx = clamp(i32(round(cx + dx * r_scale)), 0, i32(w) - 1);
+    let r_sy = clamp(i32(round(cy + dy * r_scale)), 0, i32(h) - 1);
+    let r_pixel = input[u32(r_sy) * w + u32(r_sx)];
+    let r_val = r_pixel & 0xFFu;
+
+    // Green channel: original position
+    let g_pixel = input[idx];
+    let g_val = (g_pixel >> 8u) & 0xFFu;
+    let a_val = g_pixel >> 24u;
+
+    // Blue channel: sample shifted
+    let b_scale = 1.0 + params.blue_shift * norm_dist / max_dist;
+    let b_sx = clamp(i32(round(cx + dx * b_scale)), 0, i32(w) - 1);
+    let b_sy = clamp(i32(round(cy + dy * b_scale)), 0, i32(h) - 1);
+    let b_pixel = input[u32(b_sy) * w + u32(b_sx)];
+    let b_val = (b_pixel >> 16u) & 0xFFu;
+
+    output[idx] = r_val | (g_val << 8u) | (b_val << 16u) | (a_val << 24u);
 }
 ";

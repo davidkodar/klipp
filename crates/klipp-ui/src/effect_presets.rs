@@ -373,6 +373,30 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::Equalize { strength: 0.3 });
         self.bi("equalize", "Strong", "Strong contrast enhancement",
             klipp_effects::BuiltinEffect::Equalize { strength: 0.7 });
+
+        // ── Letterbox ─────────────────────────────────────────
+        self.bi("letterbox", "CinemaScope 2.39:1", "Anamorphic widescreen matte",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 });
+        self.bi("letterbox", "Theatrical 1.85:1", "Standard theatrical widescreen",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 1.85, bar_color: 0, opacity: 1.0 });
+        self.bi("letterbox", "Classic TV 4:3", "Pillarbox for 4:3 content",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 1.333, bar_color: 0, opacity: 1.0 });
+        self.bi("letterbox", "Widescreen 16:9", "Standard HD widescreen",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 1.778, bar_color: 0, opacity: 1.0 });
+        self.bi("letterbox", "IMAX 1.43:1", "IMAX original aspect ratio",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 1.43, bar_color: 0, opacity: 1.0 });
+        self.bi("letterbox", "Ultra Panavision 2.76:1", "Ultra-wide anamorphic",
+            klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 2.76, bar_color: 0, opacity: 1.0 });
+
+        // ── Chromatic Aberration ──────────────────────────────
+        self.bi("chromatic_aberration", "Subtle Fringe", "Light edge fringing",
+            klipp_effects::BuiltinEffect::ChromaticAberration { red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5 });
+        self.bi("chromatic_aberration", "Vintage Lens", "Classic imperfect lens",
+            klipp_effects::BuiltinEffect::ChromaticAberration { red_shift: 4.0, blue_shift: -4.0, center_x: 0.5, center_y: 0.5 });
+        self.bi("chromatic_aberration", "Heavy Aberration", "Strong RGB separation",
+            klipp_effects::BuiltinEffect::ChromaticAberration { red_shift: 8.0, blue_shift: -6.0, center_x: 0.5, center_y: 0.5 });
+        self.bi("chromatic_aberration", "Anamorphic Edge", "Asymmetric lens character",
+            klipp_effects::BuiltinEffect::ChromaticAberration { red_shift: 3.0, blue_shift: -5.0, center_x: 0.5, center_y: 0.5 });
     }
 
     fn bi(&mut self, key: &str, name: &str, desc: &str, effect: klipp_effects::BuiltinEffect) {
@@ -424,6 +448,8 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::RadialBlur { .. } => "radial_blur",
         klipp_effects::BuiltinEffect::Levels { .. } => "levels",
         klipp_effects::BuiltinEffect::Equalize { .. } => "equalize",
+        klipp_effects::BuiltinEffect::Letterbox { .. } => "letterbox",
+        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "chromatic_aberration",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
     }
 }

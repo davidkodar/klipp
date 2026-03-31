@@ -309,6 +309,26 @@ pub enum BuiltinEffect {
         /// Strength of equalization (0-1, default 1.0)
         strength: f32,
     },
+    /// Letterbox: aspect ratio matte overlay (bars on top/bottom or sides).
+    Letterbox {
+        /// Target aspect ratio (e.g., 2.39 for CinemaScope, 1.85 for theatrical)
+        aspect_ratio: f32,
+        /// Bar color: 0=black (default), 1=white
+        bar_color: u32,
+        /// Bar opacity (0.0 transparent - 1.0 fully opaque, default 1.0)
+        opacity: f32,
+    },
+    /// Chromatic Aberration: radial RGB channel separation simulating lens fringing.
+    ChromaticAberration {
+        /// Red channel shift amount (pixels, negative = inward, positive = outward)
+        red_shift: f32,
+        /// Blue channel shift amount (pixels)
+        blue_shift: f32,
+        /// Center X (0.0-1.0, default 0.5)
+        center_x: f32,
+        /// Center Y (0.0-1.0, default 0.5)
+        center_y: f32,
+    },
     /// Speed Ramp: GPU-accelerated retiming with frame blending.
     /// Changes playback speed with smooth interpolation between frames.
     SpeedRamp {
@@ -449,6 +469,12 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::Equalize { strength } => {
             apply_equalize(rgba, *strength)
+        }
+        BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
+            apply_letterbox(rgba, width, height, *aspect_ratio, *bar_color, *opacity)
+        }
+        BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+            apply_chromatic_aberration(rgba, width, height, *red_shift, *blue_shift, *center_x, *center_y)
         }
         BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is handled at the engine level (frame queue + GPU blend),
@@ -1087,6 +1113,91 @@ fn apply_gamma(mut rgba: Vec<u8>, gamma: f32) -> Vec<u8> {
     rgba
 }
 
+fn apply_letterbox(mut rgba: Vec<u8>, width: u32, height: u32, aspect_ratio: f32, bar_color: u32, opacity: f32) -> Vec<u8> {
+    if aspect_ratio <= 0.0 || opacity <= 0.0 {
+        return rgba;
+    }
+    let frame_aspect = width as f32 / height as f32;
+    let opacity = opacity.clamp(0.0, 1.0);
+    let bar_val = if bar_color != 0 { 255u8 } else { 0u8 };
+
+    let mut bar_height = 0.0f32;
+    let mut bar_width = 0.0f32;
+    if frame_aspect > aspect_ratio {
+        // Frame wider than target: pillarbox (bars on sides)
+        let visible_w = height as f32 * aspect_ratio;
+        bar_width = (width as f32 - visible_w) / 2.0;
+    } else {
+        // Frame taller than target: letterbox (bars top/bottom)
+        let visible_h = width as f32 / aspect_ratio;
+        bar_height = (height as f32 - visible_h) / 2.0;
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            let in_bar = (y as f32) < bar_height || (y as f32) >= height as f32 - bar_height
+                || (x as f32) < bar_width || (x as f32) >= width as f32 - bar_width;
+            if in_bar {
+                let idx = (y * width + x) as usize * 4;
+                let orig_r = rgba[idx] as f32;
+                let orig_g = rgba[idx + 1] as f32;
+                let orig_b = rgba[idx + 2] as f32;
+                rgba[idx] = (orig_r * (1.0 - opacity) + bar_val as f32 * opacity).clamp(0.0, 255.0) as u8;
+                rgba[idx + 1] = (orig_g * (1.0 - opacity) + bar_val as f32 * opacity).clamp(0.0, 255.0) as u8;
+                rgba[idx + 2] = (orig_b * (1.0 - opacity) + bar_val as f32 * opacity).clamp(0.0, 255.0) as u8;
+                // Alpha: blend toward opaque
+                let orig_a = rgba[idx + 3] as f32;
+                rgba[idx + 3] = (orig_a * (1.0 - opacity) + 255.0 * opacity).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    rgba
+}
+
+fn apply_chromatic_aberration(rgba: Vec<u8>, width: u32, height: u32, red_shift: f32, blue_shift: f32, center_x: f32, center_y: f32) -> Vec<u8> {
+    if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
+        return rgba;
+    }
+    let w = width as i32;
+    let h = height as i32;
+    let cx = center_x * width as f32;
+    let cy = center_y * height as f32;
+    let max_dist = (cx * cx + cy * cy).sqrt().max(1.0);
+
+    let mut out = rgba.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let norm_dist = dist / max_dist;
+
+            // Red channel: shifted
+            let r_scale = 1.0 + red_shift * norm_dist / max_dist;
+            let r_sx = (cx + dx * r_scale).round() as i32;
+            let r_sy = (cy + dy * r_scale).round() as i32;
+            let r_sx = r_sx.clamp(0, w - 1) as usize;
+            let r_sy = r_sy.clamp(0, h - 1) as usize;
+            let r_idx = (r_sy * width as usize + r_sx) * 4;
+
+            // Blue channel: shifted
+            let b_scale = 1.0 + blue_shift * norm_dist / max_dist;
+            let b_sx = (cx + dx * b_scale).round() as i32;
+            let b_sy = (cy + dy * b_scale).round() as i32;
+            let b_sx = b_sx.clamp(0, w - 1) as usize;
+            let b_sy = b_sy.clamp(0, h - 1) as usize;
+            let b_idx = (b_sy * width as usize + b_sx) * 4;
+
+            let dst_idx = (y as usize * width as usize + x as usize) * 4;
+            out[dst_idx] = rgba[r_idx];         // R from shifted
+            // G stays from original position (already correct in clone)
+            out[dst_idx + 2] = rgba[b_idx];     // B from shifted
+            // Alpha from original
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1312,5 +1423,43 @@ mod tests {
         // gamma=2.0 → pow(0.502, 0.5) ≈ 0.708 → ~181
         assert!(result[0] > 170 && result[0] < 190, "r={}", result[0]);
         assert_eq!(result[3], 255);
+    }
+
+    #[test]
+    fn test_letterbox_passthrough() {
+        // 16:9 frame with 16:9 target → no bars
+        let rgba = vec![128, 64, 32, 255].repeat(16);
+        let result = apply_letterbox(rgba.clone(), 4, 4, 1.0, 0, 1.0);
+        // aspect ratio 1.0 on a 4x4 frame → no bars
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_letterbox_adds_bars() {
+        // 4x4 frame (aspect 1.0) with target 2.0 → should add bars top/bottom
+        let rgba = vec![128, 128, 128, 255].repeat(16);
+        let result = apply_letterbox(rgba, 4, 4, 2.0, 0, 1.0);
+        // Top row (y=0) should be black with letterbox
+        assert_eq!(result[0], 0); // first pixel R
+        assert_eq!(result[1], 0); // first pixel G
+        assert_eq!(result[2], 0); // first pixel B
+    }
+
+    #[test]
+    fn test_chromatic_aberration_passthrough() {
+        let rgba = vec![128, 64, 32, 255].repeat(16);
+        let result = apply_chromatic_aberration(rgba.clone(), 4, 4, 0.0, 0.0, 0.5, 0.5);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn test_chromatic_aberration_shifts() {
+        // With non-zero shift, at least some pixels should differ from original
+        let rgba = vec![200, 100, 50, 255, 50, 100, 200, 255,
+                        100, 200, 50, 255, 50, 50, 50, 255];
+        let result = apply_chromatic_aberration(rgba.clone(), 2, 2, 5.0, -5.0, 0.5, 0.5);
+        // At least one pixel should differ
+        let differs = rgba.chunks_exact(4).zip(result.chunks_exact(4)).any(|(a, b)| a != b);
+        assert!(differs, "expected some pixels to be shifted");
     }
 }

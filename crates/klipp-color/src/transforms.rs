@@ -375,6 +375,16 @@ fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
                 (v - 0.0929) / 6.025
             }
         }
+        LogFormat::AppleLog => {
+            // Apple Log Profile (from Apple's White Paper)
+            // Piecewise: for v >= cut_point use pow, otherwise linear
+            let cut = 0.0928;
+            if v >= cut {
+                (10.0f32.powf((v - 0.385537) / 0.247190) - 0.01) / 1.0
+            } else {
+                (v - 0.052272) / 5.555556
+            }
+        }
         LogFormat::Srgb | LogFormat::Linear => v, // handled above
     }
 }

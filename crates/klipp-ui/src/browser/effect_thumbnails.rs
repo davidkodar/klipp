@@ -381,6 +381,16 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::Equalize { .. } => {
             klipp_effects::BuiltinEffect::Equalize { strength: 1.0 }
         }
+        klipp_effects::BuiltinEffect::Letterbox { .. } => {
+            klipp_effects::BuiltinEffect::Letterbox {
+                aspect_ratio: 2.39, bar_color: 0, opacity: 1.0,
+            }
+        }
+        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => {
+            klipp_effects::BuiltinEffect::ChromaticAberration {
+                red_shift: 6.0, blue_shift: -6.0, center_x: 0.5, center_y: 0.5,
+            }
+        }
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is a temporal effect — no visual preview on a single frame.
             // Return identity (pass-through).

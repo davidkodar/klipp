@@ -65,6 +65,8 @@ pub enum LogFormat {
     FLog,
     /// DJI D-Log
     DJIDLog,
+    /// Apple Log (iPhone 15 Pro and later)
+    AppleLog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

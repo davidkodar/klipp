@@ -336,6 +336,24 @@ impl EffectRegistry {
                 grouping: "Color".into(),
             },
             EffectEntry {
+                name: "Letterbox".into(),
+                category: EffectCategory::Stylize,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Letterbox {
+                    aspect_ratio: 2.39, bar_color: 0, opacity: 1.0,
+                }),
+                source_label: "Built-in",
+                grouping: "Stylize".into(),
+            },
+            EffectEntry {
+                name: "Chromatic Aberration".into(),
+                category: EffectCategory::Stylize,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaticAberration {
+                    red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Stylize".into(),
+            },
+            EffectEntry {
                 name: "Speed Ramp".into(),
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::SpeedRamp {

@@ -831,6 +831,7 @@ impl InspectorPanel {
                     (LF::NLog, "Nikon N-Log"),
                     (LF::FLog, "Fuji F-Log"),
                     (LF::DJIDLog, "DJI D-Log"),
+                    (LF::AppleLog, "Apple Log"),
                 ];
                 let current_label = formats.iter()
                     .find(|(f, _)| *f == current_log)
@@ -1247,6 +1248,7 @@ impl InspectorPanel {
                         (LF::CanonLog, "Canon Log"), (LF::CanonLog3, "Canon Log 3"),
                         (LF::VLog, "Panasonic V-Log"), (LF::NLog, "Nikon N-Log"),
                         (LF::FLog, "Fuji F-Log"), (LF::DJIDLog, "DJI D-Log"),
+                        (LF::AppleLog, "Apple Log"),
                     ];
                     let current_label = formats.iter()
                         .find(|(f, _)| *f == current_log)
@@ -2009,6 +2011,8 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::RadialBlur { .. } => "Radial Blur",
         klipp_effects::BuiltinEffect::Levels { .. } => "Levels",
         klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
+        klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
+        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -2342,6 +2346,22 @@ fn show_builtin_effect_params(
         }
         klipp_effects::BuiltinEffect::Equalize { strength } => {
             track_slider!(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("Strength")));
+        }
+        klipp_effects::BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
+            track_slider!(ui.add(egui::Slider::new(aspect_ratio, 0.5..=4.0).text("Aspect Ratio")));
+            let mut bc_f = *bar_color as f32;
+            let r = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Color (0=Black, 1=White)"));
+            *bar_color = bc_f as u32;
+            if r.drag_started() { any_drag_started = true; }
+            if r.drag_stopped() { any_drag_stopped = true; }
+            changed |= r.changed();
+            track_slider!(ui.add(egui::Slider::new(opacity, 0.0..=1.0).text("Opacity")));
+        }
+        klipp_effects::BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+            track_slider!(ui.add(egui::Slider::new(red_shift, -20.0..=20.0).text("Red Shift")));
+            track_slider!(ui.add(egui::Slider::new(blue_shift, -20.0..=20.0).text("Blue Shift")));
+            track_slider!(ui.add(egui::Slider::new(center_x, 0.0..=1.0).text("Center X")));
+            track_slider!(ui.add(egui::Slider::new(center_y, 0.0..=1.0).text("Center Y")));
         }
     }
 
