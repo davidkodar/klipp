@@ -76,6 +76,14 @@ pub enum BlendMode {
     Multiply,
     Screen,
     Overlay,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion,
+    ColorDodge,
+    ColorBurn,
+    Darken,
+    Lighten,
 }
 
 /// Per-clip audio channel routing.

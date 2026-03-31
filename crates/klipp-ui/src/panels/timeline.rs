@@ -73,6 +73,8 @@ pub struct TimelinePanel {
     suppress_clip_context_menu: bool,
     /// Track height resize drag: (track_index, start_y, original_height)
     resizing_track: Option<(usize, f32, f32)>,
+    /// Marquee selection drag: start position in screen coords
+    marquee_start: Option<egui::Pos2>,
 }
 
 struct DragState {
@@ -1151,6 +1153,77 @@ impl TimelinePanel {
             }
 
             track_y += track_height;
+        }
+
+        // ── Marquee selection (drag on empty track space with Select tool) ──
+        let m_zoom = state.timeline_zoom;
+        let m_scroll = state.timeline_scroll_x;
+        if !self.embedded && state.active_tool == Tool::Select {
+            let pointer = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
+            let (pressed, down, released) = pointer;
+            let cur_pos = ui.input(|i| i.pointer.latest_pos());
+
+            // Start marquee: primary press with no existing drag operation
+            if pressed && self.marquee_start.is_none()
+                && self.dragging_clip.is_none() && self.trimming_clip.is_none()
+                && self.roll_trimming.is_none() && self.slipping_clip.is_none()
+                && self.sliding_clip.is_none() && self.resizing_track.is_none()
+            {
+                if let Some(pos) = cur_pos {
+                    // Only start if in the content area (not header) and not on a clip
+                    if pos.x > content_rect.left() && pos.y >= tracks_start_y - scroll_y {
+                        let on_clip = self.track_rects.iter().any(|(ti, _, tr)| {
+                            let clips = &state.sequence().tracks[*ti].clips;
+                            self.hit_test_clip_body(clips, &content_rect, tr, m_zoom, m_scroll,
+                                tr.height(), pos).is_some()
+                        });
+                        if !on_clip {
+                            self.marquee_start = Some(pos);
+                        }
+                    }
+                }
+            }
+
+            // Draw and update marquee during drag
+            if let Some(start) = self.marquee_start {
+                if down {
+                    if let Some(cur) = cur_pos {
+                        let marquee_rect = egui::Rect::from_two_pos(start, cur);
+                        // Draw selection rectangle
+                        ui.painter().rect_filled(
+                            marquee_rect, 2.0,
+                            egui::Color32::from_rgba_premultiplied(80, 130, 220, 30),
+                        );
+                        ui.painter().rect_stroke(
+                            marquee_rect, 2.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 220)),
+                        );
+
+                        // Collect clips intersecting the marquee
+                        let mut selected = Vec::new();
+                        for (ti, _, track_rect) in &self.track_rects {
+                            if marquee_rect.max.y < track_rect.top() || marquee_rect.min.y > track_rect.bottom() {
+                                continue; // marquee doesn't overlap this track
+                            }
+                            let th = track_rect.height();
+                            for clip in &state.sequence().tracks[*ti].clips {
+                                if clip.kind.is_gap() { continue; }
+                                let cr = Self::clip_screen_rect(clip, &content_rect, track_rect, m_zoom, m_scroll, th);
+                                if marquee_rect.intersects(cr) {
+                                    selected.push(clip.id);
+                                }
+                            }
+                        }
+                        state.selected_clips = selected;
+                        if let Some(first) = state.selected_clips.first().copied() {
+                            state.selected_clip = Some(first);
+                        }
+                    }
+                }
+                if released {
+                    self.marquee_start = None;
+                }
+            }
         }
 
         // ── Empty area below tracks: right-click to add new track ──
