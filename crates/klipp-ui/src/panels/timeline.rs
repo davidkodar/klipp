@@ -11,6 +11,17 @@ const RULER_HEIGHT: f32 = 24.0;
 const VIDEO_TRACK_HEIGHT: f32 = 50.0; // matches theme::TRACK_VIDEO_H
 const AUDIO_TRACK_HEIGHT: f32 = 48.0; // taller for visible waveforms
 const TEXT_TRACK_HEIGHT: f32 = 32.0;  // compact for title/subtitle tracks
+const MIN_TRACK_HEIGHT: f32 = 24.0;
+const MAX_TRACK_HEIGHT: f32 = 200.0;
+
+/// Get effective track height, respecting custom_height override.
+fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
+    track.custom_height.unwrap_or(match track.kind {
+        TrackKind::Audio => AUDIO_TRACK_HEIGHT,
+        TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
+        _ => VIDEO_TRACK_HEIGHT,
+    })
+}
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
@@ -60,6 +71,8 @@ pub struct TimelinePanel {
     clip_screen_rects: HashMap<ClipId, egui::Rect>,
     /// Suppress clip context menu when keyframe diamond right-click was handled
     suppress_clip_context_menu: bool,
+    /// Track height resize drag: (track_index, start_y, original_height)
+    resizing_track: Option<(usize, f32, f32)>,
 }
 
 struct DragState {
@@ -389,11 +402,7 @@ impl TimelinePanel {
             let mut pre_y = tracks_start_y;
             for ti in 0..track_count {
                 let tk = state.sequence().tracks[ti].kind;
-                let th = match tk {
-                    TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                    TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                    _ => VIDEO_TRACK_HEIGHT,
-                };
+                let th = effective_track_height(&state.sequence().tracks[ti]);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(content_rect.left(), pre_y),
                     egui::vec2(content_rect.width(), th),
@@ -406,11 +415,7 @@ impl TimelinePanel {
         for track_idx in 0..track_count {
             let track_kind = state.sequence().tracks[track_idx].kind;
             let track_name = state.sequence().tracks[track_idx].name.clone();
-            let track_height = match track_kind {
-                TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                _ => VIDEO_TRACK_HEIGHT,
-            };
+            let track_height = effective_track_height(&state.sequence().tracks[track_idx]);
 
             // Draw track header label and controls — skip when embedded
             if !self.embedded {
@@ -1080,6 +1085,51 @@ impl TimelinePanel {
                 }
             }
 
+            // ── Track height resize handle (bottom edge of header) ──
+            if !self.embedded {
+                let handle_h = 4.0;
+                let handle_rect = egui::Rect::from_min_size(
+                    egui::pos2(header_rect.left(), track_y + track_height - handle_h),
+                    egui::vec2(state.track_header_width, handle_h * 2.0), // slightly taller hit area
+                );
+                let handle_resp = ui.interact(
+                    handle_rect,
+                    egui::Id::new(("track_resize", track_idx)),
+                    egui::Sense::drag(),
+                );
+                if handle_resp.hovered() || handle_resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+                if handle_resp.drag_started() {
+                    self.resizing_track = Some((track_idx, handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0), track_height));
+                }
+                if handle_resp.dragged() {
+                    if let Some((ri, start_y, orig_h)) = self.resizing_track {
+                        if ri == track_idx {
+                            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                                let delta = pos.y - start_y;
+                                let new_h = (orig_h + delta).clamp(MIN_TRACK_HEIGHT, MAX_TRACK_HEIGHT);
+                                state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
+                                state.dirty = true;
+                            }
+                        }
+                    }
+                }
+                if handle_resp.drag_stopped() {
+                    self.resizing_track = None;
+                }
+                // Draw subtle resize line on hover
+                if handle_resp.hovered() || handle_resp.dragged() {
+                    painter.line_segment(
+                        [
+                            egui::pos2(header_rect.left() + 2.0, track_y + track_height - 1.0),
+                            egui::pos2(header_rect.right() - 2.0, track_y + track_height - 1.0),
+                        ],
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 160, 40)),
+                    );
+                }
+            }
+
             track_y += track_height;
         }
 
@@ -1705,11 +1755,7 @@ impl TimelinePanel {
                 // Find clip in sequence to get its rect
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = match track.kind {
-                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                            _ => VIDEO_TRACK_HEIGHT,
-                        };
+                        let track_height = effective_track_height(track);
                         // Find track_rect from track_rects cache
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left(); // approximation — content_rect not available here
@@ -1823,11 +1869,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = match track.kind {
-                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                            _ => VIDEO_TRACK_HEIGHT,
-                        };
+                        let track_height = effective_track_height(track);
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
@@ -1957,11 +1999,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_bh.clip_id) {
-                        let track_height = match track.kind {
-                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                            _ => VIDEO_TRACK_HEIGHT,
-                        };
+                        let track_height = effective_track_height(track);
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
@@ -2061,11 +2099,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
-                        let track_height = match track.kind {
-                            TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                            TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                            _ => VIDEO_TRACK_HEIGHT,
-                        };
+                        let track_height = effective_track_height(track);
                         if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
@@ -5778,6 +5812,17 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Track height
+                let has_custom_h = state.sequence().tracks.get(track_idx)
+                    .is_some_and(|t| t.custom_height.is_some());
+                if has_custom_h {
+                    if ui.button("Reset Track Height").clicked() {
+                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = None;
+                        state.dirty = true;
+                        ui.close_menu();
+                    }
+                }
+
                 ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
                 r.on_disabled_hover_text("(coming soon)");
@@ -7182,11 +7227,7 @@ impl TimelinePanel {
                                         Some(r) => r,
                                         None => continue,
                                     };
-                                    let other_h = match other_track.kind {
-                                        TrackKind::Audio => AUDIO_TRACK_HEIGHT,
-                                        TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
-                            _ => VIDEO_TRACK_HEIGHT,
-                                    };
+                                    let other_h = effective_track_height(other_track);
 
                                     for clip in &other_track.clips {
                                         if clip.kind.is_gap() { continue; }

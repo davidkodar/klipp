@@ -137,6 +137,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 visible: t.visible,
                 pan: t.pan,
                 locked: t.locked,
+                custom_height: t.custom_height,
                 transitions: t.transitions.iter().map(|tr| {
                     TransitionJson {
                         id: tr.id.to_string(),

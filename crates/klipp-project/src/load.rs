@@ -171,6 +171,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
             track.visible = t.visible;
             track.pan = t.pan;
             track.locked = t.locked;
+            track.custom_height = t.custom_height;
             track.transitions = t.transitions.iter().filter_map(|tr| {
                 let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
                 let kind = match tr.kind.as_str() {
@@ -181,6 +182,12 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "WipeDown" => klipp_timeline::TransitionKind::WipeDown,
                     "DipToBlack" => klipp_timeline::TransitionKind::DipToBlack,
                     "DipToWhite" => klipp_timeline::TransitionKind::DipToWhite,
+                    "PushLeft" => klipp_timeline::TransitionKind::PushLeft,
+                    "FilmDissolve" => klipp_timeline::TransitionKind::FilmDissolve,
+                    "BlurDissolve" => klipp_timeline::TransitionKind::BlurDissolve,
+                    "Flash" => klipp_timeline::TransitionKind::Flash,
+                    "Spin" => klipp_timeline::TransitionKind::Spin,
+                    "LightLeak" => klipp_timeline::TransitionKind::LightLeak,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

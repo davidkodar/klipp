@@ -299,6 +299,9 @@ pub struct Track {
     /// If this track is a Connected Storyline, its anchor on the primary.
     #[serde(default)]
     pub storyline_anchor: Option<MagneticAnchor>,
+    /// Custom track height in pixels. None = use default for track kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_height: Option<f32>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -325,6 +328,7 @@ impl Track {
             locked: false,
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
+            custom_height: None,
         }
     }
 

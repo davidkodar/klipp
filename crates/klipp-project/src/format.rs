@@ -99,6 +99,8 @@ pub struct TrackJson {
     pub pan: f32,
     #[serde(default)]
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_height: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
