@@ -3665,6 +3665,7 @@ impl PlaybackEngine {
             .unwrap()
             .get(&media_id)
             .map(|item| {
+                // 1. Proxy files (explicit user choice, highest priority)
                 if self.use_proxies {
                     if let Some(ref proxy_path) = item.proxy_path {
                         if item.proxy_ready && proxy_path.exists() {
@@ -3673,6 +3674,14 @@ impl PlaybackEngine {
                         }
                     }
                 }
+                // 2. Skim transcode (all-keyframe, fast seeking, auto-generated)
+                if let Some(ref skim_path) = item.skim_file {
+                    if skim_path.exists() {
+                        tracing::trace!("resolve_media_path: using skim for {}", item.filename);
+                        return skim_path.clone();
+                    }
+                }
+                // 3. Original source file
                 item.path.clone()
             })
     }
