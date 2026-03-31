@@ -119,6 +119,7 @@ impl ExportJob {
                         self.snapshot.width,
                         self.snapshot.height,
                         self.snapshot.fps,
+                        clip.source_rotation,
                     )?;
                     decoders.insert(clip.id, decoder);
                 }
@@ -386,6 +387,9 @@ mod tests {
                         node_graph: klipp_nodes::NodeGraph::default(),
                         effects: vec![],
                         builtin_effects: vec![],
+                        source_rotation: 0,
+                        stabilization_data: None,
+                        smoothed_trajectory: None,
                     }],
                     transitions: vec![],
                 },
@@ -403,6 +407,9 @@ mod tests {
                         node_graph: klipp_nodes::NodeGraph::default(),
                         effects: vec![],
                         builtin_effects: vec![],
+                        source_rotation: 0,
+                        stabilization_data: None,
+                        smoothed_trajectory: None,
                     }],
                     transitions: vec![],
                 },

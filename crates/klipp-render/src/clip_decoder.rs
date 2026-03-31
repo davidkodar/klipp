@@ -92,6 +92,8 @@ pub struct RenderDecoder {
     source_end_secs: f64,
     /// fps of the sequence — used for half-frame tolerance in skip logic.
     fps: f64,
+    /// Source rotation in degrees (0, 90, 180, 270) — applied after decode.
+    source_rotation: i32,
     demuxer_eof: bool,
     decoder_eof: bool,
     eof_sent: bool,
@@ -102,6 +104,7 @@ pub struct RenderDecoder {
 impl RenderDecoder {
     /// Open a decoder for a media file, seeking to `source_start_secs`.
     /// Tries CUDA NVDEC, then VAAPI, then software decode.
+    /// `source_rotation`: degrees (0, 90, 180, 270) to rotate frames after decode.
     pub fn open(
         path: &Path,
         source_start_secs: f64,
@@ -109,6 +112,7 @@ impl RenderDecoder {
         target_width: u32,
         target_height: u32,
         fps: f64,
+        source_rotation: i32,
     ) -> Result<Self, RenderError> {
         let mut format_ctx =
             ffmpeg_next::format::input(path).map_err(RenderError::Decode)?;
@@ -145,6 +149,14 @@ impl RenderDecoder {
 
         let decoder = codec_ctx.decoder().video().map_err(RenderError::Decode)?;
 
+        // For 90/270 rotation, swap the scale target so that after rotation
+        // the output matches (target_width, target_height).
+        let (scale_w, scale_h) = if source_rotation == 90 || source_rotation == 270 {
+            (target_height, target_width)
+        } else {
+            (target_width, target_height)
+        };
+
         // Software scaler: source format → RGBA at target resolution.
         // For HW decode, this is only used as fallback; the main path uses
         // download_hw_frame with raw sws for NV12→RGBA.
@@ -153,8 +165,8 @@ impl RenderDecoder {
             decoder.width(),
             decoder.height(),
             ffmpeg_next::format::Pixel::RGBA,
-            target_width,
-            target_height,
+            scale_w,
+            scale_h,
             ffmpeg_next::software::scaling::Flags::LANCZOS,
         )
         .map_err(RenderError::Decode)?;
@@ -192,6 +204,7 @@ impl RenderDecoder {
             skip_until_secs: source_start_secs,
             source_end_secs,
             fps,
+            source_rotation,
             demuxer_eof: false,
             decoder_eof: false,
             eof_sent: false,
@@ -290,28 +303,45 @@ impl RenderDecoder {
     }
 
     /// Convert a decoded frame to RGBA. Handles both HW and SW frames.
+    /// Applies source rotation (90/180/270) after decode when needed.
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
     ) -> Result<Vec<u8>, RenderError> {
-        if self.hw_accel != HwAccel::Software {
+        // For 90/270 rotation, scale to swapped dimensions first.
+        let (scale_w, scale_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
+            (self.target_height, self.target_width)
+        } else {
+            (self.target_width, self.target_height)
+        };
+
+        let rgba = if self.hw_accel != HwAccel::Software {
             // Try HW download path
             if let Some(rgba) = unsafe {
                 download_hw_frame(
                     decoded,
                     &mut self.hw_scaler,
-                    self.target_width,
-                    self.target_height,
+                    scale_w,
+                    scale_h,
                 )
             } {
-                return Ok(rgba);
+                rgba
+            } else {
+                // HW download failed — fall through to SW scaler
+                self.scale_frame_sw(decoded)?
             }
-            // HW download failed — fall through to SW scaler
-            // (frame might already be in CPU memory if HW decode returned SW format)
-        }
+        } else {
+            // Software path: use pre-created Lanczos scaler
+            self.scale_frame_sw(decoded)?
+        };
 
-        // Software path: use pre-created Lanczos scaler
-        self.scale_frame_sw(decoded)
+        // Apply source rotation if needed (phone/drone videos with container rotation metadata)
+        if self.source_rotation != 0 {
+            let (rotated, _rw, _rh) = rotate_rgba(&rgba, scale_w, scale_h, self.source_rotation);
+            Ok(rotated)
+        } else {
+            Ok(rgba)
+        }
     }
 
     /// Scale a decoded frame using the software scaler.
@@ -567,6 +597,151 @@ unsafe fn download_hw_frame(
     Some(rgba_data)
 }
 
+/// Rotate an RGBA frame by 0/90/180/270 degrees clockwise.
+/// Returns (rotated_data, new_width, new_height).
+fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32) {
+    match degrees {
+        90 => {
+            let nw = h;
+            let nh = w;
+            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = h - 1 - y;
+                    let dy = x;
+                    let dst = ((dy * nw + dx) * 4) as usize;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            (out, nw, nh)
+        }
+        180 => {
+            let mut out = vec![0u8; rgba.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = w - 1 - x;
+                    let dy = h - 1 - y;
+                    let dst = ((dy * w + dx) * 4) as usize;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            (out, w, h)
+        }
+        270 => {
+            let nw = h;
+            let nh = w;
+            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let dx = y;
+                    let dy = w - 1 - x;
+                    let dst = ((dy * nw + dx) * 4) as usize;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            (out, nw, nh)
+        }
+        _ => (rgba.to_vec(), w, h),
+    }
+}
+
+/// Decode a single frame from a media file at the given time, scaled to `max_width`.
+/// Used for RSC motion estimation (decodes adjacent frames at low resolution).
+/// Returns (rgba_data, width, height) or None on failure.
+pub(crate) fn decode_frame_at_size(
+    path: &Path,
+    seek_secs: f64,
+    max_width: u32,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let mut format_ctx = ffmpeg_next::format::input(path).ok()?;
+
+    let video_stream = format_ctx
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)?;
+    let stream_index = video_stream.index();
+
+    let codec_ctx =
+        ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters()).ok()?;
+
+    let mut decoder = codec_ctx.decoder().video().ok()?;
+    unsafe {
+        (*decoder.as_mut_ptr()).thread_count = 2;
+    }
+
+    if seek_secs > 0.1 {
+        let ts = (seek_secs * 1_000_000.0) as i64;
+        let _ = format_ctx.seek(ts, ..ts);
+    }
+
+    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+    let mut got_frame = false;
+
+    // Read packets until we get a video frame
+    loop {
+        let read_result = read_next_packet(&mut format_ctx);
+        match read_result {
+            Ok(packet) => {
+                if packet.stream() == stream_index {
+                    let _ = decoder.send_packet(&packet);
+                    if decoder.receive_frame(&mut decoded_frame).is_ok() {
+                        got_frame = true;
+                        break;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    if !got_frame {
+        return None;
+    }
+
+    let src_w = decoded_frame.width();
+    let src_h = decoded_frame.height();
+    let scale = (max_width as f64 / src_w as f64).min(1.0);
+    let dst_w = ((src_w as f64 * scale) as u32).max(1);
+    let dst_h = ((src_h as f64 * scale) as u32).max(1);
+
+    let mut scaler = ffmpeg_next::software::scaling::Context::get(
+        decoded_frame.format(),
+        src_w,
+        src_h,
+        ffmpeg_next::format::Pixel::RGBA,
+        dst_w,
+        dst_h,
+        ffmpeg_next::software::scaling::Flags::BILINEAR,
+    )
+    .ok()?;
+
+    let mut rgba_frame = ffmpeg_next::util::frame::Video::empty();
+    scaler.run(&decoded_frame, &mut rgba_frame).ok()?;
+
+    let width = rgba_frame.width() as usize;
+    let height = rgba_frame.height() as usize;
+    let linesize = rgba_frame.stride(0);
+    let expected_stride = width * 4;
+
+    let rgba = if linesize == expected_stride {
+        rgba_frame.data(0)[..expected_stride * height].to_vec()
+    } else {
+        let mut out = vec![0u8; expected_stride * height];
+        let src = rgba_frame.data(0);
+        for y in 0..height {
+            let src_offset = y * linesize;
+            let dst_offset = y * expected_stride;
+            out[dst_offset..dst_offset + expected_stride]
+                .copy_from_slice(&src[src_offset..src_offset + expected_stride]);
+        }
+        out
+    };
+
+    Some((rgba, dst_w, dst_h))
+}
+
 /// Read the next packet from the demuxer using raw FFI.
 fn read_next_packet(
     format_ctx: &mut ffmpeg_next::format::context::Input,
@@ -608,7 +783,7 @@ mod tests {
         let fps = 30.0;
         let duration_secs = 2.0;
         let mut dec =
-            RenderDecoder::open(&path, 0.0, duration_secs, 1920, 1080, fps).unwrap();
+            RenderDecoder::open(&path, 0.0, duration_secs, 1920, 1080, fps, 0).unwrap();
 
         println!("Decode mode: {}", dec.hw_accel_name());
 
@@ -638,7 +813,7 @@ mod tests {
         let fps = 30.0;
         let duration_secs = 2.0;
         let mut dec =
-            RenderDecoder::open(&path, 1.0, 1.0 + duration_secs, 1280, 720, fps).unwrap();
+            RenderDecoder::open(&path, 1.0, 1.0 + duration_secs, 1280, 720, fps, 0).unwrap();
 
         let mut count = 0u64;
         while let Ok(Some(_)) = dec.next_frame() {
@@ -660,7 +835,7 @@ mod tests {
         let fps = 30.0;
         let duration_secs = 0.5;
         let mut dec =
-            RenderDecoder::open(&path, 0.0, duration_secs, 640, 480, fps).unwrap();
+            RenderDecoder::open(&path, 0.0, duration_secs, 640, 480, fps, 0).unwrap();
 
         let mut count = 0u64;
         while let Ok(Some(_)) = dec.next_frame() {

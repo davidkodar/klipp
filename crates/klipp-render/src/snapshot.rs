@@ -1,6 +1,7 @@
 use crate::error::RenderError;
 use klipp_core::{ClipId, ExportSettings, RationalTime, TransitionId};
 use klipp_effects::BuiltinEffect;
+use klipp_effects::stabilization::{SmoothedTrajectory, StabilizationData};
 use klipp_media::MediaPool;
 use klipp_nodes::NodeGraph;
 use klipp_plugin::AppliedEffect;
@@ -64,6 +65,12 @@ pub struct ClipSnapshot {
     pub effects: Vec<AppliedEffect>,
     /// Built-in effects chain (GPU/CPU).
     pub builtin_effects: Vec<BuiltinEffect>,
+    /// Source rotation in degrees (0, 90, 180, 270) — from container metadata.
+    pub source_rotation: i32,
+    /// Pre-computed stabilization analysis data (frame transforms + trajectory).
+    pub stabilization_data: Option<StabilizationData>,
+    /// Smoothed trajectory with per-frame correction homographies.
+    pub smoothed_trajectory: Option<SmoothedTrajectory>,
 }
 
 #[derive(Clone)]
@@ -269,6 +276,9 @@ fn snapshot_clip(
         node_graph: clip.node_graph.clone(),
         effects: clip.effects.clone(),
         builtin_effects: clip.builtin_effects.clone(),
+        source_rotation: clip.source_rotation,
+        stabilization_data: clip.stabilization_data.clone(),
+        smoothed_trajectory: clip.smoothed_trajectory.clone(),
     })
 }
 
@@ -351,6 +361,7 @@ mod tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            source_rotation: 0,
         }
     }
 
@@ -409,6 +420,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let mut seq = make_sequence();
@@ -484,6 +499,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let mut seq = make_sequence();
@@ -543,6 +562,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let mut seq = make_sequence();
@@ -595,6 +618,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let pool = MediaPool::new();
@@ -650,6 +677,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let pool = MediaPool::new();
@@ -706,6 +737,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let clip_b = Clip {
@@ -743,6 +778,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let mut seq = make_sequence();
@@ -804,6 +843,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
         let clip_b = Clip {
             id: clip_b_id,
@@ -840,6 +883,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let transition = Transition {
@@ -907,6 +954,10 @@ mod tests {
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            audio_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
         };
 
         let mut seq = make_sequence();
