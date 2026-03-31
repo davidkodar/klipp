@@ -3,6 +3,7 @@ mod chroma_key;
 mod crop;
 pub mod gpu;
 mod light;
+pub mod nv12_gpu;
 mod opacity;
 mod sharpen;
 pub mod transform;

@@ -1062,6 +1062,16 @@ impl KlippApp {
                 Err(_) => break,
             }
         }
+        // Safety: if filmstrip_generating is stuck (thread died, channel broken),
+        // force-clear after 60 seconds of no completions
+        if self.state.filmstrip_generating
+            && self.state.filmstrip_queue.is_empty()
+            && self.state.filmstrip_in_progress.is_empty()
+        {
+            self.state.filmstrip_generating = false;
+            self.state.filmstrip_total_queued = 0;
+            self.state.filmstrip_completed = 0;
+        }
     }
 
     fn poll_effect_thumbnails(&mut self, ctx: &egui::Context) {
@@ -6357,29 +6367,26 @@ impl KlippApp {
                     continue;
                 }
                 AppCommand::BrowserSkimFrame { media_id, time_secs } => {
-                    // Decode a frame from the skim file at the given time
                     if let Some(item) = self.state.media_pool.get(media_id) {
-                        if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
-                            let path = skim_path.clone();
-                            let mid = *media_id;
-                            let t = *time_secs;
-                            let event_tx = self.proxy_event_tx.clone();
-                            std::thread::spawn(move || {
-                                match klipp_engine::generate_thumbnail_at_size(&path, t, 960) {
-                                    Ok((rgba, w, h)) => {
-                                        let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
-                                            media_id: mid,
-                                            rgba,
-                                            width: w,
-                                            height: h,
-                                        });
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!("Skim frame decode failed: {}", e);
-                                    }
-                                }
-                            });
-                        }
+                        // Prefer skim file (all keyframes, fast seek), fall back to source
+                        let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
+                            skim_path.clone()
+                        } else {
+                            item.path.clone()
+                        };
+                        let mid = *media_id;
+                        let t = *time_secs;
+                        let event_tx = self.proxy_event_tx.clone();
+                        std::thread::spawn(move || {
+                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&decode_path, t, 480) {
+                                let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
+                                    media_id: mid,
+                                    rgba,
+                                    width: w,
+                                    height: h,
+                                });
+                            }
+                        });
                     }
                     continue;
                 }

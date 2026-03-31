@@ -4188,13 +4188,15 @@ pub fn detect_rotation_from_path(path: &std::path::Path) -> i32 {
         .output()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse first valid rotation value
+        // Parse first valid rotation value.
+        // ffprobe reports how the video IS rotated; to correct it we negate.
         for line in stdout.lines() {
             let trimmed = line.trim();
             if let Ok(angle) = trimmed.parse::<f64>() {
                 let int_angle = angle.round() as i32;
                 if int_angle != 0 {
-                    return ((int_angle % 360) + 360) % 360;
+                    let correction = ((-int_angle % 360) + 360) % 360;
+                    return correction;
                 }
             }
         }
@@ -4629,12 +4631,31 @@ pub fn generate_filmstrip_incremental(
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
+    let rotation = {
+        let r = detect_rotation(&format_ctx, stream_index);
+        if r != 0 { r } else { detect_rotation_from_path(path) }
+    };
 
     let src_w = decoder.width();
     let src_h = decoder.height();
-    let aspect = src_w as f64 / src_h.max(1) as f64;
-    let dst_h = target_height;
-    let dst_w = (dst_h as f64 * aspect).round() as u32;
+    // For rotated video (90/270), the final display is portrait.
+    // We decode at dimensions that, after rotation, give us the target height.
+    let (decode_w, decode_h, final_w, final_h) = if rotation == 90 || rotation == 270 {
+        // After rotation, width becomes height and vice versa.
+        // Final: target_height tall, width proportional to portrait aspect.
+        let aspect = src_h as f64 / src_w.max(1) as f64; // portrait aspect
+        let fh = target_height;
+        let fw = (fh as f64 * aspect).round() as u32;
+        // Decode at swapped dims so rotation produces fw × fh
+        (fh, fw, fw, fh)
+    } else {
+        let aspect = src_w as f64 / src_h.max(1) as f64;
+        let fh = target_height;
+        let fw = (fh as f64 * aspect).round() as u32;
+        (fw, fh, fw, fh)
+    };
+    let dst_w = decode_w;
+    let dst_h = decode_h;
 
     let mut sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
     let mut count = 0;
@@ -4687,8 +4708,13 @@ pub fn generate_filmstrip_incremental(
             continue;
         }
 
-        if let Some(rgba) = frame_to_rgba(&decoded_frame, dst_w, dst_h, is_hw, &mut sws_cache) {
-            on_frame(seek_secs, rgba, dst_w, dst_h);
+        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache) {
+            if rotation != 0 {
+                let (rotated, rw, rh) = rotate_rgba(&rgba, decode_w, decode_h, rotation);
+                on_frame(seek_secs, rotated, rw, rh);
+            } else {
+                on_frame(seek_secs, rgba, final_w, final_h);
+            }
             count += 1;
         }
     }

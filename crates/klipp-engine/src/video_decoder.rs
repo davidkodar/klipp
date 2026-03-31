@@ -279,9 +279,14 @@ fn playback_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
 
 /// Download a hardware surface frame (CUDA or VAAPI) to CPU, then convert+downscale to RGBA.
 /// Uses raw FFI to avoid format enum mismatches between ffmpeg-next and system ffmpeg.
+///
+/// When `gpu_converter` is available and the transferred frame is NV12, uses the GPU compute
+/// shader for YUV→RGBA conversion + resize (much faster than CPU swscale). Falls back to
+/// swscale for non-NV12 formats (e.g. P010) or when the GPU converter is unavailable.
 unsafe fn download_hw_frame(
     hw_frame: &ffmpeg_next::frame::Video,
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
+    gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
 ) -> Option<(Vec<u8>, u32, u32)> {
     use ffmpeg_next::ffi::*;
 
@@ -308,7 +313,27 @@ unsafe fn download_hw_frame(
     let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
     let (out_w, out_h) = playback_dimensions(src_w, src_h);
 
-    // Create or reuse sws context — converts AND downscales in one pass
+    // Try GPU NV12→RGBA path: only for NV12 format with an available converter
+    if sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
+        if let Some(converter) = gpu_converter {
+            let y_stride = (*sw_frame).linesize[0] as u32;
+            let uv_stride = (*sw_frame).linesize[1] as u32;
+            let y_data_len = (y_stride * src_h) as usize;
+            let uv_data_len = (uv_stride * (src_h / 2)) as usize;
+
+            let y_data = std::slice::from_raw_parts((*sw_frame).data[0], y_data_len);
+            let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
+
+            let rgba_data = converter.convert_nv12_to_rgba(
+                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h,
+            );
+
+            av_frame_free(&mut (sw_frame as *mut _));
+            return Some((rgba_data, out_w, out_h));
+        }
+    }
+
+    // Fallback: CPU swscale path (handles NV12 without GPU, P010, and other formats)
     let sws = sws_getCachedContext(
         sws_ctx.unwrap_or(std::ptr::null_mut()),
         src_w as i32,
@@ -460,6 +485,23 @@ fn decode_thread_main(
     // Scaler for HW downloaded frames (raw sws context, created lazily)
     let mut hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
 
+    // GPU NV12→RGBA converter — own wgpu device on the decode thread.
+    // Only created for HW decode paths (CUDA/VAAPI produce NV12 frames).
+    let mut gpu_nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter> = if hw_accel != HwAccel::Software {
+        match klipp_effects::nv12_gpu::GpuNv12Converter::new() {
+            Some(c) => {
+                info!("decode_thread: GPU NV12→RGBA converter active");
+                Some(c)
+            }
+            None => {
+                info!("decode_thread: GPU NV12 converter unavailable, using CPU swscale");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let tb_num = time_base.numerator() as f64;
     let tb_den = time_base.denominator() as f64;
     let tb_f64 = if tb_den != 0.0 { tb_num / tb_den } else { 1.0 / 90000.0 };
@@ -603,7 +645,7 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler) }
+                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut()) }
             } else {
                 convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us)
             };
