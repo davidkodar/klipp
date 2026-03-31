@@ -10595,6 +10595,7 @@ impl KlippApp {
                 if let Some(item) = self.state.media_pool.get_mut(&media_id) {
                     item.skim_file = Some(skim_path);
                 }
+                self.sync_media_pool_to_engine();
                 return;
             }
 
@@ -10759,6 +10760,7 @@ impl KlippApp {
                     if let Some(item) = self.state.media_pool.get_mut(&media_id) {
                         item.skim_file = Some(path.clone());
                     }
+                    self.sync_media_pool_to_engine();
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
