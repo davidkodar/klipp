@@ -1260,6 +1260,7 @@ impl ViewerPanel {
                                     MaskHandle::Center => egui::CursorIcon::Move,
                                     MaskHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
                                     MaskHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                                    MaskHandle::BezierPoint(_) => egui::CursorIcon::Move,
                                 });
                             }
                         }
@@ -1312,6 +1313,7 @@ impl ViewerPanel {
                                     MaskHandle::Center => egui::CursorIcon::Move,
                                     MaskHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
                                     MaskHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                                    MaskHandle::BezierPoint(_) => egui::CursorIcon::Move,
                                 });
                             }
                         }
@@ -1347,6 +1349,51 @@ impl ViewerPanel {
                             }
                             if resp.hovered() || resp.dragged() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                        }
+                    }
+                }
+                // Bezier freeform path
+                klipp_core::MaskShape::Bezier { points } => {
+                    if points.len() >= 2 {
+                        let screen_pts: Vec<egui::Pos2> = points.iter().map(|(px, py)| {
+                            egui::pos2(
+                                image_rect.left() + px * image_rect.width(),
+                                image_rect.top() + py * image_rect.height(),
+                            )
+                        }).collect();
+                        // Draw path edges
+                        for i in 0..screen_pts.len() {
+                            let a = screen_pts[i];
+                            let b = screen_pts[(i + 1) % screen_pts.len()];
+                            ui.painter().line_segment([a, b], egui::Stroke::new(1.5, outline_color));
+                        }
+                        // Draw control point handles
+                        if state.viewer_mask_drag.is_none() {
+                            for (pi, sp) in screen_pts.iter().enumerate() {
+                                let handle_rect = egui::Rect::from_center_size(*sp, egui::vec2(12.0, 12.0));
+                                let resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
+                                let color = if resp.hovered() || resp.dragged() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    outline_color
+                                };
+                                ui.painter().circle_filled(*sp, 4.0, color);
+                                if resp.drag_started() {
+                                    if let Some(pos) = resp.interact_pointer_pos() {
+                                        state.viewer_mask_drag = Some(ViewerMaskDrag {
+                                            clip_id,
+                                            node_id,
+                                            mask_index: mask_idx,
+                                            handle: MaskHandle::BezierPoint(pi),
+                                            initial_shape: mask.shape.clone(),
+                                            drag_start_pos: pos,
+                                        });
+                                    }
+                                }
+                                if resp.hovered() || resp.dragged() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                                }
                             }
                         }
                     }
@@ -1419,6 +1466,16 @@ impl ViewerPanel {
                             end_x: ((current_pos.x - image_rect.min.x) / iw).clamp(0.0, 1.0),
                             end_y: ((current_pos.y - image_rect.min.y) / ih).clamp(0.0, 1.0),
                         }
+                    }
+                    (klipp_core::MaskShape::Bezier { points }, MaskHandle::BezierPoint(idx)) => {
+                        let mut new_points = points.clone();
+                        if idx < new_points.len() {
+                            new_points[idx] = (
+                                ((current_pos.x - image_rect.min.x) / iw).clamp(0.0, 1.0),
+                                ((current_pos.y - image_rect.min.y) / ih).clamp(0.0, 1.0),
+                            );
+                        }
+                        klipp_core::MaskShape::Bezier { points: new_points }
                     }
                     _ => initial_shape.clone(),
                 };

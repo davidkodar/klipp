@@ -120,6 +120,12 @@ pub enum MaskShape {
         end_x: f32,
         end_y: f32,
     },
+    /// Freeform bezier path mask. Points are in normalized coords (0-1).
+    /// The path is closed (last point connects to first).
+    Bezier {
+        /// Control points as (x, y) pairs in normalized coordinates.
+        points: Vec<(f32, f32)>,
+    },
 }
 
 /// A single mask with shape, feathering, and blend controls.

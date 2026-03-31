@@ -39,6 +39,8 @@ pub enum MaskHandle {
     Center,
     EdgeRight,
     EdgeBottom,
+    /// Bezier control point by index.
+    BezierPoint(usize),
 }
 
 /// State for viewer mask handle interaction

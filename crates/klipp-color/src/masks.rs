@@ -68,7 +68,6 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
             outside + inside
         }
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
-            // Distance along the gradient direction, normalized
             let gx = end_x - start_x;
             let gy = (end_y - start_y) / aspect;
             let glen = (gx * gx + gy * gy).sqrt();
@@ -76,8 +75,43 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
             let dx = nx - start_x;
             let dy = (ny - start_y) / aspect;
             let t = (dx * gx + dy * gy) / (glen * glen);
-            // t=0 at start (inside), t=1 at end (outside)
-            t - 0.5 // centered: negative in first half, positive in second
+            t - 0.5
+        }
+        MaskShape::Bezier { points } => {
+            if points.len() < 3 { return 1.0; } // need at least a triangle
+            // Signed distance to closed polygon (winding number for inside/outside)
+            let px = nx;
+            let py = ny / aspect;
+            let n = points.len();
+            let mut min_dist_sq = f32::MAX;
+            let mut winding = 0i32;
+            for i in 0..n {
+                let (ax, ay_raw) = points[i];
+                let (bx, by_raw) = points[(i + 1) % n];
+                let ay = ay_raw / aspect;
+                let by = by_raw / aspect;
+                // Closest point on segment to (px, py)
+                let ex = bx - ax;
+                let ey = by - ay;
+                let dx = px - ax;
+                let dy = py - ay;
+                let t = ((dx * ex + dy * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+                let cx = ax + t * ex - px;
+                let cy = ay + t * ey - py;
+                min_dist_sq = min_dist_sq.min(cx * cx + cy * cy);
+                // Winding number contribution
+                if ay <= py {
+                    if by > py {
+                        let cross = ex * (py - ay) - ey * (px - ax);
+                        if cross > 0.0 { winding += 1; }
+                    }
+                } else if by <= py {
+                    let cross = ex * (py - ay) - ey * (px - ax);
+                    if cross < 0.0 { winding -= 1; }
+                }
+            }
+            let dist = min_dist_sq.sqrt();
+            if winding != 0 { -dist } else { dist } // negative inside
         }
     }
 }
