@@ -290,7 +290,7 @@ impl BrowserPanel {
         cmds
     }
 
-    fn show_files_tab(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
+    fn show_files_tab(&mut self, ui: &mut egui::Ui, _state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
 

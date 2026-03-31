@@ -4364,7 +4364,7 @@ pub fn generate_thumbnail_at_size(
     let src_h = decoded_frame.height();
 
     // For rotated video (90/270), the effective dimensions are swapped
-    let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
+    let (eff_w, _eff_h) = if rotation == 90 || rotation == 270 {
         (src_h, src_w)
     } else {
         (src_w, src_h)
@@ -4663,8 +4663,8 @@ pub fn generate_filmstrip_incremental(
         let fw = (fh as f64 * aspect).round() as u32;
         (fw, fh, fw, fh)
     };
-    let dst_w = decode_w;
-    let dst_h = decode_h;
+    let _dst_w = decode_w;
+    let _dst_h = decode_h;
 
     let mut sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
     let mut count = 0;
