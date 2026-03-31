@@ -435,6 +435,7 @@ impl KlippApp {
                     file_modified_at,
                     media_created_at,
                     colour_space,
+                    source_rotation,
                 } => {
                     let filename = path
                         .file_name()
@@ -490,10 +491,15 @@ impl KlippApp {
                         colour_space: klipp_media::ColourSpace::from_u8(colour_space),
                         needs_reprobe: false,
                         log_format: Default::default(),
+                        source_rotation,
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
                     };
+
+                    if source_rotation != 0 {
+                        tracing::info!("Media {:?} has source rotation: {}°", path.file_name().unwrap_or_default(), source_rotation);
+                    }
 
                     self.state.media_pool.add(media_item.clone());
                     self.state.history.push(crate::history::HistoryEntry {
@@ -1733,7 +1739,14 @@ impl KlippApp {
                             let video_track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                                 .position(|t| t.kind == klipp_timeline::TrackKind::Video);
                             let audio_track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
+                                .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                                .or_else(|| {
+                                    // Auto-create audio track if none exists
+                                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                    let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+                                    seq.add_audio_track(format!("Audio {}", audio_count + 1));
+                                    seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                                });
 
                             if let (Some(vi), Some(ai)) = (video_track_idx, audio_track_idx) {
                                 let video_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[vi].append_clip(*media_id, use_duration);
@@ -1743,6 +1756,7 @@ impl KlippApp {
 
                                 if let Some(vc) = self.state.sequences[self.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
                                     vc.linked_clip_id = Some(audio_clip_id);
+                                    vc.source_rotation = item.source_rotation;
                                 }
                                 if let Some(ac) = self.state.sequences[self.state.active_sequence_idx].tracks[ai].find_clip_mut(audio_clip_id) {
                                     ac.linked_clip_id = Some(video_clip_id);
@@ -1764,6 +1778,11 @@ impl KlippApp {
                             if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
                                 let clip_id = track.append_clip(*media_id, use_duration);
                                 apply_range(track, clip_id);
+                                if has_video {
+                                    if let Some(c) = track.find_clip_mut(clip_id) {
+                                        c.source_rotation = item.source_rotation;
+                                    }
+                                }
                                 self.state.selected_clip = Some(clip_id);
                                 self.sync_sequence_to_engine();
                                 self.state.dirty = true;
@@ -2635,6 +2654,18 @@ impl KlippApp {
                     self.state.dirty = true;
                     continue;
                 }
+                AppCommand::SetSourceRotation { clip_id, degrees } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    for track in &mut seq.tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.source_rotation = *degrees;
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetClipLogFormat { clip_id, log_format } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -2676,12 +2707,16 @@ impl KlippApp {
                 // Global LUT — update UI state and forward to engine
                 AppCommand::LoadGlobalLut { ref path } => {
                     self.state.global_lut_path = Some(path.clone());
+                    self.state.global_lut_enabled = true;
                 }
                 AppCommand::ClearGlobalLut => {
                     self.state.global_lut_path = None;
                 }
                 AppCommand::SetGlobalLutOpacity(opacity) => {
                     self.state.global_lut_opacity = *opacity;
+                }
+                AppCommand::SetGlobalLutEnabled(enabled) => {
+                    self.state.global_lut_enabled = *enabled;
                 }
 
                 // Effects
@@ -4933,6 +4968,7 @@ impl KlippApp {
                         role: klipp_core::ClipRole::default(),
                         param_modifiers: std::collections::HashMap::new(),
                         speed: 1.0,
+                        source_rotation: 0,
                         audio_effects: Vec::new(),
                     };
                     // Apply baked-in title animation keyframes
@@ -5662,6 +5698,7 @@ impl KlippApp {
                                     role: clip.role,
                                     param_modifiers: clip.param_modifiers.clone(),
                                     speed: clip.speed,
+                                    source_rotation: clip.source_rotation,
                                     audio_effects: clip.audio_effects.clone(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
@@ -5788,6 +5825,7 @@ impl KlippApp {
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
+                                    source_rotation: 0,
                                     audio_effects: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
@@ -5869,6 +5907,7 @@ impl KlippApp {
                                     role: klipp_core::ClipRole::default(),
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
+                                    source_rotation: 0,
                                     audio_effects: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
@@ -6263,6 +6302,7 @@ impl KlippApp {
                         colour_space: Default::default(),
                         needs_reprobe: false,
                         log_format: Default::default(),
+                        source_rotation: 0,
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
@@ -6405,9 +6445,11 @@ impl KlippApp {
                         };
                         let mid = *media_id;
                         let t = *time_secs;
+                        let skim_res = self.prefs.playback.skim_resolution;
                         let event_tx = self.proxy_event_tx.clone();
+                        self.state.skim_decode_in_flight = true;
                         std::thread::spawn(move || {
-                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&decode_path, t, 480) {
+                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&decode_path, t, skim_res) {
                                 let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
                                     media_id: mid,
                                     rgba,
@@ -7901,6 +7943,7 @@ impl KlippApp {
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
+                source_rotation: clip.source_rotation,
                 audio_effects: clip.audio_effects.clone(),
             };
             track.clips.insert(i + 1, right_clip);
@@ -8007,6 +8050,7 @@ impl KlippApp {
                 role: clip.role,
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
+                source_rotation: clip.source_rotation,
                 audio_effects: clip.audio_effects.clone(),
             };
             track.clips.insert(i + 1, right_clip);
@@ -8036,6 +8080,7 @@ impl KlippApp {
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
+            global_lut_enabled: self.state.global_lut_enabled,
             track_header_width: self.state.track_header_width,
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
@@ -8139,11 +8184,13 @@ impl KlippApp {
 
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
+                self.state.global_lut_enabled = color_settings.global_lut_enabled;
                 if let Some(ref lut_path) = color_settings.global_lut_path {
                     if lut_path.exists() {
                         self.state.global_lut_path = Some(lut_path.clone());
                         self.cmd_tx.send(AppCommand::LoadGlobalLut { path: lut_path.clone() }).ok();
                         self.cmd_tx.send(AppCommand::SetGlobalLutOpacity(color_settings.global_lut_opacity)).ok();
+                        self.cmd_tx.send(AppCommand::SetGlobalLutEnabled(color_settings.global_lut_enabled)).ok();
                     } else {
                         tracing::warn!("Global LUT not found, skipping: {:?}", lut_path);
                         self.state.global_lut_path = None;
@@ -8248,19 +8295,12 @@ impl KlippApp {
                     .media_pool
                     .all()
                     .filter(|item| !item.offline)
-                    .map(|item| {
-                        // Use skim file for engine decode if available (much lighter than 4K source)
-                        let engine_path = item.skim_file.as_ref()
-                            .filter(|p| p.exists())
-                            .cloned()
-                            .unwrap_or_else(|| item.path.clone());
-                        (item.id, item.path.clone(), engine_path, item.duration, item.has_audio)
-                    })
+                    .map(|item| (item.id, item.path.clone(), item.duration, item.has_audio))
                     .collect();
-                for (id, source_path, engine_path, duration, has_audio) in media_items {
-                    // Re-open decoders in the engine using skim file when available
+                for (id, source_path, duration, has_audio) in media_items {
+                    // Always use the original source for timeline playback (full quality + audio)
                     self.cmd_tx.send(AppCommand::LoadMediaFile {
-                        path: engine_path.clone(),
+                        path: source_path.clone(),
                         media_id: id,
                     }).ok();
                     self.spawn_thumbnail(id, source_path.clone(), duration);
@@ -9364,6 +9404,31 @@ impl eframe::App for KlippApp {
 
         // 1. Drain events from engine
         self.drain_events(ctx);
+        // If a skim decode just finished and there's a queued request, dispatch it immediately
+        if !self.state.skim_decode_in_flight {
+            if let Some((mid, time)) = self.state.skim_queued_request.take() {
+                if let Some(item) = self.state.media_pool.get(&mid) {
+                    let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
+                        skim_path.clone()
+                    } else {
+                        item.path.clone()
+                    };
+                    let skim_res = self.prefs.playback.skim_resolution;
+                    let event_tx = self.proxy_event_tx.clone();
+                    self.state.skim_decode_in_flight = true;
+                    std::thread::spawn(move || {
+                        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(&decode_path, time, skim_res) {
+                            let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
+                                media_id: mid,
+                                rgba,
+                                width: w,
+                                height: h,
+                            });
+                        }
+                    });
+                }
+            }
+        }
         self.drain_thumbnails();
         // Keep repainting while filmstrip is generating so timeline updates progressively
         if self.state.filmstrip_generating {
@@ -9451,6 +9516,7 @@ impl eframe::App for KlippApp {
                 let color = klipp_project::ColorSettings {
                     global_lut_path: self.state.global_lut_path.clone(),
                     global_lut_opacity: self.state.global_lut_opacity,
+                    global_lut_enabled: self.state.global_lut_enabled,
                     track_header_width: self.state.track_header_width,
                     auto_generate_filmstrips: self.state.project_auto_filmstrips,
                     auto_generate_skim: self.state.project_auto_skim,
@@ -10021,6 +10087,8 @@ impl eframe::App for KlippApp {
                             &mut self.state,
                             &self.theme,
                             &mut self.layout.active_browser_tab,
+                            &mut self.layout.files_pinned,
+                            &mut self.layout.files_split_ratio,
                         );
                         all_cmds.extend(cmds);
                         // Sync view mode to prefs if changed
@@ -10812,6 +10880,7 @@ impl KlippApp {
                 }
                 AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height } => {
                     self.state.browser_skim_pending = Some((media_id, rgba, width, height));
+                    self.state.skim_decode_in_flight = false;
                 }
                 AppEvent::MediaFileChanged { path, deleted } => {
                     // Find media item(s) matching this path

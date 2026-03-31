@@ -171,6 +171,10 @@ pub struct MediaItem {
     /// Camera log encoding format (for IDT conversion)
     #[serde(default)]
     pub log_format: klipp_core::LogFormat,
+    /// Source rotation in degrees (0, 90, 180, 270) from container metadata / display matrix.
+    /// Phone videos often have 90° or 270° rotation.
+    #[serde(default)]
+    pub source_rotation: i32,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,

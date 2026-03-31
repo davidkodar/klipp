@@ -244,6 +244,26 @@ impl PreferencesPanel {
         }
 
         ui.add_space(8.0);
+        ui.label("Skim resolution");
+        ui.add_space(4.0);
+
+        let resolutions: [(u32, &str); 4] = [
+            (240, "240p (fastest)"),
+            (480, "480p (default)"),
+            (720, "720p"),
+            (1080, "1080p (sharpest)"),
+        ];
+        for (res, label) in &resolutions {
+            if ui
+                .radio(prefs.playback.skim_resolution == *res, *label)
+                .clicked()
+            {
+                prefs.playback.skim_resolution = *res;
+                *dirty = true;
+            }
+        }
+
+        ui.add_space(8.0);
         ui.label(egui::RichText::new("Playback").strong().size(12.0));
         ui.add_space(4.0);
         if ui

@@ -86,6 +86,20 @@ klipp-app
 - **Plugins**: OpenFX 1.5
 - **Captions**: [whisper-rs](https://crates.io/crates/whisper-rs)
 
+## Bundled Assets & Third-Party Credits
+
+### LUTs (Color Look-Up Tables)
+
+Klipp ships with ~300 film emulation and cinematic LUTs for color grading:
+
+- **Film Emulation LUTs** — Derived from [G'MIC](https://gmic.eu/) film simulation presets, packaged by [YahiaAngelo/Film-Luts](https://github.com/YahiaAngelo/Film-Luts). Includes emulations of Kodak Portra, Tri-X, Fuji Velvia, Superia, Provia, Agfa, Polaroid, and many more. Licensed under **MIT**.
+
+- **Cinematic Blockbuster LUTs** — By [IRCGraphic](https://github.com/IRCGraphic/D-Cinelike-and-Normal-Blockbuster-LUTs). Cinematic color grades for video footage. Licensed under **CC0 1.0** (public domain).
+
+### Icons
+
+- **Phosphor Icons** — [phosphoricons.com](https://phosphoricons.com/). Licensed under **MIT**.
+
 ## License
 
 TBD

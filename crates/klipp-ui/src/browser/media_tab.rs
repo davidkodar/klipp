@@ -785,12 +785,14 @@ fn handle_hover_skim(
 
     if has_skim_file {
         // Layer 3: Request full-resolution frame from skim file
-        // Throttle: only request if no pending decode (avoid flooding with 60 requests/sec)
-        if state.browser_skim_pending.is_none() {
+        if !state.skim_decode_in_flight {
             cmds.push(AppCommand::BrowserSkimFrame {
                 media_id: item.id,
                 time_secs: skim_time,
             });
+        } else {
+            // Queue latest position so it's picked up when current decode finishes
+            state.skim_queued_request = Some((item.id, skim_time));
         }
     }
 

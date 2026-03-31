@@ -567,13 +567,20 @@ impl PlaybackEngine {
                     Ok(()) => info!("Loaded global LUT: {}", path.display()),
                     Err(e) => error!("Failed to load LUT {}: {}", path.display(), e),
                 }
+                self.regrade_cached_frame();
             }
             AppCommand::ClearGlobalLut => {
                 self.color_pipeline.clear_global_lut();
                 info!("Cleared global LUT");
+                self.regrade_cached_frame();
             }
             AppCommand::SetGlobalLutOpacity(opacity) => {
                 self.color_pipeline.global_lut_opacity = opacity;
+                self.regrade_cached_frame();
+            }
+            AppCommand::SetGlobalLutEnabled(enabled) => {
+                self.color_pipeline.enabled = enabled;
+                self.regrade_cached_frame();
             }
 
             AppCommand::SetTrackVolume { track_index, volume } => {
@@ -3326,8 +3333,9 @@ impl PlaybackEngine {
                 || !c.transform_scale_keyframes.is_empty()
                 || !c.transform_rotation_keyframes.is_empty()
                 || has_transform_modifiers;
+            let has_source_rotation = c.source_rotation != 0;
 
-            if has_transform_kf {
+            if has_transform_kf || has_source_rotation {
                 // Get current transform values (or defaults)
                 let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y) =
                     fx.iter().find_map(|e| match e {
@@ -3351,6 +3359,11 @@ impl PlaybackEngine {
                 }
                 if !c.transform_rotation_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::Rotation) {
                     rotation = eval_with_modifiers(&c.transform_rotation_keyframes, &c.param_modifiers, &klipp_core::ParamId::Rotation, clip_relative_secs, rotation, ectx);
+                }
+
+                // Apply source rotation from media metadata (phone videos)
+                if c.source_rotation != 0 {
+                    rotation += c.source_rotation as f32;
                 }
 
                 let new_transform = klipp_effects::BuiltinEffect::Transform {
@@ -3592,8 +3605,16 @@ impl PlaybackEngine {
         } else { rgba };
         let t4 = std::time::Instant::now();
 
-        // 4. Global color pipeline
-        let rgba = self.color_pipeline.process_frame(rgba, width, height);
+        // 4. Global color pipeline (GPU-accelerated 3D LUT when available)
+        let rgba = if self.color_pipeline.enabled {
+            if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                gpu.apply_3d_lut_gpu(rgba, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+            } else {
+                self.color_pipeline.process_frame(rgba, width, height)
+            }
+        } else {
+            rgba
+        };
         let t5 = std::time::Instant::now();
 
         // Store pre-grade frame in frame buffer for Before/After split
@@ -3674,18 +3695,8 @@ impl PlaybackEngine {
                         }
                     }
                 }
-                // 2. Skim transcode (all-keyframe, fast seeking, auto-generated)
-                if let Some(ref skim_path) = item.skim_file {
-                    if skim_path.exists() {
-                        tracing::info!("resolve_media_path: using SKIM for {} -> {:?}", item.filename, skim_path);
-                        return skim_path.clone();
-                    } else {
-                        tracing::warn!("resolve_media_path: skim_file set but missing: {:?}", skim_path);
-                    }
-                } else {
-                    tracing::info!("resolve_media_path: NO skim_file for {}, using source", item.filename);
-                }
-                // 3. Original source file
+                // Skim files are video-only (for browser hover preview) — never use for playback.
+                // Original source file:
                 item.path.clone()
             })
     }
@@ -3807,6 +3818,7 @@ impl PlaybackEngine {
                     file_modified_at,
                     media_created_at,
                     colour_space,
+                    source_rotation,
                 });
 
                 self.grab_first_frame();
@@ -4219,7 +4231,7 @@ pub fn detect_rotation_from_path(path: &std::path::Path) -> i32 {
 
 /// Rotate RGBA pixel buffer by 90, 180, or 270 degrees.
 /// Returns (new_rgba, new_width, new_height).
-fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32) {
+pub(crate) fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32) {
     match degrees {
         90 => {
             // 90° clockwise: new dimensions are (h, w)

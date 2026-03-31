@@ -375,6 +375,7 @@ pub enum AppCommand {
     LoadGlobalLut { path: PathBuf },
     ClearGlobalLut,
     SetGlobalLutOpacity(f32),
+    SetGlobalLutEnabled(bool),
 
     // Effects (OFX)
     AddEffect { clip_id: ClipId, plugin_name: String },
@@ -634,6 +635,9 @@ pub enum AppCommand {
     // Clip speed
     SetClipSpeed { clip_id: ClipId, speed: f64 },
 
+    // Source rotation override (0, 90, 180, 270 degrees)
+    SetSourceRotation { clip_id: ClipId, degrees: i32 },
+
     // Clip audio
     UpdateClipAudio {
         clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,
@@ -795,6 +799,7 @@ pub enum AppEvent {
         file_modified_at: Option<u64>,
         media_created_at: Option<u64>,
         colour_space: u8,
+        source_rotation: i32,
     },
     MediaLoadFailed {
         media_id: MediaId,

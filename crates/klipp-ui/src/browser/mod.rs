@@ -76,6 +76,8 @@ impl BrowserPanel {
         state: &mut AppState,
         theme: &KlippTheme,
         active_tab: &mut BrowserTab,
+        files_pinned: &mut bool,
+        files_split_ratio: &mut f32,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -107,9 +109,11 @@ impl BrowserPanel {
                     for (tab, label) in &tabs {
                         let is_active = *active_tab == *tab;
 
+                        let display_label = label.to_string();
+
                         // Allocate tab rect manually to avoid egui button hover styling
                         let text_galley = ui.painter().layout_no_wrap(
-                            label.to_string(),
+                            display_label.clone(),
                             egui::FontId::proportional(10.0),
                             theme.text_dim,
                         );
@@ -130,7 +134,7 @@ impl BrowserPanel {
                         ui.painter().text(
                             tab_rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            *label,
+                            &display_label,
                             egui::FontId::proportional(10.0),
                             text_color,
                         );
@@ -144,8 +148,20 @@ impl BrowserPanel {
                         }
 
                         if resp.clicked() {
+                            if *tab == BrowserTab::Files && *files_pinned {
+                                // Clicking FILES while pinned unpins and shows files full width
+                                *files_pinned = false;
+                            }
                             *active_tab = *tab;
                         }
+                    }
+
+                    // Show pin indicator on FILES tab when pinned
+                    if *files_pinned {
+                        let pin_color = theme.accent;
+                        let pin_icon = Icon::PushPin.image(10.0).tint(pin_color);
+                        ui.add_space(2.0);
+                        ui.add(egui::Image::from(pin_icon).max_size(egui::vec2(10.0, 10.0)));
                     }
                 });
             },
@@ -260,37 +276,118 @@ impl BrowserPanel {
         ui.add_space(4.0);
 
         // ── Tab content ──
-        match active_tab {
-            BrowserTab::Files => {
-                let file_cmds = self.show_files_tab(ui, state, theme);
+        let show_split = *files_pinned && *active_tab != BrowserTab::Files;
+
+        if show_split {
+            // Split view: left pane (MEDIA/LIBRARY) + divider + right pane (FILES)
+            let content_rect = ui.available_rect_before_wrap();
+            let total_w = content_rect.width();
+            let divider_w = 4.0;
+            let left_w = (total_w - divider_w) * files_split_ratio.clamp(0.25, 0.75);
+            let right_w = total_w - left_w - divider_w;
+
+            let left_rect = egui::Rect::from_min_size(
+                content_rect.min,
+                egui::vec2(left_w, content_rect.height()),
+            );
+            let divider_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.min.x + left_w, content_rect.min.y),
+                egui::vec2(divider_w, content_rect.height()),
+            );
+            let right_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.min.x + left_w + divider_w, content_rect.min.y),
+                egui::vec2(right_w, content_rect.height()),
+            );
+
+            // Left pane: FILES browser (source → import flow is left-to-right)
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+                ui.set_clip_rect(left_rect);
+                let file_cmds = self.show_files_tab(ui, state, theme, Some((files_pinned, active_tab)));
                 cmds.extend(file_cmds);
-            }
-            BrowserTab::Media => {
-                let tab_cmds = media_tab::show(
-                    ui,
-                    state,
-                    theme,
-                    &self.search_query,
-                    &mut self.media_sort_by,
-                    &mut self.media_sort_ascending,
-                    &mut self.media_selected_bin,
-                    &self.browser_view_mode,
-                    &mut self.renaming_bin,
-                    &mut self.creating_bin,
-                    &mut self.scroll_to_media_id,
+            });
+
+            // Divider (draggable)
+            let divider_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(divider_rect), |ui| {
+                let (rect, resp) = ui.allocate_exact_size(
+                    divider_rect.size(),
+                    egui::Sense::click_and_drag(),
                 );
-                cmds.extend(tab_cmds);
-            }
-            BrowserTab::Library => {
-                let tab_cmds = self.show_library_tab(ui, state, theme);
-                cmds.extend(tab_cmds);
+                let hovered = resp.hovered() || resp.dragged();
+                let color = if hovered { theme.accent } else { theme.border };
+                ui.painter().rect_filled(rect, 0.0, color);
+                if hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if resp.dragged() {
+                    let delta = resp.drag_delta().x;
+                    let new_left_w = left_w + delta;
+                    *files_split_ratio = (new_left_w / (total_w - divider_w)).clamp(0.25, 0.75);
+                }
+            });
+            // Consume the space so egui knows it's used
+            let _ = divider_resp;
+
+            // Right pane: current tab content (Media or Library)
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
+                ui.set_clip_rect(right_rect);
+                match active_tab {
+                    BrowserTab::Media => {
+                        let tab_cmds = media_tab::show(
+                            ui,
+                            state,
+                            theme,
+                            &self.search_query,
+                            &mut self.media_sort_by,
+                            &mut self.media_sort_ascending,
+                            &mut self.media_selected_bin,
+                            &self.browser_view_mode,
+                            &mut self.renaming_bin,
+                            &mut self.creating_bin,
+                            &mut self.scroll_to_media_id,
+                        );
+                        cmds.extend(tab_cmds);
+                    }
+                    BrowserTab::Library => {
+                        let tab_cmds = self.show_library_tab(ui, state, theme);
+                        cmds.extend(tab_cmds);
+                    }
+                    BrowserTab::Files => unreachable!(),
+                }
+            });
+        } else {
+            // Normal single-tab view
+            match active_tab {
+                BrowserTab::Files => {
+                    let file_cmds = self.show_files_tab(ui, state, theme, Some((files_pinned, active_tab)));
+                    cmds.extend(file_cmds);
+                }
+                BrowserTab::Media => {
+                    let tab_cmds = media_tab::show(
+                        ui,
+                        state,
+                        theme,
+                        &self.search_query,
+                        &mut self.media_sort_by,
+                        &mut self.media_sort_ascending,
+                        &mut self.media_selected_bin,
+                        &self.browser_view_mode,
+                        &mut self.renaming_bin,
+                        &mut self.creating_bin,
+                        &mut self.scroll_to_media_id,
+                    );
+                    cmds.extend(tab_cmds);
+                }
+                BrowserTab::Library => {
+                    let tab_cmds = self.show_library_tab(ui, state, theme);
+                    cmds.extend(tab_cmds);
+                }
             }
         }
 
         cmds
     }
 
-    fn show_files_tab(&mut self, ui: &mut egui::Ui, _state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
+    fn show_files_tab(&mut self, ui: &mut egui::Ui, _state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
 
@@ -370,6 +467,24 @@ impl BrowserPanel {
                 self.files_entries_dirty = true;
             }
 
+            // Pin button — push to right side of toolbar
+            if let Some((ref pinned, _)) = files_pinned {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let is_pinned = **pinned;
+                    let pin_color = if is_pinned { theme.accent } else { theme.text_dim };
+                    let pin_resp = ui.add(
+                        egui::Button::image(Icon::PushPin.image(12.0).tint(pin_color))
+                            .min_size(egui::vec2(22.0, 20.0))
+                            .fill(if is_pinned { theme.accent_subtle } else { theme.bg_raised })
+                            .rounding(3.0),
+                    );
+                    // We handle the click after this closure to avoid borrow issues
+                    if pin_resp.clicked() {
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_pin_clicked"), true));
+                    }
+                });
+            }
+
             // Current path display
             let path_str = self.files_current_path.to_string_lossy();
             let short_path = if path_str.len() > 35 {
@@ -384,6 +499,18 @@ impl BrowserPanel {
                     .monospace(),
             );
         });
+
+        // Handle pin click (deferred to avoid borrow conflict inside horizontal)
+        if let Some((ref mut pinned, ref mut active_tab)) = files_pinned {
+            let pin_clicked: bool = ui.ctx().data_mut(|d| d.get_temp(egui::Id::new("_pin_clicked")).unwrap_or(false));
+            if pin_clicked {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_pin_clicked"), false));
+                **pinned = !**pinned;
+                if **pinned {
+                    **active_tab = BrowserTab::Media;
+                }
+            }
+        }
 
         // ── Quick bookmarks ──
         ui.add_space(4.0);

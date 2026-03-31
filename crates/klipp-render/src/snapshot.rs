@@ -408,6 +408,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let mut seq = make_sequence();
@@ -482,6 +483,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let mut seq = make_sequence();
@@ -540,6 +542,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let mut seq = make_sequence();
@@ -591,6 +594,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let pool = MediaPool::new();
@@ -645,6 +649,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let pool = MediaPool::new();
@@ -700,6 +705,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let clip_b = Clip {
@@ -736,6 +742,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let mut seq = make_sequence();
@@ -796,6 +803,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
         let clip_b = Clip {
             id: clip_b_id,
@@ -831,6 +839,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let transition = Transition {
@@ -897,6 +906,7 @@ mod tests {
             role: klipp_core::ClipRole::default(),
             param_modifiers: std::collections::HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
         };
 
         let mut seq = make_sequence();

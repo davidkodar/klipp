@@ -128,6 +128,38 @@ pub struct NodeParams {
 }
 
 impl NodeParams {
+    /// Check if all params are at their default (identity) values — no grading applied.
+    pub fn is_default(&self) -> bool {
+        self.exposure.is_none()
+            && self.contrast.is_none()
+            && self.saturation.is_none()
+            && self.temperature.is_none()
+            && self.tint.is_none()
+            && self.hue.is_none()
+            && self.highlights.is_none()
+            && self.shadows.is_none()
+            && self.whites.is_none()
+            && self.blacks.is_none()
+            && self.lift_x.is_none()
+            && self.lift_y.is_none()
+            && self.lift_master.is_none()
+            && self.gamma_x.is_none()
+            && self.gamma_y.is_none()
+            && self.gamma_master.is_none()
+            && self.gain_x.is_none()
+            && self.gain_y.is_none()
+            && self.gain_master.is_none()
+            && self.offset_x.is_none()
+            && self.offset_y.is_none()
+            && self.offset_master.is_none()
+            && self.curves.is_none()
+            && self.huesat.is_none()
+            && self.global_mix.is_none()
+            && self.log_format.is_none()
+            && self.qualifier.is_none()
+            && self.masks.is_none()
+    }
+
     /// Apply a keyframe override by param name.
     pub fn apply_override(&mut self, param_name: &str, value: f32) {
         match param_name {

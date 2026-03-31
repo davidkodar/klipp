@@ -169,6 +169,7 @@ impl NewInspectorPanel {
                     vec![
                         (InspectorTab::Video, "VIDEO"),
                         (InspectorTab::Audio, "AUDIO"),
+                        (InspectorTab::Color, "COLOR"),
                         (InspectorTab::Effects, "EFFECTS"),
                         (InspectorTab::Info, "INFO"),
                     ]
@@ -291,6 +292,7 @@ impl NewInspectorPanel {
                             role: klipp_core::ClipRole::default(),
                             param_modifiers: std::collections::HashMap::new(),
                             speed: 1.0,
+                            source_rotation: 0,
                             audio_effects: Vec::new(),
                         };
                         audio_tab::show(ui, theme, state, Some((&temp_clip, 0, false)), &mut cmds, (0.0, 0.0), None, source_channels, 0.0, &mut self.duck, &track_infos);
@@ -305,6 +307,9 @@ impl NewInspectorPanel {
                     } else {
                         effects_tab::show_empty(ui, theme, &mut cmds);
                     }
+                }
+                InspectorTab::Color => {
+                    crate::panels::inspector::InspectorPanel::show_color_and_luts(ui, state, &mut cmds);
                 }
                 InspectorTab::Title => {
                     if let Some((_, ref clip)) = clip_info {

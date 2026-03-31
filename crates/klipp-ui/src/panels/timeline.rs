@@ -4798,11 +4798,15 @@ impl TimelinePanel {
                                 .and_then(|m| m.skim_file.as_ref())
                                 .is_some_and(|p| p.exists());
 
-                            if has_skim_file && state.browser_skim_pending.is_none() {
-                                cmds.push(AppCommand::BrowserSkimFrame {
-                                    media_id,
-                                    time_secs: skim_time,
-                                });
+                            if has_skim_file {
+                                if !state.skim_decode_in_flight {
+                                    cmds.push(AppCommand::BrowserSkimFrame {
+                                        media_id,
+                                        time_secs: skim_time,
+                                    });
+                                } else {
+                                    state.skim_queued_request = Some((media_id, skim_time));
+                                }
                             }
 
                             // Fallback: poster thumbnail

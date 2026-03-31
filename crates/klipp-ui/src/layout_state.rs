@@ -23,8 +23,17 @@ pub struct LayoutState {
     /// Right-side inspector width in color workspace.
     #[serde(default = "default_color_inspector_width")]
     pub color_inspector_width: f32,
+
+    // ── Split browser (pinned files) ──
+    /// When true, the FILES browser stays visible alongside MEDIA/LIBRARY.
+    #[serde(default)]
+    pub files_pinned: bool,
+    /// Fraction of browser_width allocated to the left pane (MEDIA/LIBRARY) when files are pinned.
+    #[serde(default = "default_files_split_ratio")]
+    pub files_split_ratio: f32,
 }
 
+fn default_files_split_ratio() -> f32 { 0.5 }
 fn default_color_panel_height() -> f32 { 200.0 }
 fn default_color_viewer_ratio() -> f32 { 0.55 }
 fn default_color_inspector_width() -> f32 { 300.0 }
@@ -43,6 +52,8 @@ impl Default for LayoutState {
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
+            files_pinned: false,
+            files_split_ratio: default_files_split_ratio(),
         }
     }
 }
@@ -99,6 +110,7 @@ pub enum LibraryCategory {
 pub enum InspectorTab {
     Video,
     Audio,
+    Color,
     Effects,
     Title,
     Info,

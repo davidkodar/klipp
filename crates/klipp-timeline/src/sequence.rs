@@ -172,10 +172,23 @@ impl Sequence {
     }
 
     /// Remove a track including all its clips.
+    /// Also clears linked_clip_id on clips in other tracks that pointed to removed clips.
     pub fn remove_track_with_clips(&mut self, track_id: TrackId) -> Result<(), &'static str> {
         let pos = self.tracks.iter().position(|t| t.id == track_id)
             .ok_or("track not found")?;
+        // Collect IDs of clips being removed so we can unlink them
+        let removed_ids: Vec<ClipId> = self.tracks[pos].clips.iter().map(|c| c.id).collect();
         self.tracks.remove(pos);
+        // Clear dangling linked_clip_id references
+        for track in &mut self.tracks {
+            for clip in &mut track.clips {
+                if let Some(linked) = clip.linked_clip_id {
+                    if removed_ids.contains(&linked) {
+                        clip.linked_clip_id = None;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -364,6 +377,7 @@ impl Track {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             audio_effects: Vec::new(),
+            source_rotation: 0,
         });
         clip_id
     }
@@ -544,6 +558,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            source_rotation: clip.source_rotation,
             audio_effects: clip.audio_effects.clone(),
         };
         let clip_b = Clip {
@@ -581,6 +596,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            source_rotation: clip.source_rotation,
             audio_effects: clip.audio_effects.clone(),
         };
 
@@ -702,6 +718,10 @@ pub struct Clip {
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
+    /// Source media rotation in degrees (0, 90, 180, 270). Auto-detected from metadata.
+    /// Applied as a pre-transform via the GPU pipeline. Users can override per-clip.
+    #[serde(default)]
+    pub source_rotation: i32,
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
@@ -773,6 +793,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
             audio_effects: Vec::new(),
         }
     }
@@ -820,6 +841,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            source_rotation: 0,
             audio_effects: Vec::new(),
         }
     }

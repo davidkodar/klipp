@@ -538,7 +538,7 @@ impl ViewerPanel {
 
         // ── On-screen transform controls ──
         // Suppress transform controls during text edit mode
-        if state.show_transform_controls && !state.viewer_text_edit && state.eyedropper_mode == crate::state::EyedropperMode::None {
+        if state.show_transform_controls && !state.viewer_text_edit && state.eyedropper_mode == crate::state::EyedropperMode::None && !state.has_modal_open() {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 

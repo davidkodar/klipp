@@ -39,6 +39,8 @@ pub struct SequenceJson {
     pub global_lut_path: Option<String>,
     #[serde(default = "default_lut_opacity")]
     pub global_lut_opacity: f32,
+    #[serde(default = "default_true")]
+    pub global_lut_enabled: bool,
     #[serde(default)]
     pub markers: Vec<MarkerJson>,
     #[serde(default = "default_header_width")]
@@ -55,6 +57,7 @@ pub struct SequenceJson {
 
 fn default_header_width() -> f32 { 160.0 }
 fn default_lut_opacity() -> f32 { 1.0 }
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimecodeJson {
@@ -185,6 +188,8 @@ pub struct ClipJson {
     pub param_modifiers: Option<HashMap<String, klipp_core::ModifierStack>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_rotation: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_effects: Option<Vec<klipp_core::AudioEffectInstance>>,
 }
@@ -417,6 +422,8 @@ pub struct MediaItemJson {
     pub color_label: u8,
     #[serde(default)]
     pub colour_space: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_rotation: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

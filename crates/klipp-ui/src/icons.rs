@@ -112,6 +112,9 @@ define_icons! {
     // Inspector
     Diamond         => "diamond",
 
+    // Browser (cont.)
+    PushPin         => "push-pin",
+
     // Misc
     Lightning       => "lightning",
 }

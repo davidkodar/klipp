@@ -181,6 +181,7 @@ fn show_bin_media_video(
         role: klipp_core::ClipRole::default(),
         param_modifiers: HashMap::new(),
         speed: 1.0,
+        source_rotation: 0,
         audio_effects: Vec::new(),
     };
     // is_timeline = false → no Speed Ramp, no amber banner
@@ -385,6 +386,31 @@ fn show_clip_video(
                 r_py_out = Some(scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
                 r_sc_out = Some(scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
                 r_ro_out = Some(scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
+
+                // Source rotation (auto-detected from media metadata, user-overridable)
+                if clip.source_rotation != 0 || clip.media_id().is_some() {
+                    ui.horizontal(|ui| {
+                        ui.label("Source Rotation");
+                        let current = clip.source_rotation;
+                        let label = match current {
+                            0 => "None",
+                            90 => "90\u{00b0} CW",
+                            180 => "180\u{00b0}",
+                            270 => "90\u{00b0} CCW",
+                            _ => "Custom",
+                        };
+                        egui::ComboBox::from_id_salt(format!("{:?}_src_rot", clip_id))
+                            .selected_text(label)
+                            .width(80.0)
+                            .show_ui(ui, |ui| {
+                                for (val, text) in [(0, "None"), (90, "90\u{00b0} CW"), (180, "180\u{00b0}"), (270, "90\u{00b0} CCW")] {
+                                    if ui.selectable_label(current == val, text).clicked() {
+                                        cmds.push(AppCommand::SetSourceRotation { clip_id, degrees: val });
+                                    }
+                                }
+                            });
+                    });
+                }
 
                 // Separator before opacity
                 let sep_w = ui.available_width();

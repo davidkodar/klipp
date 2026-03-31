@@ -265,6 +265,10 @@ pub struct AppState {
     pub skim_transcode_done_at: Option<std::time::Instant>,
     /// Pending skim frame RGBA to upload as texture (media_id, rgba, width, height)
     pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32)>,
+    /// True while a skim decode thread is running (prevents spawning more threads)
+    pub skim_decode_in_flight: bool,
+    /// Latest skim request queued while a decode was in flight (media_id, time_secs)
+    pub skim_queued_request: Option<(MediaId, f64)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
     pub browser_skim_active_this_frame: bool,
     /// Media IDs that need skim transcode started (queued during drain_events)
@@ -324,6 +328,7 @@ pub struct AppState {
     // Global LUT
     pub global_lut_path: Option<PathBuf>,
     pub global_lut_opacity: f32,
+    pub global_lut_enabled: bool,
 
     // Color panel / node graph
     pub show_color_panel: bool,
@@ -718,6 +723,8 @@ impl Default for AppState {
             skim_transcode_status: None,
             skim_transcode_done_at: None,
             browser_skim_pending: None,
+            skim_decode_in_flight: false,
+            skim_queued_request: None,
             browser_skim_active_this_frame: false,
             pending_skim_transcodes: Vec::new(),
             audio_skimming_enabled: true,
@@ -744,6 +751,7 @@ impl Default for AppState {
             perf_prev_wall_time: std::time::Instant::now(),
             global_lut_path: None,
             global_lut_opacity: 1.0,
+            global_lut_enabled: true,
             show_color_panel: false,
             selected_node_id: None,
             show_node_strip: false,

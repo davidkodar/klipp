@@ -185,90 +185,98 @@ impl NodeInspectorPanel {
         // ── Exposure section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Exposure) {
             *selected_node = Some(nid);
-            let reset = section_header(ui, "EXPOSURE", enabled, theme);
-            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
-                if reset {
-                    node.params.exposure = Some(0.0);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
+            let (reset, is_open) = section_header(ui, "EXPOSURE", enabled, theme);
+            if is_open {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                    if reset {
+                        node.params.exposure = Some(0.0);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
+                    }
+                    let mut val = node.params.exposure.unwrap_or(0.0);
+                    if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, "stops", theme) {
+                        node.params.exposure = Some(val);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
+                    }
                 }
-                let mut val = node.params.exposure.unwrap_or(0.0);
-                if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, "stops", theme) {
-                    node.params.exposure = Some(val);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
-                }
+                section_divider(ui);
             }
-            section_divider(ui);
         }
 
         // ── Contrast section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Contrast) {
-            let reset = section_header(ui, "CONTRAST", enabled, theme);
-            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
-                if reset {
-                    node.params.contrast = Some(0.0);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
+            let (reset, is_open) = section_header(ui, "CONTRAST", enabled, theme);
+            if is_open {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                    if reset {
+                        node.params.contrast = Some(0.0);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
+                    }
+                    let mut val = node.params.contrast.unwrap_or(0.0);
+                    if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme) {
+                        node.params.contrast = Some(val);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
+                    }
                 }
-                let mut val = node.params.contrast.unwrap_or(0.0);
-                if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme) {
-                    node.params.contrast = Some(val);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
-                }
+                section_divider(ui);
             }
-            section_divider(ui);
         }
 
         // ── Saturation section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Saturation) {
-            let reset = section_header(ui, "SATURATION", enabled, theme);
-            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
-                if reset {
-                    node.params.saturation = Some(1.0);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
+            let (reset, is_open) = section_header(ui, "SATURATION", enabled, theme);
+            if is_open {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                    if reset {
+                        node.params.saturation = Some(1.0);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
+                    }
+                    let mut val = node.params.saturation.unwrap_or(1.0);
+                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme) {
+                        node.params.saturation = Some(val);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
+                    }
                 }
-                let mut val = node.params.saturation.unwrap_or(1.0);
-                if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme) {
-                    node.params.saturation = Some(val);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
-                }
+                section_divider(ui);
             }
-            section_divider(ui);
         }
 
         // ── Tone Controls section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::ToneControls) {
-            let reset = section_header(ui, "TONE CONTROLS", enabled, theme);
-            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
-                if reset {
-                    for p in ["highlights", "shadows", "whites", "blacks"] {
-                        node.params.apply_override(p, 0.0);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: 0.0 });
+            let (reset, is_open) = section_header(ui, "TONE CONTROLS", enabled, theme);
+            if is_open {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                    if reset {
+                        for p in ["highlights", "shadows", "whites", "blacks"] {
+                            node.params.apply_override(p, 0.0);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: 0.0 });
+                        }
+                    }
+                    for (label, param_name, default) in [
+                        ("Highlights", "highlights", 0.0_f32),
+                        ("Shadows", "shadows", 0.0),
+                        ("Whites", "whites", 0.0),
+                        ("Blacks", "blacks", 0.0),
+                    ] {
+                        let mut val = match param_name {
+                            "highlights" => node.params.highlights.unwrap_or(default),
+                            "shadows" => node.params.shadows.unwrap_or(default),
+                            "whites" => node.params.whites.unwrap_or(default),
+                            _ => node.params.blacks.unwrap_or(default),
+                        };
+                        if inspector_row(ui, label, &mut val, -1.0..=1.0, "", theme) {
+                            node.params.apply_override(param_name, val);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
+                        }
                     }
                 }
-                for (label, param_name, default) in [
-                    ("Highlights", "highlights", 0.0_f32),
-                    ("Shadows", "shadows", 0.0),
-                    ("Whites", "whites", 0.0),
-                    ("Blacks", "blacks", 0.0),
-                ] {
-                    let mut val = match param_name {
-                        "highlights" => node.params.highlights.unwrap_or(default),
-                        "shadows" => node.params.shadows.unwrap_or(default),
-                        "whites" => node.params.whites.unwrap_or(default),
-                        _ => node.params.blacks.unwrap_or(default),
-                    };
-                    if inspector_row(ui, label, &mut val, -1.0..=1.0, "", theme) {
-                        node.params.apply_override(param_name, val);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
-                    }
-                }
+                section_divider(ui);
             }
-            section_divider(ui);
         }
 
         // ── Color Balance section — with gradient sliders ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::ColorBalance) {
-            let reset = section_header(ui, "COLOR BALANCE", enabled, theme);
-            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+            let (reset, is_open) = section_header(ui, "COLOR BALANCE", enabled, theme);
+            if is_open { if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
                 if reset {
                     for (p, d) in [("temperature", 0.0), ("tint", 0.0), ("hue", 0.0), ("global_mix", 1.0)] {
                         node.params.apply_override(p, d);
@@ -311,7 +319,7 @@ impl NodeInspectorPanel {
                     node.params.global_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
                 }
-            }
+            } }
         }
     }
 
@@ -456,30 +464,32 @@ impl NodeInspectorPanel {
                     ("GAIN", "gain_sat", "gain_bri", params.gain_sat.unwrap_or(0.0), params.gain_bri.unwrap_or(0.0)),
                     ("OFFSET", "offset_sat", "offset_bri", params.offset_sat.unwrap_or(0.0), params.offset_bri.unwrap_or(0.0)),
                 ] {
-                    let reset = section_header(ui, group_label, true, theme);
-                    if reset {
-                        params.apply_override(sat_name, 0.0);
-                        params.apply_override(bri_name, 0.0);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                    let (reset, is_open) = section_header(ui, group_label, true, theme);
+                    if is_open {
+                        if reset {
+                            params.apply_override(sat_name, 0.0);
+                            params.apply_override(bri_name, 0.0);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                        }
+                        let mut s = sat_val;
+                        if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme) {
+                            params.apply_override(sat_name, s);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
+                        }
+                        let mut b = bri_val;
+                        if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme) {
+                            params.apply_override(bri_name, b);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
+                        }
+                        section_divider(ui);
                     }
-                    let mut s = sat_val;
-                    if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme) {
-                        params.apply_override(sat_name, s);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
-                    }
-                    let mut b = bri_val;
-                    if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme) {
-                        params.apply_override(bri_name, b);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
-                    }
-                    section_divider(ui);
                 }
             }
             NodeKind::RGBCurves => {
                 // Section header: "RGB CURVES" with reset + enable
-                let reset = section_header(ui, "RGB CURVES", *enabled, theme);
-                if reset {
+                let (reset, is_open) = section_header(ui, "RGB CURVES", *enabled, theme);
+                if is_open && reset {
                     // Reset all curves to identity (2 points: [0,0] and [1,1])
                     if let Some(c) = &mut params.curves {
                         c.master = vec![[0.0, 0.0], [1.0, 1.0]];
@@ -495,6 +505,7 @@ impl NodeInspectorPanel {
                     });
                 }
 
+                if is_open {
                 // Channel selector pills + eyedropper icon
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -574,6 +585,7 @@ impl NodeInspectorPanel {
                     params.curves_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: mix });
                 }
+                } // is_open
             }
             NodeKind::HueSatCurves => {
                 let huesat = params.huesat.get_or_insert_with(Default::default);
@@ -795,38 +807,72 @@ const ROW_H: f32 = 28.0;
 
 /// Section header: "EXPOSURE" with enabled dot and reset icon.
 /// Returns true if the reset button was clicked.
-fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTheme) -> bool {
+/// Collapsible section header matching the inspector card style.
+/// Returns (reset_clicked, is_open).
+fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTheme) -> (bool, bool) {
     ui.add_space(2.0);
     let avail_w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 26.0), egui::Sense::hover());
+    let header_h = 28.0;
 
-    let icon_x = rect.max.x - PAD - 6.0;
+    // Collapse state
+    let collapsed_key = egui::Id::new("color_section_collapsed");
+    let is_collapsed: bool = ui.ctx().data_mut(|d| {
+        let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+        set.contains(title)
+    });
+    let is_open = !is_collapsed;
+
+    let (rect, header_resp) = ui.allocate_exact_size(egui::vec2(avail_w, header_h), egui::Sense::click());
     let cy = rect.center().y;
 
-    {
-        let painter = ui.painter().clone();
+    // Background card
+    let rounding = if is_open {
+        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
+    } else {
+        egui::Rounding::same(6.0)
+    };
+    ui.painter().rect_filled(rect, rounding, theme.bg_deep);
 
-        // Section title
-        painter.text(
-            egui::pos2(rect.min.x + PAD, cy),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(10.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 71),
-        );
+    // Left accent bar
+    let accent_rounding = if is_open {
+        egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 }
+    } else {
+        egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 }
+    };
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(rect.min, egui::vec2(3.0, header_h)),
+        accent_rounding, theme.border,
+    );
 
-        // Enabled dot
-        let dot_x = rect.max.x - PAD - 22.0;
-        let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
-        painter.circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
+    // Caret icon
+    let caret_x = rect.min.x + 14.0;
+    let caret = if is_open { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
+    ui.painter().text(
+        egui::pos2(caret_x, cy),
+        egui::Align2::CENTER_CENTER,
+        caret,
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100),
+    );
 
-    }
+    // Section title
+    ui.painter().text(
+        egui::pos2(rect.min.x + 24.0, cy),
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(10.0),
+        theme.text_dim,
+    );
 
-    // Clickable reset button area (allocated first so we can check hover for tinting)
+    // Enabled dot
+    let dot_x = rect.max.x - PAD - 22.0;
+    let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
+    ui.painter().circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
+
+    // Reset button
+    let icon_x = rect.max.x - PAD - 6.0;
     let reset_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(16.0, 16.0));
     let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
-
-    // Reset icon (Phosphor ArrowCounterClockwise)
     let reset_tint = if reset_resp.hovered() {
         theme.text_accent
     } else {
@@ -835,7 +881,19 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
     let icon_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(12.0, 12.0));
     Icon::ArrowCounterClockwise.image(12.0).tint(reset_tint).paint_at(ui, icon_rect);
 
-    reset_resp.clicked()
+    // Toggle collapse on header click (but not on reset button)
+    if header_resp.clicked() && !reset_resp.clicked() {
+        ui.ctx().data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+            if is_collapsed {
+                set.remove(title);
+            } else {
+                set.insert(title.to_string());
+            }
+        });
+    }
+
+    (reset_resp.clicked(), is_open)
 }
 
 /// 0.5px divider line between sections

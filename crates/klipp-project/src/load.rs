@@ -88,6 +88,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             colour_space: klipp_media::ColourSpace::from_u8(item_json.colour_space),
             needs_reprobe: false,
             log_format: Default::default(),
+            source_rotation: item_json.source_rotation.unwrap_or(0),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
@@ -135,6 +136,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             resolve_media_path(dir, Path::new(p))
         }),
         global_lut_opacity: first.global_lut_opacity,
+        global_lut_enabled: first.global_lut_enabled,
         track_header_width: first.track_header_width,
         auto_generate_filmstrips: first.auto_generate_filmstrips,
         auto_generate_skim: first.auto_generate_skim,
@@ -271,6 +273,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                         }).collect()
                     }).unwrap_or_default(),
                     speed: c.speed.unwrap_or(1.0),
+                    source_rotation: c.source_rotation.unwrap_or(0),
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
                 }
             }).collect();

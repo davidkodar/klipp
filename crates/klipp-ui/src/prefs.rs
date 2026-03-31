@@ -102,6 +102,13 @@ pub struct PlaybackPrefs {
     /// Whether loop playback is enabled (cycle between in/out points or whole sequence).
     #[serde(default)]
     pub loop_playback: bool,
+    /// Resolution (max height in pixels) for skim frame decodes. Higher = sharper but slower.
+    #[serde(default = "default_skim_resolution")]
+    pub skim_resolution: u32,
+}
+
+fn default_skim_resolution() -> u32 {
+    480
 }
 
 /// Where to show audio fade overlays on the timeline.
@@ -225,6 +232,7 @@ impl Default for PlaybackPrefs {
             skim_audio: true,
             jkl_audio_mute_threshold: 4.0,
             loop_playback: false,
+            skim_resolution: default_skim_resolution(),
         }
     }
 }

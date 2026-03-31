@@ -9,6 +9,7 @@ use tracing::info;
 pub struct ColorSettings {
     pub global_lut_path: Option<std::path::PathBuf>,
     pub global_lut_opacity: f32,
+    pub global_lut_enabled: bool,
     pub track_header_width: f32,
     /// Per-project: generate filmstrip thumbnails on import. None = use global pref.
     pub auto_generate_filmstrips: Option<bool>,
@@ -21,6 +22,7 @@ impl Default for ColorSettings {
         Self {
             global_lut_path: None,
             global_lut_opacity: 1.0,
+            global_lut_enabled: true,
             track_header_width: 160.0,
             auto_generate_filmstrips: None,
             auto_generate_skim: None,
@@ -105,6 +107,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 .to_string()
         }),
         global_lut_opacity: color.global_lut_opacity,
+        global_lut_enabled: color.global_lut_enabled,
         track_header_width: color.track_header_width,
         auto_generate_filmstrips: color.auto_generate_filmstrips,
         auto_generate_skim: color.auto_generate_skim,
@@ -194,6 +197,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
                         },
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
+                        source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
                         audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
                     }
                 }).collect(),
@@ -326,5 +330,6 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         media_created_at: item.media_created_at,
         color_label: item.color_label.to_u8(),
         colour_space: item.colour_space.to_u8(),
+        source_rotation: if item.source_rotation == 0 { None } else { Some(item.source_rotation) },
     }
 }

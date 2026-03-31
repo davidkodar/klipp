@@ -69,7 +69,9 @@ impl NodeGraph {
     pub fn is_identity(&self) -> bool {
         self.nodes
             .iter()
-            .all(|n| !n.enabled || matches!(n.kind, NodeKind::Source | NodeKind::Output))
+            .all(|n| !n.enabled
+                || matches!(n.kind, NodeKind::Source | NodeKind::Output | NodeKind::InputTransform)
+                || n.params.is_default())
     }
 
     /// Topologically sorted execution order using Kahn's algorithm.

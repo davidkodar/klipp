@@ -33,6 +33,10 @@ pub struct GpuEffectsPipeline {
     huesat_pipeline: wgpu::ComputePipeline,
     huesat_bgl: wgpu::BindGroupLayout,
     huesat_lut_buf: wgpu::Buffer,
+    // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
+    lut3d_pipeline: wgpu::ComputePipeline,
+    lut3d_buf: Option<wgpu::Buffer>,
+    lut3d_buf_size: u64,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
@@ -295,6 +299,7 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
+        let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
@@ -348,6 +353,9 @@ impl GpuEffectsPipeline {
             huesat_pipeline,
             huesat_bgl,
             huesat_lut_buf,
+            lut3d_pipeline,
+            lut3d_buf: None,
+            lut3d_buf_size: 0,
             qualifier_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
@@ -545,6 +553,78 @@ impl GpuEffectsPipeline {
                 label: None, timestamp_writes: None,
             });
             pass.set_pipeline(&self.huesat_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply a 3D LUT with trilinear interpolation on GPU.
+    /// `lut_data` is RGB triples in B-major order, `lut_size` is the grid dimension (e.g. 33).
+    pub fn apply_3d_lut_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        lut_data: &[f32],
+        lut_size: u32,
+        opacity: f32,
+    ) -> Vec<u8> {
+        if opacity <= 0.0 {
+            return rgba;
+        }
+
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        // (Re-)create LUT buffer if needed
+        let lut_byte_size = (lut_data.len() * 4) as u64;
+        if self.lut3d_buf.is_none() || self.lut3d_buf_size < lut_byte_size {
+            self.lut3d_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("lut3d_data"),
+                size: lut_byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.lut3d_buf_size = lut_byte_size;
+        }
+        let lut_buf = self.lut3d_buf.as_ref().unwrap();
+        self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
+
+        self.write_params(&GpuLut3dParams {
+            width,
+            height,
+            lut_size,
+            opacity,
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lut3d_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None, timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.lut3d_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
@@ -1466,6 +1546,16 @@ struct GpuHueSatParams {
     height: u32,
     mix: f32,
     _pad0: u32,
+}
+// 4 fields × 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuLut3dParams {
+    width: u32,
+    height: u32,
+    lut_size: u32,
+    opacity: f32,
 }
 // 4 fields × 4 bytes = 16 bytes
 
@@ -2918,5 +3008,83 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rg = u32(clamp(sg * 255.0, 0.0, 255.0));
     let rb = u32(clamp(sb * 255.0, 0.0, 255.0));
     output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+}
+";
+
+const SHADER_LUT3D: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    lut_size: u32,
+    opacity: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> lut: array<f32>;
+
+fn lut_sample(ri: u32, gi: u32, bi: u32) -> vec3<f32> {
+    let n = params.lut_size;
+    let idx = (bi * n * n + gi * n + ri) * 3u;
+    return vec3<f32>(lut[idx], lut[idx + 1u], lut[idx + 2u]);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let pixel_idx = gid.x;
+    if pixel_idx >= params.width * params.height { return; }
+
+    let packed = input[pixel_idx];
+    let r_in = f32(packed & 0xFFu) / 255.0;
+    let g_in = f32((packed >> 8u) & 0xFFu) / 255.0;
+    let b_in = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let a = packed >> 24u;
+
+    let n1 = f32(params.lut_size - 1u);
+
+    let r_idx = clamp(r_in * n1, 0.0, n1);
+    let g_idx = clamp(g_in * n1, 0.0, n1);
+    let b_idx = clamp(b_in * n1, 0.0, n1);
+
+    let r0 = min(u32(r_idx), params.lut_size - 2u);
+    let g0 = min(u32(g_idx), params.lut_size - 2u);
+    let b0 = min(u32(b_idx), params.lut_size - 2u);
+    let r1 = r0 + 1u;
+    let g1 = g0 + 1u;
+    let b1 = b0 + 1u;
+
+    let rf = r_idx - f32(r0);
+    let gf = g_idx - f32(g0);
+    let bf = b_idx - f32(b0);
+
+    // Trilinear interpolation
+    let c000 = lut_sample(r0, g0, b0);
+    let c100 = lut_sample(r1, g0, b0);
+    let c010 = lut_sample(r0, g1, b0);
+    let c110 = lut_sample(r1, g1, b0);
+    let c001 = lut_sample(r0, g0, b1);
+    let c101 = lut_sample(r1, g0, b1);
+    let c011 = lut_sample(r0, g1, b1);
+    let c111 = lut_sample(r1, g1, b1);
+
+    let c00 = mix(c000, c100, rf);
+    let c01 = mix(c001, c101, rf);
+    let c10 = mix(c010, c110, rf);
+    let c11 = mix(c011, c111, rf);
+
+    let c0 = mix(c00, c10, gf);
+    let c1 = mix(c01, c11, gf);
+
+    let graded = mix(c0, c1, bf);
+
+    // Blend with original by opacity
+    let orig = vec3<f32>(r_in, g_in, b_in);
+    let result = mix(orig, graded, params.opacity);
+
+    let out_r = u32(clamp(result.x * 255.0, 0.0, 255.0));
+    let out_g = u32(clamp(result.y * 255.0, 0.0, 255.0));
+    let out_b = u32(clamp(result.z * 255.0, 0.0, 255.0));
+    output[pixel_idx] = out_r | (out_g << 8u) | (out_b << 16u) | (a << 24u);
 }
 ";
