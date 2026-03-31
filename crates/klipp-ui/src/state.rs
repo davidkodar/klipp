@@ -220,6 +220,10 @@ pub struct AppState {
 
     // Phase 4: Clipboard
     pub clipboard: Option<ClipboardContent>,
+    /// Attributes clipboard for Paste Attributes (Ctrl+Shift+V).
+    pub attributes_clipboard: Option<AttributesClipboard>,
+    /// Whether to show the Paste Attributes dialog.
+    pub show_paste_attributes_dialog: bool,
 
     // Phase 4: Source monitor
     pub source_media_id: Option<MediaId>,
@@ -637,6 +641,43 @@ pub struct ClipboardContent {
     pub source_track_index: usize,
 }
 
+/// Snapshot of a clip's attributes for Paste Attributes.
+#[derive(Debug, Clone)]
+pub struct AttributesClipboard {
+    /// Built-in effects chain (GPU/CPU).
+    pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
+    pub builtin_effects_enabled: Vec<bool>,
+    /// OFX effects chain.
+    pub effects: Vec<klipp_plugin::AppliedEffect>,
+    /// Node-based color grade.
+    pub node_graph: klipp_nodes::NodeGraph,
+    /// Audio params.
+    pub volume: f32,
+    pub pan: f32,
+    pub gain: f32,
+    pub fade_in_secs: f32,
+    pub fade_out_secs: f32,
+    pub fade_in_curve: klipp_timeline::FadeCurve,
+    pub fade_out_curve: klipp_timeline::FadeCurve,
+    pub volume_keyframes: Vec<klipp_core::Keyframe>,
+    pub pan_keyframes: Vec<klipp_core::Keyframe>,
+    pub gain_keyframes: Vec<klipp_core::Keyframe>,
+    /// Audio effects.
+    pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
+    /// Transform keyframes.
+    pub opacity_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+    /// Effect keyframes.
+    pub effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    /// Param modifiers (behaviors).
+    pub param_modifiers: std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+    /// Speed.
+    pub speed: f64,
+}
+
 impl AppState {
     /// Returns true when any modal dialog, window, or popup menu is open.
     /// Used to block background interactions like skimming, timeline hover, etc.
@@ -705,6 +746,8 @@ impl Default for AppState {
             fullscreen_viewer: false,
             fullscreen_changed: false,
             clipboard: None,
+            attributes_clipboard: None,
+            show_paste_attributes_dialog: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
             selected_media_ids: std::collections::HashSet::new(),

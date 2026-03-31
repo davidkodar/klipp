@@ -5499,6 +5499,16 @@ impl TimelinePanel {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.button("Copy Attributes  Ctrl+Shift+C").clicked() {
+                    cmds.push(AppCommand::CopyAttributes { clip_id });
+                    ui.close_menu();
+                }
+                if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste Attributes...  Ctrl+Shift+V")).clicked() {
+                    state.show_paste_attributes_dialog = true;
+                    ui.close_menu();
+                }
+                ui.separator();
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())

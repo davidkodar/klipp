@@ -326,6 +326,16 @@ pub enum AppCommand {
     CopyClip { clip_id: ClipId },
     PasteClip,
     DuplicateClip { clip_id: ClipId },
+    /// Copy attributes from a clip for later paste-attributes.
+    CopyAttributes { clip_id: ClipId },
+    /// Paste previously copied attributes onto the selected clip(s).
+    PasteAttributes {
+        effects: bool,
+        color_grade: bool,
+        audio: bool,
+        transform: bool,
+        speed: bool,
+    },
     /// Toggle a clip's enabled state (disabled clips are dimmed and skipped in render).
     SetClipEnabled { clip_id: ClipId, enabled: bool },
     SelectAllClips,

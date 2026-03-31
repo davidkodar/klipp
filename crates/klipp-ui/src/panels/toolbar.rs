@@ -428,6 +428,14 @@ impl ToolbarPanel {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::DuplicateClip { clip_id }); }
                 ui.close_menu();
             }
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id }); }
+                ui.close_menu();
+            }
+            if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
+                state.show_paste_attributes_dialog = true;
+                ui.close_menu();
+            }
             if ui.add(egui::Button::new("Select All").shortcut_text("Ctrl+A")).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Next Edit Point").shortcut_text("\u{2193}")).clicked() { cmds.push(AppCommand::NextEditPoint); ui.close_menu(); }

@@ -5766,6 +5766,94 @@ impl KlippApp {
                     continue;
                 }
                 // Ctrl+D — Duplicate selected clip (place immediately after original)
+                // Copy Attributes: snapshot a clip's effects/audio/transform/speed
+                AppCommand::CopyAttributes { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
+                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard {
+                            builtin_effects: clip.builtin_effects.clone(),
+                            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                            effects: clip.effects.clone(),
+                            node_graph: clip.node_graph.clone(),
+                            volume: clip.volume,
+                            pan: clip.pan,
+                            gain: clip.gain,
+                            fade_in_secs: clip.fade_in_secs,
+                            fade_out_secs: clip.fade_out_secs,
+                            fade_in_curve: clip.fade_in_curve,
+                            fade_out_curve: clip.fade_out_curve,
+                            volume_keyframes: clip.volume_keyframes.clone(),
+                            pan_keyframes: clip.pan_keyframes.clone(),
+                            gain_keyframes: clip.gain_keyframes.clone(),
+                            audio_effects: clip.audio_effects.clone(),
+                            opacity_keyframes: clip.opacity_keyframes.clone(),
+                            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                            effect_keyframes: clip.effect_keyframes.clone(),
+                            param_modifiers: clip.param_modifiers.clone(),
+                            speed: clip.speed,
+                        });
+                        self.state.toast.show(format!("Attributes copied"));
+                    }
+                    continue;
+                }
+                // Paste Attributes: apply selected attribute categories to target clip(s)
+                AppCommand::PasteAttributes { effects, color_grade, audio, transform, speed } => {
+                    if let Some(ref attrs) = self.state.attributes_clipboard.clone() {
+                        // Collect target clip IDs
+                        let mut targets = self.state.selected_clips.clone();
+                        if let Some(primary) = self.state.selected_clip {
+                            if !targets.contains(&primary) {
+                                targets.push(primary);
+                            }
+                        }
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        for clip in seq.all_clips_mut() {
+                            if !targets.contains(&clip.id) { continue; }
+                            if *effects {
+                                clip.builtin_effects = attrs.builtin_effects.clone();
+                                clip.builtin_effects_enabled = attrs.builtin_effects_enabled.clone();
+                                clip.effects = attrs.effects.clone();
+                                clip.effect_keyframes = attrs.effect_keyframes.clone();
+                            }
+                            if *color_grade {
+                                clip.node_graph = attrs.node_graph.clone();
+                            }
+                            if *audio {
+                                clip.volume = attrs.volume;
+                                clip.pan = attrs.pan;
+                                clip.gain = attrs.gain;
+                                clip.fade_in_secs = attrs.fade_in_secs;
+                                clip.fade_out_secs = attrs.fade_out_secs;
+                                clip.fade_in_curve = attrs.fade_in_curve;
+                                clip.fade_out_curve = attrs.fade_out_curve;
+                                clip.volume_keyframes = attrs.volume_keyframes.clone();
+                                clip.pan_keyframes = attrs.pan_keyframes.clone();
+                                clip.gain_keyframes = attrs.gain_keyframes.clone();
+                                clip.audio_effects = attrs.audio_effects.clone();
+                            }
+                            if *transform {
+                                clip.opacity_keyframes = attrs.opacity_keyframes.clone();
+                                clip.transform_pos_x_keyframes = attrs.transform_pos_x_keyframes.clone();
+                                clip.transform_pos_y_keyframes = attrs.transform_pos_y_keyframes.clone();
+                                clip.transform_scale_keyframes = attrs.transform_scale_keyframes.clone();
+                                clip.transform_rotation_keyframes = attrs.transform_rotation_keyframes.clone();
+                                clip.param_modifiers = attrs.param_modifiers.clone();
+                            }
+                            if *speed {
+                                clip.speed = attrs.speed;
+                            }
+                        }
+                        let count = targets.len();
+                        self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
+                        self.state.dirty = true;
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 AppCommand::DuplicateClip { clip_id } => {
                     let cid = *clip_id;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -9077,15 +9165,27 @@ impl KlippApp {
             {
                 self.state.show_scopes = !self.state.show_scopes;
             }
-            // Ctrl+C — Copy
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::C) {
+            // Ctrl+C — Copy (Ctrl+Shift+C copies attributes)
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::C) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CopyClip { clip_id });
                 }
             }
-            // Ctrl+V — Paste
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
+            // Ctrl+Shift+C — Copy Attributes
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::C) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::CopyAttributes { clip_id });
+                }
+            }
+            // Ctrl+V — Paste (Ctrl+Shift+V opens Paste Attributes dialog)
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::V) {
                 cmds.push(AppCommand::PasteClip);
+            }
+            // Ctrl+Shift+V — Paste Attributes dialog
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::V) {
+                if self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
+                    self.state.show_paste_attributes_dialog = true;
+                }
             }
             // Ctrl+D — Duplicate selected clip
             if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::D) {
@@ -9889,6 +9989,60 @@ impl eframe::App for KlippApp {
         // 4. Unsaved changes dialog
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
+
+        // 4a0. Paste Attributes dialog
+        if self.state.show_paste_attributes_dialog {
+            let mut open = true;
+            egui::Window::new("Paste Attributes")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+                    ui.label("Select which attributes to paste:");
+                    ui.add_space(6.0);
+
+                    // Use persistent checkboxes stored as statics (simple approach)
+                    // These default to true on first show
+                    static mut PA_EFFECTS: bool = true;
+                    static mut PA_COLOR: bool = true;
+                    static mut PA_AUDIO: bool = true;
+                    static mut PA_TRANSFORM: bool = true;
+                    static mut PA_SPEED: bool = false;
+
+                    // SAFETY: single-threaded UI
+                    unsafe {
+                        ui.checkbox(&mut PA_EFFECTS, "Effects (built-in + OFX)");
+                        ui.checkbox(&mut PA_COLOR, "Color Grade (node graph)");
+                        ui.checkbox(&mut PA_AUDIO, "Audio (volume, pan, gain, fades, FX)");
+                        ui.checkbox(&mut PA_TRANSFORM, "Transform (position, scale, rotation, opacity)");
+                        ui.checkbox(&mut PA_SPEED, "Speed");
+                    }
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Paste").clicked() {
+                            unsafe {
+                                all_cmds.push(AppCommand::PasteAttributes {
+                                    effects: PA_EFFECTS,
+                                    color_grade: PA_COLOR,
+                                    audio: PA_AUDIO,
+                                    transform: PA_TRANSFORM,
+                                    speed: PA_SPEED,
+                                });
+                            }
+                            self.state.show_paste_attributes_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_paste_attributes_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_paste_attributes_dialog = false;
+            }
+        }
 
         // 4a1. Auto-save recovery dialog
         if self.state.show_autosave_recovery {
