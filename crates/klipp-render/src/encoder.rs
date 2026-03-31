@@ -129,16 +129,20 @@ impl Encoder {
             .video()
             .map_err(|e| RenderError::Encode(format!("video encoder context: {e}")))?;
 
-        video_ctx.set_width(snapshot.width);
-        video_ctx.set_height(snapshot.height);
-        video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(
-            snapshot.fps_num as i32,
-            snapshot.fps_den as i32,
-        )));
-        video_ctx.set_time_base(ffmpeg_next::Rational::new(
-            snapshot.fps_den as i32,
-            snapshot.fps_num as i32,
-        ));
+        // Resolution: use export override if set, else sequence resolution
+        let (out_w, out_h) = match &settings.resolution {
+            Some(res) => (res.width, res.height),
+            None => (snapshot.width, snapshot.height),
+        };
+        video_ctx.set_width(out_w);
+        video_ctx.set_height(out_h);
+        // Frame rate: use export override if set, else sequence fps
+        let (fps_num, fps_den) = match &settings.fps {
+            Some(fps) => (fps.num as i32, fps.den as i32),
+            None => (snapshot.fps_num as i32, snapshot.fps_den as i32),
+        };
+        video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
+        video_ctx.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
 
         // Set pixel format based on codec + HW/SW
         let pix_fmt = match settings.video_codec {

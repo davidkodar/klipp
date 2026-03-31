@@ -345,6 +345,10 @@ pub enum AppCommand {
     SelectClipsBackward,
     /// Save current viewer frame as PNG.
     FrameGrab,
+    /// Import SRT/VTT subtitle file onto a subtitle track.
+    ImportSubtitles { path: PathBuf },
+    /// Export subtitles from subtitle tracks as SRT.
+    ExportSubtitles { path: PathBuf },
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.

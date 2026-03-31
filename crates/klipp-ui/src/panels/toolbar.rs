@@ -377,6 +377,27 @@ impl ToolbarPanel {
                     }
                 }
             }
+            if ui.button("Import Subtitles (SRT/VTT)...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Import Subtitles")
+                    .add_filter("Subtitles", &["srt", "vtt"])
+                    .pick_file()
+                {
+                    cmds.push(AppCommand::ImportSubtitles { path });
+                }
+            }
+            if ui.button("Export Subtitles (SRT)...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Export Subtitles")
+                    .add_filter("SRT", &["srt"])
+                    .set_file_name("subtitles.srt")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::ExportSubtitles { path });
+                }
+            }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }

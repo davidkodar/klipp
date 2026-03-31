@@ -68,6 +68,12 @@ struct ExportDialogState {
     selected_preset_id: Option<String>,
     save_preset_name: String,
     show_save_preset: bool,
+    /// Override resolution (None = use sequence resolution).
+    resolution_override: u8, // 0=Sequence, 1=720p, 2=1080p, 3=4K, 4=Custom
+    custom_width: u32,
+    custom_height: u32,
+    /// Override frame rate (None = use sequence fps).
+    fps_override: u8, // 0=Sequence, 1=24, 2=25, 3=29.97, 4=30, 5=60
 }
 
 impl Default for ExportDialogState {
@@ -85,6 +91,10 @@ impl Default for ExportDialogState {
             selected_preset_id: None,
             save_preset_name: String::new(),
             show_save_preset: false,
+            resolution_override: 0,
+            custom_width: 1920,
+            custom_height: 1080,
+            fps_override: 0,
         }
     }
 }
@@ -6009,6 +6019,88 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Import SRT/VTT subtitles onto a subtitle track
+                AppCommand::ImportSubtitles { path } => {
+                    let path = path.clone();
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            let subs = parse_srt_vtt(&content);
+                            if subs.is_empty() {
+                                self.state.toast.show(format!("No subtitles found in file"));
+                            } else {
+                                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                let fps_rate = seq.fps.rate();
+                                // Find or create a subtitle track
+                                let sub_track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Subtitle)
+                                    .unwrap_or_else(|| {
+                                        let id = seq.add_subtitle_track("Subtitles".into());
+                                        seq.tracks.iter().position(|t| t.id == id).unwrap()
+                                    });
+                                let track = &mut seq.tracks[sub_track_idx];
+                                for sub in &subs {
+                                    let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
+                                    let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
+                                    let dur = timeline_out - timeline_in;
+                                    let title_data = klipp_timeline::TitleData {
+                                        text: sub.text.clone(),
+                                        font_size: 32.0,
+                                        font_name: String::new(),
+                                        position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
+                                        alignment: klipp_timeline::TextAlignment::Center,
+                                        background: klipp_timeline::TitleBackground::None,
+                                        outline: Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 }),
+                                        ..Default::default()
+                                    };
+                                    let clip = klipp_timeline::Clip {
+                                        id: klipp_core::ClipId::new(),
+                                        kind: klipp_timeline::ClipKind::Title(title_data),
+                                        timeline_in,
+                                        timeline_out,
+                                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                        source_out: dur,
+                                        ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                    };
+                                    track.clips.push(clip);
+                                }
+                                track.sort_clips();
+                                self.state.toast.show(format!("Imported {} subtitles", subs.len()));
+                                self.state.dirty = true;
+                            }
+                        }
+                        Err(e) => {
+                            self.state.toast.show(format!("Failed to read file: {e}"));
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Export subtitles as SRT
+                AppCommand::ExportSubtitles { path } => {
+                    let path = path.clone();
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let mut subs = Vec::new();
+                    for track in &seq.tracks {
+                        if track.kind != klipp_timeline::TrackKind::Subtitle && track.kind != klipp_timeline::TrackKind::Text {
+                            continue;
+                        }
+                        for clip in &track.clips {
+                            if let Some(td) = clip.title_data() {
+                                subs.push(SubtitleEntry {
+                                    start_secs: clip.timeline_in.to_secs_f64(),
+                                    end_secs: clip.timeline_out.to_secs_f64(),
+                                    text: td.text.clone(),
+                                });
+                            }
+                        }
+                    }
+                    subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
+                    let srt = generate_srt(&subs);
+                    match std::fs::write(&path, &srt) {
+                        Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
+                        Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
+                    }
+                    continue;
+                }
                 // Next edit point: jump playhead to the nearest clip boundary after current position
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;
@@ -9762,6 +9854,27 @@ fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
     }
 }
 
+fn dialog_resolution(dialog: &ExportDialogState) -> Option<klipp_core::Resolution> {
+    match dialog.resolution_override {
+        1 => Some(klipp_core::Resolution { width: 1280, height: 720 }),
+        2 => Some(klipp_core::Resolution { width: 1920, height: 1080 }),
+        3 => Some(klipp_core::Resolution { width: 3840, height: 2160 }),
+        4 => Some(klipp_core::Resolution { width: dialog.custom_width, height: dialog.custom_height }),
+        _ => None, // 0 = use sequence
+    }
+}
+
+fn dialog_fps(dialog: &ExportDialogState) -> Option<klipp_core::Fps> {
+    match dialog.fps_override {
+        1 => Some(klipp_core::Fps::new(24, 1)),
+        2 => Some(klipp_core::Fps::new(25, 1)),
+        3 => Some(klipp_core::Fps::new(30000, 1001)),
+        4 => Some(klipp_core::Fps::new(30, 1)),
+        5 => Some(klipp_core::Fps::new(60, 1)),
+        _ => None, // 0 = use sequence
+    }
+}
+
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     dialog.video_codec = settings.video_codec;
@@ -11860,6 +11973,51 @@ impl KlippApp {
                                 }
                             });
                         ui.end_row();
+
+                        // Resolution override
+                        let seq_res = &self.state.sequences[self.state.active_sequence_idx].resolution;
+                        let res_labels = [
+                            format!("Sequence ({}x{})", seq_res.width, seq_res.height),
+                            "720p (1280x720)".into(),
+                            "1080p (1920x1080)".into(),
+                            "4K (3840x2160)".into(),
+                            "Custom".into(),
+                        ];
+                        ui.label("Resolution:");
+                        egui::ComboBox::from_id_salt("export_resolution")
+                            .selected_text(&res_labels[self.export_dialog.resolution_override as usize])
+                            .show_ui(ui, |ui| {
+                                for (i, label) in res_labels.iter().enumerate() {
+                                    ui.selectable_value(&mut self.export_dialog.resolution_override, i as u8, label.as_str());
+                                }
+                            });
+                        ui.end_row();
+
+                        if self.export_dialog.resolution_override == 4 {
+                            ui.label("Custom size:");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_width).range(128..=7680).suffix("w"));
+                                ui.label("\u{00d7}");
+                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_height).range(128..=4320).suffix("h"));
+                            });
+                            ui.end_row();
+                        }
+
+                        // Frame rate override
+                        let seq_fps = &self.state.sequences[self.state.active_sequence_idx].fps;
+                        let fps_labels = [
+                            format!("Sequence ({:.3} fps)", seq_fps.as_f64()),
+                            "24 fps".into(), "25 fps".into(), "29.97 fps".into(), "30 fps".into(), "60 fps".into(),
+                        ];
+                        ui.label("Frame rate:");
+                        egui::ComboBox::from_id_salt("export_fps")
+                            .selected_text(&fps_labels[self.export_dialog.fps_override as usize])
+                            .show_ui(ui, |ui| {
+                                for (i, label) in fps_labels.iter().enumerate() {
+                                    ui.selectable_value(&mut self.export_dialog.fps_override, i as u8, label.as_str());
+                                }
+                            });
+                        ui.end_row();
                     });
 
                 // Export range checkbox
@@ -11883,8 +12041,8 @@ impl KlippApp {
                             output_path: path.clone(),
                             format: self.export_dialog.format,
                             video_codec: self.export_dialog.video_codec,
-                            resolution: None,
-                            fps: None,
+                            resolution: dialog_resolution(&self.export_dialog),
+                            fps: dialog_fps(&self.export_dialog),
                             crf: self.export_dialog.crf,
                             preset: self.export_dialog.preset,
                             audio_codec: self.export_dialog.audio_codec,
@@ -12751,4 +12909,98 @@ fn parse_anim_part(s: &str) -> (&str, f32) {
         }
     }
     (s, 0.5) // default 0.5s
+}
+
+// ── SRT/VTT subtitle parsing and generation ──
+
+struct SubtitleEntry {
+    start_secs: f64,
+    end_secs: f64,
+    text: String,
+}
+
+/// Parse SRT or VTT subtitle content into timed entries.
+fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
+    let mut subs = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    let is_vtt = content.starts_with("WEBVTT");
+    if is_vtt { i = 1; } // skip header
+
+    while i < lines.len() {
+        // Skip blank lines and sequence numbers
+        let line = lines[i].trim();
+        if line.is_empty() || line.parse::<u32>().is_ok() {
+            i += 1;
+            continue;
+        }
+        // Look for timestamp line: "00:00:01,000 --> 00:00:04,000" or "00:00:01.000 --> 00:00:04.000"
+        if line.contains("-->") {
+            let parts: Vec<&str> = line.split("-->").collect();
+            if parts.len() == 2 {
+                let start = parse_srt_timestamp(parts[0].trim());
+                let end = parse_srt_timestamp(parts[1].trim());
+                if let (Some(s), Some(e)) = (start, end) {
+                    // Collect text lines until blank line
+                    let mut text_lines = Vec::new();
+                    i += 1;
+                    while i < lines.len() && !lines[i].trim().is_empty() {
+                        text_lines.push(lines[i].trim());
+                        i += 1;
+                    }
+                    let text = text_lines.join("\n");
+                    // Strip HTML tags (SRT allows <i>, <b>, etc.)
+                    let text = text.replace("<i>", "").replace("</i>", "")
+                        .replace("<b>", "").replace("</b>", "")
+                        .replace("<u>", "").replace("</u>", "");
+                    if !text.is_empty() {
+                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text });
+                    }
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    subs
+}
+
+/// Parse "HH:MM:SS,mmm" or "HH:MM:SS.mmm" or "MM:SS.mmm" to seconds.
+fn parse_srt_timestamp(s: &str) -> Option<f64> {
+    let s = s.replace(',', ".");
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        3 => {
+            let h: f64 = parts[0].parse().ok()?;
+            let m: f64 = parts[1].parse().ok()?;
+            let sec: f64 = parts[2].parse().ok()?;
+            Some(h * 3600.0 + m * 60.0 + sec)
+        }
+        2 => {
+            let m: f64 = parts[0].parse().ok()?;
+            let sec: f64 = parts[1].parse().ok()?;
+            Some(m * 60.0 + sec)
+        }
+        _ => None,
+    }
+}
+
+/// Generate SRT format string from subtitle entries.
+fn generate_srt(subs: &[SubtitleEntry]) -> String {
+    let mut out = String::new();
+    for (i, sub) in subs.iter().enumerate() {
+        out.push_str(&format!("{}\n", i + 1));
+        out.push_str(&format!("{} --> {}\n", format_srt_time(sub.start_secs), format_srt_time(sub.end_secs)));
+        out.push_str(&sub.text);
+        out.push_str("\n\n");
+    }
+    out
+}
+
+fn format_srt_time(secs: f64) -> String {
+    let h = (secs / 3600.0) as u32;
+    let m = ((secs % 3600.0) / 60.0) as u32;
+    let s = (secs % 60.0) as u32;
+    let ms = ((secs % 1.0) * 1000.0) as u32;
+    format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
 }
