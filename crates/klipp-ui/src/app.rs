@@ -10682,11 +10682,12 @@ impl KlippApp {
                 let dst = skim_path.to_str().unwrap_or("");
 
                 // Try NVENC first (GPU), fall back to libx264 (CPU)
+                // QP 30 for lightweight preview quality (QP 18 was overkill at ~50Mbps)
                 let result = run_ffmpeg(&[
                     "-y", "-hwaccel", "cuda",
                     "-i", src,
                     "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
-                    "-rc", "constqp", "-qp", "18",
+                    "-rc", "constqp", "-qp", "30",
                     "-an", "-vf", "scale_cuda=960:-2", dst,
                 ]);
 
@@ -10696,7 +10697,7 @@ impl KlippApp {
                         tracing::info!("NVENC skim transcode failed, falling back to libx264");
                         run_ffmpeg(&[
                             "-y", "-i", src,
-                            "-c:v", "libx264", "-g", "1", "-crf", "18",
+                            "-c:v", "libx264", "-g", "1", "-crf", "30",
                             "-preset", "ultrafast",
                             "-an", "-vf", "scale=960:-2", dst,
                         ])
