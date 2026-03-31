@@ -674,8 +674,7 @@ pub fn show(
                 position_x: 0.0, position_y: 0.0,
                 scale_x: 1.0, scale_y: 1.0,
                 rotation: 0.0,
-                anchor_x: 0.5, anchor_y: 0.5,
-            }),
+                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
             ("Chroma Key", klipp_effects::BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.2,
@@ -1046,8 +1045,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
-            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
-        },
+            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 },
         BuiltinEffect::ChromaKey { .. } => BuiltinEffect::ChromaKey {
             key_color: [0, 255, 0], tolerance: 0.2, spill_suppression: 0.1,
         },
@@ -1426,7 +1424,7 @@ fn show_builtin_effect_params(
             let r_f = scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, "", ks_f);
             track_scrubby!("feather", r_f, *feather);
         }
-        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } => {
+        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } => {
             // Transform in effects tab: no keyframes (handled by video tab's dedicated keyframes)
             let r = scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
             track_scrubby!("", r, *position_x);

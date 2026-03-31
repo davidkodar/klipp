@@ -36,12 +36,21 @@ pub enum BuiltinEffect {
         scale_x: f32,
         /// Vertical scale (1.0 = 100%)
         scale_y: f32,
-        /// Rotation in degrees
+        /// Rotation in degrees (Z-axis)
         rotation: f32,
         /// Anchor X (0.0–1.0, default 0.5 = center)
         anchor_x: f32,
         /// Anchor Y (0.0–1.0, default 0.5 = center)
         anchor_y: f32,
+        /// 3D rotation around X axis (tilt forward/backward) in degrees
+        #[serde(default)]
+        rotation_x: f32,
+        /// 3D rotation around Y axis (tilt left/right) in degrees
+        #[serde(default)]
+        rotation_y: f32,
+        /// Perspective strength (0 = none/orthographic, 1.0 = moderate, 2.0 = strong)
+        #[serde(default)]
+        perspective: f32,
     },
     Opacity {
         /// Opacity value (0.0–1.0)
@@ -394,11 +403,13 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         BuiltinEffect::Transform {
             position_x, position_y, scale_x, scale_y,
             rotation, anchor_x, anchor_y,
+            rotation_x, rotation_y, perspective,
         } => {
             transform::apply(
                 rgba, width, height,
                 *position_x, *position_y, *scale_x, *scale_y,
                 *rotation, *anchor_x, *anchor_y,
+                *rotation_x, *rotation_y, *perspective,
             )
         }
         BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {

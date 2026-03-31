@@ -1655,8 +1655,7 @@ impl InspectorPanel {
                     position_x: 0.0, position_y: 0.0,
                     scale_x: 1.0, scale_y: 1.0,
                     rotation: 0.0,
-                    anchor_x: 0.5, anchor_y: 0.5,
-                }),
+                    anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
                 ("Chroma Key", klipp_effects::BuiltinEffect::ChromaKey {
                     key_color: [0, 255, 0],
                     tolerance: 0.2,
@@ -2063,12 +2062,16 @@ fn show_builtin_effect_params(
         klipp_effects::BuiltinEffect::Transform {
             position_x, position_y, scale_x, scale_y,
             rotation, anchor_x, anchor_y,
+            rotation_x, rotation_y, perspective,
         } => {
             track_slider!(ui.add(egui::Slider::new(position_x, -1920.0..=1920.0).text("Position X")));
             track_slider!(ui.add(egui::Slider::new(position_y, -1080.0..=1080.0).text("Position Y")));
             track_slider!(ui.add(egui::Slider::new(scale_x, 0.01..=4.0).text("Scale X")));
             track_slider!(ui.add(egui::Slider::new(scale_y, 0.01..=4.0).text("Scale Y")));
             track_slider!(ui.add(egui::Slider::new(rotation, -360.0..=360.0).text("Rotation")));
+            track_slider!(ui.add(egui::Slider::new(rotation_x, -360.0..=360.0).text("Rotation X (3D)")));
+            track_slider!(ui.add(egui::Slider::new(rotation_y, -360.0..=360.0).text("Rotation Y (3D)")));
+            track_slider!(ui.add(egui::Slider::new(perspective, 0.0..=2.0).text("Perspective")));
             track_slider!(ui.add(egui::Slider::new(anchor_x, 0.0..=1.0).text("Anchor X")));
             track_slider!(ui.add(egui::Slider::new(anchor_y, 0.0..=1.0).text("Anchor Y")));
         }

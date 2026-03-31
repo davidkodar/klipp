@@ -3764,8 +3764,7 @@ impl KlippApp {
                                 clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
                                     position_x: 0.0, position_y: 0.0,
                                     scale_x: *start_scale, scale_y: *start_scale,
-                                    rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
-                                });
+                                    rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 });
                             }
 
                             // Scale keyframes

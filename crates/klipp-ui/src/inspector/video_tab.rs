@@ -21,6 +21,7 @@ pub fn get_transform(clip: &Clip) -> TransformParams {
                 rotation,
                 anchor_x,
                 anchor_y,
+                ..
             } => Some(TransformParams {
                 position_x: *position_x,
                 position_y: *position_y,
@@ -28,8 +29,7 @@ pub fn get_transform(clip: &Clip) -> TransformParams {
                 scale_y: *scale_y,
                 rotation: *rotation,
                 anchor_x: *anchor_x,
-                anchor_y: *anchor_y,
-            }),
+                anchor_y: *anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
             _ => None,
         })
         .unwrap_or_default()
@@ -66,6 +66,9 @@ pub struct TransformParams {
     pub rotation: f32,
     pub anchor_x: f32,
     pub anchor_y: f32,
+    pub rotation_x: f32,
+    pub rotation_y: f32,
+    pub perspective: f32,
 }
 
 impl Default for TransformParams {
@@ -77,8 +80,7 @@ impl Default for TransformParams {
             scale_y: 1.0,
             rotation: 0.0,
             anchor_x: 0.5,
-            anchor_y: 0.5,
-        }
+            anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }
     }
 }
 
@@ -91,8 +93,7 @@ impl TransformParams {
             scale_y: self.scale_y,
             rotation: self.rotation,
             anchor_x: self.anchor_x,
-            anchor_y: self.anchor_y,
-        }
+            anchor_y: self.anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }
     }
 }
 

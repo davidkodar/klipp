@@ -1996,7 +1996,7 @@ impl PlaybackEngine {
                     if has_transform {
                         let tdef = clip.builtin_effects.iter()
                             .find_map(|e| match e {
-                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
+                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
                                     Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
                                 _ => None,
                             })
@@ -2057,7 +2057,7 @@ impl PlaybackEngine {
 
                                 let sample_rgba = klipp_effects::transform::apply(
                                     rgba.clone(), res.width, res.height,
-                                    spx, spy, ssc, ssc, sro, tdef.5, tdef.6,
+                                    spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
                                 );
                                 for (i, &b) in sample_rgba.iter().enumerate() {
                                     accum[i] += b as u32;
@@ -2087,7 +2087,7 @@ impl PlaybackEngine {
                                 _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
                             };
 
-                            rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6);
+                            rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
                         }
                     }
 
@@ -3157,7 +3157,7 @@ impl PlaybackEngine {
             if has_transform {
                 let tdef = clip.builtin_effects.iter()
                     .find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } =>
+                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
                             Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
                         _ => None,
                     })
@@ -3209,7 +3209,7 @@ impl PlaybackEngine {
 
                         let sample_rgba = klipp_effects::transform::apply(
                             rgba.clone(), res.width, res.height,
-                            spx, spy, ssc, ssc, sro, tdef.5, tdef.6,
+                            spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
                         );
                         for (i, &b) in sample_rgba.iter().enumerate() {
                             accum[i] += b as u32;
@@ -3239,7 +3239,7 @@ impl PlaybackEngine {
                         _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
                     };
 
-                    rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6);
+                    rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
                 }
             }
 
@@ -3371,13 +3371,14 @@ impl PlaybackEngine {
 
             if has_transform_kf {
                 // Get current transform values (or defaults)
-                let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y) =
+                let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
                     fx.iter().find_map(|e| match e {
                         klipp_effects::BuiltinEffect::Transform {
                             position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                        } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+                            rotation_x, rotation_y, perspective,
+                        } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
                         _ => None,
-                    }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+                    }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
 
                 let ectx = eval_ctx.as_ref().unwrap();
                 if !c.transform_pos_x_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX) {
@@ -3401,6 +3402,7 @@ impl PlaybackEngine {
                 let new_transform = klipp_effects::BuiltinEffect::Transform {
                     position_x: pos_x, position_y: pos_y,
                     scale_x, scale_y, rotation, anchor_x, anchor_y,
+                    rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
                 };
                 let mut found = false;
                 for effect in &mut fx {

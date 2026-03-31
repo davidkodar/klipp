@@ -951,12 +951,17 @@ impl GpuEffectsPipeline {
                     rotation,
                     anchor_x,
                     anchor_y,
+                    rotation_x,
+                    rotation_y,
+                    perspective,
                 } => {
                     if *position_x == 0.0
                         && *position_y == 0.0
                         && (*scale_x - 1.0).abs() < f32::EPSILON
                         && (*scale_y - 1.0).abs() < f32::EPSILON
                         && rotation.abs() < f32::EPSILON
+                        && rotation_x.abs() < f32::EPSILON
+                        && rotation_y.abs() < f32::EPSILON
                     {
                         continue;
                     }
@@ -973,6 +978,9 @@ impl GpuEffectsPipeline {
                     } else {
                         1.0
                     };
+                    let rx_rad = rotation_x.to_radians();
+                    let ry_rad = rotation_y.to_radians();
+                    let focal = if *perspective > 0.001 { width as f32 / *perspective } else { 0.0 };
                     self.write_params(&TransformParams {
                         width,
                         height,
@@ -984,7 +992,12 @@ impl GpuEffectsPipeline {
                         sin_r,
                         inv_sx,
                         inv_sy,
-                        _pad: [0; 2],
+                        cos_rx: rx_rad.cos(),
+                        sin_rx: rx_rad.sin(),
+                        cos_ry: ry_rad.cos(),
+                        sin_ry: ry_rad.sin(),
+                        focal,
+                        _pad: [0; 3],
                     });
                     self.dispatch(&self.transform_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
@@ -1922,7 +1935,12 @@ struct TransformParams {
     sin_r: f32,
     inv_sx: f32,
     inv_sy: f32,
-    _pad: [u32; 2],
+    cos_rx: f32,
+    sin_rx: f32,
+    cos_ry: f32,
+    sin_ry: f32,
+    focal: f32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -2706,8 +2724,14 @@ struct Params {
     sin_r: f32,
     inv_sx: f32,
     inv_sy: f32,
+    cos_rx: f32,
+    sin_rx: f32,
+    cos_ry: f32,
+    sin_ry: f32,
+    focal: f32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<u32>;
@@ -2722,19 +2746,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     if y >= params.height { return; }
 
-    // Inverse mapping: output pixel → source pixel
     let dx = f32(x) - params.anchor_x - params.position_x;
     let dy = f32(y) - params.anchor_y - params.position_y;
 
-    // Inverse rotation
+    // Inverse Z-rotation (2D)
     let rx = dx * params.cos_r + dy * params.sin_r;
     let ry = -dx * params.sin_r + dy * params.cos_r;
 
     // Inverse scale
-    let sx = rx * params.inv_sx + params.anchor_x;
-    let sy = ry * params.inv_sy + params.anchor_y;
+    var sx = rx * params.inv_sx;
+    var sy = ry * params.inv_sy;
 
-    // Nearest-neighbour sample
+    // 3D rotation + perspective
+    if params.cos_rx != 1.0 || params.cos_ry != 1.0 {
+        let y1 = sy * params.cos_rx;
+        let z1 = sy * params.sin_rx;
+        let x2 = sx * params.cos_ry + z1 * params.sin_ry;
+        let z2 = -sx * params.sin_ry + z1 * params.cos_ry;
+        if params.focal > 0.0 {
+            let w_f = 1.0 + z2 / params.focal;
+            if w_f > 0.01 {
+                sx = x2 / w_f;
+                sy = y1 / w_f;
+            }
+        } else {
+            sx = x2;
+            sy = y1;
+        }
+    }
+
+    sx = sx + params.anchor_x;
+    sy = sy + params.anchor_y;
+
     let src_x = i32(round(sx));
     let src_y = i32(round(sy));
 
@@ -2742,7 +2785,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src_idx = u32(src_y) * params.width + u32(src_x);
         output[idx] = input[src_idx];
     } else {
-        output[idx] = 0u;  // transparent
+        output[idx] = 0u;
     }
 }
 "
