@@ -1,5 +1,6 @@
 pub mod chorus;
 pub mod compressor;
+pub mod multiband_compressor;
 pub mod declick;
 pub mod deesser;
 pub mod delay;
@@ -172,6 +173,7 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         "normalize" => Some(Box::new(normalize::Normalize::new(sample_rate))),
         "pitch_shift" => Some(Box::new(pitch_shift::PitchShift::new(sample_rate))),
         "chorus" => Some(Box::new(chorus::Chorus::new(sample_rate))),
+        "multiband_compressor" => Some(Box::new(multiband_compressor::MultibandCompressor::new(sample_rate))),
         _ => None,
     }
 }
@@ -191,5 +193,6 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("normalize", "Normalize"),
         ("pitch_shift", "Pitch Shift"),
         ("chorus", "Chorus"),
+        ("multiband_compressor", "Multiband Compressor"),
     ]
 }

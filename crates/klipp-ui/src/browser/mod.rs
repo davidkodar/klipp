@@ -12,12 +12,24 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
+/// Smart bin filter criteria for auto-filtering media.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmartBinFilter {
+    None,
+    Unused,
+    VideoOnly,
+    AudioOnly,
+    StillsOnly,
+    HighRating, // 4+ stars
+}
+
 pub struct BrowserPanel {
     pub search_query: String,
     // Media tab state (migrated from MediaPanel)
     pub media_sort_by: media_tab::SortBy,
     pub media_sort_ascending: bool,
     pub media_selected_bin: Option<String>,
+    pub smart_bin_filter: SmartBinFilter,
     pub browser_view_mode: media_tab::BrowserViewMode,
     // Bin management state
     pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
@@ -53,6 +65,7 @@ impl Default for BrowserPanel {
             media_sort_by: media_tab::SortBy::Name,
             media_sort_ascending: true,
             media_selected_bin: None,
+            smart_bin_filter: SmartBinFilter::None,
             browser_view_mode: media_tab::BrowserViewMode::List,
             renaming_bin: None,
             creating_bin: None,
@@ -332,6 +345,30 @@ impl BrowserPanel {
                 ui.set_clip_rect(right_rect);
                 match active_tab {
                     BrowserTab::Media => {
+                        // Smart bin filter selector
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
+                            let filter_label = match self.smart_bin_filter {
+                                SmartBinFilter::None => "All Media",
+                                SmartBinFilter::Unused => "Unused",
+                                SmartBinFilter::VideoOnly => "Video Only",
+                                SmartBinFilter::AudioOnly => "Audio Only",
+                                SmartBinFilter::StillsOnly => "Stills Only",
+                                SmartBinFilter::HighRating => "4+ Stars",
+                            };
+                            egui::ComboBox::from_id_salt("smart_bin")
+                                .selected_text(filter_label)
+                                .width(100.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Unused, "Unused");
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::AudioOnly, "Audio Only");
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
+                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::HighRating, "4+ Stars");
+                                });
+                        });
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -344,6 +381,7 @@ impl BrowserPanel {
                             &mut self.renaming_bin,
                             &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
+                            self.smart_bin_filter,
                         );
                         cmds.extend(tab_cmds);
                     }
@@ -374,6 +412,7 @@ impl BrowserPanel {
                         &mut self.renaming_bin,
                         &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
+                        self.smart_bin_filter,
                     );
                     cmds.extend(tab_cmds);
                 }

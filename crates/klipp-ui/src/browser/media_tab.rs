@@ -34,6 +34,7 @@ pub fn show(
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
+    smart_filter: super::SmartBinFilter,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
@@ -49,6 +50,25 @@ pub fn show(
             if let Some(ref bin) = selected_bin {
                 if m.bin.as_ref() != Some(bin) {
                     return false;
+                }
+            }
+            // Smart bin filter
+            match smart_filter {
+                super::SmartBinFilter::None => {}
+                super::SmartBinFilter::Unused => {
+                    if state.media_usage_cache.get(&m.id).copied().unwrap_or(0) > 0 { return false; }
+                }
+                super::SmartBinFilter::VideoOnly => {
+                    if m.video_codec.is_empty() || m.is_still { return false; }
+                }
+                super::SmartBinFilter::AudioOnly => {
+                    if !m.has_audio || !m.video_codec.is_empty() { return false; }
+                }
+                super::SmartBinFilter::StillsOnly => {
+                    if !m.is_still { return false; }
+                }
+                super::SmartBinFilter::HighRating => {
+                    if m.rating < 4 { return false; }
                 }
             }
             if !search_lower.is_empty() {
