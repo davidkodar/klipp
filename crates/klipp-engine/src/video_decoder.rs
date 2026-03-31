@@ -49,7 +49,8 @@ pub struct VideoDecoder {
 
 impl VideoDecoder {
     /// Open a video file for decoding with optional VAAPI hardware acceleration.
-    pub fn open(path: &Path) -> Result<Self, DecoderError> {
+    /// `source_rotation` is the media rotation in degrees (0, 90, 180, 270) from metadata.
+    pub fn open(path: &Path, source_rotation: i32) -> Result<Self, DecoderError> {
         // Validate file can be opened before spawning the thread
         {
             let ctx = ffmpeg_next::format::input(path)
@@ -72,7 +73,7 @@ impl VideoDecoder {
         let thread = std::thread::Builder::new()
             .name("klipp-vdec".into())
             .spawn(move || {
-                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone);
+                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation);
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
 
@@ -266,14 +267,21 @@ const MAX_PLAYBACK_WIDTH: u32 = 1920;
 const MAX_PLAYBACK_HEIGHT: u32 = 1080;
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
-fn playback_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
-    if src_w <= MAX_PLAYBACK_WIDTH && src_h <= MAX_PLAYBACK_HEIGHT {
-        return (src_w, src_h);
+/// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
+fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
+    // For rotation, the effective display dimensions are swapped
+    let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
+        (src_h, src_w)
+    } else {
+        (src_w, src_h)
+    };
+    if eff_w <= MAX_PLAYBACK_WIDTH && eff_h <= MAX_PLAYBACK_HEIGHT {
+        return (eff_w, eff_h);
     }
-    let scale = (MAX_PLAYBACK_WIDTH as f64 / src_w as f64)
-        .min(MAX_PLAYBACK_HEIGHT as f64 / src_h as f64);
-    let out_w = ((src_w as f64 * scale) as u32) & !1; // even width
-    let out_h = ((src_h as f64 * scale) as u32) & !1; // even height
+    let scale = (MAX_PLAYBACK_WIDTH as f64 / eff_w as f64)
+        .min(MAX_PLAYBACK_HEIGHT as f64 / eff_h as f64);
+    let out_w = ((eff_w as f64 * scale) as u32) & !1; // even width
+    let out_h = ((eff_h as f64 * scale) as u32) & !1; // even height
     (out_w.max(2), out_h.max(2))
 }
 
@@ -281,12 +289,13 @@ fn playback_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
 /// Uses raw FFI to avoid format enum mismatches between ffmpeg-next and system ffmpeg.
 ///
 /// When `gpu_converter` is available and the transferred frame is NV12, uses the GPU compute
-/// shader for YUV→RGBA conversion + resize (much faster than CPU swscale). Falls back to
-/// swscale for non-NV12 formats (e.g. P010) or when the GPU converter is unavailable.
+/// shader for YUV→RGBA conversion + resize + rotation (much faster than CPU swscale).
+/// Falls back to swscale for non-NV12 formats (e.g. P010) or when the GPU converter is unavailable.
 unsafe fn download_hw_frame(
     hw_frame: &ffmpeg_next::frame::Video,
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
+    source_rotation: i32,
 ) -> Option<(Vec<u8>, u32, u32)> {
     use ffmpeg_next::ffi::*;
 
@@ -311,7 +320,7 @@ unsafe fn download_hw_frame(
     let src_w = (*sw_frame).width as u32;
     let src_h = (*sw_frame).height as u32;
     let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
-    let (out_w, out_h) = playback_dimensions(src_w, src_h);
+    let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
 
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
     // Temporary diagnostic — log first frame only
@@ -319,7 +328,7 @@ unsafe fn download_hw_frame(
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::Relaxed) {
-            tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, gpu_available={}", sw_fmt, src_w, src_h, out_w, out_h, gpu_converter.is_some());
+            tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, rotation={}, gpu_available={}", sw_fmt, src_w, src_h, out_w, out_h, source_rotation, gpu_converter.is_some());
         }
     }
     if sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
@@ -333,7 +342,7 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let rgba_data = converter.convert_nv12_to_rgba(
-                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h,
+                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h, source_rotation as u32,
             );
 
             av_frame_free(&mut (sw_frame as *mut _));
@@ -342,13 +351,16 @@ unsafe fn download_hw_frame(
     }
 
     // Fallback: CPU swscale path (handles NV12 without GPU, P010, and other formats)
+    // swscale does resize only — rotation is applied separately via CPU rotate_rgba.
+    // Use unrotated dimensions for swscale, then rotate the RGBA output.
+    let (sws_out_w, sws_out_h) = playback_dimensions(src_w, src_h, 0);
     let sws = sws_getCachedContext(
         sws_ctx.unwrap_or(std::ptr::null_mut()),
         src_w as i32,
         src_h as i32,
         sw_fmt,
-        out_w as i32,
-        out_h as i32,
+        sws_out_w as i32,
+        sws_out_h as i32,
         AVPixelFormat::AV_PIX_FMT_RGBA,
         1, // SWS_FAST_BILINEAR
         std::ptr::null_mut(),
@@ -361,18 +373,18 @@ unsafe fn download_hw_frame(
         return None;
     }
     if sws_ctx.is_none() {
-        info!("HW download: scaler created for {:?} {}x{} → {}x{}", sw_fmt, src_w, src_h, out_w, out_h);
+        info!("HW download: scaler created for {:?} {}x{} → {}x{}", sw_fmt, src_w, src_h, sws_out_w, sws_out_h);
     }
     *sws_ctx = Some(sws);
 
-    // Allocate output RGBA frame at playback resolution
+    // Allocate output RGBA frame at playback resolution (unrotated)
     let rgba_frame = av_frame_alloc();
     if rgba_frame.is_null() {
         av_frame_free(&mut (sw_frame as *mut _));
         return None;
     }
-    (*rgba_frame).width = out_w as i32;
-    (*rgba_frame).height = out_h as i32;
+    (*rgba_frame).width = sws_out_w as i32;
+    (*rgba_frame).height = sws_out_h as i32;
     (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA as i32;
     if av_frame_get_buffer(rgba_frame, 0) < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
@@ -394,14 +406,14 @@ unsafe fn download_hw_frame(
 
     // Extract RGBA data (handle stride != width*4)
     let stride = (*rgba_frame).linesize[0] as usize;
-    let expected_stride = (out_w * 4) as usize;
-    let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * out_h as usize);
+    let expected_stride = (sws_out_w * 4) as usize;
+    let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * sws_out_h as usize);
 
     let rgba_data = if stride == expected_stride {
         data_slice.to_vec()
     } else {
-        let mut buf = Vec::with_capacity(expected_stride * out_h as usize);
-        for row in 0..out_h as usize {
+        let mut buf = Vec::with_capacity(expected_stride * sws_out_h as usize);
+        for row in 0..sws_out_h as usize {
             let start = row * stride;
             buf.extend_from_slice(&data_slice[start..start + expected_stride]);
         }
@@ -409,7 +421,14 @@ unsafe fn download_hw_frame(
     };
 
     av_frame_free(&mut (rgba_frame as *mut _));
-    Some((rgba_data, out_w, out_h))
+
+    // Apply CPU rotation for the swscale fallback path
+    if source_rotation != 0 {
+        let (rotated, rw, rh) = crate::engine::rotate_rgba(&rgba_data, sws_out_w, sws_out_h, source_rotation);
+        Some((rotated, rw, rh))
+    } else {
+        Some((rgba_data, sws_out_w, sws_out_h))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +442,7 @@ fn decode_thread_main(
     cmd_rx: Receiver<DecodeCommand>,
     hw_active_flag: Arc<std::sync::atomic::AtomicBool>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    source_rotation: i32,
 ) {
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
         Ok(ctx) => ctx,
@@ -653,9 +673,9 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut()) }
+                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), source_rotation) }
             } else {
-                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us)
+                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation)
             };
 
             let (rgba_data, width, height) = match frame_result {
@@ -754,13 +774,15 @@ fn decode_thread_main(
     }
 }
 
-/// Convert a software-decoded frame to RGBA, with optional downscaling.
+/// Convert a software-decoded frame to RGBA, with optional downscaling and rotation.
 fn convert_sw_frame(
     received_frame: &ffmpeg_next::frame::Video,
     sw_scaler: &mut Option<ffmpeg_next::software::scaling::Context>,
     perf_copy_us: &mut u64,
+    source_rotation: i32,
 ) -> Option<(Vec<u8>, u32, u32)> {
-    let (out_w, out_h) = playback_dimensions(received_frame.width(), received_frame.height());
+    // swscale does resize only — use unrotated dimensions, then rotate RGBA output
+    let (out_w, out_h) = playback_dimensions(received_frame.width(), received_frame.height(), 0);
     let need_scaler = match sw_scaler {
         Some(s) => {
             let inp = s.input();
@@ -822,5 +844,11 @@ fn convert_sw_frame(
     };
     *perf_copy_us += t_copy.elapsed().as_micros() as u64;
 
-    Some((rgba_data, width, height))
+    // Apply CPU rotation for the software decode path
+    if source_rotation != 0 {
+        let (rotated, rw, rh) = crate::engine::rotate_rgba(&rgba_data, width, height, source_rotation);
+        Some((rotated, rw, rh))
+    } else {
+        Some((rgba_data, width, height))
+    }
 }

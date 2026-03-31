@@ -155,6 +155,7 @@ pub struct PlaybackEngine {
     clip_source_start: f64, // source seconds at which playback started for current clip
     clip_timeline_start: Timecode, // timeline position of clip_source_start
     clip_speed: f64, // per-clip speed multiplier (1.0 = normal)
+    current_source_rotation: i32, // source rotation in degrees (0, 90, 180, 270)
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -282,6 +283,7 @@ impl PlaybackEngine {
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
             clip_speed: 1.0,
+            current_source_rotation: 0,
             expected_audio_generation: 0,
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
@@ -799,7 +801,7 @@ impl PlaybackEngine {
                         let source_secs = clip.source_in.to_secs_f64()
                             + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed;
                         let clip_source_in = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed));
+                        return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation));
                     }
                     // Playhead is on a gap clip — fall through to find next real clip
                 }
@@ -808,7 +810,7 @@ impl PlaybackEngine {
                     if clip.timeline_in >= self.playhead {
                         if let Some(media_id) = clip.media_id() {
                             let si = clip.source_in.to_secs_f64();
-                            return Some((idx, media_id, si, clip.timeline_in, si, clip.speed));
+                            return Some((idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
                         }
                         // Gap clip — continue searching
                     }
@@ -817,19 +819,19 @@ impl PlaybackEngine {
                 for (idx, clip) in track.clips.iter().enumerate() {
                     if let Some(media_id) = clip.media_id() {
                         let si = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, si, clip.timeline_in, si, clip.speed));
+                        return Some((idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
                     }
                 }
                 None
             });
         drop(seq);
 
-        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in, clip_speed)) = clip_info {
+        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in, clip_speed, source_rotation)) = clip_info {
             if let Some(path) = self.path_for_media(media_id) {
                 info!("handle_play: clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
 
                 // Open video decoder
-                match VideoDecoder::open(&path) {
+                match VideoDecoder::open(&path, source_rotation) {
                     Ok(dec) => {
                         if source_secs > 0.01 {
                             dec.seek(source_secs);
@@ -882,6 +884,7 @@ impl PlaybackEngine {
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = clip_speed;
+                self.current_source_rotation = source_rotation;
                 self.current_clip_index = clip_idx;
                 self.current_file = Some(path);
                 self.state = PlaybackState::Playing;
@@ -1639,7 +1642,7 @@ impl PlaybackEngine {
                         for idx in next_idx..track.clips.len() {
                             let clip = &track.clips[idx];
                             if let Some(media_id) = clip.media_id() {
-                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in, clip.speed));
+                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in, clip.speed, clip.source_rotation));
                                 break;
                             }
                         }
@@ -1651,7 +1654,7 @@ impl PlaybackEngine {
         };
         drop(seq);
 
-        if let Some((actual_idx, media_id, source_in_secs, timeline_in, next_clip_speed)) = next_clip_info {
+        if let Some((actual_idx, media_id, source_in_secs, timeline_in, next_clip_speed, source_rotation)) = next_clip_info {
             // Contiguous clip optimization: if the next clip uses the same media file
             // and its source_in matches the current clip's source_out (e.g. after a blade cut),
             // keep the decoder running — no seek, no flush, no stall.
@@ -1675,6 +1678,7 @@ impl PlaybackEngine {
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
+                self.current_source_rotation = source_rotation;
                 self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed); // suppress fade-in on next sync
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -1745,6 +1749,7 @@ impl PlaybackEngine {
                     self.clip_source_start = source_in_secs;
                     self.clip_timeline_start = timeline_in;
                     self.clip_speed = next_clip_speed;
+                    self.current_source_rotation = source_rotation;
                     self.last_frame_time = std::time::Instant::now();
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     self.maybe_open_v2_decoder(self.playhead);
@@ -1784,6 +1789,7 @@ impl PlaybackEngine {
                     self.clip_source_start = source_in_secs;
                     self.clip_timeline_start = timeline_in;
                     self.clip_speed = next_clip_speed;
+                    self.current_source_rotation = source_rotation;
                     self.last_frame_time = std::time::Instant::now();
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     self.maybe_open_v2_decoder(self.playhead);
@@ -1810,7 +1816,7 @@ impl PlaybackEngine {
                 self.audio_output = None;
 
                 // Open new video decoder
-                match VideoDecoder::open(&path) {
+                match VideoDecoder::open(&path, source_rotation) {
                     Ok(dec) => {
                         if source_in_secs > 0.01 {
                             dec.seek(source_in_secs);
@@ -1845,6 +1851,7 @@ impl PlaybackEngine {
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
+                self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
 
@@ -1870,8 +1877,9 @@ impl PlaybackEngine {
             for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
                 if track.clips.get(self.current_clip_index).and_then(|c| c.media_id()).is_some() {
                     for idx in next_idx..track.clips.len() {
-                        if let Some(media_id) = track.clips[idx].media_id() {
-                            result = Some((idx, media_id, track.clips[idx].source_in.to_secs_f64()));
+                        let clip = &track.clips[idx];
+                        if let Some(media_id) = clip.media_id() {
+                            result = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.source_rotation));
                             break;
                         }
                     }
@@ -1882,12 +1890,12 @@ impl PlaybackEngine {
         };
         drop(seq);
 
-        if let Some((idx, media_id, source_in_secs)) = next_info {
+        if let Some((idx, media_id, source_in_secs, preroll_rotation)) = next_info {
             if self.preroll_clip_index == Some(idx) {
                 return; // Already pre-rolling this clip
             }
             if let Some(path) = self.path_for_media(media_id) {
-                match VideoDecoder::open(&path) {
+                match VideoDecoder::open(&path, preroll_rotation) {
                     Ok(dec) => {
                         if source_in_secs > 0.01 {
                             dec.seek(source_in_secs);
@@ -2096,6 +2104,7 @@ impl PlaybackEngine {
                 if let Some(media_id) = clip.media_id() {
                     let source_secs = clip.source_in.to_secs_f64()
                         + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
+                    let v2_rotation = clip.source_rotation;
                     // Already have the right decoder open?
                     if self.current_clip_v2 == Some(idx) {
                         return;
@@ -2108,7 +2117,7 @@ impl PlaybackEngine {
                     self.v2_frame_cache = None;
 
                     if let Some(path) = self.path_for_media(media_id) {
-                        match VideoDecoder::open(&path) {
+                        match VideoDecoder::open(&path, v2_rotation) {
                             Ok(dec) => {
                                 if source_secs > 0.01 {
                                     dec.seek(source_secs);
@@ -2352,17 +2361,17 @@ impl PlaybackEngine {
                             let source_secs = clip.source_in.to_secs_f64()
                                 + (target - clip.timeline_in).to_secs_f64() * clip.speed;
                             let clip_source_in = clip.source_in.to_secs_f64();
-                            Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
+                            Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                         })
                     });
                 drop(seq);
 
-                let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
+                let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
                     let need_new = self.current_clip_index != idx || self.v1_decoder.is_none();
                     if need_new {
                         if let Some(path) = self.path_for_media(media_id) {
                             self.v1_decoder = None;
-                            if let Ok(dec) = VideoDecoder::open(&path) {
+                            if let Ok(dec) = VideoDecoder::open(&path, rot) {
                                 dec.seek(source_secs);
                                 dec.resume();
                                 self.v1_decoder = Some(dec);
@@ -2371,6 +2380,7 @@ impl PlaybackEngine {
                                 self.clip_source_start = clip_source_in;
                                 self.clip_timeline_start = timeline_in;
                                 self.clip_speed = spd;
+                                self.current_source_rotation = rot;
                             }
                         }
                     } else if let Some(dec) = &self.v1_decoder {
@@ -2426,7 +2436,7 @@ impl PlaybackEngine {
                     let source_secs = clip.source_in.to_secs_f64()
                         + (target - clip.timeline_in).to_secs_f64() * clip.speed;
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
             });
         // Also check for title clip
@@ -2484,14 +2494,14 @@ impl PlaybackEngine {
         }
 
         // Handle media clip at loop target
-        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
                     self.stop_all_audio();
-                    match VideoDecoder::open(&path) {
+                    match VideoDecoder::open(&path, rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -2501,6 +2511,7 @@ impl PlaybackEngine {
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
+                            self.current_source_rotation = rot;
                         }
                         Err(e) => {
                             error!("[Loop] Failed to open decoder: {e}");
@@ -2638,19 +2649,19 @@ impl PlaybackEngine {
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed))
+                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
             });
         drop(seq);
 
-        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd)) = clip_info {
+        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
                     self.stop_all_audio();
-                    match VideoDecoder::open(&path) {
+                    match VideoDecoder::open(&path, rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -2660,6 +2671,7 @@ impl PlaybackEngine {
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
+                            self.current_source_rotation = rot;
                         }
                         Err(e) => {
                             error!("Failed to open decoder for seek: {e}");
@@ -2982,7 +2994,7 @@ impl PlaybackEngine {
             // Open new decoder for the partner clip
             if let Some(media_id) = active.partner_clip.media_id() {
                 if let Some(path) = self.path_for_media(media_id) {
-                    match VideoDecoder::open(&path) {
+                    match VideoDecoder::open(&path, active.partner_clip.source_rotation) {
                         Ok(dec) => {
                             let source_secs = active.partner_clip.source_in.to_secs_f64()
                                 + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0) * active.partner_clip.speed;
@@ -3338,9 +3350,8 @@ impl PlaybackEngine {
                 || !c.transform_scale_keyframes.is_empty()
                 || !c.transform_rotation_keyframes.is_empty()
                 || has_transform_modifiers;
-            let has_source_rotation = c.source_rotation != 0;
 
-            if has_transform_kf || has_source_rotation {
+            if has_transform_kf {
                 // Get current transform values (or defaults)
                 let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y) =
                     fx.iter().find_map(|e| match e {
@@ -3366,10 +3377,8 @@ impl PlaybackEngine {
                     rotation = eval_with_modifiers(&c.transform_rotation_keyframes, &c.param_modifiers, &klipp_core::ParamId::Rotation, clip_relative_secs, rotation, ectx);
                 }
 
-                // Apply source rotation from media metadata (phone videos)
-                if c.source_rotation != 0 {
-                    rotation += c.source_rotation as f32;
-                }
+                // Source rotation is now handled in the decode pipeline (NV12→RGBA GPU converter)
+                // rather than the effects pipeline, so it's not added to the Transform here.
 
                 let new_transform = klipp_effects::BuiltinEffect::Transform {
                     position_x: pos_x, position_y: pos_y,
@@ -3932,7 +3941,7 @@ impl PlaybackEngine {
 
     fn grab_first_frame(&mut self) {
         if let Some(path) = &self.current_file {
-            match VideoDecoder::open(path) {
+            match VideoDecoder::open(path, self.current_source_rotation) {
                 Ok(dec) => {
                     dec.resume();
                     self.v1_decoder = Some(dec);

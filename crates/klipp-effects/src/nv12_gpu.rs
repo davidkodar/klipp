@@ -34,14 +34,26 @@ struct Nv12Params {
     dst_height: u32,
     y_stride: u32,
     uv_stride: u32,
-    _pad0: u32,
+    rotation: u32, // 0, 90, 180, 270
     _pad1: u32,
 }
 
-/// The compute shader source — NV12 to RGBA with BT.709 color matrix and nearest-neighbor resize.
+/// The compute shader source — NV12 to RGBA with BT.709 color matrix, nearest-neighbor resize,
+/// and source rotation (0/90/180/270 degrees).
+///
+/// Source rotation is applied here during NV12→RGBA conversion (Option A).
+/// This is zero-cost: rotation happens in the same GPU pass as color space conversion.
+///
+/// Alternative: Option C would apply rotation as a separate GPU effect in the
+/// effects pipeline (gpu.rs). This would require making GpuEffectsPipeline
+/// dimension-aware (separate src/dst dimensions for all ping-pong buffers),
+/// which is a larger refactor. Option C would be needed if rotation must
+/// interact with other effects that depend on specific orientation, or if
+/// rotation needs to be animated via keyframes.
+///
 /// Uses 2D workgroups (16×16) for spatial locality on the output image.
 const SHADER_NV12_TO_RGBA: &str = "
-// NV12 to RGBA conversion with optional resize
+// NV12 to RGBA conversion with optional resize and source rotation
 // NV12: Y plane (full res) + interleaved UV plane (half res)
 // BT.709 color matrix
 
@@ -57,7 +69,7 @@ struct Params {
     dst_height: u32,
     y_stride: u32,
     uv_stride: u32,
-    _pad0: u32,
+    rotation: u32,
     _pad1: u32,
 }
 
@@ -67,9 +79,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dy = gid.y;
     if (dx >= params.dst_width || dy >= params.dst_height) { return; }
 
-    // Map output pixel to source pixel (nearest neighbor resize)
-    let sx = dx * params.src_width / params.dst_width;
-    let sy = dy * params.src_height / params.dst_height;
+    // Map output pixel to source pixel with rotation and nearest-neighbor resize.
+    // For 90/270 rotation, dst_width/dst_height are swapped relative to src dimensions
+    // (caller is responsible for providing the rotated output dimensions).
+    var sx: u32;
+    var sy: u32;
+
+    if params.rotation == 0u {
+        sx = dx * params.src_width / params.dst_width;
+        sy = dy * params.src_height / params.dst_height;
+    } else if params.rotation == 90u {
+        sx = dy * params.src_width / params.dst_height;
+        sy = (params.dst_width - 1u - dx) * params.src_height / params.dst_width;
+    } else if params.rotation == 180u {
+        sx = (params.dst_width - 1u - dx) * params.src_width / params.dst_width;
+        sy = (params.dst_height - 1u - dy) * params.src_height / params.dst_height;
+    } else { // 270
+        sx = (params.dst_height - 1u - dy) * params.src_width / params.dst_height;
+        sy = dx * params.src_height / params.dst_width;
+    }
+
+    // Clamp to source bounds
+    sx = min(sx, params.src_width - 1u);
+    sy = min(sy, params.src_height - 1u);
 
     // Read Y value (byte access via u32 array)
     let y_byte_idx = sy * params.y_stride + sx;
@@ -300,13 +332,14 @@ impl GpuNv12Converter {
         self.cached_output_size = size;
     }
 
-    /// Convert NV12 frame to RGBA with optional resize on the GPU.
+    /// Convert NV12 frame to RGBA with optional resize and rotation on the GPU.
     ///
     /// - `y_data`: Y plane bytes (src_height rows, each y_stride bytes)
     /// - `uv_data`: interleaved UV plane bytes (src_height/2 rows, each uv_stride bytes)
     /// - `src_width`, `src_height`: source frame dimensions
     /// - `y_stride`, `uv_stride`: byte stride per row for each plane
-    /// - `dst_width`, `dst_height`: desired output dimensions
+    /// - `dst_width`, `dst_height`: desired output dimensions (caller must swap for 90°/270°)
+    /// - `rotation`: source rotation in degrees (0, 90, 180, 270)
     ///
     /// Returns the RGBA pixel data (dst_width * dst_height * 4 bytes).
     #[allow(clippy::too_many_arguments)]
@@ -320,6 +353,7 @@ impl GpuNv12Converter {
         uv_stride: u32,
         dst_width: u32,
         dst_height: u32,
+        rotation: u32,
     ) -> Vec<u8> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -345,7 +379,7 @@ impl GpuNv12Converter {
             dst_height,
             y_stride,
             uv_stride,
-            _pad0: 0,
+            rotation,
             _pad1: 0,
         };
         self.queue
