@@ -265,6 +265,9 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             style_runs: serde_json::to_value(&data.style_runs).unwrap_or_default(),
         },
         ClipKind::Gap => ClipKindJson::Gap,
+        ClipKind::Sequence { sequence_id } => ClipKindJson::Sequence {
+            sequence_id: sequence_id.to_string(),
+        },
     }
 }
 

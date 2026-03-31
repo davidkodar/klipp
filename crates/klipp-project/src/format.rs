@@ -265,6 +265,9 @@ pub enum ClipKindJson {
         style_runs: serde_json::Value,
     },
     Gap,
+    Sequence {
+        sequence_id: String,
+    },
 }
 
 fn default_one_f32() -> f32 { 1.0 }

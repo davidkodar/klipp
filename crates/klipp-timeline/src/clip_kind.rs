@@ -74,6 +74,8 @@ pub enum ClipKind {
     Title(TitleData),
     /// A gap placeholder — no media, no rendering. Pure timing spacer.
     Gap,
+    /// A nested sequence (compound clip) — references another sequence by ID.
+    Sequence { sequence_id: klipp_core::SequenceId },
 }
 
 impl ClipKind {

@@ -483,6 +483,13 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Select All").shortcut_text("Ctrl+A")).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
             if ui.button("Select All Forward").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
             if ui.button("Select All Backward").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            if !state.compound_clip_stack.is_empty() {
+                ui.separator();
+                if ui.button("\u{2190} Back (Exit Compound Clip)").clicked() {
+                    cmds.push(AppCommand::CloseCompoundClip);
+                    ui.close_menu();
+                }
+            }
             ui.separator();
             if ui.add(egui::Button::new("Next Edit Point").shortcut_text("\u{2193}")).clicked() { cmds.push(AppCommand::NextEditPoint); ui.close_menu(); }
             if ui.add(egui::Button::new("Previous Edit Point").shortcut_text("\u{2191}")).clicked() { cmds.push(AppCommand::PrevEditPoint); ui.close_menu(); }

@@ -5635,6 +5635,23 @@ impl TimelinePanel {
                     state.show_paste_attributes_dialog = true;
                     ui.close_menu();
                 }
+                // Compound clip operations
+                let is_compound = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .is_some_and(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { .. }));
+                if is_compound {
+                    if ui.button("Open Compound Clip").clicked() {
+                        cmds.push(AppCommand::OpenCompoundClip { clip_id });
+                        ui.close_menu();
+                    }
+                }
+                let has_multi_for_compound = state.selected_clips.len() >= 2
+                    || (state.selected_clip.is_some() && !state.selected_clips.is_empty());
+                if ui.add_enabled(has_multi_for_compound, egui::Button::new("Create Compound Clip...")).clicked() {
+                    cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
+                    ui.close_menu();
+                }
                 ui.separator();
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()
@@ -6064,6 +6081,17 @@ impl TimelinePanel {
                     if self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                         state.selected_clips.clear();
                         cmds.push(AppCommand::SelectClip(None));
+                    }
+                }
+            }
+        }
+
+        // Double-click: open compound clips
+        if track_response.double_clicked() {
+            if let Some(pos) = track_response.interact_pointer_pos {
+                if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                    if matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }) {
+                        cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip.id });
                     }
                 }
             }

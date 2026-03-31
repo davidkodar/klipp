@@ -406,6 +406,12 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                 })
             }
             ClipKindJson::Gap => ClipKind::Gap,
+            ClipKindJson::Sequence { sequence_id } => {
+                let sid = parse_uuid(sequence_id)
+                    .map(klipp_core::SequenceId)
+                    .unwrap_or_else(|_| klipp_core::SequenceId::new());
+                ClipKind::Sequence { sequence_id: sid }
+            }
         };
     }
 

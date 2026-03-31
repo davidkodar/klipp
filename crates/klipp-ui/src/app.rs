@@ -6119,6 +6119,136 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Create compound clip: move selected clips into a new nested sequence
+                AppCommand::CreateCompoundClip { name } => {
+                    let name = name.clone();
+                    let mut target_clips: Vec<klipp_core::ClipId> = self.state.selected_clips.clone();
+                    if let Some(primary) = self.state.selected_clip {
+                        if !target_clips.contains(&primary) {
+                            target_clips.push(primary);
+                        }
+                    }
+                    if target_clips.is_empty() {
+                        self.state.toast.show(format!("Select clips first"));
+                        continue;
+                    }
+
+                    let active_idx = self.state.active_sequence_idx;
+                    let fps = self.state.sequences[active_idx].fps;
+                    let res = self.state.sequences[active_idx].resolution;
+
+                    // Collect the clips and find the time range
+                    let seq = &self.state.sequences[active_idx];
+                    let mut collected: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
+                    for (ti, track) in seq.tracks.iter().enumerate() {
+                        for (ci, clip) in track.clips.iter().enumerate() {
+                            if target_clips.contains(&clip.id) {
+                                collected.push((ti, ci, clip.clone()));
+                            }
+                        }
+                    }
+                    if collected.is_empty() { continue; }
+
+                    let range_start = collected.iter().map(|(_, _, c)| c.timeline_in).min().unwrap();
+                    let range_end = collected.iter().map(|(_, _, c)| c.timeline_out).max().unwrap();
+
+                    // Create new sequence with same fps/resolution
+                    let mut nested_seq = klipp_timeline::Sequence {
+                        id: klipp_core::SequenceId::new(),
+                        name: name.clone(),
+                        fps,
+                        resolution: res,
+                        tracks: Vec::new(),
+                        in_point: None,
+                        out_point: None,
+                        markers: Vec::new(),
+                        last_playhead: None,
+                    };
+
+                    // Reproduce track structure and move clips (offset to start at 0)
+                    let parent_seq = &self.state.sequences[active_idx];
+                    for (ti, track) in parent_seq.tracks.iter().enumerate() {
+                        let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
+                        for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
+                            let mut c = clip.clone();
+                            c.timeline_in = c.timeline_in - range_start;
+                            c.timeline_out = c.timeline_out - range_start;
+                            new_track.clips.push(c);
+                        }
+                        if !new_track.clips.is_empty() {
+                            new_track.sort_clips();
+                            nested_seq.tracks.push(new_track);
+                        }
+                    }
+
+                    let nested_seq_id = nested_seq.id;
+                    self.state.sequences.push(nested_seq);
+
+                    // Remove original clips from parent and insert compound clip
+                    let parent_seq = &mut self.state.sequences[active_idx];
+                    // Find the first track that had selected clips
+                    let first_track_idx = collected.first().map(|(ti, _, _)| *ti).unwrap_or(0);
+                    for (ti, _, clip) in &collected {
+                        if let Some(track) = parent_seq.tracks.get_mut(*ti) {
+                            track.clips.retain(|c| c.id != clip.id);
+                        }
+                    }
+                    // Insert compound clip on the first track at the range start
+                    let compound_clip = klipp_timeline::Clip::sequence(nested_seq_id, range_start, range_end);
+                    let compound_id = compound_clip.id;
+                    if let Some(track) = parent_seq.tracks.get_mut(first_track_idx) {
+                        track.clips.push(compound_clip);
+                        track.sort_clips();
+                    }
+
+                    self.state.selected_clip = Some(compound_id);
+                    self.state.selected_clips.clear();
+                    self.state.toast.show(format!("Created compound clip \"{}\"", name));
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Open compound clip: drill into nested sequence
+                AppCommand::OpenCompoundClip { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let nested_id = seq.all_clips()
+                        .find(|c| c.id == cid)
+                        .and_then(|c| match &c.kind {
+                            klipp_timeline::ClipKind::Sequence { sequence_id } => Some(*sequence_id),
+                            _ => None,
+                        });
+                    if let Some(sid) = nested_id {
+                        if let Some(target_idx) = self.state.sequences.iter().position(|s| s.id == sid) {
+                            // Push current position to breadcrumb stack
+                            self.state.compound_clip_stack.push((
+                                self.state.active_sequence_idx,
+                                self.state.playhead,
+                            ));
+                            // Switch to nested sequence
+                            self.state.active_sequence_idx = target_idx;
+                            self.state.playhead = klipp_core::RationalTime::from_secs_f64(
+                                0.0, self.state.sequences[target_idx].fps.rate());
+                            self.state.selected_clip = None;
+                            self.state.selected_clips.clear();
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    continue;
+                }
+                // Close compound clip: navigate back to parent sequence
+                AppCommand::CloseCompoundClip => {
+                    if let Some((parent_idx, parent_playhead)) = self.state.compound_clip_stack.pop() {
+                        if parent_idx < self.state.sequences.len() {
+                            self.state.active_sequence_idx = parent_idx;
+                            self.state.playhead = parent_playhead;
+                            self.state.selected_clip = None;
+                            self.state.selected_clips.clear();
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    continue;
+                }
                 // Next edit point: jump playhead to the nearest clip boundary after current position
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;

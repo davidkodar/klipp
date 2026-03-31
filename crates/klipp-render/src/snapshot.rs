@@ -265,6 +265,9 @@ fn snapshot_clip(
         }
         ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
         ClipKind::Gap => ClipKindSnapshot::Gap,
+        // Compound clips are treated as gaps during export for now —
+        // full recursive render requires the sequence to be flattened first.
+        ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
     };
 
     Ok(ClipSnapshot {

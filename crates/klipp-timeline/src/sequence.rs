@@ -881,4 +881,54 @@ impl Clip {
             smoothed_trajectory: None,
         }
     }
+
+    /// Create a compound clip (nested sequence) with the given timeline extent.
+    pub fn sequence(
+        sequence_id: klipp_core::SequenceId,
+        timeline_in: Timecode,
+        timeline_out: Timecode,
+    ) -> Self {
+        let dur = timeline_out - timeline_in;
+        Self {
+            id: ClipId::new(),
+            kind: ClipKind::Sequence { sequence_id },
+            timeline_in,
+            timeline_out,
+            source_in: Timecode { value: 0, rate: timeline_in.rate },
+            source_out: dur,
+            node_graph: klipp_nodes::NodeGraph::default(),
+            effects: Vec::new(),
+            builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
+            linked_clip_id: None,
+            group_id: None,
+            magnetic_anchor: None,
+            gain: 1.0,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
+            fade_in_curve: FadeCurve::default(),
+            fade_out_curve: FadeCurve::default(),
+            channel_config: ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: ClipRole::default(),
+            param_modifiers: HashMap::new(),
+            speed: 1.0,
+            source_rotation: 0,
+            enabled: true,
+            audio_effects: Vec::new(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
+        }
+    }
 }

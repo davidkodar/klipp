@@ -353,6 +353,12 @@ pub enum AppCommand {
     ExportFcpxml { path: PathBuf },
     /// Export sequence as CMX 3600 EDL for broad NLE interchange.
     ExportEdl { path: PathBuf },
+    /// Create a compound clip (nested sequence) from selected clips.
+    CreateCompoundClip { name: String },
+    /// Open (drill into) a compound clip for editing.
+    OpenCompoundClip { clip_id: ClipId },
+    /// Navigate back from a nested sequence to the parent.
+    CloseCompoundClip,
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.

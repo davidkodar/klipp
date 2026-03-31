@@ -173,6 +173,9 @@ pub struct AppState {
     // Project
     pub sequences: Vec<Sequence>,
     pub active_sequence_idx: usize,
+    /// Breadcrumb stack for navigating into compound clips. Each entry is
+    /// (parent_sequence_idx, parent_playhead) so we can navigate back.
+    pub compound_clip_stack: Vec<(usize, klipp_core::Timecode)>,
     pub media_pool: MediaPool,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
@@ -721,6 +724,7 @@ impl Default for AppState {
             active_workspace: Workspace::default(),
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
+            compound_clip_stack: Vec::new(),
             media_pool: MediaPool::new(),
             project_path: None,
             created_at: None,
