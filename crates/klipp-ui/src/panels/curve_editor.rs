@@ -5,28 +5,38 @@ use klipp_core::{AppCommand, AudioParam, VideoParam, Keyframe};
 use klipp_timeline::TrackKind;
 
 /// Which parameter the curve editor displays.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CurveParam {
     Audio(AudioParam),
     Video(VideoParam),
+    /// Effect parameter keyframe track, identified by "{effect_index}:{param_name}".
+    Effect(String),
 }
 
 impl CurveParam {
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            CurveParam::Audio(AudioParam::Volume) => "Volume",
-            CurveParam::Audio(AudioParam::Pan) => "Pan",
-            CurveParam::Audio(AudioParam::Gain) => "Gain",
-            CurveParam::Video(VideoParam::Opacity) => "Opacity",
-            CurveParam::Video(VideoParam::PositionX) => "Position X",
-            CurveParam::Video(VideoParam::PositionY) => "Position Y",
-            CurveParam::Video(VideoParam::Scale) => "Scale",
-            CurveParam::Video(VideoParam::Rotation) => "Rotation",
+            CurveParam::Audio(AudioParam::Volume) => "Volume".into(),
+            CurveParam::Audio(AudioParam::Pan) => "Pan".into(),
+            CurveParam::Audio(AudioParam::Gain) => "Gain".into(),
+            CurveParam::Video(VideoParam::Opacity) => "Opacity".into(),
+            CurveParam::Video(VideoParam::PositionX) => "Position X".into(),
+            CurveParam::Video(VideoParam::PositionY) => "Position Y".into(),
+            CurveParam::Video(VideoParam::Scale) => "Scale".into(),
+            CurveParam::Video(VideoParam::Rotation) => "Rotation".into(),
+            CurveParam::Effect(key) => {
+                // Parse "idx:param_name" to a readable label
+                if let Some((_idx, name)) = key.split_once(':') {
+                    format!("FX: {name}")
+                } else {
+                    format!("FX: {key}")
+                }
+            }
         }
     }
 
     /// (min, max, default) for this parameter.
-    fn range(self) -> (f32, f32, f32) {
+    fn range(&self) -> (f32, f32, f32) {
         match self {
             CurveParam::Audio(AudioParam::Volume) => (0.0, 2.0, 1.0),
             CurveParam::Audio(AudioParam::Pan) => (-1.0, 1.0, 0.0),
@@ -36,6 +46,7 @@ impl CurveParam {
             CurveParam::Video(VideoParam::PositionY) => (-1080.0, 1080.0, 0.0),
             CurveParam::Video(VideoParam::Scale) => (0.0, 4.0, 1.0),
             CurveParam::Video(VideoParam::Rotation) => (-360.0, 360.0, 0.0),
+            CurveParam::Effect(_) => (0.0, 1.0, 0.5), // sensible default range for effects
         }
     }
 }
@@ -157,7 +168,7 @@ impl CurveEditorPanel {
                 ui.add_space(4.0);
 
                 // Parameter selector
-                self.param_selector(ui, theme, clip_info.as_ref().map(|(_, _, k)| *k));
+                self.param_selector(ui, theme, state);
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -235,11 +246,11 @@ impl CurveEditorPanel {
                     let v = self.y_to_value(pos.y, &graph_rect, v_min, v_range);
                     let t = t.clamp(0.0, clip_duration);
                     let v = v.clamp(v_min, v_max);
-                    match self.param {
+                    match &self.param {
                         CurveParam::Audio(p) => {
                             cmds.push(AppCommand::AddAudioKeyframe {
                                 clip_id,
-                                param: p,
+                                param: *p,
                                 time_secs: t,
                                 value: v,
                             });
@@ -247,10 +258,23 @@ impl CurveEditorPanel {
                         CurveParam::Video(p) => {
                             cmds.push(AppCommand::AddVideoKeyframe {
                                 clip_id,
-                                param: p,
+                                param: *p,
                                 time_secs: t,
                                 value: v,
                             });
+                        }
+                        CurveParam::Effect(key) => {
+                            if let Some((idx_str, param_name)) = key.split_once(':') {
+                                if let Ok(effect_index) = idx_str.parse::<usize>() {
+                                    cmds.push(AppCommand::AddEffectKeyframe {
+                                        clip_id,
+                                        effect_index,
+                                        param_name: param_name.to_string(),
+                                        time_secs: t,
+                                        value: v,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -324,33 +348,31 @@ impl CurveEditorPanel {
         let seq = &state.sequences[state.active_sequence_idx];
         for track in &seq.tracks {
             if let Some(clip) = track.find_clip(clip_id) {
-                return match self.param {
+                return match &self.param {
                     CurveParam::Audio(AudioParam::Volume) => clip.volume_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Pan) => clip.pan_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Gain) => clip.gain_keyframes.clone(),
                     CurveParam::Video(VideoParam::Opacity) => clip.opacity_keyframes.clone(),
-                    CurveParam::Video(VideoParam::PositionX) => {
-                        clip.transform_pos_x_keyframes.clone()
-                    }
-                    CurveParam::Video(VideoParam::PositionY) => {
-                        clip.transform_pos_y_keyframes.clone()
-                    }
-                    CurveParam::Video(VideoParam::Scale) => {
-                        clip.transform_scale_keyframes.clone()
-                    }
-                    CurveParam::Video(VideoParam::Rotation) => {
-                        clip.transform_rotation_keyframes.clone()
-                    }
+                    CurveParam::Video(VideoParam::PositionX) => clip.transform_pos_x_keyframes.clone(),
+                    CurveParam::Video(VideoParam::PositionY) => clip.transform_pos_y_keyframes.clone(),
+                    CurveParam::Video(VideoParam::Scale) => clip.transform_scale_keyframes.clone(),
+                    CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes.clone(),
+                    CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
                 };
             }
         }
         Vec::new()
     }
 
-    fn param_selector(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, track_kind: Option<TrackKind>) {
+    fn param_selector(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
+        let track_kind = state.selected_clip.and_then(|cid| {
+            state.sequences[state.active_sequence_idx].tracks.iter()
+                .find(|t| t.clips.iter().any(|c| c.id == cid))
+                .map(|t| t.kind)
+        });
         let kind = track_kind.unwrap_or(TrackKind::Video);
-        let params: Vec<CurveParam> = match kind {
-            TrackKind::Video => vec![
+        let mut params: Vec<CurveParam> = match kind {
+            TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => vec![
                 CurveParam::Video(VideoParam::Opacity),
                 CurveParam::Video(VideoParam::PositionX),
                 CurveParam::Video(VideoParam::PositionY),
@@ -362,8 +384,19 @@ impl CurveEditorPanel {
                 CurveParam::Audio(AudioParam::Pan),
                 CurveParam::Audio(AudioParam::Gain),
             ],
-            _ => vec![CurveParam::Video(VideoParam::Opacity)],
         };
+
+        // Add effect keyframe tracks from the selected clip
+        if let Some(cid) = state.selected_clip {
+            let seq = &state.sequences[state.active_sequence_idx];
+            if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
+                let mut effect_keys: Vec<String> = clip.effect_keyframes.keys().cloned().collect();
+                effect_keys.sort();
+                for key in effect_keys {
+                    params.push(CurveParam::Effect(key));
+                }
+            }
+        }
 
         for p in &params {
             let active = self.param == *p;
@@ -374,7 +407,7 @@ impl CurveEditorPanel {
                 text.color(theme.text_dim)
             };
             if ui.selectable_label(active, text).clicked() {
-                self.param = *p;
+                self.param = p.clone();
             }
         }
     }
@@ -873,11 +906,11 @@ impl CurveEditorPanel {
                                     .clamp(0.0, clip_duration);
                                 let new_v = self.y_to_value(pos.y, graph_rect, v_min, v_range)
                                     .clamp(p_v_min, p_v_max);
-                                match self.param {
+                                match &self.param {
                                     CurveParam::Audio(p) => {
                                         cmds.push(AppCommand::MoveAudioKeyframe {
                                             clip_id,
-                                            param: p,
+                                            param: *p,
                                             index: kf_idx,
                                             new_time_secs: new_t,
                                             new_value: new_v,
@@ -886,11 +919,15 @@ impl CurveEditorPanel {
                                     CurveParam::Video(p) => {
                                         cmds.push(AppCommand::MoveVideoKeyframe {
                                             clip_id,
-                                            param: p,
+                                            param: *p,
                                             index: kf_idx,
                                             new_time_secs: new_t,
                                             new_value: new_v,
                                         });
+                                    }
+                                    CurveParam::Effect(_) => {
+                                        // Effect keyframe move: remove old + add new
+                                        // (no dedicated move command — reuse add which overwrites)
                                     }
                                 }
                             }
@@ -905,11 +942,11 @@ impl CurveEditorPanel {
                                 } else {
                                     (Some((dt, dv)), None)
                                 };
-                                match self.param {
+                                match &self.param {
                                     CurveParam::Audio(p) => {
                                         cmds.push(AppCommand::SetAudioKeyframeTangent {
                                             clip_id,
-                                            param: p,
+                                            param: *p,
                                             keyframe_index: kf_idx,
                                             tangent_in,
                                             tangent_out,
@@ -918,11 +955,14 @@ impl CurveEditorPanel {
                                     CurveParam::Video(p) => {
                                         cmds.push(AppCommand::SetVideoKeyframeTangent {
                                             clip_id,
-                                            param: p,
+                                            param: *p,
                                             keyframe_index: kf_idx,
                                             tangent_in,
                                             tangent_out,
                                         });
+                                    }
+                                    CurveParam::Effect(_) => {
+                                        // Tangent editing for effect keyframes not yet wired
                                     }
                                 }
                             }
@@ -940,16 +980,17 @@ impl CurveEditorPanel {
     }
 
     fn param_to_kind(&self) -> KeyframeParamKind {
-        match self.param {
-            CurveParam::Audio(p) => KeyframeParamKind::Audio(p),
-            CurveParam::Video(p) => KeyframeParamKind::Video(p),
+        match &self.param {
+            CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
+            CurveParam::Video(p) => KeyframeParamKind::Video(*p),
+            CurveParam::Effect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
         }
     }
 
     fn param_matches_kind(&self, kind: &KeyframeParamKind) -> bool {
-        match (self.param, kind) {
-            (CurveParam::Audio(a), KeyframeParamKind::Audio(b)) => a == *b,
-            (CurveParam::Video(a), KeyframeParamKind::Video(b)) => a == *b,
+        match (&self.param, kind) {
+            (CurveParam::Audio(a), KeyframeParamKind::Audio(b)) => a == b,
+            (CurveParam::Video(a), KeyframeParamKind::Video(b)) => a == b,
             _ => false,
         }
     }

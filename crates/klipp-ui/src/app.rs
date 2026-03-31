@@ -9669,9 +9669,10 @@ impl KlippApp {
                     }
                 }
             }
-            // Shift+K — Toggle keyframe editor panel
+            // Shift+K — Toggle curve editor (keyframe editor) panel
             if i.key_pressed(egui::Key::K) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
-                self.state.show_keyframe_editor = !self.state.show_keyframe_editor;
+                self.state.show_curve_editor = !self.state.show_curve_editor;
+                self.state.show_keyframe_editor = self.state.show_curve_editor;
             }
             // Alt+Left — Navigate to previous keyframe
             if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {

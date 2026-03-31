@@ -73,11 +73,11 @@ pub fn show_keyframe_editor(
         );
     }
 
-    // Stub label
+    // Hint label
     painter.text(
         plot_rect.center(),
         egui::Align2::CENTER_CENTER,
-        "Keyframe Editor (node-based — coming soon)",
+        "Press Shift+K to open the Curve Editor",
         egui::FontId::monospace(10.0),
         text_dim,
     );
