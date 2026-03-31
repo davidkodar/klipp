@@ -9360,6 +9360,12 @@ impl KlippApp {
             if kb.is_action_pressed("preferences", i) {
                 self.state.show_preferences = true;
             }
+            // Ctrl+K — Command palette
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::K) {
+                self.state.show_command_palette = true;
+                self.state.command_palette_query.clear();
+                self.state.command_palette_selected = 0;
+            }
             // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
             if kb.is_action_pressed("undo", i) {
                 cmds.push(AppCommand::Undo);
@@ -11335,6 +11341,155 @@ impl eframe::App for KlippApp {
         if self.state.show_markers_panel {
             let cmds = self.markers.show(ctx, &mut self.state);
             all_cmds.extend(cmds);
+        }
+
+        // Command palette (Ctrl+K)
+        if self.state.show_command_palette {
+            // Build command list
+            let commands: Vec<(&str, &str, Option<AppCommand>)> = vec![
+                ("Save Project", "Ctrl+S", Some(AppCommand::SaveProject)),
+                ("Open Project...", "Ctrl+O", None), // requires dialog
+                ("Import Media...", "Ctrl+I", None),
+                ("Export...", "Ctrl+E", None),
+                ("Undo", "Ctrl+Z", Some(AppCommand::Undo)),
+                ("Redo", "Ctrl+Y", Some(AppCommand::Redo)),
+                ("Split at Playhead", "Ctrl+B", None), // complex
+                ("Duplicate Clip", "Ctrl+D", self.state.selected_clip.map(|id| AppCommand::DuplicateClip { clip_id: id })),
+                ("Select All", "Ctrl+A", Some(AppCommand::SelectAllClips)),
+                ("Deselect All", "Ctrl+Shift+A", Some(AppCommand::SelectClip(None))),
+                ("Select Forward", "", Some(AppCommand::SelectClipsForward)),
+                ("Select Backward", "", Some(AppCommand::SelectClipsBackward)),
+                ("Next Edit Point", "\u{2193}", Some(AppCommand::NextEditPoint)),
+                ("Previous Edit Point", "\u{2191}", Some(AppCommand::PrevEditPoint)),
+                ("Fit Timeline to Window", "", Some(AppCommand::FitTimelineToWindow)),
+                ("Toggle Loop Playback", "Ctrl+L", Some(AppCommand::ToggleLoopPlayback)),
+                ("Frame Grab (Save PNG)", "", Some(AppCommand::FrameGrab)),
+                ("Add Marker", "M", Some(AppCommand::AddMarker { position: self.state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue })),
+                ("Add Adjustment Layer", "", Some(AppCommand::CreateAdjustmentLayer)),
+                ("Create Multicam Clip", "", Some(AppCommand::CreateMulticamClip)),
+                ("Toggle Snap", "N", Some(AppCommand::SetSnapEnabled(!self.state.snap_enabled))),
+                ("Toggle Performance Overlay", "P", None),
+                ("Preferences...", "Ctrl+,", None),
+                ("Export FCPXML...", "", None),
+                ("Export EDL...", "", None),
+                ("Import Subtitles...", "", None),
+                ("Export Subtitles...", "", None),
+            ];
+
+            let query = self.state.command_palette_query.to_lowercase();
+            let filtered: Vec<_> = commands.iter()
+                .filter(|(label, shortcut, _)| {
+                    query.is_empty()
+                        || label.to_lowercase().contains(&query)
+                        || shortcut.to_lowercase().contains(&query)
+                })
+                .collect();
+
+            let max_visible = 12;
+            let sel = &mut self.state.command_palette_selected;
+            if *sel >= filtered.len() { *sel = 0; }
+
+            let mut close = false;
+            let mut execute: Option<AppCommand> = None;
+
+            egui::Area::new(egui::Id::new("command_palette"))
+                .fixed_pos(egui::pos2(
+                    ctx.screen_rect().center().x - 200.0,
+                    ctx.screen_rect().top() + 80.0,
+                ))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::window(ui.style())
+                        .fill(egui::Color32::from_rgb(0x1a, 0x1a, 0x20))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x50)))
+                        .rounding(8.0)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(400.0);
+
+                            // Search input
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.state.command_palette_query)
+                                    .hint_text("Type a command...")
+                                    .desired_width(384.0)
+                                    .font(egui::FontId::proportional(14.0))
+                            );
+                            resp.request_focus();
+
+                            // Handle keyboard navigation
+                            let input = ui.input(|i| (
+                                i.key_pressed(egui::Key::ArrowDown),
+                                i.key_pressed(egui::Key::ArrowUp),
+                                i.key_pressed(egui::Key::Enter),
+                                i.key_pressed(egui::Key::Escape),
+                            ));
+                            if input.0 && *sel + 1 < filtered.len() { *sel += 1; }
+                            if input.1 && *sel > 0 { *sel -= 1; }
+                            if input.3 { close = true; }
+                            if input.2 {
+                                if let Some((_, _, cmd)) = filtered.get(*sel) {
+                                    execute = cmd.clone();
+                                }
+                                close = true;
+                            }
+
+                            ui.add_space(4.0);
+
+                            // Results list
+                            for (i, (label, shortcut, cmd)) in filtered.iter().take(max_visible).enumerate() {
+                                let is_selected = i == *sel;
+                                let bg = if is_selected {
+                                    egui::Color32::from_rgb(0x30, 0x40, 0x60)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                let text_color = if cmd.is_some() {
+                                    egui::Color32::from_rgb(0xe0, 0xe0, 0xe8)
+                                } else {
+                                    egui::Color32::from_rgb(0x80, 0x80, 0x90)
+                                };
+
+                                {
+                                    let (r, _) = ui.allocate_exact_size(egui::vec2(400.0, 22.0), egui::Sense::click());
+                                    ui.painter().rect_filled(r, 4.0, bg);
+                                    ui.painter().text(
+                                        egui::pos2(r.left() + 8.0, r.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        label,
+                                        egui::FontId::proportional(12.0),
+                                        text_color,
+                                    );
+                                    if !shortcut.is_empty() {
+                                        ui.painter().text(
+                                            egui::pos2(r.right() - 8.0, r.center().y),
+                                            egui::Align2::RIGHT_CENTER,
+                                            shortcut,
+                                            egui::FontId::monospace(10.0),
+                                            egui::Color32::from_rgb(0x60, 0x60, 0x70),
+                                        );
+                                    }
+                                    if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
+                                        execute = cmd.clone();
+                                        close = true;
+                                    }
+                                }
+                            }
+
+                            if filtered.is_empty() {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(0x60, 0x60, 0x70),
+                                    "No matching commands",
+                                );
+                            }
+                        });
+                });
+
+            if close {
+                self.state.show_command_palette = false;
+            }
+            if let Some(cmd) = execute {
+                all_cmds.push(cmd);
+            }
         }
 
         // History panel

@@ -543,6 +543,10 @@ pub struct AppState {
     pub show_curve_editor: bool,
     /// Whether the history panel is visible
     pub show_history_panel: bool,
+    /// Command palette state
+    pub show_command_palette: bool,
+    pub command_palette_query: String,
+    pub command_palette_selected: usize,
 
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
@@ -926,6 +930,9 @@ impl Default for AppState {
             viewer_mask_drag: None,
             show_curve_editor: false,
             show_history_panel: false,
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,
