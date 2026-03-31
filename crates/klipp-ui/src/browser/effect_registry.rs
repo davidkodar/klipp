@@ -256,6 +256,15 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Rolling Shutter Correction".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::RollingShutterCorrection {
+                    strength: 0.5, readout_ratio: 0.5,
+                }),
+                source_label: "Built-in",
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "Dilate".into(),
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Dilate { radius: 1 }),

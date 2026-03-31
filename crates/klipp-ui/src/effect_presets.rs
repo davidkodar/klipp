@@ -222,6 +222,16 @@ impl PresetManager {
         self.bi("opacity", "75%", "Three-quarter opacity",
             klipp_effects::BuiltinEffect::Opacity { value: 0.75 });
 
+        // ── Rolling Shutter Correction ──────────────────────────
+        self.bi("rolling_shutter_correction", "iPhone / Modern Phone", "Fast readout ~15ms",
+            klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.35 });
+        self.bi("rolling_shutter_correction", "Action Cam (GoPro)", "Medium readout ~16ms",
+            klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.40 });
+        self.bi("rolling_shutter_correction", "Mirrorless Camera", "Sony/Canon ~20ms readout",
+            klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.50 });
+        self.bi("rolling_shutter_correction", "Drone (DJI)", "Slow readout ~30ms",
+            klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.8, readout_ratio: 0.75 });
+
         // ── Speed Ramp ─────────────────────────────────────────
         self.bi("speed_ramp", "Slow-Mo 50%", "Half-speed playback",
             klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
@@ -450,6 +460,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Equalize { .. } => "equalize",
         klipp_effects::BuiltinEffect::Letterbox { .. } => "letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "chromatic_aberration",
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "rolling_shutter_correction",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
     }
 }

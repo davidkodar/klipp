@@ -2013,6 +2013,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
         klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -2144,6 +2145,10 @@ fn show_builtin_effect_params(
             track_slider!(ui.add(egui::Slider::new(radius, 0.0..=50.0).text("Radius")));
             track_slider!(ui.add(egui::Slider::new(intensity, 0.0..=1.0).text("Intensity")));
             track_slider!(ui.add(egui::Slider::new(hue, 0.0..=1.0).text("Hue")));
+        }
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } => {
+            track_slider!(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("Strength")));
+            track_slider!(ui.add(egui::Slider::new(readout_ratio, 0.0..=1.0).text("Readout Ratio")));
         }
         klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
             track_slider!(ui.add(egui::Slider::new(speed, 0.1..=4.0).step_by(0.05_f64).text("Speed")));

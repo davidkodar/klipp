@@ -1027,6 +1027,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
         klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
     }
 }
@@ -1124,6 +1125,9 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::ChromaticAberration { .. } => BuiltinEffect::ChromaticAberration {
             red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5,
         },
+        BuiltinEffect::RollingShutterCorrection { .. } => BuiltinEffect::RollingShutterCorrection {
+            strength: 0.5, readout_ratio: 0.5,
+        },
         BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
             speed: 1.0, blend_mode: 1, ramp_curve: 0,
             ramp_start: 0.0, ramp_end: 1.0, reverse: false,
@@ -1141,7 +1145,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
-        | BuiltinEffect::Denoise { .. } | BuiltinEffect::SpeedRamp { .. }
+        | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::SpeedRamp { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. })
@@ -1640,6 +1644,16 @@ fn show_builtin_effect_params(
             track_scrubby!("intensity", r_i, *intensity);
             let r_h = scrubby_param_row(ui, "Hue", hue, 0.0..=1.0, 0.2, 0.005, 2, "", ks_h);
             track_scrubby!("hue", r_h, *hue);
+        }
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } => {
+            *strength = eval_effect_kf(clip, effect_index, "strength", clip_time_secs, *strength);
+            *readout_ratio = eval_effect_kf(clip, effect_index, "readout_ratio", clip_time_secs, *readout_ratio);
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "readout_ratio", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 0.5, 0.005, 2, "", ks_s);
+            track_scrubby!("strength", r_s, *strength);
+            let r_r = scrubby_param_row(ui, "Readout Ratio", readout_ratio, 0.0..=1.0, 0.5, 0.005, 2, "", ks_r);
+            track_scrubby!("readout_ratio", r_r, *readout_ratio);
         }
         klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, ramp_curve, ramp_start, ramp_end, reverse, freeze_at, freeze } => {
             *speed = eval_effect_kf(clip, effect_index, "speed", clip_time_secs, *speed);

@@ -5,6 +5,7 @@ pub mod gpu;
 mod light;
 pub mod nv12_gpu;
 mod opacity;
+pub mod rolling_shutter;
 mod sharpen;
 pub mod transform;
 
@@ -329,6 +330,13 @@ pub enum BuiltinEffect {
         /// Center Y (0.0-1.0, default 0.5)
         center_y: f32,
     },
+    /// Rolling Shutter Correction: removes wobble/jello from CMOS sensor footage.
+    RollingShutterCorrection {
+        /// Correction strength (0.0=off, 1.0=full correction)
+        strength: f32,
+        /// Sensor readout ratio: fraction of frame duration for full sensor readout
+        readout_ratio: f32,
+    },
     /// Speed Ramp: GPU-accelerated retiming with frame blending.
     /// Changes playback speed with smooth interpolation between frames.
     SpeedRamp {
@@ -475,6 +483,10 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
             apply_chromatic_aberration(rgba, width, height, *red_shift, *blue_shift, *center_x, *center_y)
+        }
+        BuiltinEffect::RollingShutterCorrection { .. } => {
+            // RSC requires temporal frame access — handled at engine level.
+            rgba
         }
         BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is handled at the engine level (frame queue + GPU blend),

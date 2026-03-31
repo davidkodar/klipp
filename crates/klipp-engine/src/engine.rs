@@ -181,6 +181,8 @@ pub struct PlaybackEngine {
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
     gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
+    // Rolling shutter correction motion cache
+    rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
     // Transition decoder — secondary decoder for the partner clip during transitions
     transition_decoder: Option<VideoDecoder>,
     transition_clip_id: Option<klipp_core::ClipId>,
@@ -298,6 +300,7 @@ impl PlaybackEngine {
                 h
             },
             gpu_effects: klipp_effects::gpu::GpuEffectsPipeline::new(),
+            rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
             transition_frame_cache: None,
@@ -3272,6 +3275,8 @@ impl PlaybackEngine {
             .find_map(|t| t.clips.get(self.current_clip_index));
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let node_graph = clip.map(|c| c.node_graph.clone());
+        let rsc_clip_id_hash = clip.map(|c| c.id.0.as_u64_pair().0).unwrap_or(0);
+        let rsc_media_id = clip.and_then(|c| c.media_id());
         let clip_time_secs = clip.map(|_c| {
             (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64()) * self.clip_speed
                 + self.clip_source_start
@@ -3594,6 +3599,68 @@ impl PlaybackEngine {
             }
         } else { rgba };
         let t3 = std::time::Instant::now();
+
+        // 2.5. Rolling Shutter Correction: compute per-row transforms from adjacent frames
+        if let Some(rsc_effect) = builtin_fx.iter().find(|e| matches!(e, klipp_effects::BuiltinEffect::RollingShutterCorrection { .. })) {
+            if let klipp_effects::BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } = rsc_effect {
+                if *strength > f32::EPSILON {
+                    let frame_pts_ms = (clip_time_secs * 1000.0) as i64;
+
+                    // Check cache
+                    let cached = self.rsc_motion_cache.get(rsc_clip_id_hash, frame_pts_ms).cloned();
+
+                    let row_transforms = if let Some((h_prev, h_next)) = cached {
+                        klipp_effects::rolling_shutter::compute_row_transforms(&h_prev, &h_next, height, *readout_ratio, *strength)
+                    } else {
+                        // Decode adjacent frames for motion estimation
+                        let frame_dur = if self.fps.as_f64() > 0.0 { 1.0 / self.fps.as_f64() } else { 1.0 / 30.0 };
+                        let prev_secs = (clip_time_secs - frame_dur).max(0.0);
+                        let next_secs = clip_time_secs + frame_dur;
+
+                        // Use the source media path to open a temporary decoder
+                        let source_path = rsc_media_id.and_then(|mid| {
+                            self.media_pool.read().ok().and_then(|pool| pool.get(&mid).map(|item| item.path.clone()))
+                        });
+
+                        if let Some(ref path) = source_path {
+                            // Decode prev and next frames at 480p for fast motion estimation
+                            let prev_frame = generate_thumbnail_at_size(path, prev_secs, 480).ok();
+                            let next_frame = generate_thumbnail_at_size(path, next_secs, 480).ok();
+
+                            if let (Some((prev_rgba, pw, ph)), Some((next_rgba, nw, nh))) = (prev_frame, next_frame) {
+                                let curr_frame = generate_thumbnail_at_size(path, clip_time_secs, 480).ok();
+                                if let Some((curr_rgba, cw, ch)) = curr_frame {
+                                    if let Some((h_prev, h_next)) = klipp_effects::rolling_shutter::estimate_motion(
+                                        &prev_rgba, pw, ph, &curr_rgba, cw, ch, &next_rgba, nw, nh,
+                                    ) {
+                                        self.rsc_motion_cache.insert(rsc_clip_id_hash, frame_pts_ms, h_prev.clone(), h_next.clone());
+                                        klipp_effects::rolling_shutter::compute_row_transforms(&h_prev, &h_next, height, *readout_ratio, *strength)
+                                    } else {
+                                        klipp_effects::rolling_shutter::compute_row_transforms(
+                                            &klipp_effects::rolling_shutter::Homography::identity(),
+                                            &klipp_effects::rolling_shutter::Homography::identity(),
+                                            height, *readout_ratio, *strength,
+                                        )
+                                    }
+                                } else {
+                                    vec![]
+                                }
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        }
+                    };
+
+                    if !row_transforms.is_empty() {
+                        if let Some(gpu) = &mut self.gpu_effects {
+                            gpu.upload_rsc_row_transforms(&row_transforms);
+                        }
+                    }
+                }
+            }
+        }
 
         // 3. Built-in effects (GPU-accelerated when available, CPU fallback)
         let rgba = if !builtin_fx.is_empty() {

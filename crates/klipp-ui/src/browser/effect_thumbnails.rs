@@ -391,6 +391,10 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 red_shift: 6.0, blue_shift: -6.0, center_x: 0.5, center_y: 0.5,
             }
         }
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => {
+            // RSC has no visual effect on a single still frame — return identity.
+            klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.0, readout_ratio: 0.5 }
+        }
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is a temporal effect — no visual preview on a single frame.
             // Return identity (pass-through).

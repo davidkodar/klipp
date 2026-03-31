@@ -50,6 +50,10 @@ pub struct GpuEffectsPipeline {
     equalize_pipeline: wgpu::ComputePipeline,
     letterbox_pipeline: wgpu::ComputePipeline,
     chromatic_aberration_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — rolling shutter correction (uses huesat 4-binding layout)
+    rsc_pipeline: wgpu::ComputePipeline,
+    rsc_row_buf: Option<wgpu::Buffer>,
+    rsc_row_buf_size: u64,
     // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
@@ -343,6 +347,7 @@ impl GpuEffectsPipeline {
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
+        let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
@@ -413,6 +418,9 @@ impl GpuEffectsPipeline {
             equalize_pipeline,
             letterbox_pipeline,
             chromatic_aberration_pipeline,
+            rsc_pipeline,
+            rsc_row_buf: None,
+            rsc_row_buf_size: 0,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
@@ -1483,6 +1491,34 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.chromatic_aberration_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::RollingShutterCorrection { strength, .. } => {
+                    if *strength < f32::EPSILON || !self.has_rsc_data() {
+                        continue; // No correction or no motion data ready
+                    }
+                    self.write_params(&RscParams { width, height, strength: *strength, _pad: 0 });
+                    let input = if current_in_a { buf_a } else { buf_b };
+                    let output = if current_in_a { buf_b } else { buf_a };
+                    let row_buf = self.rsc_row_buf.as_ref().unwrap();
+                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("rsc_bg"),
+                        layout: &self.huesat_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: row_buf.as_entire_binding() },
+                        ],
+                    });
+                    let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    {
+                        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                        pass.set_pipeline(&self.rsc_pipeline);
+                        pass.set_bind_group(0, &bg, &[]);
+                        pass.dispatch_workgroups(workgroups, 1, 1);
+                    }
+                    self.queue.submit(std::iter::once(enc.finish()));
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
@@ -1594,6 +1630,24 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    pub fn upload_rsc_row_transforms(&mut self, row_transforms: &[crate::rolling_shutter::RowTransform]) {
+        let byte_size = (row_transforms.len() * std::mem::size_of::<crate::rolling_shutter::RowTransform>()) as u64;
+        if self.rsc_row_buf.as_ref().map_or(true, |_| self.rsc_row_buf_size < byte_size) {
+            self.rsc_row_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rsc_row_transforms"),
+                size: byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.rsc_row_buf_size = byte_size;
+        }
+        self.queue.write_buffer(self.rsc_row_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(row_transforms));
+    }
+
+    pub fn has_rsc_data(&self) -> bool {
+        self.rsc_row_buf.is_some() && self.rsc_row_buf_size > 0
     }
 
     fn download(&self, source: &wgpu::Buffer, byte_size: u64) -> Vec<u8> {
@@ -2238,6 +2292,15 @@ struct LetterboxParams {
     _pad2: u32,
 }
 // 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RscParams {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -4786,5 +4849,70 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b_val = (b_pixel >> 16u) & 0xFFu;
 
     output[idx] = r_val | (g_val << 8u) | (b_val << 16u) | (a_val << 24u);
+}
+";
+
+const SHADER_ROLLING_SHUTTER: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad: u32,
+}
+
+struct RowXform {
+    a: f32, b: f32, tx: f32,
+    c: f32, d: f32, ty: f32,
+    _pad0: f32, _pad1: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> row_xforms: array<RowXform>;
+
+fn unpack(v: u32) -> vec4<f32> {
+    return vec4<f32>(
+        f32(v & 0xFFu), f32((v >> 8u) & 0xFFu),
+        f32((v >> 16u) & 0xFFu), f32((v >> 24u) & 0xFFu)
+    );
+}
+
+fn sample_bilinear(fx: f32, fy: f32) -> vec4<f32> {
+    let w = params.width;
+    let h = params.height;
+    let x0 = u32(clamp(i32(floor(fx)), 0, i32(w) - 1));
+    let x1 = u32(clamp(i32(floor(fx)) + 1, 0, i32(w) - 1));
+    let y0 = u32(clamp(i32(floor(fy)), 0, i32(h) - 1));
+    let y1 = u32(clamp(i32(floor(fy)) + 1, 0, i32(h) - 1));
+    let dx = fract(fx);
+    let dy = fract(fy);
+    let tl = unpack(input[y0 * w + x0]);
+    let tr = unpack(input[y0 * w + x1]);
+    let bl = unpack(input[y1 * w + x0]);
+    let br = unpack(input[y1 * w + x1]);
+    return mix(mix(tl, tr, dx), mix(bl, br, dx), dy);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+
+    let xf = row_xforms[y];
+    let fx = f32(x);
+    let fy = f32(y);
+
+    let src_x = xf.a * fx + xf.b * fy + xf.tx;
+    let src_y = xf.c * fx + xf.d * fy + xf.ty;
+
+    let color = sample_bilinear(src_x, src_y);
+    let ro = u32(clamp(color.x, 0.0, 255.0));
+    let go = u32(clamp(color.y, 0.0, 255.0));
+    let bo = u32(clamp(color.z, 0.0, 255.0));
+    let ao = u32(clamp(color.w, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (ao << 24u);
 }
 ";
