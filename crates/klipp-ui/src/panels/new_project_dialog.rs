@@ -29,6 +29,19 @@ pub const FPS_PRESETS: &[(&str, u32, u32)] = &[
     ("120 fps", 120, 1),
 ];
 
+/// Project templates that pre-fill resolution and frame rate.
+pub const TEMPLATES: &[(&str, usize, usize)] = &[
+    ("Custom", 0, 0),           // no preset
+    ("YouTube 1080p 24fps", 2, 2),   // 1080p, 24fps
+    ("YouTube 4K 30fps", 5, 5),      // 4K UHD, 30fps
+    ("Instagram Square", 8, 5),      // 1080x1080, 30fps
+    ("Instagram Vertical", 7, 5),    // 1080x1920, 30fps
+    ("Broadcast PAL", 2, 3),         // 1080p, 25fps
+    ("Broadcast NTSC", 2, 4),        // 1080p, 29.97fps
+    ("Cinema 24fps", 2, 2),          // 1080p, 24fps
+    ("Cinema 4K DCI", 6, 2),         // 4096x2160, 24fps
+];
+
 pub struct NewProjectDialog {
     pub project_name: String,
     pub location: PathBuf,
@@ -39,6 +52,7 @@ pub struct NewProjectDialog {
     pub sequence_name: String,
     /// Track whether sequence name was manually edited (else auto-sync from project name)
     name_manually_edited: bool,
+    pub template_idx: usize,
 }
 
 impl NewProjectDialog {
@@ -56,6 +70,7 @@ impl NewProjectDialog {
             fps_idx: 0, // Automatic (from first clip)
             sequence_name: String::new(),
             name_manually_edited: false,
+            template_idx: 0,
         }
     }
 
@@ -68,6 +83,7 @@ impl NewProjectDialog {
         self.custom_height = 1080;
         self.fps_idx = 0; // Automatic
         self.name_manually_edited = false;
+        self.template_idx = 0;
         if let Some(loc) = default_location {
             self.location = loc.clone();
         }
@@ -151,6 +167,28 @@ impl NewProjectDialog {
                         .color(theme.text_dim),
                 );
 
+                ui.add_space(2.0);
+
+                // Template
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Template").size(12.0).color(theme.text_secondary));
+                    ui.add_space(38.0);
+                    let old_idx = self.template_idx;
+                    egui::ComboBox::from_id_salt("project_template")
+                        .selected_text(TEMPLATES[self.template_idx].0)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            for (i, (label, _, _)) in TEMPLATES.iter().enumerate() {
+                                ui.selectable_value(&mut self.template_idx, i, *label);
+                            }
+                        });
+                    // Apply template when changed
+                    if self.template_idx != old_idx && self.template_idx > 0 {
+                        let (_, res_idx, fps_idx) = TEMPLATES[self.template_idx];
+                        self.resolution_idx = res_idx;
+                        self.fps_idx = fps_idx;
+                    }
+                });
                 ui.add_space(2.0);
 
                 // Resolution

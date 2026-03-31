@@ -7,6 +7,9 @@ pub struct AudioTrackSettings {
     pub solo: bool,
     pub peak_left: f32,
     pub peak_right: f32,
+    /// RMS level (root mean square) for loudness display.
+    pub rms_left: f32,
+    pub rms_right: f32,
     /// Optional bus assignment (index into AudioMixer::buses). None = direct to master.
     pub bus: Option<usize>,
 }
@@ -20,6 +23,8 @@ impl Default for AudioTrackSettings {
             solo: false,
             peak_left: 0.0,
             peak_right: 0.0,
+            rms_left: 0.0,
+            rms_right: 0.0,
             bus: None,
         }
     }
@@ -119,6 +124,9 @@ impl AudioMixer {
 
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
+            let mut sum_sq_l = 0.0f32;
+            let mut sum_sq_r = 0.0f32;
+            let mut sample_count = 0u32;
 
             // Determine output target: bus buffer or master
             let target = if let Some(bus_idx) = settings.bus {
@@ -138,6 +146,9 @@ impl AudioMixer {
                 let out_r = r * settings.volume * pan_r;
                 peak_l = peak_l.max(out_l.abs());
                 peak_r = peak_r.max(out_r.abs());
+                sum_sq_l += out_l * out_l;
+                sum_sq_r += out_r * out_r;
+                sample_count += 1;
                 let base = j * 2;
                 if base < target.len() {
                     target[base] += out_l;
@@ -149,6 +160,10 @@ impl AudioMixer {
 
             settings.peak_left = peak_l;
             settings.peak_right = peak_r;
+            if sample_count > 0 {
+                settings.rms_left = (sum_sq_l / sample_count as f32).sqrt();
+                settings.rms_right = (sum_sq_r / sample_count as f32).sqrt();
+            }
         }
 
         // Mix buses into master

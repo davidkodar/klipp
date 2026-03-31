@@ -1015,6 +1015,19 @@ fn show_multi_context_menu(
         }
     });
     ui.separator();
+    if ui.button(format!("Generate Proxies ({count})")).clicked() {
+        for &id in selected_ids {
+            cmds.push(AppCommand::GenerateProxy { media_id: id });
+        }
+        ui.close_menu();
+    }
+    if ui.button(format!("Regenerate Filmstrips ({count})")).clicked() {
+        for &id in selected_ids {
+            cmds.push(AppCommand::RegenerateFilmstrip { media_id: id });
+        }
+        ui.close_menu();
+    }
+    ui.separator();
     if ui.button(format!("Remove {count} items from Project")).clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::RemoveFromPool { media_id: id });

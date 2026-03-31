@@ -216,6 +216,8 @@ impl ToolbarPanel {
                 // Compact menus
                 Self::file_menu(ui, &mut cmds, state, recent_projects);
                 Self::edit_menu(ui, &mut cmds, state);
+                Self::clip_menu(ui, &mut cmds, state);
+                Self::timeline_menu(ui, &mut cmds, state);
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::settings_menu(ui, &mut cmds, state);
@@ -669,6 +671,58 @@ impl ToolbarPanel {
                 let c = if state.playhead_follow == *mode { "\u{2713} " } else { "  " };
                 if ui.button(format!("{}{}", c, mode.label())).clicked() { state.playhead_follow = *mode; ui.close_menu(); }
             }
+        });
+    }
+    fn clip_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Clip").size(11.0), |ui| {
+            let has_clip = state.selected_clip.is_some();
+            if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable")).clicked() {
+                if let Some(cid) = state.selected_clip {
+                    let enabled = state.sequence().all_clips().find(|c| c.id == cid).map_or(true, |c| c.enabled);
+                    cmds.push(AppCommand::SetClipEnabled { clip_id: cid, enabled: !enabled });
+                }
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Set Clip Speed...")).clicked() { ui.close_menu(); }
+            ui.separator();
+            if ui.add_enabled(has_clip, egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
+                if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
+                ui.close_menu();
+            }
+            if ui.add_enabled(state.attributes_clipboard.is_some() && has_clip, egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
+                state.show_paste_attributes_dialog = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.menu_button("Motion Presets", |ui| {
+                for (label, preset) in [
+                    ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
+                    ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
+                    ("Ken Burns: Pan Left", "ken_burns_pan_left"),
+                    ("PiP: Top Right", "pip_top_right"),
+                    ("PiP: Bottom Left", "pip_bottom_left"),
+                ] {
+                    if let Some(cid) = state.selected_clip {
+                        if ui.button(label).clicked() {
+                            cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() });
+                            ui.close_menu();
+                        }
+                    }
+                }
+            });
+        });
+    }
+    fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Timeline").size(11.0), |ui| {
+            if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddTrackAbove { track_index: 0 }); ui.close_menu(); }
+            if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddTrackBelow { track_index: state.sequence().tracks.len().saturating_sub(1) }); ui.close_menu(); }
+            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
+            ui.separator();
+            if ui.add(egui::Button::new("Fit to Window")).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
+            if ui.button("Insert Gap (1s)").clicked() { cmds.push(AppCommand::InsertGapAtPlayhead); ui.close_menu(); }
+            ui.separator();
+            let snap_label = if state.snap_enabled { "\u{2713} Snap" } else { "  Snap" };
+            if ui.button(snap_label).clicked() { cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled)); ui.close_menu(); }
         });
     }
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {

@@ -100,6 +100,23 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             );
         }
 
+        // Link indicator for selected clip
+        if let Some(cid) = state.selected_clip {
+            let is_linked = state.sequence().tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == cid)
+                .and_then(|c| c.linked_clip_id)
+                .is_some();
+            let link_label = if is_linked { "\u{1F517}" } else { "\u{26D3}\u{FE0E}" };
+            let link_color = if is_linked {
+                egui::Color32::from_rgb(100, 200, 120)
+            } else {
+                egui::Color32::from_rgb(120, 120, 130)
+            };
+            ui.add_space(6.0);
+            ui.colored_label(link_color, egui::RichText::new(link_label).size(11.0));
+        }
+
         // Right group
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(10.0);
