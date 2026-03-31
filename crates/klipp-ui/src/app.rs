@@ -6101,6 +6101,24 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Export FCPXML
+                AppCommand::ExportFcpxml { path } => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, &path) {
+                        Ok(_) => self.state.toast.show(format!("FCPXML exported to {}", path.display())),
+                        Err(e) => self.state.toast.show(format!("FCPXML export failed: {e}")),
+                    }
+                    continue;
+                }
+                // Export EDL
+                AppCommand::ExportEdl { path } => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, &path) {
+                        Ok(_) => self.state.toast.show(format!("EDL exported to {}", path.display())),
+                        Err(e) => self.state.toast.show(format!("EDL export failed: {e}")),
+                    }
+                    continue;
+                }
                 // Next edit point: jump playhead to the nearest clip boundary after current position
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;

@@ -1,4 +1,5 @@
 mod format;
+pub mod fcpxml;
 mod load;
 pub mod path_util;
 mod save;

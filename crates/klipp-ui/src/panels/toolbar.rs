@@ -399,6 +399,29 @@ impl ToolbarPanel {
                 }
             }
             ui.separator();
+            if ui.button("Export FCPXML...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Export FCPXML")
+                    .add_filter("FCPXML", &["fcpxml"])
+                    .set_file_name("export.fcpxml")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::ExportFcpxml { path });
+                }
+            }
+            if ui.button("Export EDL...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Export EDL")
+                    .add_filter("EDL", &["edl"])
+                    .set_file_name("export.edl")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::ExportEdl { path });
+                }
+            }
+            ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
             if ui.button("Project Info...").clicked() { state.show_project_info = true; ui.close_menu(); }

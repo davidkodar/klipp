@@ -349,6 +349,10 @@ pub enum AppCommand {
     ImportSubtitles { path: PathBuf },
     /// Export subtitles from subtitle tracks as SRT.
     ExportSubtitles { path: PathBuf },
+    /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.
+    ExportFcpxml { path: PathBuf },
+    /// Export sequence as CMX 3600 EDL for broad NLE interchange.
+    ExportEdl { path: PathBuf },
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.
