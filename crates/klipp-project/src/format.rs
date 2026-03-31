@@ -196,6 +196,12 @@ pub struct ClipJson {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_effects: Option<Vec<klipp_core::AudioEffectInstance>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam_angle: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multicam_cuts: Vec<(f64, u8)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5652,6 +5652,10 @@ impl TimelinePanel {
                     cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
                     ui.close_menu();
                 }
+                if ui.button("Create Multicam Clip").clicked() {
+                    cmds.push(AppCommand::CreateMulticamClip);
+                    ui.close_menu();
+                }
                 ui.separator();
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()

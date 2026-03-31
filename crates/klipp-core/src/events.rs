@@ -355,6 +355,10 @@ pub enum AppCommand {
     ExportEdl { path: PathBuf },
     /// Create a compound clip (nested sequence) from selected clips.
     CreateCompoundClip { name: String },
+    /// Create a multicam clip from clips on different tracks at the playhead.
+    CreateMulticamClip,
+    /// Switch multicam angle (1-indexed).
+    SwitchMulticamAngle { angle: usize },
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.

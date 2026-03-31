@@ -384,6 +384,9 @@ impl Track {
             audio_effects: Vec::new(),
             source_rotation: 0,
             enabled: true,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
         });
@@ -568,6 +571,9 @@ impl Track {
             speed: clip.speed,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
+            multicam_group: clip.multicam_group,
+            multicam_angle: clip.multicam_angle,
+            multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -609,6 +615,9 @@ impl Track {
             speed: clip.speed,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
+            multicam_group: clip.multicam_group,
+            multicam_angle: clip.multicam_angle,
+            multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -746,6 +755,16 @@ pub struct Clip {
     /// but remain visible (dimmed) on the timeline.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Multicam group ID: clips sharing this ID are different angles of the same event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam_group: Option<GroupId>,
+    /// Multicam angle index within the group (0-based). Angle 0 = primary/default.
+    #[serde(default)]
+    pub multicam_angle: u8,
+    /// For the primary multicam clip: cut list mapping timecodes to angle indices.
+    /// Each entry is (time_secs_from_clip_start, angle_index).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multicam_cuts: Vec<(f64, u8)>,
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
@@ -825,6 +844,9 @@ impl Clip {
             speed: 1.0,
             source_rotation: 0,
             enabled: true,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -876,6 +898,9 @@ impl Clip {
             speed: 1.0,
             source_rotation: 0,
             enabled: true,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -926,6 +951,9 @@ impl Clip {
             speed: 1.0,
             source_rotation: 0,
             enabled: true,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,

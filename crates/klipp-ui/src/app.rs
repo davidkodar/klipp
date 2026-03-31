@@ -5029,6 +5029,9 @@ impl KlippApp {
                         speed: 1.0,
                         source_rotation: 0,
                         enabled: true,
+                        multicam_group: None,
+                        multicam_angle: 0,
+                        multicam_cuts: Vec::new(),
                         audio_effects: Vec::new(),
                         stabilization_data: None,
                         smoothed_trajectory: None,
@@ -5762,6 +5765,9 @@ impl KlippApp {
                                     speed: clip.speed,
                                     source_rotation: clip.source_rotation,
                                     enabled: clip.enabled,
+                                    multicam_group: clip.multicam_group,
+                                    multicam_angle: clip.multicam_angle,
+                                    multicam_cuts: clip.multicam_cuts.clone(),
                                     audio_effects: clip.audio_effects.clone(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -5915,6 +5921,9 @@ impl KlippApp {
                             speed: clip.speed,
                             source_rotation: clip.source_rotation,
                             enabled: clip.enabled,
+                            multicam_group: clip.multicam_group,
+                            multicam_angle: clip.multicam_angle,
+                            multicam_cuts: clip.multicam_cuts.clone(),
                             audio_effects: clip.audio_effects.clone(),
                             stabilization_data: None,
                             smoothed_trajectory: None,
@@ -6249,6 +6258,67 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Create multicam clip: group clips at playhead across tracks as angles
+                AppCommand::CreateMulticamClip => {
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    // Find clips at playhead across all video tracks
+                    let mut angle_clips: Vec<(usize, klipp_core::ClipId)> = Vec::new();
+                    for (ti, track) in seq.tracks.iter().enumerate() {
+                        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { continue; }
+                        if let Some((_, clip)) = track.clip_at_timecode(ph) {
+                            if clip.media_id().is_some() {
+                                angle_clips.push((ti, clip.id));
+                            }
+                        }
+                    }
+                    if angle_clips.len() < 2 {
+                        self.state.toast.show(format!("Need 2+ video clips at playhead for multicam"));
+                        continue;
+                    }
+                    let group_id = klipp_core::GroupId::new();
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    for (angle_idx, (ti, cid)) in angle_clips.iter().enumerate() {
+                        if let Some(clip) = seq.tracks[*ti].clips.iter_mut().find(|c| c.id == *cid) {
+                            clip.multicam_group = Some(group_id);
+                            clip.multicam_angle = angle_idx as u8;
+                        }
+                    }
+                    self.state.toast.show(format!("Created multicam group with {} angles", angle_clips.len()));
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Switch multicam angle: record a cut in the multicam cut list
+                AppCommand::SwitchMulticamAngle { angle } => {
+                    let angle = *angle;
+                    let ph = self.state.playhead;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    // Find multicam clip at playhead (angle 0 = primary, holds the cut list)
+                    let mut found = false;
+                    for track in &mut seq.tracks {
+                        for clip in &mut track.clips {
+                            if clip.multicam_group.is_some()
+                                && clip.multicam_angle == 0
+                                && ph >= clip.timeline_in && ph < clip.timeline_out
+                            {
+                                let clip_time = (ph - clip.timeline_in).to_secs_f64();
+                                // Remove any existing cut at this exact time
+                                clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
+                                clip.multicam_cuts.push((clip_time, angle as u8));
+                                clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                                found = true;
+                                break;
+                            }
+                        }
+                        if found { break; }
+                    }
+                    if found {
+                        self.state.toast.show(format!("Cut to angle {}", angle));
+                        self.state.dirty = true;
+                    }
+                    continue;
+                }
                 // Next edit point: jump playhead to the nearest clip boundary after current position
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;
@@ -6423,6 +6493,9 @@ impl KlippApp {
                                     speed: 1.0,
                                     source_rotation: 0,
                                     enabled: true,
+                                    multicam_group: None,
+                                    multicam_angle: 0,
+                                    multicam_cuts: Vec::new(),
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -6508,6 +6581,9 @@ impl KlippApp {
                                     speed: 1.0,
                                     source_rotation: 0,
                                     enabled: true,
+                                    multicam_group: None,
+                                    multicam_angle: 0,
+                                    multicam_cuts: Vec::new(),
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -8608,6 +8684,9 @@ impl KlippApp {
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
+                multicam_group: clip.multicam_group,
+                multicam_angle: clip.multicam_angle,
+                multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
@@ -8718,6 +8797,9 @@ impl KlippApp {
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
+                multicam_group: clip.multicam_group,
+                multicam_angle: clip.multicam_angle,
+                multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
@@ -9612,6 +9694,18 @@ impl KlippApp {
             // P — Toggle performance overlay
             if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
+            }
+            // 1-9 — Switch multicam angle (only when not text editing)
+            if !text_editing && !i.modifiers.ctrl && !i.modifiers.alt {
+                for (key, angle) in [
+                    (egui::Key::Num1, 1), (egui::Key::Num2, 2), (egui::Key::Num3, 3),
+                    (egui::Key::Num4, 4), (egui::Key::Num5, 5), (egui::Key::Num6, 6),
+                    (egui::Key::Num7, 7), (egui::Key::Num8, 8), (egui::Key::Num9, 9),
+                ] {
+                    if i.key_pressed(key) {
+                        cmds.push(AppCommand::SwitchMulticamAngle { angle });
+                    }
+                }
             }
             // N — Toggle snap
             if i.key_pressed(egui::Key::N) && !i.modifiers.ctrl {
