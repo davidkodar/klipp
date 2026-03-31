@@ -493,6 +493,7 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Next Edit Point").shortcut_text("\u{2193}")).clicked() { cmds.push(AppCommand::NextEditPoint); ui.close_menu(); }
             if ui.add(egui::Button::new("Previous Edit Point").shortcut_text("\u{2191}")).clicked() { cmds.push(AppCommand::PrevEditPoint); ui.close_menu(); }
+            if ui.button("Fit Timeline to Window").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
             ui.separator();
             // Tool selection
             let check = |active: bool| if active { "\u{2713} " } else { "  " };
@@ -632,6 +633,22 @@ impl ToolbarPanel {
                 state.viewer_overlay = match state.viewer_overlay {
                     crate::state::ViewerOverlay::SafeAreas => crate::state::ViewerOverlay::None,
                     _ => crate::state::ViewerOverlay::SafeAreas,
+                };
+                ui.close_menu();
+            }
+            let grid_label = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => "\u{2713} Grid (Rule of Thirds)", _ => "  Grid (Rule of Thirds)" };
+            if ui.button(grid_label).clicked() {
+                state.viewer_overlay = match state.viewer_overlay {
+                    crate::state::ViewerOverlay::Grid => crate::state::ViewerOverlay::None,
+                    _ => crate::state::ViewerOverlay::Grid,
+                };
+                ui.close_menu();
+            }
+            let checker_label = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => "\u{2713} Transparency Checkerboard", _ => "  Transparency Checkerboard" };
+            if ui.button(checker_label).clicked() {
+                state.viewer_overlay = match state.viewer_overlay {
+                    crate::state::ViewerOverlay::Checkerboard => crate::state::ViewerOverlay::None,
+                    _ => crate::state::ViewerOverlay::Checkerboard,
                 };
                 ui.close_menu();
             }

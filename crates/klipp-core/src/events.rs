@@ -359,6 +359,10 @@ pub enum AppCommand {
     CreateMulticamClip,
     /// Switch multicam angle (1-indexed).
     SwitchMulticamAngle { angle: usize },
+    /// Zoom timeline to fit all clips.
+    FitTimelineToWindow,
+    /// Apply a motion preset (Ken Burns / PiP) to selected clip.
+    ApplyMotionPreset { clip_id: ClipId, preset: String },
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.

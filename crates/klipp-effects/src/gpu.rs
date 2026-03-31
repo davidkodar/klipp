@@ -1573,6 +1573,9 @@ impl GpuEffectsPipeline {
                     self.queue.submit(std::iter::once(enc.finish()));
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Vibrance { .. } => {
+                    // Vibrance handled by CPU fallback. Pass through GPU chain.
+                }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.

@@ -473,6 +473,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "rolling_shutter_correction",
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => "video_stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
+        klipp_effects::BuiltinEffect::Vibrance { .. } => "vibrance",
     }
 }
 

@@ -400,8 +400,9 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             klipp_effects::BuiltinEffect::VideoStabilization { smoothing: 0.0, crop_ratio: 0.0, zoom: false }
         }
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => {
-            // SpeedRamp is a temporal effect — no visual preview on a single frame.
-            // Return identity (pass-through).
+            effect.clone()
+        }
+        klipp_effects::BuiltinEffect::Vibrance { .. } => {
             effect.clone()
         }
     }

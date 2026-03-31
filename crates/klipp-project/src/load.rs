@@ -415,6 +415,11 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
                 ClipKind::Sequence { sequence_id: sid }
             }
+            ClipKindJson::Generator { data } => {
+                let gen_data = serde_json::from_value(data.clone())
+                    .unwrap_or_default();
+                ClipKind::Generator(gen_data)
+            }
         };
     }
 

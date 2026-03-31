@@ -1320,7 +1320,8 @@ impl KlippApp {
                     pixel[2] = b;
                 }
             }
-            crate::state::ViewerOverlay::None | crate::state::ViewerOverlay::SafeAreas => {}
+            crate::state::ViewerOverlay::None | crate::state::ViewerOverlay::SafeAreas
+            | crate::state::ViewerOverlay::Grid | crate::state::ViewerOverlay::Checkerboard => {}
         }
 
         let t_convert = std::time::Instant::now();
@@ -6317,6 +6318,82 @@ impl KlippApp {
                         self.state.toast.show(format!("Cut to angle {}", angle));
                         self.state.dirty = true;
                     }
+                    continue;
+                }
+                // Fit timeline zoom to show all clips
+                AppCommand::FitTimelineToWindow => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let max_secs = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .map(|c| c.timeline_out.to_secs_f64())
+                        .fold(0.0f64, f64::max);
+                    if max_secs > 0.01 {
+                        // Leave 5% margin on right
+                        let avail_w = self.state.last_timeline_content_width;
+                        let zoom = avail_w / (max_secs as f32 * 1.05);
+                        self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
+                        self.state.timeline_scroll_x = 0.0;
+                    }
+                    continue;
+                }
+                // Apply motion preset (Ken Burns, PiP)
+                AppCommand::ApplyMotionPreset { clip_id, preset } => {
+                    let cid = *clip_id;
+                    let preset = preset.clone();
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        let dur = clip.duration().to_secs_f64();
+                        match preset.as_str() {
+                            "ken_burns_zoom_in" => {
+                                clip.transform_scale_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: dur, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                            }
+                            "ken_burns_zoom_out" => {
+                                clip.transform_scale_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: dur, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                            }
+                            "ken_burns_pan_left" => {
+                                clip.transform_scale_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: dur, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                                clip.transform_pos_x_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: dur, value: -100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                            }
+                            "pip_top_right" => {
+                                clip.transform_scale_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                                clip.transform_pos_x_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 600.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                                clip.transform_pos_y_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: -300.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                            }
+                            "pip_bottom_left" => {
+                                clip.transform_scale_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                                clip.transform_pos_x_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: -600.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                                clip.transform_pos_y_keyframes = vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 300.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ];
+                            }
+                            _ => {}
+                        }
+                        self.state.toast.show(format!("Applied {} preset", preset.replace('_', " ")));
+                        self.state.dirty = true;
+                    }
+                    self.sync_sequence_to_engine();
                     continue;
                 }
                 // Next edit point: jump playhead to the nearest clip boundary after current position

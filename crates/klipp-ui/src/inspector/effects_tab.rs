@@ -1030,6 +1030,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => "Video Stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
+        klipp_effects::BuiltinEffect::Vibrance { .. } => "Vibrance",
     }
 }
 
@@ -1136,6 +1137,9 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             speed: 1.0, blend_mode: 1, ramp_curve: 0,
             ramp_start: 0.0, ramp_end: 1.0, reverse: false,
             freeze_at: 0.0, freeze: false,
+        },
+        klipp_effects::BuiltinEffect::Vibrance { .. } => {
+            klipp_effects::BuiltinEffect::Vibrance { amount: 0.0 }
         },
     }
 }
@@ -1760,6 +1764,12 @@ fn show_builtin_effect_params(
                 let r_fa = scrubby_param_row(ui, "Freeze At", freeze_at, 0.0..=1.0, 0.5, 0.005, 3, "", ks_fa);
                 track_scrubby!("freeze_at", r_fa, *freeze_at);
             }
+        }
+        klipp_effects::BuiltinEffect::Vibrance { amount } => {
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            let ks = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let r = scrubby_param_row(ui, "Amount", amount, -1.0..=2.0, 0.5, 0.01, 2, "", ks);
+            track_scrubby!("amount", r, *amount);
         }
         klipp_effects::BuiltinEffect::Invert { mix } => {
             *mix = eval_effect_kf(clip, effect_index, "mix", clip_time_secs, *mix);

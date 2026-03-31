@@ -604,6 +604,8 @@ pub enum ViewerOverlay {
     Zebra,
     FalseColor,
     SafeAreas,
+    Grid,
+    Checkerboard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

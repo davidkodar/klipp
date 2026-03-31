@@ -150,11 +150,18 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
                     ));
                 }
                 ClipKind::Sequence { .. } => {
-                    // Compound clips exported as ref clips with a note
                     let offset = tc_str(clip.timeline_in, fps);
                     let duration = tc_str(clip.duration(), fps);
                     xml.push_str(&format!(
                         "            <gap name=\"Compound Clip\" offset=\"{}\" duration=\"{}\"/>\n",
+                        offset, duration
+                    ));
+                }
+                ClipKind::Generator(_) => {
+                    let offset = tc_str(clip.timeline_in, fps);
+                    let duration = tc_str(clip.duration(), fps);
+                    xml.push_str(&format!(
+                        "            <gap name=\"Generator\" offset=\"{}\" duration=\"{}\"/>\n",
                         offset, duration
                     ));
                 }

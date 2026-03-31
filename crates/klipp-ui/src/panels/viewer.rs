@@ -662,6 +662,8 @@ impl ViewerPanel {
                 ViewerOverlay::Zebra => Some("ZEBRA"),
                 ViewerOverlay::FalseColor => Some("FALSE COLOR"),
                 ViewerOverlay::SafeAreas => Some("SAFE AREAS"),
+                ViewerOverlay::Grid => Some("GRID"),
+                ViewerOverlay::Checkerboard => None, // no badge for checkerboard
                 ViewerOverlay::None => None,
             };
             if let Some(label) = overlay_label {
@@ -708,6 +710,56 @@ impl ViewerPanel {
                 egui::FontId::proportional(9.0),
                 egui::Color32::from_rgba_premultiplied(0, 180, 255, 140),
             );
+        }
+
+        // Grid overlay: rule of thirds + center crosshair
+        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Grid) {
+            let w = image_rect.width();
+            let h = image_rect.height();
+            let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(200, 200, 200, 80));
+            // Rule of thirds: vertical lines
+            for i in 1..=2 {
+                let x = image_rect.left() + w * i as f32 / 3.0;
+                ui.painter().line_segment([egui::pos2(x, image_rect.top()), egui::pos2(x, image_rect.bottom())], stroke);
+            }
+            // Rule of thirds: horizontal lines
+            for i in 1..=2 {
+                let y = image_rect.top() + h * i as f32 / 3.0;
+                ui.painter().line_segment([egui::pos2(image_rect.left(), y), egui::pos2(image_rect.right(), y)], stroke);
+            }
+            // Center crosshair
+            let cx = image_rect.center().x;
+            let cy = image_rect.center().y;
+            let cross = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 100, 100, 100));
+            ui.painter().line_segment([egui::pos2(cx - 12.0, cy), egui::pos2(cx + 12.0, cy)], cross);
+            ui.painter().line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
+        }
+
+        // Checkerboard transparency overlay (drawn behind video, replaces black background)
+        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Checkerboard) {
+            let tile: f32 = 12.0;
+            let c1 = egui::Color32::from_rgb(80, 80, 80);
+            let c2 = egui::Color32::from_rgb(120, 120, 120);
+            let x0 = image_rect.left();
+            let y0 = image_rect.top();
+            let mut y = y0;
+            let mut row = 0;
+            while y < image_rect.bottom() {
+                let mut x = x0;
+                let mut col = 0;
+                while x < image_rect.right() {
+                    let color = if (row + col) % 2 == 0 { c1 } else { c2 };
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(x, y),
+                        egui::vec2(tile.min(image_rect.right() - x), tile.min(image_rect.bottom() - y)),
+                    );
+                    ui.painter().rect_filled(r, 0.0, color);
+                    x += tile;
+                    col += 1;
+                }
+                y += tile;
+                row += 1;
+            }
         }
 
         // Timecode + zoom now shown in playbar below scrub bar

@@ -2016,6 +2016,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => "Video Stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
+        klipp_effects::BuiltinEffect::Vibrance { .. } => "Vibrance",
     }
 }
 
@@ -2203,6 +2204,9 @@ fn show_builtin_effect_params(
             if *freeze {
                 track_slider!(ui.add(egui::Slider::new(freeze_at, 0.0..=1.0).text("Freeze At")));
             }
+        }
+        klipp_effects::BuiltinEffect::Vibrance { amount } => {
+            track_slider!(ui.add(egui::Slider::new(amount, -1.0..=2.0).text("Vibrance")));
         }
         klipp_effects::BuiltinEffect::Invert { mix } => {
             track_slider!(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")));

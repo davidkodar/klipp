@@ -76,6 +76,27 @@ pub enum ClipKind {
     Gap,
     /// A nested sequence (compound clip) — references another sequence by ID.
     Sequence { sequence_id: klipp_core::SequenceId },
+    /// A procedurally-generated frame source (solid color, gradient, bars, countdown).
+    Generator(GeneratorData),
+}
+
+/// Data for a generator clip.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum GeneratorData {
+    /// Solid color fill.
+    SolidColor { color: [u8; 4] },
+    /// Vertical gradient between two colors.
+    Gradient { top: [u8; 4], bottom: [u8; 4] },
+    /// SMPTE color bars (broadcast test pattern).
+    ColorBars,
+    /// Countdown timer (seconds remaining overlaid on black).
+    Countdown,
+}
+
+impl Default for GeneratorData {
+    fn default() -> Self {
+        GeneratorData::SolidColor { color: [0, 0, 0, 255] }
+    }
 }
 
 impl ClipKind {

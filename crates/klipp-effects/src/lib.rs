@@ -266,6 +266,11 @@ pub enum BuiltinEffect {
         /// Value/brightness multiplier (0..3, default 1.0)
         value: f32,
     },
+    /// Vibrance: selective saturation that protects already-saturated colors.
+    Vibrance {
+        /// Vibrance amount (-1.0 to 2.0, default 0.0). Positive = more vibrant, negative = desaturate.
+        amount: f32,
+    },
     /// Noise Generator: add random noise to the image.
     NoiseGenerator {
         /// Noise amount (0..1, default 0.1)
@@ -473,6 +478,9 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         }
         BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
             apply_hsv_adjust(rgba, *hue_shift, *saturation, *value)
+        }
+        BuiltinEffect::Vibrance { amount } => {
+            apply_vibrance(rgba, *amount)
         }
         BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
             apply_noise_generator(rgba, *amount, *monochrome, *seed)
@@ -924,6 +932,30 @@ fn apply_hsv_adjust(mut rgba: Vec<u8>, hue_shift: f32, saturation: f32, value: f
         chunk[0] = ((rr + m) * 255.0).clamp(0.0, 255.0) as u8;
         chunk[1] = ((gg + m) * 255.0).clamp(0.0, 255.0) as u8;
         chunk[2] = ((bb + m) * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    rgba
+}
+
+/// Vibrance: selective saturation that increases saturation of muted colors more than
+/// already-saturated colors. Negative values desaturate.
+fn apply_vibrance(mut rgba: Vec<u8>, amount: f32) -> Vec<u8> {
+    if amount.abs() < 0.001 { return rgba; }
+    for chunk in rgba.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        let max_c = r.max(g).max(b);
+        let min_c = r.min(g).min(b);
+        let sat = if max_c > 0.001 { (max_c - min_c) / max_c } else { 0.0 };
+        // Scale effect inversely with current saturation: low-sat colors get more boost
+        let scale = amount * (1.0 - sat);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let nr = (luma + (r - luma) * (1.0 + scale)).clamp(0.0, 1.0);
+        let ng = (luma + (g - luma) * (1.0 + scale)).clamp(0.0, 1.0);
+        let nb = (luma + (b - luma) * (1.0 + scale)).clamp(0.0, 1.0);
+        chunk[0] = (nr * 255.0 + 0.5) as u8;
+        chunk[1] = (ng * 255.0 + 0.5) as u8;
+        chunk[2] = (nb * 255.0 + 0.5) as u8;
     }
     rgba
 }

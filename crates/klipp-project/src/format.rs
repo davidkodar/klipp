@@ -274,6 +274,10 @@ pub enum ClipKindJson {
     Sequence {
         sequence_id: String,
     },
+    Generator {
+        #[serde(default)]
+        data: serde_json::Value,
+    },
 }
 
 fn default_one_f32() -> f32 { 1.0 }

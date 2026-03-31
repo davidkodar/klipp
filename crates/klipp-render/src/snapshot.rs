@@ -268,6 +268,8 @@ fn snapshot_clip(
         // Compound clips are treated as gaps during export for now —
         // full recursive render requires the sequence to be flattened first.
         ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
+        // Generators are treated as gaps in export snapshot (rendered inline during playback).
+        ClipKind::Generator(_) => ClipKindSnapshot::Gap,
     };
 
     Ok(ClipSnapshot {
