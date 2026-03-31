@@ -199,6 +199,7 @@ fn snapshot_video_track(
 ) -> Result<VideoTrackSnapshot, RenderError> {
     let mut clips = Vec::with_capacity(track.clips.len());
     for clip in &track.clips {
+        if !clip.enabled { continue; }
         clips.push(snapshot_clip(clip, media_pool, fps)?);
     }
 
@@ -223,6 +224,7 @@ fn snapshot_audio_track(
 ) -> Result<AudioTrackSnapshot, RenderError> {
     let mut clips = Vec::new();
     for clip in &track.clips {
+        if !clip.enabled { continue; }
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {

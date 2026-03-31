@@ -293,6 +293,7 @@ impl NewInspectorPanel {
                             param_modifiers: std::collections::HashMap::new(),
                             speed: 1.0,
                             source_rotation: 0,
+                            enabled: true,
                             audio_effects: Vec::new(),
                             stabilization_data: None,
                             smoothed_trajectory: None,

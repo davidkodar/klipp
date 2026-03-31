@@ -2760,6 +2760,7 @@ impl TimelinePanel {
             let is_multi_selected = state.selected_clips.contains(&clip.id);
             let is_hovered = state.hovered_clip == Some(clip.id);
             let is_title = clip.title_data().is_some();
+            let is_disabled = !clip.enabled;
             let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
@@ -2812,6 +2813,18 @@ impl TimelinePanel {
                 (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
             } else {
                 (base_color, bright_color, 1.0)
+            };
+
+            // Dim disabled clips
+            let (fill, border_color) = if is_disabled {
+                let dim = |c: egui::Color32| {
+                    egui::Color32::from_rgba_unmultiplied(
+                        c.r() / 2, c.g() / 2, c.b() / 2, 160,
+                    )
+                };
+                (dim(fill), dim(border_color))
+            } else {
+                (fill, border_color)
             };
 
             // Apply drag transparency to filmstrip images
@@ -5476,6 +5489,20 @@ impl TimelinePanel {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                     ui.close_menu();
                 }
+                if ui.button("Duplicate Clip  Ctrl+D").clicked() {
+                    cmds.push(AppCommand::DuplicateClip { clip_id });
+                    ui.close_menu();
+                }
+                // Enable/Disable clip
+                let clip_enabled = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .map_or(true, |c| c.enabled);
+                let enable_label = if clip_enabled { "Disable Clip" } else { "Enable Clip" };
+                if ui.button(enable_label).clicked() {
+                    cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip_enabled });
+                    ui.close_menu();
+                }
 
                 // Link/Unlink
                 let clip_info = state.sequence().tracks.iter()
@@ -5738,6 +5765,56 @@ impl TimelinePanel {
                 ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
                 r.on_disabled_hover_text("(coming soon)");
+            } else {
+                // No clip selected — offer gap operations on empty track space
+                // Find gap at click position on this track
+                let click_tc = if let Some(pos) = pointer_pos {
+                    let x_in_content = pos.x - content_rect.left() + scroll;
+                    let click_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                    Some(RationalTime::from_secs_f64(click_secs, fps.rate()))
+                } else {
+                    None
+                };
+                if let Some(tc) = click_tc {
+                    if let Some(track) = state.sequence().tracks.get(track_idx) {
+                        // Find gap around the clicked position
+                        let mut clips_sorted: Vec<_> = track.clips.iter()
+                            .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+                            .collect();
+                        clips_sorted.sort_by_key(|c| c.timeline_in);
+                        // Look for a gap between clips that contains `tc`
+                        let mut gap_found = None;
+                        if clips_sorted.is_empty() {
+                            // Empty track — no gap to close
+                        } else {
+                            // Check gap before first clip
+                            let zero = RationalTime::from_secs_f64(0.0, fps.rate());
+                            if clips_sorted[0].timeline_in > zero && tc < clips_sorted[0].timeline_in {
+                                gap_found = Some((zero, clips_sorted[0].timeline_in));
+                            }
+                            // Check gaps between clips
+                            for pair in clips_sorted.windows(2) {
+                                let end_a = pair[0].timeline_out;
+                                let start_b = pair[1].timeline_in;
+                                if start_b > end_a && tc >= end_a && tc < start_b {
+                                    gap_found = Some((end_a, start_b));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some((gap_start, gap_end)) = gap_found {
+                            let dur_secs = (gap_end - gap_start).to_secs_f64();
+                            if ui.button(format!("Close Gap ({:.2}s)", dur_secs)).clicked() {
+                                cmds.push(AppCommand::CloseGap {
+                                    track_index: track_idx,
+                                    gap_start,
+                                    gap_end,
+                                });
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                }
             }
         });
 

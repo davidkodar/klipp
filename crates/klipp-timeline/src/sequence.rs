@@ -306,6 +306,7 @@ fn default_volume() -> f32 { 1.0 }
 fn default_true() -> bool { true }
 fn default_clip_volume() -> f32 { 1.0 }
 fn default_speed() -> f64 { 1.0 }
+fn default_enabled() -> bool { true }
 
 impl Track {
     pub fn new(name: &str, kind: TrackKind) -> Self {
@@ -378,6 +379,7 @@ impl Track {
             speed: 1.0,
             audio_effects: Vec::new(),
             source_rotation: 0,
+            enabled: true,
             stabilization_data: None,
             smoothed_trajectory: None,
         });
@@ -561,6 +563,7 @@ impl Track {
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
             source_rotation: clip.source_rotation,
+            enabled: clip.enabled,
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -601,6 +604,7 @@ impl Track {
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
             source_rotation: clip.source_rotation,
+            enabled: clip.enabled,
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -728,6 +732,10 @@ pub struct Clip {
     /// Applied as a pre-transform via the GPU pipeline. Users can override per-clip.
     #[serde(default)]
     pub source_rotation: i32,
+    /// Whether this clip is enabled. Disabled clips are skipped during render/playback
+    /// but remain visible (dimmed) on the timeline.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
@@ -806,6 +814,7 @@ impl Clip {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            enabled: true,
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
@@ -856,6 +865,7 @@ impl Clip {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             source_rotation: 0,
+            enabled: true,
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,

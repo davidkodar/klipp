@@ -4972,6 +4972,7 @@ impl KlippApp {
                         param_modifiers: std::collections::HashMap::new(),
                         speed: 1.0,
                         source_rotation: 0,
+                        enabled: true,
                         audio_effects: Vec::new(),
                         stabilization_data: None,
                         smoothed_trajectory: None,
@@ -5704,6 +5705,7 @@ impl KlippApp {
                                     param_modifiers: clip.param_modifiers.clone(),
                                     speed: clip.speed,
                                     source_rotation: clip.source_rotation,
+                                    enabled: clip.enabled,
                                     audio_effects: clip.audio_effects.clone(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -5717,6 +5719,161 @@ impl KlippApp {
                                 self.state.dirty = true;
                             }
                         }
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Ctrl+D — Duplicate selected clip (place immediately after original)
+                AppCommand::DuplicateClip { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let found = seq.tracks.iter().enumerate().find_map(|(ti, t)| {
+                        t.find_clip(cid).map(|c| (ti, c.clone()))
+                    });
+                    if let Some((track_index, clip)) = found {
+                        let new_id = klipp_core::ClipId::new();
+                        let timeline_in = clip.timeline_out;
+                        let dur = clip.duration();
+                        let new_clip = klipp_timeline::Clip {
+                            id: new_id,
+                            kind: clip.kind.clone(),
+                            timeline_in,
+                            timeline_out: timeline_in + dur,
+                            source_in: clip.source_in,
+                            source_out: clip.source_out,
+                            node_graph: clip.node_graph.clone(),
+                            effects: clip.effects.clone(),
+                            builtin_effects: clip.builtin_effects.clone(),
+                            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                            linked_clip_id: None,
+                            group_id: None,
+                            magnetic_anchor: None,
+                            gain: clip.gain,
+                            volume: clip.volume,
+                            pan: clip.pan,
+                            fade_in_secs: clip.fade_in_secs,
+                            fade_out_secs: clip.fade_out_secs,
+                            fade_in_curve: clip.fade_in_curve,
+                            fade_out_curve: clip.fade_out_curve,
+                            channel_config: clip.channel_config,
+                            volume_keyframes: clip.volume_keyframes.clone(),
+                            pan_keyframes: clip.pan_keyframes.clone(),
+                            gain_keyframes: clip.gain_keyframes.clone(),
+                            opacity_keyframes: clip.opacity_keyframes.clone(),
+                            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                            clip_markers: clip.clip_markers.clone(),
+                            effect_keyframes: clip.effect_keyframes.clone(),
+                            role: clip.role,
+                            param_modifiers: clip.param_modifiers.clone(),
+                            speed: clip.speed,
+                            source_rotation: clip.source_rotation,
+                            enabled: clip.enabled,
+                            audio_effects: clip.audio_effects.clone(),
+                            stabilization_data: None,
+                            smoothed_trajectory: None,
+                        };
+                        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
+                        Self::overwrite_insert_clip_on_track(track, new_clip.clone());
+                        self.state.history.push(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::LegacyPasteClip {
+                                clip: new_clip,
+                                track_index,
+                            },
+                        });
+                        self.state.selected_clip = Some(new_id);
+                        self.state.selected_clips.clear();
+                        self.state.dirty = true;
+                    }
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Toggle clip enabled/disabled
+                AppCommand::SetClipEnabled { clip_id, enabled } => {
+                    let cid = *clip_id;
+                    let en = *enabled;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.enabled = en;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                // Select All clips on timeline
+                AppCommand::SelectAllClips => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let all_ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+                        .map(|c| c.id)
+                        .collect();
+                    if let Some(first) = all_ids.first().copied() {
+                        self.state.selected_clip = Some(first);
+                    }
+                    self.state.selected_clips = all_ids;
+                    continue;
+                }
+                // Next edit point: jump playhead to the nearest clip boundary after current position
+                AppCommand::NextEditPoint => {
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let mut boundaries: Vec<klipp_core::RationalTime> = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+                        .flat_map(|c| [c.timeline_in, c.timeline_out])
+                        .filter(|&tc| tc > ph)
+                        .collect();
+                    boundaries.sort();
+                    boundaries.dedup();
+                    if let Some(&next) = boundaries.first() {
+                        self.state.playhead = next;
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(next));
+                    }
+                    continue;
+                }
+                // Previous edit point: jump playhead to the nearest clip boundary before current position
+                AppCommand::PrevEditPoint => {
+                    let ph = self.state.playhead;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let mut boundaries: Vec<klipp_core::RationalTime> = seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+                        .flat_map(|c| [c.timeline_in, c.timeline_out])
+                        .filter(|&tc| tc < ph)
+                        .collect();
+                    boundaries.sort();
+                    boundaries.dedup();
+                    if let Some(&prev) = boundaries.last() {
+                        self.state.playhead = prev;
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(prev));
+                    }
+                    continue;
+                }
+                // Close gap: remove empty space on a track by shifting downstream clips left
+                AppCommand::CloseGap { track_index, gap_start, gap_end } => {
+                    let ti = *track_index;
+                    let start = *gap_start;
+                    let end = *gap_end;
+                    let gap_dur = end - start;
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
+                        // Remove any explicit Gap clips in this range
+                        track.clips.retain(|c| {
+                            !(matches!(c.kind, klipp_timeline::ClipKind::Gap)
+                              && c.timeline_in >= start && c.timeline_out <= end)
+                        });
+                        // Shift all clips that start at or after gap_end left by gap duration
+                        for c in track.clips.iter_mut() {
+                            if c.timeline_in >= end {
+                                c.timeline_in -= gap_dur;
+                                c.timeline_out -= gap_dur;
+                            }
+                        }
+                        track.sort_clips();
+                        self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
                     continue;
@@ -5833,6 +5990,7 @@ impl KlippApp {
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
                                     source_rotation: 0,
+                                    enabled: true,
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -5917,6 +6075,7 @@ impl KlippApp {
                                     param_modifiers: std::collections::HashMap::new(),
                                     speed: 1.0,
                                     source_rotation: 0,
+                                    enabled: true,
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
@@ -8016,6 +8175,7 @@ impl KlippApp {
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
+                enabled: clip.enabled,
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
@@ -8125,6 +8285,7 @@ impl KlippApp {
                 param_modifiers: clip.param_modifiers.clone(),
                 speed: clip.speed,
                 source_rotation: clip.source_rotation,
+                enabled: clip.enabled,
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
@@ -8884,6 +9045,12 @@ impl KlippApp {
             if i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
                 cmds.push(AppCommand::PasteClip);
             }
+            // Ctrl+D — Duplicate selected clip
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::D) {
+                if let Some(clip_id) = self.state.selected_clip {
+                    cmds.push(AppCommand::DuplicateClip { clip_id });
+                }
+            }
             // Ctrl+B — Split at playhead (all tracks with clips at playhead)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
                 let ph = self.state.playhead;
@@ -9102,6 +9269,18 @@ impl KlippApp {
             if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::A) {
                 self.state.selected_clips.clear();
                 cmds.push(AppCommand::SelectClip(None));
+            }
+            // Ctrl+A — Select All clips on timeline
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::A) {
+                cmds.push(AppCommand::SelectAllClips);
+            }
+            // Up Arrow — Previous edit point
+            if !i.modifiers.ctrl && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp) {
+                cmds.push(AppCommand::PrevEditPoint);
+            }
+            // Down Arrow — Next edit point
+            if !i.modifiers.ctrl && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowDown) {
+                cmds.push(AppCommand::NextEditPoint);
             }
             // , or F10 — Insert edit (ripple)
             if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == ","))

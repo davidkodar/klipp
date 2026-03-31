@@ -325,6 +325,16 @@ pub enum AppCommand {
     CutClip { clip_id: ClipId },
     CopyClip { clip_id: ClipId },
     PasteClip,
+    DuplicateClip { clip_id: ClipId },
+    /// Toggle a clip's enabled state (disabled clips are dimmed and skipped in render).
+    SetClipEnabled { clip_id: ClipId, enabled: bool },
+    SelectAllClips,
+    /// Navigate to next edit point (clip boundary) on the timeline.
+    NextEditPoint,
+    /// Navigate to previous edit point (clip boundary) on the timeline.
+    PrevEditPoint,
+    /// Close the gap (empty space) at the playhead on a given track, or the nearest gap.
+    CloseGap { track_index: usize, gap_start: RationalTime, gap_end: RationalTime },
 
     // Source monitor
     LoadSourceMedia { media_id: MediaId },

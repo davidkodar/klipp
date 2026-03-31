@@ -731,7 +731,7 @@ impl PlaybackEngine {
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .any(|track| {
                     track.clip_at_timecode(self.playhead)
-                        .map(|(_, c)| c.media_id().is_some())
+                        .map(|(_, c)| c.enabled && c.media_id().is_some())
                         .unwrap_or(false)
                 });
             let title_info = if !has_media_clip {
@@ -739,6 +739,7 @@ impl PlaybackEngine {
                     .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                     .find_map(|track| {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
+                            if !clip.enabled { return None; }
                             let td = clip.title_data()?.clone();
                             Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
                         })
@@ -973,6 +974,7 @@ impl PlaybackEngine {
                 .enumerate()
                 .filter_map(|(track_idx, track)| {
                     let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
+                    if !clip.enabled { return None; }
                     let media_id = clip.media_id()?;
                     let item = pool.get(&media_id)?;
                     if !item.has_audio {

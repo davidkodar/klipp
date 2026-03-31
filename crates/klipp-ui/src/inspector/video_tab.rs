@@ -182,6 +182,7 @@ fn show_bin_media_video(
         param_modifiers: HashMap::new(),
         speed: 1.0,
         source_rotation: 0,
+        enabled: true,
         audio_effects: Vec::new(),
         stabilization_data: None,
         smoothed_trajectory: None,
