@@ -157,12 +157,13 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
                         offset, duration
                     ));
                 }
-                ClipKind::Generator(_) => {
+                ClipKind::Generator(_) | ClipKind::AdjustmentLayer => {
                     let offset = tc_str(clip.timeline_in, fps);
                     let duration = tc_str(clip.duration(), fps);
+                    let name = if matches!(clip.kind, ClipKind::AdjustmentLayer) { "Adjustment Layer" } else { "Generator" };
                     xml.push_str(&format!(
-                        "            <gap name=\"Generator\" offset=\"{}\" duration=\"{}\"/>\n",
-                        offset, duration
+                        "            <gap name=\"{}\" offset=\"{}\" duration=\"{}\"/>\n",
+                        name, offset, duration
                     ));
                 }
             }

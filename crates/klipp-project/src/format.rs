@@ -278,6 +278,7 @@ pub enum ClipKindJson {
         #[serde(default)]
         data: serde_json::Value,
     },
+    AdjustmentLayer,
 }
 
 fn default_one_f32() -> f32 { 1.0 }

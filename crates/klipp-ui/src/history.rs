@@ -416,6 +416,25 @@ impl CommandHistory {
     pub fn redo_label(&self) -> Option<&'static str> {
         self.redo_stack.last().map(|e| e.label())
     }
+
+    /// Get all undo stack entries (oldest first) for history panel display.
+    pub fn undo_entries(&self) -> &[HistoryEntry] {
+        &self.undo_stack
+    }
+
+    /// Get all redo stack entries (oldest first) for history panel display.
+    pub fn redo_entries(&self) -> &[HistoryEntry] {
+        &self.redo_stack
+    }
+
+    /// Undo N steps (for history panel click-to-jump).
+    pub fn undo_count(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    pub fn redo_count(&self) -> usize {
+        self.redo_stack.len()
+    }
 }
 
 /// Combines the old state from begin_drag with the new state from end_drag.

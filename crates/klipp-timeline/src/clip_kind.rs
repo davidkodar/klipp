@@ -78,6 +78,8 @@ pub enum ClipKind {
     Sequence { sequence_id: klipp_core::SequenceId },
     /// A procedurally-generated frame source (solid color, gradient, bars, countdown).
     Generator(GeneratorData),
+    /// Adjustment layer — transparent clip that applies its effects to all clips below.
+    AdjustmentLayer,
 }
 
 /// Data for a generator clip.

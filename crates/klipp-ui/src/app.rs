@@ -6133,6 +6133,37 @@ impl KlippApp {
                     }
                     continue;
                 }
+                // Create adjustment layer at playhead
+                AppCommand::CreateAdjustmentLayer => {
+                    let ph = self.state.playhead;
+                    let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                    let duration = klipp_core::RationalTime::from_frames(120, fps_rate); // 5 seconds at 24fps
+                    let timeline_out = ph + duration;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    // Find or create the top video track
+                    let track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                        .unwrap_or_else(|| {
+                            seq.tracks.insert(0, klipp_timeline::Track::new("Adjustment", klipp_timeline::TrackKind::Video));
+                            0
+                        });
+                    let clip = klipp_timeline::Clip {
+                        id: klipp_core::ClipId::new(),
+                        kind: klipp_timeline::ClipKind::AdjustmentLayer,
+                        timeline_in: ph,
+                        timeline_out,
+                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                        source_out: duration,
+                        ..klipp_timeline::Clip::gap(ph, timeline_out)
+                    };
+                    let clip_id = clip.id;
+                    seq.tracks[track_idx].clips.push(clip);
+                    seq.tracks[track_idx].sort_clips();
+                    self.state.selected_clip = Some(clip_id);
+                    self.state.toast.show(format!("Adjustment layer created"));
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 // Create compound clip: move selected clips into a new nested sequence
                 AppCommand::CreateCompoundClip { name } => {
                     let name = name.clone();
@@ -11303,6 +11334,56 @@ impl eframe::App for KlippApp {
         if self.state.show_markers_panel {
             let cmds = self.markers.show(ctx, &mut self.state);
             all_cmds.extend(cmds);
+        }
+
+        // History panel
+        if self.state.show_history_panel {
+            let mut open = true;
+            egui::Window::new("History")
+                .open(&mut open)
+                .resizable(true)
+                .default_size([220.0, 400.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("{} undo / {} redo", self.state.history.undo_count(), self.state.history.redo_count()));
+                    ui.separator();
+                    egui::ScrollArea::vertical().max_height(350.0).show(ui, |ui| {
+                        // Redo stack (future states, shown dimmed at top)
+                        let redo = self.state.history.redo_entries();
+                        for (i, entry) in redo.iter().enumerate().rev() {
+                            let label = entry.label();
+                            let resp = ui.selectable_label(false,
+                                egui::RichText::new(format!("  {label}"))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(100, 100, 120))
+                            );
+                            if resp.clicked() {
+                                // Redo (redo_count - i) steps
+                                for _ in 0..=(redo.len() - 1 - i) {
+                                    all_cmds.push(AppCommand::Redo);
+                                }
+                            }
+                        }
+                        // Current state marker
+                        ui.colored_label(egui::Color32::from_rgb(200, 160, 40),
+                            egui::RichText::new("\u{25B6} Current State").size(11.0));
+                        // Undo stack (past states, most recent first)
+                        let undo = self.state.history.undo_entries();
+                        for (i, entry) in undo.iter().enumerate().rev() {
+                            let label = entry.label();
+                            let resp = ui.selectable_label(false,
+                                egui::RichText::new(format!("  {label}")).size(11.0));
+                            if resp.clicked() {
+                                // Undo (undo_count - i) steps
+                                for _ in 0..=(undo.len() - 1 - i) {
+                                    all_cmds.push(AppCommand::Undo);
+                                }
+                            }
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_history_panel = false;
+            }
         }
 
         // About dialog

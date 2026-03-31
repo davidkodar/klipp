@@ -420,6 +420,7 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     .unwrap_or_default();
                 ClipKind::Generator(gen_data)
             }
+            ClipKindJson::AdjustmentLayer => ClipKind::AdjustmentLayer,
         };
     }
 

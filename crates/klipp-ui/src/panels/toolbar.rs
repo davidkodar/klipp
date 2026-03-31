@@ -494,6 +494,7 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Next Edit Point").shortcut_text("\u{2193}")).clicked() { cmds.push(AppCommand::NextEditPoint); ui.close_menu(); }
             if ui.add(egui::Button::new("Previous Edit Point").shortcut_text("\u{2191}")).clicked() { cmds.push(AppCommand::PrevEditPoint); ui.close_menu(); }
             if ui.button("Fit Timeline to Window").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
+            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.separator();
             // Tool selection
             let check = |active: bool| if active { "\u{2713} " } else { "  " };
@@ -609,6 +610,7 @@ impl ToolbarPanel {
             if ui.button(inspector_label).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
             if ui.button(if state.show_markers_panel { "\u{2713} Markers" } else { "  Markers" }).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
             if ui.button(if state.show_curve_editor { "\u{2713} Curve Editor" } else { "  Curve Editor" }).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            if ui.button(if state.show_history_panel { "\u{2713} History" } else { "  History" }).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
             ui.separator();
             if ui.button(if state.use_proxies { "\u{2713} Proxies" } else { "  Proxies" }).clicked() { cmds.push(AppCommand::SetUseProxies(!state.use_proxies)); ui.close_menu(); }
             ui.separator();

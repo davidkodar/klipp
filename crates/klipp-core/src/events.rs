@@ -422,6 +422,8 @@ pub enum AppCommand {
     FitTimelineToWindow,
     /// Apply a motion preset (Ken Burns / PiP) to selected clip.
     ApplyMotionPreset { clip_id: ClipId, preset: String },
+    /// Create an adjustment layer at the playhead on the top video track.
+    CreateAdjustmentLayer,
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.

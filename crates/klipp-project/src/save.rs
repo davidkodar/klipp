@@ -274,6 +274,7 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
         ClipKind::Generator(data) => ClipKindJson::Generator {
             data: serde_json::to_value(data).unwrap_or_default(),
         },
+        ClipKind::AdjustmentLayer => ClipKindJson::AdjustmentLayer,
     }
 }
 
