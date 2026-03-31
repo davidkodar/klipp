@@ -290,7 +290,7 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
-            graph_executor: klipp_nodes::GraphExecutor::new(),
+            graph_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             bypass_color_grade: false,
             matte_preview: false,
             scope_tap_node: None,
@@ -301,7 +301,7 @@ impl PlaybackEngine {
                 h.discover_plugins();
                 h
             },
-            gpu_effects: klipp_effects::gpu::GpuEffectsPipeline::new(),
+            gpu_effects: None, // lazily initialized on first use
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
@@ -3059,7 +3059,22 @@ impl PlaybackEngine {
         }
     }
 
+    /// Lazily initialize GPU effects pipeline on first use.
+    /// This defers the ~1-2s shader compilation cost from startup to the first frame
+    /// that actually needs GPU processing.
+    fn ensure_gpu_effects(&mut self) {
+        if self.gpu_effects.is_none() {
+            let t = std::time::Instant::now();
+            self.gpu_effects = klipp_effects::gpu::GpuEffectsPipeline::new();
+            if self.gpu_effects.is_some() {
+                info!("PlaybackEngine: GPU effects pipeline initialized lazily in {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+    }
+
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        // Lazily initialize GPU on first frame
+        self.ensure_gpu_effects();
         // Cache the pre-grade frame for instant re-grading when paused
         self.cached_pregrade_frame = Some((rgba.clone(), width, height));
         // Also store in shared frame buffer so UI thread can re-grade directly
@@ -3237,6 +3252,7 @@ impl PlaybackEngine {
     }
 
     fn regrade_cached_frame(&mut self) {
+        self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with V2 overlay
         if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
             let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);
