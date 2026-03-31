@@ -695,6 +695,8 @@ pub struct AttributesClipboard {
     pub param_modifiers: std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
     /// Speed.
     pub speed: f64,
+    /// Speed keyframes.
+    pub speed_keyframes: Vec<klipp_core::Keyframe>,
 }
 
 impl AppState {

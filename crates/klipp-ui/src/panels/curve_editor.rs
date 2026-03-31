@@ -9,6 +9,8 @@ use klipp_timeline::TrackKind;
 pub enum CurveParam {
     Audio(AudioParam),
     Video(VideoParam),
+    /// Playback speed envelope.
+    Speed,
     /// Effect parameter keyframe track, identified by "{effect_index}:{param_name}".
     Effect(String),
 }
@@ -24,8 +26,8 @@ impl CurveParam {
             CurveParam::Video(VideoParam::PositionY) => "Position Y".into(),
             CurveParam::Video(VideoParam::Scale) => "Scale".into(),
             CurveParam::Video(VideoParam::Rotation) => "Rotation".into(),
+            CurveParam::Speed => "Speed".into(),
             CurveParam::Effect(key) => {
-                // Parse "idx:param_name" to a readable label
                 if let Some((_idx, name)) = key.split_once(':') {
                     format!("FX: {name}")
                 } else {
@@ -46,7 +48,8 @@ impl CurveParam {
             CurveParam::Video(VideoParam::PositionY) => (-1080.0, 1080.0, 0.0),
             CurveParam::Video(VideoParam::Scale) => (0.0, 4.0, 1.0),
             CurveParam::Video(VideoParam::Rotation) => (-360.0, 360.0, 0.0),
-            CurveParam::Effect(_) => (0.0, 1.0, 0.5), // sensible default range for effects
+            CurveParam::Speed => (0.1, 4.0, 1.0),
+            CurveParam::Effect(_) => (0.0, 1.0, 0.5),
         }
     }
 }
@@ -263,6 +266,10 @@ impl CurveEditorPanel {
                                 value: v,
                             });
                         }
+                        CurveParam::Speed => {
+                            // Speed keyframes: directly modify clip
+                            // (no dedicated AppCommand yet — add inline)
+                        }
                         CurveParam::Effect(key) => {
                             if let Some((idx_str, param_name)) = key.split_once(':') {
                                 if let Ok(effect_index) = idx_str.parse::<usize>() {
@@ -357,6 +364,7 @@ impl CurveEditorPanel {
                     CurveParam::Video(VideoParam::PositionY) => clip.transform_pos_y_keyframes.clone(),
                     CurveParam::Video(VideoParam::Scale) => clip.transform_scale_keyframes.clone(),
                     CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes.clone(),
+                    CurveParam::Speed => clip.speed_keyframes.clone(),
                     CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
                 };
             }
@@ -378,6 +386,7 @@ impl CurveEditorPanel {
                 CurveParam::Video(VideoParam::PositionY),
                 CurveParam::Video(VideoParam::Scale),
                 CurveParam::Video(VideoParam::Rotation),
+                CurveParam::Speed,
             ],
             TrackKind::Audio => vec![
                 CurveParam::Audio(AudioParam::Volume),
@@ -925,9 +934,8 @@ impl CurveEditorPanel {
                                             new_value: new_v,
                                         });
                                     }
-                                    CurveParam::Effect(_) => {
-                                        // Effect keyframe move: remove old + add new
-                                        // (no dedicated move command — reuse add which overwrites)
+                                    CurveParam::Speed | CurveParam::Effect(_) => {
+                                        // Speed/effect keyframe move not yet wired to commands
                                     }
                                 }
                             }
@@ -961,8 +969,8 @@ impl CurveEditorPanel {
                                             tangent_out,
                                         });
                                     }
-                                    CurveParam::Effect(_) => {
-                                        // Tangent editing for effect keyframes not yet wired
+                                    CurveParam::Speed | CurveParam::Effect(_) => {
+                                        // Tangent editing not yet wired for speed/effects
                                     }
                                 }
                             }
@@ -983,7 +991,7 @@ impl CurveEditorPanel {
         match &self.param {
             CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
             CurveParam::Video(p) => KeyframeParamKind::Video(*p),
-            CurveParam::Effect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
+            CurveParam::Speed | CurveParam::Effect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
         }
     }
 

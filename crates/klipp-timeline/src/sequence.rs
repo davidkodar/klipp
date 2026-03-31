@@ -381,6 +381,7 @@ impl Track {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            speed_keyframes: Vec::new(),
             audio_effects: Vec::new(),
             source_rotation: 0,
             enabled: true,
@@ -569,6 +570,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            speed_keyframes: clip.speed_keyframes.clone(),
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             multicam_group: clip.multicam_group,
@@ -613,6 +615,7 @@ impl Track {
             role: clip.role,
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
+            speed_keyframes: clip.speed_keyframes.clone(),
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             multicam_group: clip.multicam_group,
@@ -747,6 +750,10 @@ pub struct Clip {
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
+    /// Speed keyframes for variable speed envelopes (time-varying speed).
+    /// When non-empty, these override the constant `speed` field.
+    #[serde(default)]
+    pub speed_keyframes: Vec<klipp_core::Keyframe>,
     /// Source media rotation in degrees (0, 90, 180, 270). Auto-detected from metadata.
     /// Applied as a pre-transform via the GPU pipeline. Users can override per-clip.
     #[serde(default)]
@@ -799,6 +806,16 @@ impl Clip {
         self.source_out - self.source_in
     }
 
+    /// Evaluate speed at a given clip-relative time (seconds from clip start).
+    /// Returns the constant speed if no keyframes, or the keyframed value.
+    pub fn speed_at(&self, clip_time_secs: f64) -> f64 {
+        if self.speed_keyframes.is_empty() {
+            self.speed
+        } else {
+            klipp_core::keyframe::evaluate(&self.speed_keyframes, clip_time_secs, self.speed as f32) as f64
+        }
+    }
+
     /// Create a gap placeholder clip with the given timeline extent.
     /// Rescales timeline_out to match timeline_in's rate if they differ.
     pub fn gap(timeline_in: Timecode, timeline_out: Timecode) -> Self {
@@ -842,6 +859,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
             multicam_group: None,
@@ -896,6 +914,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
             multicam_group: None,
@@ -949,6 +968,7 @@ impl Clip {
             role: ClipRole::default(),
             param_modifiers: HashMap::new(),
             speed: 1.0,
+            speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
             multicam_group: None,

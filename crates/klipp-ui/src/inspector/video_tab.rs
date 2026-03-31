@@ -182,6 +182,7 @@ fn show_bin_media_video(
         role: klipp_core::ClipRole::default(),
         param_modifiers: HashMap::new(),
         speed: 1.0,
+        speed_keyframes: Vec::new(),
         source_rotation: 0,
         enabled: true,
         multicam_group: None,

@@ -66,7 +66,14 @@ pub fn save_project_with_color(
 
     let project_json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {e}"))?;
-    std::fs::write(dir.join("project.json"), project_json)
+
+    // Rotate backup versions before overwriting (keep up to 5 backups)
+    let project_file = dir.join("project.json");
+    if project_file.exists() {
+        rotate_backups(&project_file, 5);
+    }
+
+    std::fs::write(&project_file, project_json)
         .map_err(|e| format!("Failed to write project.json: {e}"))?;
 
     // Build media/manifest.json — store paths relative to project dir
@@ -198,6 +205,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
                         },
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
+                        speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
                         source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
                         enabled: if c.enabled { None } else { Some(false) },
                         audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
@@ -344,4 +352,25 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         colour_space: item.colour_space.to_u8(),
         source_rotation: if item.source_rotation == 0 { None } else { Some(item.source_rotation) },
     }
+}
+
+/// Rotate backup files: project.json → project.json.bak.1, .bak.1 → .bak.2, etc.
+/// Keeps up to `max_backups` versions.
+fn rotate_backups(path: &Path, max_backups: u32) {
+    // Remove oldest backup if at limit
+    let oldest = path.with_extension(format!("json.bak.{max_backups}"));
+    let _ = std::fs::remove_file(&oldest);
+
+    // Shift existing backups: .bak.N-1 → .bak.N
+    for i in (1..max_backups).rev() {
+        let from = path.with_extension(format!("json.bak.{i}"));
+        let to = path.with_extension(format!("json.bak.{}", i + 1));
+        if from.exists() {
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+
+    // Copy current file to .bak.1
+    let bak1 = path.with_extension("json.bak.1");
+    let _ = std::fs::copy(path, &bak1);
 }

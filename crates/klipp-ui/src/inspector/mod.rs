@@ -292,6 +292,7 @@ impl NewInspectorPanel {
                             role: klipp_core::ClipRole::default(),
                             param_modifiers: std::collections::HashMap::new(),
                             speed: 1.0,
+                            speed_keyframes: Vec::new(),
                             source_rotation: 0,
                             enabled: true,
                             multicam_group: None,
