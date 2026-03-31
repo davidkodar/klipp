@@ -471,11 +471,15 @@ impl BrowserPanel {
             if let Some((ref pinned, _)) = files_pinned {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let is_pinned = **pinned;
-                    let pin_color = if is_pinned { theme.accent } else { theme.text_dim };
+                    let pin_color = if is_pinned {
+                        egui::Color32::from_rgb(30, 30, 34) // dark icon on amber fill
+                    } else {
+                        theme.text_dim
+                    };
                     let pin_resp = ui.add(
                         egui::Button::image(Icon::PushPin.image(12.0).tint(pin_color))
                             .min_size(egui::vec2(22.0, 20.0))
-                            .fill(if is_pinned { theme.accent_subtle } else { theme.bg_raised })
+                            .fill(if is_pinned { theme.accent } else { theme.bg_raised })
                             .rounding(3.0),
                     );
                     // We handle the click after this closure to avoid borrow issues
@@ -529,9 +533,9 @@ impl BrowserPanel {
                     let btn = ui.add(
                         egui::Button::new(
                             egui::RichText::new(*label).size(9.0)
-                                .color(if is_current { theme.accent } else { theme.text_secondary })
+                                .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
                         )
-                        .fill(if is_current { theme.accent_subtle } else { egui::Color32::TRANSPARENT })
+                        .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                         .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
                         .rounding(3.0),
                     );
