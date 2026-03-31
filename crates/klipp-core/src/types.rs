@@ -34,6 +34,8 @@ pub enum ColorSpace {
     Rec709,
     Rec2020,
     P3D65,
+    AcesCG,
+    Aces2065,
     Unknown,
 }
 
@@ -67,6 +69,12 @@ pub enum LogFormat {
     DJIDLog,
     /// Apple Log (iPhone 15 Pro and later)
     AppleLog,
+    /// ACES — ACEScc (logarithmic, for color grading)
+    AcesCC,
+    /// ACES — ACEScg (linear, AP1 primaries, common working space)
+    AcesCG,
+    /// ACES — ACES2065-1 (linear, AP0 primaries, archival interchange)
+    Aces2065,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,9 +98,11 @@ pub enum BlendMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChannelConfig {
     #[default]
-    Default,      // Use source as-is (stereo stays stereo, mono gets centered)
-    MonoDownmix,  // Sum L+R, halve amplitude, output to both channels
-    SwapLR,       // Swap left and right channels
+    Default,       // Use source as-is (stereo stays stereo, mono gets centered)
+    MonoDownmix,   // Sum L+R, halve amplitude, output to both channels
+    SwapLR,        // Swap left and right channels
+    Surround51,    // 5.1 output: L, R, C, LFE, Ls, Rs
+    Surround71,    // 7.1 output: L, R, C, LFE, Ls, Rs, Lb, Rb
 }
 
 /// Audio fade curve shape.

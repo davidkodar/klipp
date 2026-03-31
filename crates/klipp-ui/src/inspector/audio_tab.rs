@@ -1319,6 +1319,8 @@ fn channel_config_label(config: ChannelConfig) -> &'static str {
         ChannelConfig::Default => "Default",
         ChannelConfig::MonoDownmix => "Mono Downmix",
         ChannelConfig::SwapLR => "Swap L/R",
+        ChannelConfig::Surround51 => "5.1 Surround",
+        ChannelConfig::Surround71 => "7.1 Surround",
     }
 }
 

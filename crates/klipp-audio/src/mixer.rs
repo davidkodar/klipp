@@ -7,6 +7,8 @@ pub struct AudioTrackSettings {
     pub solo: bool,
     pub peak_left: f32,
     pub peak_right: f32,
+    /// Optional bus assignment (index into AudioMixer::buses). None = direct to master.
+    pub bus: Option<usize>,
 }
 
 impl Default for AudioTrackSettings {
@@ -18,14 +20,42 @@ impl Default for AudioTrackSettings {
             solo: false,
             peak_left: 0.0,
             peak_right: 0.0,
+            bus: None,
+        }
+    }
+}
+
+/// Audio submix bus with its own volume, pan, and mute controls.
+#[derive(Debug, Clone)]
+pub struct AudioBus {
+    pub name: String,
+    pub volume: f32,
+    pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
+    pub peak_left: f32,
+    pub peak_right: f32,
+}
+
+impl AudioBus {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+            peak_left: 0.0,
+            peak_right: 0.0,
         }
     }
 }
 
 /// Mixes multiple audio tracks into a single stereo output.
-/// Uses equal-power pan law (constant-power, standard DAW behavior).
+/// Supports optional submix buses: tracks can route to a bus, and buses route to master.
 pub struct AudioMixer {
     pub tracks: Vec<AudioTrackSettings>,
+    pub buses: Vec<AudioBus>,
     pub master_volume: f32,
 }
 
@@ -33,8 +63,16 @@ impl AudioMixer {
     pub fn new(track_count: usize) -> Self {
         Self {
             tracks: vec![AudioTrackSettings::default(); track_count],
+            buses: Vec::new(),
             master_volume: 1.0,
         }
+    }
+
+    /// Add a submix bus and return its index.
+    pub fn add_bus(&mut self, name: &str) -> usize {
+        let idx = self.buses.len();
+        self.buses.push(AudioBus::new(name));
+        idx
     }
 
     /// Ensure at least `count` track settings exist.
@@ -49,8 +87,16 @@ impl AudioMixer {
     /// Returns interleaved f32 stereo output.
     pub fn mix(&mut self, track_buffers: &[(usize, &[f32])]) -> Vec<f32> {
         let frame_len = track_buffers.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
-        let mut output = vec![0.0f32; frame_len];
         let any_solo = self.tracks.iter().any(|t| t.solo);
+        let has_buses = !self.buses.is_empty();
+
+        // If buses exist, create per-bus intermediate buffers
+        let mut bus_buffers: Vec<Vec<f32>> = if has_buses {
+            vec![vec![0.0f32; frame_len]; self.buses.len()]
+        } else {
+            Vec::new()
+        };
+        let mut master_buf = vec![0.0f32; frame_len];
 
         for &(track_idx, buf) in track_buffers.iter() {
             let settings = match self.tracks.get_mut(track_idx) {
@@ -68,13 +114,22 @@ impl AudioMixer {
                 continue;
             }
 
-            // Balance-style pan: center = unity, hard L/R attenuates opposite channel.
-            // pan: -1.0 = hard left, 0.0 = center, 1.0 = hard right
             let pan_l = if settings.pan <= 0.0 { 1.0 } else { 1.0 - settings.pan };
             let pan_r = if settings.pan >= 0.0 { 1.0 } else { 1.0 + settings.pan };
 
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
+
+            // Determine output target: bus buffer or master
+            let target = if let Some(bus_idx) = settings.bus {
+                if bus_idx < bus_buffers.len() {
+                    &mut bus_buffers[bus_idx]
+                } else {
+                    &mut master_buf
+                }
+            } else {
+                &mut master_buf
+            };
 
             for (j, pair) in buf.chunks(2).enumerate() {
                 let l = pair.first().copied().unwrap_or(0.0);
@@ -84,11 +139,11 @@ impl AudioMixer {
                 peak_l = peak_l.max(out_l.abs());
                 peak_r = peak_r.max(out_r.abs());
                 let base = j * 2;
-                if base < output.len() {
-                    output[base] += out_l;
+                if base < target.len() {
+                    target[base] += out_l;
                 }
-                if base + 1 < output.len() {
-                    output[base + 1] += out_r;
+                if base + 1 < target.len() {
+                    target[base + 1] += out_r;
                 }
             }
 
@@ -96,9 +151,37 @@ impl AudioMixer {
             settings.peak_right = peak_r;
         }
 
+        // Mix buses into master
+        for (bus_idx, bus_buf) in bus_buffers.iter().enumerate() {
+            if let Some(bus) = self.buses.get_mut(bus_idx) {
+                if bus.muted { continue; }
+                let pan_l = if bus.pan <= 0.0 { 1.0 } else { 1.0 - bus.pan };
+                let pan_r = if bus.pan >= 0.0 { 1.0 } else { 1.0 + bus.pan };
+                let mut peak_l = 0.0f32;
+                let mut peak_r = 0.0f32;
+                for (j, pair) in bus_buf.chunks(2).enumerate() {
+                    let l = pair.first().copied().unwrap_or(0.0);
+                    let r = pair.get(1).copied().unwrap_or(0.0);
+                    let out_l = l * bus.volume * pan_l;
+                    let out_r = r * bus.volume * pan_r;
+                    peak_l = peak_l.max(out_l.abs());
+                    peak_r = peak_r.max(out_r.abs());
+                    let base = j * 2;
+                    if base < master_buf.len() {
+                        master_buf[base] += out_l;
+                    }
+                    if base + 1 < master_buf.len() {
+                        master_buf[base + 1] += out_r;
+                    }
+                }
+                bus.peak_left = peak_l;
+                bus.peak_right = peak_r;
+            }
+        }
+
         // Soft clip
-        output.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
-        output
+        master_buf.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
+        master_buf
     }
 }
 

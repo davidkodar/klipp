@@ -258,18 +258,49 @@ pub fn apply_global_mix(graded: &mut [u8], original: &[u8], mix: f32) {
 pub fn apply_input_transform(rgba: &mut [u8], log_format: klipp_core::LogFormat) {
     use klipp_core::LogFormat;
     match log_format {
-        LogFormat::Srgb | LogFormat::Linear => return, // no conversion needed
+        LogFormat::Srgb | LogFormat::Linear => return,
         _ => {}
     }
+
+    // ACES color space matrices (AP1→Rec.709 and AP0→Rec.709)
+    let needs_matrix = matches!(log_format, LogFormat::AcesCG | LogFormat::Aces2065);
+
     for pixel in rgba.chunks_exact_mut(4) {
         let r = pixel[0] as f32 / 255.0;
         let g = pixel[1] as f32 / 255.0;
         let b = pixel[2] as f32 / 255.0;
-        let (lr, lg, lb) = (
+        let (mut lr, mut lg, mut lb) = (
             log_to_linear(r, log_format),
             log_to_linear(g, log_format),
             log_to_linear(b, log_format),
         );
+
+        // Apply color space matrix for ACES primaries → Rec.709
+        if needs_matrix {
+            let (nr, ng, nb) = match log_format {
+                LogFormat::AcesCG => {
+                    // ACEScg (AP1) → Rec.709 matrix (from ACES specification)
+                    (
+                         1.705051 * lr - 0.621792 * lg - 0.083259 * lb,
+                        -0.130256 * lr + 1.140805 * lg - 0.010549 * lb,
+                        -0.024003 * lr - 0.128969 * lg + 1.152972 * lb,
+                    )
+                }
+                LogFormat::Aces2065 => {
+                    // ACES 2065-1 (AP0) → Rec.709 matrix
+                    (
+                         2.521401 * lr - 1.134038 * lg - 0.387363 * lb,
+                        -0.276214 * lr + 1.372595 * lg - 0.096381 * lb,
+                        -0.015315 * lr - 0.152836 * lg + 1.168151 * lb,
+                    )
+                }
+                _ => (lr, lg, lb),
+            };
+            lr = nr;
+            lg = ng;
+            lb = nb;
+        }
+
         // Linear → sRGB gamma for display/grading in Rec.709
         pixel[0] = (linear_to_srgb(lr).clamp(0.0, 1.0) * 255.0) as u8;
         pixel[1] = (linear_to_srgb(lg).clamp(0.0, 1.0) * 255.0) as u8;
@@ -384,6 +415,31 @@ fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
             } else {
                 (v - 0.052272) / 5.555556
             }
+        }
+        LogFormat::AcesCC => {
+            // ACEScc → linear (from ACES spec S-2014-003)
+            // ACEScc uses a log encoding with a mid-grey at 0.4135
+            if v < -0.3013698630 {
+                // Below cut point: linear segment
+                (2.0f32.powf(v * 17.52 - 9.72) - 0.000_030_518) * 2.0
+            } else if v < 1.468 {
+                2.0f32.powf(v * 17.52 - 9.72)
+            } else {
+                // Above 1.468: clamp to max
+                65504.0
+            }
+        }
+        LogFormat::AcesCG => {
+            // ACEScg is linear light in AP1 primaries
+            // Simple matrix transform AP1→sRGB (Rec.709) primaries
+            // For per-channel approximation, just pass through (linear)
+            // Full color-correct transform would need a 3x3 matrix on RGB triplets
+            v
+        }
+        LogFormat::Aces2065 => {
+            // ACES 2065-1 is linear light in AP0 primaries
+            // Similar to ACEScg — per-channel passthrough for linear data
+            v
         }
         LogFormat::Srgb | LogFormat::Linear => v, // handled above
     }

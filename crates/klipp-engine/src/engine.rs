@@ -39,6 +39,8 @@ fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
         klipp_timeline::ChannelConfig::Default => 0,
         klipp_timeline::ChannelConfig::MonoDownmix => 1,
         klipp_timeline::ChannelConfig::SwapLR => 2,
+        klipp_timeline::ChannelConfig::Surround51 => 3,
+        klipp_timeline::ChannelConfig::Surround71 => 4,
     }
 }
 
