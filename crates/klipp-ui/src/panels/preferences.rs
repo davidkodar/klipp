@@ -146,15 +146,15 @@ impl PreferencesPanel {
                         PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                         PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
-                        PrefsTab::System => { ui.heading("System / Performance"); ui.label("GPU preference, decode threads, playback resolution — coming in next update."); }
-                        PrefsTab::Appearance => { ui.heading("Appearance"); ui.label("Accent color, UI text size, role colors — coming in next update."); }
-                        PrefsTab::AudioHardware => { ui.heading("Audio Hardware"); ui.label("Output device, sample rate, buffer size — coming in next update."); }
-                        PrefsTab::MediaCache => { ui.heading("Media Cache"); ui.label("Cache directories, size limits, transcode quality — coming in next update."); }
-                        PrefsTab::Color => { ui.heading("Color"); ui.label("Working color space, viewer LUT, scope settings — coming in next update."); }
-                        PrefsTab::Title => { ui.heading("Titles"); ui.label("Default font, size, search paths — coming in next update."); }
-                        PrefsTab::Timeline => { ui.heading("Timeline"); ui.label("Clip colors, gap spacing, track heights, snap — coming in next update."); }
-                        PrefsTab::Viewer => { ui.heading("Viewer"); ui.label("Safe areas, grid, checkerboard, handles — coming in next update."); }
-                        PrefsTab::Advanced => { ui.heading("Advanced"); ui.label("Toast duration, backup count, anti-click fade, pre-roll — coming in next update."); }
+                        PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
+                        PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
+                        PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
+                        PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty),
+                        PrefsTab::Color => self.show_color(ui, prefs, prefs_dirty),
+                        PrefsTab::Title => self.show_title(ui, prefs, prefs_dirty),
+                        PrefsTab::Timeline => self.show_timeline(ui, prefs, prefs_dirty),
+                        PrefsTab::Viewer => self.show_viewer(ui, prefs, prefs_dirty),
+                        PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty),
                         PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
                     }
                 });
@@ -434,6 +434,50 @@ impl PreferencesPanel {
             .color(egui::Color32::from_rgb(120, 120, 130)),
         );
 
+        // Expanded editing fields
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Track Defaults").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Video track height:");
+            let mut v = prefs.editing.default_video_track_height;
+            if ui.add(egui::DragValue::new(&mut v).range(30.0..=100.0).speed(0.5).suffix(" px")).changed() {
+                prefs.editing.default_video_track_height = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Audio track height:");
+            let mut v = prefs.editing.default_audio_track_height;
+            if ui.add(egui::DragValue::new(&mut v).range(24.0..=80.0).speed(0.5).suffix(" px")).changed() {
+                prefs.editing.default_audio_track_height = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Interaction").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Snap threshold:");
+            let mut v = prefs.editing.snap_threshold_px;
+            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" px")).changed() {
+                prefs.editing.snap_threshold_px = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Zoom step:");
+            let mut v = prefs.editing.zoom_step;
+            if ui.add(egui::DragValue::new(&mut v).range(1.1..=2.5).speed(0.05).suffix("x")).changed() {
+                prefs.editing.zoom_step = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Backup versions:");
+            let mut v = prefs.editing.backup_count;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=20).speed(1.0)).changed() {
+                prefs.editing.backup_count = v; *dirty = true;
+            }
+        });
+
         let _ = cmds; // suppress unused warning
     }
 
@@ -522,6 +566,81 @@ impl PreferencesPanel {
                 .size(10.0)
                 .color(egui::Color32::from_rgb(120, 120, 130)),
         );
+
+        // Expanded audio fields
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Mixing").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Pan law:");
+            egui::ComboBox::from_id_salt("pan_law")
+                .selected_text(match prefs.audio.pan_law {
+                    klipp_core::PanLaw::Linear => "Linear (Balance)",
+                    klipp_core::PanLaw::ConstantPower => "Constant Power",
+                    klipp_core::PanLaw::Minus3dB => "-3 dB",
+                    klipp_core::PanLaw::Minus4_5dB => "-4.5 dB",
+                    klipp_core::PanLaw::Minus6dB => "-6 dB",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Linear, "Linear (Balance)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::ConstantPower, "Constant Power").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus3dB, "-3 dB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus4_5dB, "-4.5 dB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus6dB, "-6 dB").changed() { *dirty = true; }
+                });
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Metering").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Loudness standard:");
+            egui::ComboBox::from_id_salt("loudness_std")
+                .selected_text(match prefs.audio.loudness_standard {
+                    klipp_core::LoudnessStandard::EbuR128 => "EBU R128 (-23 LUFS)",
+                    klipp_core::LoudnessStandard::AtscA85 => "ATSC A/85 (-24 LKFS)",
+                    klipp_core::LoudnessStandard::Off => "Off",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128, "EBU R128 (-23 LUFS)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::AtscA85, "ATSC A/85 (-24 LKFS)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::Off, "Off").changed() { *dirty = true; }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Normalize target:");
+            let mut v = prefs.audio.normalize_target_lufs;
+            if ui.add(egui::DragValue::new(&mut v).range(-24.0..=-6.0).speed(0.5).suffix(" LUFS")).changed() {
+                prefs.audio.normalize_target_lufs = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Defaults").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Default fade curve:");
+            egui::ComboBox::from_id_salt("fade_curve")
+                .selected_text(match prefs.audio.default_fade_curve {
+                    klipp_core::FadeCurve::Linear => "Linear",
+                    klipp_core::FadeCurve::Exponential => "Exponential",
+                    klipp_core::FadeCurve::Logarithmic => "Logarithmic",
+                    klipp_core::FadeCurve::SCurve => "S-Curve",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Linear, "Linear").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Exponential, "Exponential").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Logarithmic, "Logarithmic").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::SCurve, "S-Curve").changed() { *dirty = true; }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Default fade duration:");
+            let mut v = prefs.audio.default_fade_duration_ms;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=5000).speed(10.0).suffix(" ms")).changed() {
+                prefs.audio.default_fade_duration_ms = v; *dirty = true;
+            }
+        });
     }
 
     fn show_export(
@@ -945,6 +1064,406 @@ impl PreferencesPanel {
                 tracing::info!("Proxy cache cleared: {}", cache_dir.display());
             }
         }
+    }
+
+    // ══════════════════════════════════════════════
+    // NEW PREFERENCE TABS (Phase 2)
+    // ══════════════════════════════════════════════
+
+    fn show_system(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("GPU").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("GPU preference:");
+            egui::ComboBox::from_id_salt("gpu_pref")
+                .selected_text(match prefs.system.gpu_preference {
+                    klipp_core::GpuPreference::HighPerformance => "High Performance (discrete GPU)",
+                    klipp_core::GpuPreference::LowPower => "Low Power (integrated GPU)",
+                    klipp_core::GpuPreference::CpuOnly => "CPU Only (disable GPU effects)",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance, "High Performance").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::LowPower, "Low Power").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::CpuOnly, "CPU Only").changed() { *dirty = true; }
+                });
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Decoding").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Decode threads:");
+            let mut v = prefs.system.decode_threads;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=64).speed(1.0).suffix(" (0 = auto)")).changed() {
+                prefs.system.decode_threads = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Max playback height:");
+            egui::ComboBox::from_id_salt("max_pb_h")
+                .selected_text(format!("{}p", prefs.system.max_playback_height))
+                .show_ui(ui, |ui| {
+                    for h in [720, 1080, 1440, 2160] {
+                        if ui.selectable_value(&mut prefs.system.max_playback_height, h, format!("{h}p")).changed() { *dirty = true; }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Frame queue size:");
+            let mut v = prefs.system.frame_queue_size;
+            if ui.add(egui::DragValue::new(&mut v).range(4..=64).speed(1.0).suffix(" frames")).changed() {
+                prefs.system.frame_queue_size = v; *dirty = true;
+            }
+        });
+    }
+
+    fn show_appearance(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("UI Size").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Text size:");
+            let mut v = prefs.appearance.ui_text_size;
+            if ui.add(egui::Slider::new(&mut v, 10.0..=18.0).step_by(0.5_f64).suffix(" pt")).changed() {
+                prefs.appearance.ui_text_size = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Colors").strong().size(12.0));
+        ui.add_space(4.0);
+
+        // Helper to edit [u8;3] as Color32
+        let mut color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool| {
+            ui.horizontal(|ui| {
+                let mut c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                ui.label(label);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *rgb = [c.r(), c.g(), c.b()];
+                    *dirty = true;
+                }
+            });
+        };
+
+        color_row(ui, "Accent color:", &mut prefs.appearance.accent_color, dirty);
+        color_row(ui, "Playhead color:", &mut prefs.appearance.playhead_color, dirty);
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Role Colors").strong().size(12.0));
+        ui.add_space(4.0);
+
+        color_row(ui, "Video:", &mut prefs.appearance.role_video, dirty);
+        color_row(ui, "Dialogue:", &mut prefs.appearance.role_dialogue, dirty);
+        color_row(ui, "Music:", &mut prefs.appearance.role_music, dirty);
+        color_row(ui, "SFX:", &mut prefs.appearance.role_sfx, dirty);
+        color_row(ui, "Title:", &mut prefs.appearance.role_title, dirty);
+        color_row(ui, "B-Roll:", &mut prefs.appearance.role_broll, dirty);
+        color_row(ui, "Ambience:", &mut prefs.appearance.role_ambience, dirty);
+        color_row(ui, "Foley:", &mut prefs.appearance.role_foley, dirty);
+        color_row(ui, "Voiceover:", &mut prefs.appearance.role_voiceover, dirty);
+        color_row(ui, "Graphics:", &mut prefs.appearance.role_graphics, dirty);
+    }
+
+    fn show_audio_hardware(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Output Device").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Device:");
+            let current = prefs.audio_hardware.output_device.as_deref().unwrap_or("System Default");
+            egui::ComboBox::from_id_salt("audio_device")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(prefs.audio_hardware.output_device.is_none(), "System Default").clicked() {
+                        prefs.audio_hardware.output_device = None; *dirty = true;
+                    }
+                });
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Format").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Sample rate:");
+            egui::ComboBox::from_id_salt("sample_rate")
+                .selected_text(format!("{} Hz", prefs.audio_hardware.sample_rate))
+                .show_ui(ui, |ui| {
+                    for sr in [44100, 48000, 96000, 192000] {
+                        if ui.selectable_value(&mut prefs.audio_hardware.sample_rate, sr, format!("{sr} Hz")).changed() { *dirty = true; }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Buffer size:");
+            egui::ComboBox::from_id_salt("buffer_sz")
+                .selected_text(format!("{} samples", prefs.audio_hardware.buffer_size))
+                .show_ui(ui, |ui| {
+                    for bs in [64, 128, 256, 512, 1024, 2048] {
+                        if ui.selectable_value(&mut prefs.audio_hardware.buffer_size, bs, format!("{bs} samples")).changed() { *dirty = true; }
+                    }
+                });
+        });
+    }
+
+    fn show_media_cache(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Cache Directories").strong().size(12.0));
+        ui.add_space(4.0);
+
+        let mut dir_picker = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default: &str, dirty: &mut bool| {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| format!("(default: {default})"));
+                ui.label(&display);
+                if ui.button("Browse...").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().set_title(label).pick_folder() {
+                        *path = Some(p); *dirty = true;
+                    }
+                }
+                if path.is_some() && ui.small_button("Reset").clicked() {
+                    *path = None; *dirty = true;
+                }
+            });
+        };
+
+        dir_picker(ui, "Filmstrip cache:", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/filmstrips", dirty);
+        dir_picker(ui, "Audio cache:", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/audio-cache", dirty);
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Limits").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Max cache size:");
+            let mut v = prefs.media_cache.max_cache_size_mb;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=32768).speed(100.0).suffix(" MB")).changed() {
+                prefs.media_cache.max_cache_size_mb = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Skim transcode quality:");
+            let mut v = prefs.media_cache.skim_transcode_quality;
+            if ui.add(egui::Slider::new(&mut v, 18..=32).text("CRF")).changed() {
+                prefs.media_cache.skim_transcode_quality = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Thumbnail height:");
+            let mut v = prefs.media_cache.thumbnail_height;
+            if ui.add(egui::DragValue::new(&mut v).range(80..=320).speed(1.0).suffix(" px")).changed() {
+                prefs.media_cache.thumbnail_height = v; *dirty = true;
+            }
+        });
+    }
+
+    fn show_color(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Color Management").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Working color space:");
+            egui::ComboBox::from_id_salt("working_cs")
+                .selected_text(format!("{:?}", prefs.color.working_color_space))
+                .show_ui(ui, |ui| {
+                    for cs in [klipp_core::ColorSpace::Srgb, klipp_core::ColorSpace::Rec709, klipp_core::ColorSpace::Rec2020, klipp_core::ColorSpace::P3D65, klipp_core::ColorSpace::AcesCG] {
+                        if ui.selectable_value(&mut prefs.color.working_color_space, cs, format!("{cs:?}")).changed() { *dirty = true; }
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Viewer LUT:");
+            let display = prefs.color.viewer_lut_path.as_ref().map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string()).unwrap_or("(none)".into());
+            ui.label(&display);
+            if ui.button("Browse...").clicked() {
+                if let Some(p) = rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file() {
+                    prefs.color.viewer_lut_path = Some(p); *dirty = true;
+                }
+            }
+            if prefs.color.viewer_lut_path.is_some() && ui.small_button("Clear").clicked() {
+                prefs.color.viewer_lut_path = None; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Scopes").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Quality:");
+            egui::ComboBox::from_id_salt("scope_q")
+                .selected_text(match prefs.color.scope_quality {
+                    klipp_core::ScopeQuality::Low => "Low (fast)",
+                    klipp_core::ScopeQuality::Medium => "Medium",
+                    klipp_core::ScopeQuality::High => "High (detailed)",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::Low, "Low (fast)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::Medium, "Medium").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::High, "High (detailed)").changed() { *dirty = true; }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Update interval:");
+            let mut v = prefs.color.scope_update_interval_ms;
+            if ui.add(egui::DragValue::new(&mut v).range(16..=100).speed(1.0).suffix(" ms")).changed() {
+                prefs.color.scope_update_interval_ms = v; *dirty = true;
+            }
+        });
+    }
+
+    fn show_title(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Title Defaults").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Default font:");
+            if ui.add(egui::TextEdit::singleline(&mut prefs.title.default_font).desired_width(200.0).hint_text("(system default)")).changed() {
+                *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Default size:");
+            let mut v = prefs.title.default_size_pt;
+            if ui.add(egui::DragValue::new(&mut v).range(8.0..=120.0).speed(0.5).suffix(" pt")).changed() {
+                prefs.title.default_size_pt = v; *dirty = true;
+            }
+        });
+    }
+
+    fn show_timeline(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Clip Colors").strong().size(12.0));
+        ui.add_space(4.0);
+        let mut colors_changed = false;
+        for (i, color) in prefs.timeline.clip_colors.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("Color {}:", i + 1));
+                let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *color = [c.r(), c.g(), c.b()];
+                    colors_changed = true;
+                }
+            });
+        }
+        if colors_changed { *dirty = true; }
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Dimensions").strong().size(12.0));
+        ui.add_space(4.0);
+
+        let mut dim_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, min: f32, max: f32, suffix: &str, dirty: &mut bool| {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let mut v = *val;
+                if ui.add(egui::DragValue::new(&mut v).range(min..=max).speed(0.5).suffix(suffix)).changed() {
+                    *val = v; *dirty = true;
+                }
+            });
+        };
+
+        dim_row(ui, "Clip gap:", &mut prefs.timeline.clip_gap_px, 0.0, 20.0, " px", dirty);
+        dim_row(ui, "Trim handle:", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
+        dim_row(ui, "Ruler height:", &mut prefs.timeline.ruler_height, 16.0, 48.0, " px", dirty);
+        dim_row(ui, "Clip corner radius:", &mut prefs.timeline.clip_corner_radius, 0.0, 16.0, " px", dirty);
+        dim_row(ui, "Overview bar:", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
+        dim_row(ui, "Min track height:", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
+        dim_row(ui, "Max track height:", &mut prefs.timeline.max_track_height, 100.0, 500.0, " px", dirty);
+        dim_row(ui, "Text track height:", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
+    }
+
+    fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Safe Areas").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Action safe:");
+            let mut v = prefs.viewer.action_safe_pct * 100.0;
+            if ui.add(egui::Slider::new(&mut v, 70.0..=100.0).suffix("%")).changed() {
+                prefs.viewer.action_safe_pct = v / 100.0; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Title safe:");
+            let mut v = prefs.viewer.title_safe_pct * 100.0;
+            if ui.add(egui::Slider::new(&mut v, 50.0..=100.0).suffix("%")).changed() {
+                prefs.viewer.title_safe_pct = v / 100.0; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Overlays").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Grid color:");
+            let gc = &mut prefs.viewer.grid_color;
+            let mut c = egui::Color32::from_rgba_unmultiplied(gc[0], gc[1], gc[2], gc[3]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                *gc = [c.r(), c.g(), c.b(), c.a()];
+                *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Checkerboard tile:");
+            let mut v = prefs.viewer.checkerboard_tile_size;
+            if ui.add(egui::DragValue::new(&mut v).range(4.0..=32.0).speed(0.5).suffix(" px")).changed() {
+                prefs.viewer.checkerboard_tile_size = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Transform handle size:");
+            let mut v = prefs.viewer.transform_handle_size;
+            if ui.add(egui::DragValue::new(&mut v).range(4.0..=20.0).speed(0.5).suffix(" px")).changed() {
+                prefs.viewer.transform_handle_size = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Fullscreen overlay timeout:");
+            let mut v = prefs.viewer.fullscreen_overlay_timeout_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(1.0..=10.0).speed(0.1).suffix(" sec")).changed() {
+                prefs.viewer.fullscreen_overlay_timeout_secs = v; *dirty = true;
+            }
+        });
+    }
+
+    fn show_advanced(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        ui.label(egui::RichText::new("Notifications").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Toast duration:");
+            let mut v = prefs.advanced.toast_duration_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=5.0).speed(0.1).suffix(" sec")).changed() {
+                prefs.advanced.toast_duration_secs = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Modal backdrop opacity:");
+            let mut v = prefs.advanced.modal_backdrop_alpha;
+            if ui.add(egui::Slider::new(&mut v, 0..=255)).changed() {
+                prefs.advanced.modal_backdrop_alpha = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Performance").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Perf overlay update:");
+            let mut v = prefs.advanced.perf_overlay_interval_ms;
+            if ui.add(egui::DragValue::new(&mut v).range(100..=2000).speed(10.0).suffix(" ms")).changed() {
+                prefs.advanced.perf_overlay_interval_ms = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Audio").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Anti-click fade:");
+            let mut v = prefs.advanced.anti_click_fade_ms;
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" ms")).changed() {
+                prefs.advanced.anti_click_fade_ms = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Pre-roll lookahead:");
+            let mut v = prefs.advanced.pre_roll_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=5.0).speed(0.1).suffix(" sec")).changed() {
+                prefs.advanced.pre_roll_secs = v; *dirty = true;
+            }
+        });
     }
 
     fn show_keyboard(&mut self, ui: &mut egui::Ui, key_bindings: &mut crate::keybindings::KeyBindings) {
