@@ -4,6 +4,16 @@
 //! Frames are uploaded, processed through the effect chain, and downloaded.
 //! Falls back to CPU if GPU is unavailable.
 
+/// GPU power preference set from application preferences.
+static GPU_POWER_PREF: std::sync::Mutex<Option<wgpu::PowerPreference>> = std::sync::Mutex::new(None);
+
+/// Set the GPU power preference before pipeline initialization.
+/// Options: HighPerformance (discrete), LowPower (integrated).
+/// None uses HighPerformance as default.
+pub fn set_gpu_power_preference(pref: Option<wgpu::PowerPreference>) {
+    *GPU_POWER_PREF.lock().unwrap() = pref;
+}
+
 use crate::BuiltinEffect;
 use tracing::{debug, info, warn};
 
@@ -111,8 +121,11 @@ impl GpuEffectsPipeline {
             ..Default::default()
         });
 
+        let power_pref = GPU_POWER_PREF.lock().ok()
+            .and_then(|g| *g)
+            .unwrap_or(wgpu::PowerPreference::HighPerformance);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: power_pref,
             force_fallback_adapter: false,
             compatible_surface: None,
         }));

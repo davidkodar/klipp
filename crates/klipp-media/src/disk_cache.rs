@@ -42,6 +42,16 @@ pub fn compute_cache_key(path: &Path) -> Option<String> {
     Some(format!("{:016x}", fnv1a(&buf)))
 }
 
+/// Override paths for cache directories (set from preferences).
+static FILMSTRIP_DIR_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+static AUDIO_CACHE_DIR_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Set cache directory overrides from preferences.
+pub fn set_cache_dir_overrides(filmstrip: Option<PathBuf>, audio: Option<PathBuf>) {
+    *FILMSTRIP_DIR_OVERRIDE.lock().unwrap() = filmstrip;
+    *AUDIO_CACHE_DIR_OVERRIDE.lock().unwrap() = audio;
+}
+
 /// Base cache directory: `~/.cache/klipp/`.
 pub fn cache_base_dir() -> PathBuf {
     dirs::cache_dir()
@@ -72,7 +82,9 @@ const FILMSTRIP_MAGIC: [u8; 4] = *b"KLFS";
 const FILMSTRIP_VERSION: u32 = 1;
 
 fn filmstrip_dir() -> PathBuf {
-    cache_base_dir().join("filmstrips")
+    FILMSTRIP_DIR_OVERRIDE.lock().ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| cache_base_dir().join("filmstrips"))
 }
 
 fn filmstrip_path(cache_key: &str) -> PathBuf {
@@ -257,7 +269,9 @@ pub fn load_thumbnail_cache(cache_key: &str) -> std::io::Result<(Vec<u8>, u32, u
 // ── Audio conform cache (content-based keys) ──
 
 fn audio_cache_dir() -> PathBuf {
-    cache_base_dir().join("audio-cache")
+    AUDIO_CACHE_DIR_OVERRIDE.lock().ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| cache_base_dir().join("audio-cache"))
 }
 
 /// Check if audio conform cache exists for a content-based key.

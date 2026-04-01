@@ -273,6 +273,22 @@ impl KlippApp {
         app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
         app.state.toast.visible_duration = app.prefs.advanced.toast_duration_secs;
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
+        klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
+        klipp_engine::video_decoder::set_max_playback_height(app.prefs.system.max_playback_height);
+        klipp_engine::video_decoder::set_frame_queue_size(app.prefs.system.frame_queue_size);
+        klipp_engine::video_decoder::set_decode_threads(app.prefs.system.decode_threads);
+        klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
+        // Map GpuPreference to wgpu PowerPreference (klipp-effects can't depend on klipp-core)
+        let gpu_pref = match app.prefs.system.gpu_preference {
+            klipp_core::GpuPreference::HighPerformance => Some(wgpu::PowerPreference::HighPerformance),
+            klipp_core::GpuPreference::LowPower => Some(wgpu::PowerPreference::LowPower),
+            klipp_core::GpuPreference::CpuOnly => None, // don't init GPU at all
+        };
+        klipp_effects::gpu::set_gpu_power_preference(gpu_pref);
+        klipp_media::disk_cache::set_cache_dir_overrides(
+            app.prefs.media_cache.filmstrip_cache_dir.clone(),
+            app.prefs.media_cache.audio_cache_dir.clone(),
+        );
         app.state.modal_backdrop_alpha = app.prefs.advanced.modal_backdrop_alpha;
         app.state.scope_quality = app.prefs.color.scope_quality;
         app.state.scope_update_interval_ms = app.prefs.color.scope_update_interval_ms;
@@ -11269,6 +11285,7 @@ impl eframe::App for KlippApp {
                                     &mut self.state.scope_state,
                                     self.state.scope_mode,
                                     &self.frame_buffer,
+                                    self.state.scope_quality,
                                 );
                             });
                             // Force repaint to recalculate layout on next frame

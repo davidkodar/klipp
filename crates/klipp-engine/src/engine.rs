@@ -245,7 +245,8 @@ impl PlaybackEngine {
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
         let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone());
-        let audio_output = match AudioOutput::new(main_consumer, skim_consumer.clone()) {
+        let preferred_device = crate::audio_output::PREFERRED_DEVICE.lock().ok().and_then(|g| g.clone());
+        let audio_output = match AudioOutput::new_with_device(main_consumer, skim_consumer.clone(), preferred_device.as_deref()) {
             Ok(output) => {
                 info!("PlaybackEngine: audio output created eagerly");
                 Some(SendAudioOutput(output))

@@ -13,9 +13,19 @@ const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
 
 /// Minimum fade duration (seconds) applied at clip boundaries to prevent click/pop artifacts.
-/// Even when fade_in_secs and fade_out_secs are 0, this tiny linear ramp is applied.
-const ANTI_CLICK_FADE_MS: f64 = 2.0;
-const ANTI_CLICK_FADE_SECS: f64 = ANTI_CLICK_FADE_MS / 1000.0;
+/// Configurable via preferences (default 2.0ms). Set via `set_anti_click_fade_ms()`.
+static ANTI_CLICK_FADE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
+    unsafe { std::mem::transmute::<f64, u64>(2.0) }
+);
+
+/// Set the anti-click fade duration from preferences.
+pub fn set_anti_click_fade_ms(ms: f64) {
+    ANTI_CLICK_FADE_MS.store(ms.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn anti_click_fade_secs() -> f64 {
+    f64::from_bits(ANTI_CLICK_FADE_MS.load(std::sync::atomic::Ordering::Relaxed)) / 1000.0
+}
 
 /// Apply a curve shape to a linear 0..1 value.
 /// 0 = Linear, 1 = Exponential, 2 = Logarithmic, 3 = S-Curve
@@ -43,7 +53,7 @@ fn fade_envelope(
     let mut gain = 1.0;
 
     // Effective fade durations: at least ANTI_CLICK_FADE_SECS when anti-click is enabled
-    let min_fade = if anti_click { ANTI_CLICK_FADE_SECS } else { 0.0 };
+    let min_fade = if anti_click { anti_click_fade_secs() } else { 0.0 };
     let eff_fade_in = fade_in.max(min_fade);
     let eff_fade_out = fade_out.max(min_fade);
 

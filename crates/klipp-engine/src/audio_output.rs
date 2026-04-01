@@ -8,6 +8,15 @@ use tracing::{error, info};
 /// Consumer side of the skim audio ring buffer, shared with the cpal callback.
 pub type SkimConsumer = Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>;
 
+/// Preferred audio device name (set from preferences). None = system default.
+pub(crate) static PREFERRED_DEVICE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Set the preferred audio output device name. Call before creating AudioOutput.
+/// If the device isn't found at runtime, silently falls back to the system default.
+pub fn set_preferred_device(name: Option<String>) {
+    *PREFERRED_DEVICE.lock().unwrap() = name;
+}
+
 /// Flush all samples from a skim consumer (drains to silence).
 pub fn flush_skim_consumer(skim: &SkimConsumer) {
     if let Ok(mut guard) = skim.lock() {
@@ -74,10 +83,32 @@ impl AudioOutput {
     /// Pure consumer — no clock duties. The master clock is external.
     /// `skim_consumer` is shared with the app layer so it can inject skim audio.
     pub fn new(mut consumer: AudioConsumer, skim_consumer: SkimConsumer) -> Result<Self, AudioOutputError> {
+        Self::new_with_device(consumer, skim_consumer, None)
+    }
+
+    /// Create audio output with an optional device name preference.
+    /// Falls back silently to the system default device if the named device isn't found.
+    pub fn new_with_device(mut consumer: AudioConsumer, skim_consumer: SkimConsumer, preferred_device: Option<&str>) -> Result<Self, AudioOutputError> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(AudioOutputError::NoDevice)?;
+
+        // Try to find preferred device by name, fall back to default
+        let device = if let Some(name) = preferred_device {
+            use cpal::traits::HostTrait;
+            host.output_devices()
+                .ok()
+                .and_then(|mut devices| devices.find(|d| {
+                    use cpal::traits::DeviceTrait;
+                    d.name().ok().as_deref() == Some(name)
+                }))
+                .or_else(|| {
+                    tracing::warn!("Audio device '{}' not found, using default", name);
+                    host.default_output_device()
+                })
+                .ok_or(AudioOutputError::NoDevice)?
+        } else {
+            host.default_output_device()
+                .ok_or(AudioOutputError::NoDevice)?
+        };
 
         let supported_config = device
             .default_output_config()

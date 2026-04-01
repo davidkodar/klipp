@@ -59,6 +59,7 @@ pub fn show_scopes(
     state: &mut ScopeState,
     mode: ScopeMode,
     frame_buffer: &SharedFrameBuffer,
+    quality: klipp_core::ScopeQuality,
 ) {
     let available = ui.available_size();
     let ppp = ui.ctx().pixels_per_point();
@@ -75,7 +76,8 @@ pub fn show_scopes(
 
     if has_data {
         let frame_hash = quick_frame_hash(&fb.data);
-        let step: u32 = if fb.width > 1280 { 3 } else if fb.width > 640 { 2 } else { 1 };
+        let base_step: u32 = if fb.width > 1280 { 3 } else if fb.width > 640 { 2 } else { 1 };
+        let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
         // ALWAYS ensure the current mode's texture exists — instant display on tab switch
         let current_stale = state.textures[mi].is_none()

@@ -61,7 +61,8 @@ impl VideoDecoder {
                 .ok_or(DecoderError::NoVideoStream)?;
         }
 
-        let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(16)));
+        let queue_cap = FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize;
+        let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(queue_cap)));
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let queue_clone = frame_queue.clone();
         let path_owned = path.to_path_buf();
@@ -263,8 +264,33 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
 /// format conversion. This is the single biggest performance win: swscale does
 /// both NV12/P010→RGBA conversion AND resize in one pass, and the resulting
 /// RGBA buffer is 4× smaller (1920×1080 = 8MB vs 3840×2160 = 33MB).
-const MAX_PLAYBACK_WIDTH: u32 = 1920;
-const MAX_PLAYBACK_HEIGHT: u32 = 1080;
+static MAX_PB_HEIGHT_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
+static FRAME_QUEUE_SIZE_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+static DECODE_THREADS_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Set decode thread count from preferences (0 = auto/all cores).
+pub fn set_decode_threads(count: u32) {
+    DECODE_THREADS_PREF.store(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Set the frame queue capacity from preferences.
+pub fn set_frame_queue_size(size: u32) {
+    FRAME_QUEUE_SIZE_PREF.store(size.max(4), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Set the max playback height from preferences.
+pub fn set_max_playback_height(h: u32) {
+    MAX_PB_HEIGHT_PREF.store(h, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn max_playback_height() -> u32 {
+    MAX_PB_HEIGHT_PREF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn max_playback_width() -> u32 {
+    let h = max_playback_height();
+    (h as f64 * 16.0 / 9.0) as u32 // assume 16:9 aspect
+}
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
 /// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
@@ -275,11 +301,11 @@ fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
     } else {
         (src_w, src_h)
     };
-    if eff_w <= MAX_PLAYBACK_WIDTH && eff_h <= MAX_PLAYBACK_HEIGHT {
+    if eff_w <= max_playback_width() && eff_h <= max_playback_height() {
         return (eff_w, eff_h);
     }
-    let scale = (MAX_PLAYBACK_WIDTH as f64 / eff_w as f64)
-        .min(MAX_PLAYBACK_HEIGHT as f64 / eff_h as f64);
+    let scale = (max_playback_width() as f64 / eff_w as f64)
+        .min(max_playback_height() as f64 / eff_h as f64);
     let out_w = ((eff_w as f64 * scale) as u32) & !1; // even width
     let out_h = ((eff_h as f64 * scale) as u32) & !1; // even height
     (out_w.max(2), out_h.max(2))
@@ -492,7 +518,8 @@ fn decode_thread_main(
     // Enable multi-threaded decoding — helps SW fallback (libdav1d uses all cores),
     // and doesn't hurt HW decode (ffmpeg ignores thread_count for HW decoders).
     unsafe {
-        (*codec_ctx.as_mut_ptr()).thread_count = 0;
+        let tc = DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed);
+        (*codec_ctx.as_mut_ptr()).thread_count = tc as i32;
     }
 
     let mut decoder = match codec_ctx.decoder().video() {
