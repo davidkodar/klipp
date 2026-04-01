@@ -30,6 +30,9 @@ pub struct Encoder {
     audio_time_base: Option<ffmpeg_next::Rational>,
     /// Pre-created RGBA→YUV scaler (Gap 9: created once, reused per frame).
     rgba_to_yuv: ffmpeg_next::software::scaling::Context,
+    /// Encoder output resolution (may differ from snapshot if resolution override is set).
+    output_width: u32,
+    output_height: u32,
     /// Audio samples per encoder frame (codec-specific).
     audio_frame_size: Option<usize>,
     /// Pending audio samples (accumulate until we have a full encoder frame).
@@ -347,15 +350,15 @@ impl Encoder {
             ((*output_ctx.as_ptr()).nb_streams - 1) as usize
         };
 
-        // Create RGBA→YUV scaler (Gap 9: created once, reused per frame)
+        // Create RGBA→YUV scaler. Input size = snapshot (source frames), output = encoder target.
         let rgba_to_yuv = ffmpeg_next::software::scaling::Context::get(
             ffmpeg_next::format::Pixel::RGBA,
-            snapshot.width,
+            snapshot.width,  // input: composited frame size
             snapshot.height,
             pix_fmt,
-            snapshot.width,
-            snapshot.height,
-            ffmpeg_next::software::scaling::Flags::BICUBIC,
+            out_w,           // output: encoder target resolution (may differ from snapshot)
+            out_h,
+            ffmpeg_next::software::scaling::Flags::LANCZOS,  // Lanczos for quality on resize
         )
         .map_err(|e| RenderError::Encode(format!("RGBA→YUV scaler: {e}")))?;
 
@@ -506,6 +509,8 @@ impl Encoder {
             video_time_base,
             audio_time_base,
             rgba_to_yuv,
+            output_width: out_w,
+            output_height: out_h,
             audio_frame_size,
             audio_buffer: Vec::new(),
             audio_resampler,
@@ -564,11 +569,11 @@ impl Encoder {
             }
         }
 
-        // Convert RGBA → YUV using pre-created scaler (Gap 9)
+        // Convert RGBA → YUV using pre-created scaler (may resize if export res differs from snapshot)
         let mut yuv_frame = ffmpeg_next::frame::Video::new(
             self.video_encoder.format(),
-            width,
-            height,
+            self.output_width,
+            self.output_height,
         );
         self.rgba_to_yuv
             .run(&rgba_frame, &mut yuv_frame)

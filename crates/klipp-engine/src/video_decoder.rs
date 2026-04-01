@@ -288,8 +288,9 @@ fn max_playback_height() -> u32 {
 }
 
 fn max_playback_width() -> u32 {
-    let h = max_playback_height();
-    (h as f64 * 16.0 / 9.0) as u32 // assume 16:9 aspect
+    // Use 2:1 ratio to accommodate all aspect ratios (16:9, 21:9, 4:3, etc.)
+    // The actual downscale is aspect-preserving — this just sets the bounding box.
+    max_playback_height() * 2
 }
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
