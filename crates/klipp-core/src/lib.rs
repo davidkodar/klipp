@@ -1,4 +1,5 @@
 pub mod color_grade;
+pub mod config;
 pub mod error;
 pub mod events;
 pub mod keyframe;
@@ -20,3 +21,4 @@ pub use time::{Fps, RationalTime, TimeRange, Timecode};
 pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use ofx_value::OfxValue;
 pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution};
+pub use config::{GpuPreference, LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality};

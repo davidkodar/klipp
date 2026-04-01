@@ -28,9 +28,10 @@ pub enum PixelFormat {
     Nv12,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorSpace {
     Srgb,
+    #[default]
     Rec709,
     Rec2020,
     P3D65,
