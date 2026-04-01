@@ -46,6 +46,19 @@ pub fn save_project_with_color(
     active_sequence_id: Option<&str>,
     created_at: Option<&str>,
 ) -> Result<(), String> {
+    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, 5)
+}
+
+/// Save with configurable backup count.
+pub fn save_project_with_color_and_backups(
+    dir: &Path,
+    sequences: &[Sequence],
+    media_pool: &MediaPool,
+    color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
+    backup_count: u32,
+) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
@@ -67,10 +80,10 @@ pub fn save_project_with_color(
     let project_json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {e}"))?;
 
-    // Rotate backup versions before overwriting (keep up to 5 backups)
+    // Rotate backup versions before overwriting
     let project_file = dir.join("project.json");
-    if project_file.exists() {
-        rotate_backups(&project_file, 5);
+    if project_file.exists() && backup_count > 0 {
+        rotate_backups(&project_file, backup_count);
     }
 
     std::fs::write(&project_file, project_json)

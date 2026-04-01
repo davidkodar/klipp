@@ -5,11 +5,20 @@ use klipp_core::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefsTab {
     General,
+    System,
+    Appearance,
     Playback,
     Editing,
     Audio,
+    AudioHardware,
     Export,
+    MediaCache,
+    Color,
+    Title,
+    Timeline,
+    Viewer,
     Proxy,
+    Advanced,
     Keyboard,
 }
 
@@ -97,11 +106,20 @@ impl PreferencesPanel {
                 ui.horizontal(|ui| {
                     for (tab, label) in [
                         (PrefsTab::General, "General"),
+                        (PrefsTab::System, "System"),
+                        (PrefsTab::Appearance, "Appearance"),
                         (PrefsTab::Playback, "Playback"),
                         (PrefsTab::Editing, "Editing"),
                         (PrefsTab::Audio, "Audio"),
+                        (PrefsTab::AudioHardware, "Audio HW"),
                         (PrefsTab::Export, "Export"),
+                        (PrefsTab::MediaCache, "Cache"),
+                        (PrefsTab::Color, "Color"),
+                        (PrefsTab::Title, "Title"),
+                        (PrefsTab::Timeline, "Timeline"),
+                        (PrefsTab::Viewer, "Viewer"),
                         (PrefsTab::Proxy, "Proxy"),
+                        (PrefsTab::Advanced, "Advanced"),
                         (PrefsTab::Keyboard, "Keyboard"),
                     ] {
                         let style = if self.active_tab == tab {
@@ -128,6 +146,15 @@ impl PreferencesPanel {
                         PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                         PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                         PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
+                        PrefsTab::System => { ui.heading("System / Performance"); ui.label("GPU preference, decode threads, playback resolution — coming in next update."); }
+                        PrefsTab::Appearance => { ui.heading("Appearance"); ui.label("Accent color, UI text size, role colors — coming in next update."); }
+                        PrefsTab::AudioHardware => { ui.heading("Audio Hardware"); ui.label("Output device, sample rate, buffer size — coming in next update."); }
+                        PrefsTab::MediaCache => { ui.heading("Media Cache"); ui.label("Cache directories, size limits, transcode quality — coming in next update."); }
+                        PrefsTab::Color => { ui.heading("Color"); ui.label("Working color space, viewer LUT, scope settings — coming in next update."); }
+                        PrefsTab::Title => { ui.heading("Titles"); ui.label("Default font, size, search paths — coming in next update."); }
+                        PrefsTab::Timeline => { ui.heading("Timeline"); ui.label("Clip colors, gap spacing, track heights, snap — coming in next update."); }
+                        PrefsTab::Viewer => { ui.heading("Viewer"); ui.label("Safe areas, grid, checkerboard, handles — coming in next update."); }
+                        PrefsTab::Advanced => { ui.heading("Advanced"); ui.label("Toast duration, backup count, anti-click fade, pre-roll — coming in next update."); }
                         PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
                     }
                 });

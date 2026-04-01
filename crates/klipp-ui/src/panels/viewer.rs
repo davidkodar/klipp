@@ -693,7 +693,7 @@ impl ViewerPanel {
             let w = image_rect.width();
             let h = image_rect.height();
             // 90% action safe
-            let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * 0.9, h * 0.9));
+            let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.action_safe_pct, h * state.viewer_prefs.action_safe_pct));
             ui.painter().rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
             ui.painter().text(
                 egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
@@ -702,7 +702,7 @@ impl ViewerPanel {
                 egui::Color32::from_rgba_premultiplied(255, 200, 0, 140),
             );
             // 80% title safe
-            let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * 0.8, h * 0.8));
+            let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.title_safe_pct, h * state.viewer_prefs.title_safe_pct));
             ui.painter().rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
             ui.painter().text(
                 egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
@@ -737,7 +737,7 @@ impl ViewerPanel {
 
         // Checkerboard transparency overlay (drawn behind video, replaces black background)
         if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Checkerboard) {
-            let tile: f32 = 12.0;
+            let tile: f32 = state.viewer_prefs.checkerboard_tile_size;
             let c1 = egui::Color32::from_rgb(80, 80, 80);
             let c2 = egui::Color32::from_rgb(120, 120, 120);
             let x0 = image_rect.left();

@@ -186,9 +186,10 @@ impl KlippApp {
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
         let (proxy_progress_tx, proxy_progress_rx) = crossbeam_channel::unbounded();
-        let theme = KlippTheme::default();
+        let prefs = crate::prefs::Preferences::load();
+        let theme = KlippTheme::from_prefs(&prefs.appearance);
         theme.apply_to_egui(&cc.egui_ctx);
-        theme.apply_fonts(&cc.egui_ctx);
+        theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
         crate::icons::install(&cc.egui_ctx);
         let layout = LayoutState::load();
 
@@ -221,7 +222,7 @@ impl KlippApp {
             proxy_event_tx,
             proxy_event_rx,
             export_dialog: ExportDialogState::default(),
-            prefs: crate::prefs::Preferences::load(),
+            prefs,
             prefs_dirty: false,
             key_bindings: crate::keybindings::KeyBindings::load(),
             prefs_last_save: std::time::Instant::now(),
@@ -265,6 +266,14 @@ impl KlippApp {
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
+        app.state.snap_threshold_px = app.prefs.editing.snap_threshold_px;
+        app.state.zoom_step = app.prefs.editing.zoom_step;
+        app.state.timeline_prefs = app.prefs.timeline.clone();
+        app.state.viewer_prefs = app.prefs.viewer.clone();
+        app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
+        app.state.modal_backdrop_alpha = app.prefs.advanced.modal_backdrop_alpha;
+        app.state.scope_quality = app.prefs.color.scope_quality;
+        app.state.scope_update_interval_ms = app.prefs.color.scope_update_interval_ms;
         app.state.history.set_max_size(app.prefs.editing.undo_limit);
         app.state.audio_fade_overlay_mode = app.prefs.audio.fade_overlay_mode;
         app.state.audio_show_rubber_band = app.prefs.audio.show_rubber_band;

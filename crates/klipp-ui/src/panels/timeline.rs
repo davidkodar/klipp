@@ -8,13 +8,14 @@ use std::collections::HashMap;
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
-const VIDEO_TRACK_HEIGHT: f32 = 50.0; // matches theme::TRACK_VIDEO_H
-const AUDIO_TRACK_HEIGHT: f32 = 48.0; // taller for visible waveforms
-const TEXT_TRACK_HEIGHT: f32 = 32.0;  // compact for title/subtitle tracks
+// Default track heights — overridable via prefs.timeline (synced to state.timeline_prefs)
+const VIDEO_TRACK_HEIGHT: f32 = 50.0;
+const AUDIO_TRACK_HEIGHT: f32 = 48.0;
+const TEXT_TRACK_HEIGHT: f32 = 32.0;
 const MIN_TRACK_HEIGHT: f32 = 24.0;
 const MAX_TRACK_HEIGHT: f32 = 200.0;
 
-/// Get effective track height, respecting custom_height override.
+/// Get effective track height, respecting custom_height override and prefs.
 fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
     track.custom_height.unwrap_or(match track.kind {
         TrackKind::Audio => AUDIO_TRACK_HEIGHT,
@@ -22,9 +23,19 @@ fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
         _ => VIDEO_TRACK_HEIGHT,
     })
 }
+
+/// Get effective track height using preferences for defaults.
+fn effective_track_height_with_prefs(track: &klipp_timeline::Track, tl: &crate::prefs::TimelinePrefs) -> f32 {
+    track.custom_height.unwrap_or(match track.kind {
+        TrackKind::Audio => tl.min_track_height.max(AUDIO_TRACK_HEIGHT), // use pref default
+        TrackKind::Text | TrackKind::Subtitle => tl.text_track_height,
+        _ => tl.min_track_height.max(VIDEO_TRACK_HEIGHT),
+    })
+}
+
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
 const TRIM_HANDLE_WIDTH: f32 = 14.0;
-const CLIP_GAP: f32 = 3.0; // visual gap between adjacent clips (px per side)
+const CLIP_GAP: f32 = 3.0;
 const STATUS_BAR_HEIGHT: f32 = 18.0;
 const OVERVIEW_BAR_HEIGHT: f32 = 24.0;
 

@@ -62,6 +62,7 @@ pub struct AudioMixer {
     pub tracks: Vec<AudioTrackSettings>,
     pub buses: Vec<AudioBus>,
     pub master_volume: f32,
+    pub pan_law: klipp_core::PanLaw,
 }
 
 impl AudioMixer {
@@ -70,6 +71,40 @@ impl AudioMixer {
             tracks: vec![AudioTrackSettings::default(); track_count],
             buses: Vec::new(),
             master_volume: 1.0,
+            pan_law: klipp_core::PanLaw::default(),
+        }
+    }
+
+    /// Calculate L/R gain factors from pan position and current pan law.
+    fn pan_gains_for(pan: f32, law: klipp_core::PanLaw) -> (f32, f32) {
+        use klipp_core::PanLaw;
+        match law {
+            PanLaw::Linear => {
+                let l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+                let r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+                (l, r)
+            }
+            PanLaw::ConstantPower => {
+                let angle = (pan + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+                (angle.cos(), angle.sin())
+            }
+            PanLaw::Minus3dB => {
+                let t = (pan + 1.0) * 0.5; // 0..1
+                let l = ((1.0 - t) * 2.0).min(1.0).sqrt();
+                let r = (t * 2.0).min(1.0).sqrt();
+                (l, r)
+            }
+            PanLaw::Minus4_5dB => {
+                let t = (pan + 1.0) * 0.5;
+                let l = ((1.0 - t) * 2.0).min(1.0).powf(0.75);
+                let r = (t * 2.0).min(1.0).powf(0.75);
+                (l, r)
+            }
+            PanLaw::Minus6dB => {
+                let l = (1.0 - pan.max(0.0)).min(1.0);
+                let r = (1.0 + pan.min(0.0)).min(1.0);
+                (l, r)
+            }
         }
     }
 
@@ -119,8 +154,7 @@ impl AudioMixer {
                 continue;
             }
 
-            let pan_l = if settings.pan <= 0.0 { 1.0 } else { 1.0 - settings.pan };
-            let pan_r = if settings.pan >= 0.0 { 1.0 } else { 1.0 + settings.pan };
+            let (pan_l, pan_r) = Self::pan_gains_for(settings.pan, self.pan_law);
 
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
@@ -170,8 +204,7 @@ impl AudioMixer {
         for (bus_idx, bus_buf) in bus_buffers.iter().enumerate() {
             if let Some(bus) = self.buses.get_mut(bus_idx) {
                 if bus.muted { continue; }
-                let pan_l = if bus.pan <= 0.0 { 1.0 } else { 1.0 - bus.pan };
-                let pan_r = if bus.pan >= 0.0 { 1.0 } else { 1.0 + bus.pan };
+                let (pan_l, pan_r) = Self::pan_gains_for(bus.pan, self.pan_law);
                 let mut peak_l = 0.0f32;
                 let mut peak_r = 0.0f32;
                 for (j, pair) in bus_buf.chunks(2).enumerate() {

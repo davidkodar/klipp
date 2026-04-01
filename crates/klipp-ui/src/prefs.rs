@@ -516,16 +516,17 @@ pub struct AppearancePrefs {
 }
 fn default_ui_text_size() -> f32 { 13.0 }
 fn default_accent_color() -> [u8; 3] { [0xe8, 0xa0, 0x20] }
-fn default_role_video() -> [u8; 3] { [80, 130, 200] }
-fn default_role_dialogue() -> [u8; 3] { [100, 180, 100] }
-fn default_role_music() -> [u8; 3] { [180, 120, 200] }
-fn default_role_sfx() -> [u8; 3] { [200, 160, 60] }
-fn default_role_title() -> [u8; 3] { [200, 200, 100] }
-fn default_role_broll() -> [u8; 3] { [100, 160, 160] }
-fn default_role_ambience() -> [u8; 3] { [140, 140, 100] }
-fn default_role_foley() -> [u8; 3] { [160, 100, 100] }
-fn default_role_voiceover() -> [u8; 3] { [100, 140, 200] }
-fn default_role_graphics() -> [u8; 3] { [200, 140, 160] }
+// Role colors match theme.rs Default exactly
+fn default_role_video() -> [u8; 3] { [0x2d, 0x6f, 0xa8] }
+fn default_role_dialogue() -> [u8; 3] { [0x3a, 0x8c, 0x6e] }
+fn default_role_music() -> [u8; 3] { [0x42, 0x85, 0xf4] }
+fn default_role_sfx() -> [u8; 3] { [0xa8, 0x5c, 0x2d] }
+fn default_role_title() -> [u8; 3] { [0xc0, 0x39, 0x2b] }
+fn default_role_broll() -> [u8; 3] { [0x4a, 0x6e, 0xa8] }
+fn default_role_ambience() -> [u8; 3] { [0x9c, 0x27, 0xb0] }
+fn default_role_foley() -> [u8; 3] { [0xe9, 0x1e, 0x63] }
+fn default_role_voiceover() -> [u8; 3] { [0x00, 0xbc, 0xd4] }
+fn default_role_graphics() -> [u8; 3] { [0xff, 0xeb, 0x3b] }
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {

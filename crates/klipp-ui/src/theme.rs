@@ -78,6 +78,31 @@ impl Default for KlippTheme {
 }
 
 impl KlippTheme {
+    /// Build theme from appearance preferences, keeping backgrounds/text as default dark theme.
+    pub fn from_prefs(prefs: &crate::prefs::AppearancePrefs) -> Self {
+        let [ar, ag, ab] = prefs.accent_color;
+        let accent = Color32::from_rgb(ar, ag, ab);
+        let mut t = Self::default();
+        t.accent = accent;
+        t.accent_dim = Color32::from_rgb(ar.saturating_sub(0x48), ag.saturating_sub(0x32), ab.saturating_sub(0x0c));
+        t.accent_glow = Color32::from_rgba_premultiplied(ar, ag, ab, 46);
+        t.accent_subtle = Color32::from_rgba_premultiplied(ar, ag, ab, 23);
+        t.text_accent = accent;
+        // Role colors from prefs
+        let c = |rgb: [u8; 3]| Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        t.role_video = c(prefs.role_video);
+        t.role_dialogue = c(prefs.role_dialogue);
+        t.role_music = c(prefs.role_music);
+        t.role_sfx = c(prefs.role_sfx);
+        t.role_title = c(prefs.role_title);
+        t.role_broll = c(prefs.role_broll);
+        t.role_ambience = c(prefs.role_ambience);
+        t.role_foley = c(prefs.role_foley);
+        t.role_voiceover = c(prefs.role_voiceover);
+        t.role_graphics = c(prefs.role_graphics);
+        t
+    }
+
     /// Return the theme color for a clip role.
     pub fn clip_role_color(&self, role: klipp_timeline::ClipRole) -> Color32 {
         use klipp_timeline::ClipRole;
@@ -135,30 +160,35 @@ impl KlippTheme {
         ctx.set_visuals(visuals);
     }
 
-    /// Configure egui font sizes to match the design spec.
+    /// Configure egui font sizes. `base_size` is the body text size (default 13.0).
     pub fn apply_fonts(&self, ctx: &egui::Context) {
+        self.apply_fonts_with_size(ctx, 13.0);
+    }
+
+    /// Configure egui font sizes with a custom base size from preferences.
+    pub fn apply_fonts_with_size(&self, ctx: &egui::Context, base_size: f32) {
         use egui::{FontFamily, FontId, TextStyle};
 
         let mut style = (*ctx.style()).clone();
         style.text_styles.insert(
             TextStyle::Body,
-            FontId::new(13.0, FontFamily::Proportional),
+            FontId::new(base_size, FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Small,
-            FontId::new(11.0, FontFamily::Proportional),
+            FontId::new(base_size - 2.0, FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Button,
-            FontId::new(13.0, FontFamily::Proportional),
+            FontId::new(base_size, FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Heading,
-            FontId::new(10.0, FontFamily::Proportional),
+            FontId::new(base_size - 3.0, FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Monospace,
-            FontId::new(12.0, FontFamily::Monospace),
+            FontId::new(base_size - 1.0, FontFamily::Monospace),
         );
         ctx.set_style(style);
     }

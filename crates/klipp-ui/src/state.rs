@@ -223,6 +223,22 @@ pub struct AppState {
     pub ripple_enabled: bool,
     /// Default transition duration in frames (synced from prefs).
     pub default_transition_frames: u32,
+    /// Timeline visual prefs (synced from prefs as whole struct).
+    pub timeline_prefs: crate::prefs::TimelinePrefs,
+    /// Viewer prefs (synced from prefs as whole struct).
+    pub viewer_prefs: crate::prefs::ViewerPrefs,
+    /// Snap threshold in pixels (synced from prefs).
+    pub snap_threshold_px: f32,
+    /// Zoom step multiplier (synced from prefs).
+    pub zoom_step: f32,
+    /// Toast duration in seconds (synced from prefs).
+    pub toast_duration_secs: f64,
+    /// Modal backdrop opacity (synced from prefs).
+    pub modal_backdrop_alpha: u8,
+    /// Scope quality (synced from prefs).
+    pub scope_quality: klipp_core::ScopeQuality,
+    /// Scope update interval ms (synced from prefs).
+    pub scope_update_interval_ms: u32,
     /// Magnetic timeline edit mode: Insert (ripple) or Overwrite (replace)
     pub edit_mode: klipp_timeline::magnetic::EditMode,
     pub fullscreen_viewer: bool,
@@ -767,6 +783,14 @@ impl Default for AppState {
             snap_enabled: true,
             ripple_enabled: true,
             default_transition_frames: 24,
+            timeline_prefs: Default::default(),
+            viewer_prefs: Default::default(),
+            snap_threshold_px: 10.0,
+            zoom_step: 1.5,
+            toast_duration_secs: 2.2,
+            modal_backdrop_alpha: 120,
+            scope_quality: Default::default(),
+            scope_update_interval_ms: 32,
             edit_mode: klipp_timeline::magnetic::EditMode::default(),
             fullscreen_viewer: false,
             fullscreen_changed: false,
