@@ -34,9 +34,42 @@ fn effective_track_height_with_prefs(track: &klipp_timeline::Track, tl: &crate::
 }
 
 const MEDIA_POOL_HEIGHT: f32 = 50.0;
-const TRIM_HANDLE_WIDTH: f32 = 14.0;
-const CLIP_GAP: f32 = 3.0;
 const STATUS_BAR_HEIGHT: f32 = 18.0;
+
+// Timeline layout values — set from state.timeline_prefs at start of each frame.
+// Using thread_local so all functions can read without parameter changes.
+thread_local! {
+    static TL_CLIP_GAP: std::cell::Cell<f32> = const { std::cell::Cell::new(3.0) };
+    static TL_TRIM_HANDLE_WIDTH: std::cell::Cell<f32> = const { std::cell::Cell::new(14.0) };
+    static TL_OVERVIEW_BAR_HEIGHT: std::cell::Cell<f32> = const { std::cell::Cell::new(24.0) };
+    static TL_SNAP_THRESHOLD_PX: std::cell::Cell<f32> = const { std::cell::Cell::new(10.0) };
+    static TL_CLIP_COLORS: std::cell::RefCell<Vec<[u8; 3]>> = std::cell::RefCell::new(vec![
+        [50,90,160], [50,130,80], [160,90,50], [130,50,130], [50,130,130], [160,50,80]
+    ]);
+}
+
+/// Sync timeline prefs into thread-locals at start of each show() call.
+fn sync_timeline_prefs(prefs: &crate::prefs::TimelinePrefs) {
+    TL_CLIP_GAP.set(prefs.clip_gap_px);
+    TL_TRIM_HANDLE_WIDTH.set(prefs.trim_handle_width);
+    TL_OVERVIEW_BAR_HEIGHT.set(prefs.overview_bar_height);
+    TL_CLIP_COLORS.with(|c| *c.borrow_mut() = prefs.clip_colors.clone());
+}
+
+/// Sync snap threshold from editing prefs.
+fn sync_editing_prefs_to_timeline(snap_px: f32) {
+    TL_SNAP_THRESHOLD_PX.set(snap_px);
+}
+
+fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
+
+// Accessor functions replacing the old consts
+fn clip_gap() -> f32 { TL_CLIP_GAP.get() }
+fn trim_handle_width() -> f32 { TL_TRIM_HANDLE_WIDTH.get() }
+
+// Keep const for backward compat in places that can't use function calls
+const CLIP_GAP: f32 = 3.0; // fallback only — prefer clip_gap()
+const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const OVERVIEW_BAR_HEIGHT: f32 = 24.0;
 
 const CLIP_COLORS: &[(u8, u8, u8)] = &[
@@ -49,13 +82,19 @@ const CLIP_COLORS: &[(u8, u8, u8)] = &[
 ];
 
 fn clip_color(index: usize) -> egui::Color32 {
-    let (r, g, b) = CLIP_COLORS[index % CLIP_COLORS.len()];
-    egui::Color32::from_rgb(r, g, b)
+    TL_CLIP_COLORS.with(|colors| {
+        let colors = colors.borrow();
+        let c = colors[index % colors.len()];
+        egui::Color32::from_rgb(c[0], c[1], c[2])
+    })
 }
 
 fn clip_color_bright(index: usize) -> egui::Color32 {
-    let (r, g, b) = CLIP_COLORS[index % CLIP_COLORS.len()];
-    egui::Color32::from_rgb(r.saturating_add(30), g.saturating_add(30), b.saturating_add(30))
+    TL_CLIP_COLORS.with(|colors| {
+        let colors = colors.borrow();
+        let c = colors[index % colors.len()];
+        egui::Color32::from_rgb(c[0].saturating_add(30), c[1].saturating_add(30), c[2].saturating_add(30))
+    })
 }
 
 #[derive(Default)]
@@ -170,6 +209,10 @@ enum TrimEdge {
 
 impl TimelinePanel {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
+        // Sync timeline prefs into thread-locals for this frame
+        sync_timeline_prefs(&state.timeline_prefs);
+        sync_editing_prefs_to_timeline(state.snap_threshold_px);
+
         let mut cmds = Vec::new();
         let available = ui.available_size();
 
@@ -1878,7 +1921,7 @@ impl TimelinePanel {
 
                                 // ── Snap keyframe to notable positions ──
                                 // Snap threshold: 8px converted to time
-                                let snap_thresh_secs = 8.0_f64 / (zoom as f64);
+                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
 
                                 // Snap to playhead position (relative to clip start)
                                 let playhead_abs = state.playhead_smooth_secs;
@@ -1990,7 +2033,7 @@ impl TimelinePanel {
                                 let mut new_time = frac * clip_dur_secs;
 
                                 // Snap to notable positions
-                                let snap_thresh_secs = 8.0_f64 / (zoom as f64);
+                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
                                 let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
                                 if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs {
                                     if (new_time - playhead_rel).abs() < snap_thresh_secs {
@@ -5032,7 +5075,7 @@ impl TimelinePanel {
                         let mut blade_x = pos.x;
 
                         if blade_snap {
-                            let snap_thresh_secs = 20.0 / zoom as f64;
+                            let snap_thresh_secs = (snap_threshold_px() * 2.0) as f64 / zoom as f64;
                             // Snap targets: playhead, clip edges, in/out markers
                             let mut best_dist = f64::MAX;
                             let mut best_secs = raw_secs;
@@ -6032,7 +6075,7 @@ impl TimelinePanel {
                         let mut cut_secs = click_secs;
                         let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
                         if blade_snap {
-                            let snap_thresh_secs = 20.0 / zoom as f64;
+                            let snap_thresh_secs = (snap_threshold_px() * 2.0) as f64 / zoom as f64;
                             let mut best_dist = f64::MAX;
                             // Playhead
                             let ph_secs = state.playhead.to_secs_f64();
@@ -6454,7 +6497,7 @@ impl TimelinePanel {
 
         // Collect snap targets upfront (avoids borrow conflicts with state mutation)
         let snap_enabled = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
-        let snap_threshold_secs = 10.0 / zoom as f64;
+        let snap_threshold_secs = snap_threshold_px() as f64 / zoom as f64;
         // Collect all snap points: (time_secs, RationalTime) for each clip edge + playhead + zero
         let snap_targets: Vec<(f64, RationalTime, Option<ClipId>)> = {
             let mut targets = Vec::new();
@@ -7883,9 +7926,10 @@ impl TimelinePanel {
     ) -> egui::Rect {
         let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
         let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+        let gap = clip_gap();
         egui::Rect::from_min_size(
-            egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
-            egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+            egui::pos2(clip_x + gap, track_rect.top() + 2.0),
+            egui::vec2((clip_w - gap * 2.0).max(2.0), track_height - 4.0),
         )
     }
 

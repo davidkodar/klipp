@@ -359,7 +359,7 @@ impl KlippApp {
 
         // Update stats every 250ms
         let now = std::time::Instant::now();
-        if now.duration_since(self.state.perf_last_update).as_millis() >= 250 {
+        if now.duration_since(self.state.perf_last_update).as_millis() >= self.prefs.advanced.perf_overlay_interval_ms as u128 {
             self.state.perf_last_update = now;
 
             // FPS from average frame time

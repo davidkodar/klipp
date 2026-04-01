@@ -1618,7 +1618,7 @@ impl ViewerPanel {
         painter.line_segment([mid_left, mid_right], cross_stroke);
 
         // Corner handles (scale)
-        let handle_size = 8.0;
+        let handle_size = state.viewer_prefs.transform_handle_size;
         let handle_half = handle_size / 2.0;
         for corner in &corners {
             let handle_rect = egui::Rect::from_center_size(*corner, egui::vec2(handle_size, handle_size));
