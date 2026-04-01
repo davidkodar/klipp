@@ -144,3 +144,301 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
     default
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kf(time: f64, value: f32, interp: Interpolation) -> Keyframe {
+        Keyframe {
+            time_secs: time,
+            value,
+            interpolation: interp,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        }
+    }
+
+    fn kf_linear(time: f64, value: f32) -> Keyframe {
+        kf(time, value, Interpolation::Linear)
+    }
+
+    fn kf_step(time: f64, value: f32) -> Keyframe {
+        kf(time, value, Interpolation::Step)
+    }
+
+    fn kf_bezier(time: f64, value: f32, tan_out: (f64, f32), tan_in: (f64, f32)) -> Keyframe {
+        Keyframe {
+            time_secs: time,
+            value,
+            interpolation: Interpolation::Bezier,
+            tangent_out: tan_out,
+            tangent_in: tan_in,
+        }
+    }
+
+    // ---- 1. Empty keyframes returns default ----
+
+    #[test]
+    fn empty_keyframes_returns_default() {
+        assert_eq!(evaluate(&[], 0.0, 42.0), 42.0);
+        assert_eq!(evaluate(&[], 1.0, -7.5), -7.5);
+        assert_eq!(evaluate(&[], -1.0, 100.0), 100.0);
+    }
+
+    // ---- 2. Single keyframe returns its value at any time ----
+
+    #[test]
+    fn single_keyframe_at_exact_time() {
+        let kfs = [kf_linear(1.0, 50.0)];
+        assert_eq!(evaluate(&kfs, 1.0, 0.0), 50.0);
+    }
+
+    #[test]
+    fn single_keyframe_before() {
+        let kfs = [kf_linear(1.0, 50.0)];
+        assert_eq!(evaluate(&kfs, 0.0, 0.0), 50.0);
+    }
+
+    #[test]
+    fn single_keyframe_after() {
+        let kfs = [kf_linear(1.0, 50.0)];
+        assert_eq!(evaluate(&kfs, 5.0, 0.0), 50.0);
+    }
+
+    // ---- 3. Two keyframes, linear interpolation ----
+
+    #[test]
+    fn two_keyframes_linear_at_endpoints() {
+        let kfs = [kf_linear(0.0, 0.0), kf_linear(1.0, 100.0)];
+        assert_eq!(evaluate(&kfs, 0.0, -1.0), 0.0);
+        assert_eq!(evaluate(&kfs, 1.0, -1.0), 100.0);
+    }
+
+    #[test]
+    fn two_keyframes_linear_at_25_percent() {
+        let kfs = [kf_linear(0.0, 0.0), kf_linear(1.0, 100.0)];
+        let v = evaluate(&kfs, 0.25, -1.0);
+        assert!((v - 25.0).abs() < 0.01, "expected ~25.0, got {v}");
+    }
+
+    #[test]
+    fn two_keyframes_linear_at_50_percent() {
+        let kfs = [kf_linear(0.0, 0.0), kf_linear(1.0, 100.0)];
+        let v = evaluate(&kfs, 0.5, -1.0);
+        assert!((v - 50.0).abs() < 0.01, "expected ~50.0, got {v}");
+    }
+
+    #[test]
+    fn two_keyframes_linear_at_75_percent() {
+        let kfs = [kf_linear(0.0, 0.0), kf_linear(1.0, 100.0)];
+        let v = evaluate(&kfs, 0.75, -1.0);
+        assert!((v - 75.0).abs() < 0.01, "expected ~75.0, got {v}");
+    }
+
+    #[test]
+    fn two_keyframes_linear_non_zero_start() {
+        let kfs = [kf_linear(2.0, 10.0), kf_linear(4.0, 30.0)];
+        let v = evaluate(&kfs, 3.0, 0.0);
+        assert!((v - 20.0).abs() < 0.01, "expected ~20.0, got {v}");
+    }
+
+    // ---- 4. Two keyframes, step interpolation ----
+
+    #[test]
+    fn two_keyframes_step_holds_previous() {
+        let kfs = [kf_step(0.0, 10.0), kf_step(1.0, 90.0)];
+        assert_eq!(evaluate(&kfs, 0.0, -1.0), 10.0);
+        assert_eq!(evaluate(&kfs, 0.25, -1.0), 10.0);
+        assert_eq!(evaluate(&kfs, 0.5, -1.0), 10.0);
+        assert_eq!(evaluate(&kfs, 0.99, -1.0), 10.0);
+        assert_eq!(evaluate(&kfs, 1.0, -1.0), 90.0);
+    }
+
+    #[test]
+    fn step_then_linear_segments() {
+        let kfs = [
+            kf_step(0.0, 0.0),
+            kf_linear(1.0, 100.0),
+            kf_linear(2.0, 200.0),
+        ];
+        assert_eq!(evaluate(&kfs, 0.5, -1.0), 0.0);
+        let v = evaluate(&kfs, 1.5, -1.0);
+        assert!((v - 150.0).abs() < 0.01, "expected ~150.0, got {v}");
+    }
+
+    // ---- 5. Before first keyframe (hold backward) ----
+
+    #[test]
+    fn before_first_keyframe_holds_backward() {
+        let kfs = [kf_linear(5.0, 42.0), kf_linear(10.0, 100.0)];
+        assert_eq!(evaluate(&kfs, 0.0, -1.0), 42.0);
+        assert_eq!(evaluate(&kfs, 4.99, -1.0), 42.0);
+    }
+
+    // ---- 6. After last keyframe (hold forward) ----
+
+    #[test]
+    fn after_last_keyframe_holds_forward() {
+        let kfs = [kf_linear(0.0, 10.0), kf_linear(1.0, 20.0)];
+        assert_eq!(evaluate(&kfs, 1.0, -1.0), 20.0);
+        assert_eq!(evaluate(&kfs, 100.0, -1.0), 20.0);
+    }
+
+    // ---- 7. Three keyframes, correct per-segment interpolation ----
+
+    #[test]
+    fn three_keyframes_first_segment() {
+        let kfs = [
+            kf_linear(0.0, 0.0),
+            kf_linear(1.0, 100.0),
+            kf_linear(2.0, 50.0),
+        ];
+        let v = evaluate(&kfs, 0.5, -1.0);
+        assert!((v - 50.0).abs() < 0.01, "first segment mid: expected ~50.0, got {v}");
+    }
+
+    #[test]
+    fn three_keyframes_second_segment() {
+        let kfs = [
+            kf_linear(0.0, 0.0),
+            kf_linear(1.0, 100.0),
+            kf_linear(2.0, 50.0),
+        ];
+        let v = evaluate(&kfs, 1.5, -1.0);
+        assert!((v - 75.0).abs() < 0.01, "second segment mid: expected ~75.0, got {v}");
+    }
+
+    #[test]
+    fn three_keyframes_at_middle_keyframe() {
+        let kfs = [
+            kf_linear(0.0, 0.0),
+            kf_linear(1.0, 100.0),
+            kf_linear(2.0, 50.0),
+        ];
+        let v = evaluate(&kfs, 1.0, -1.0);
+        assert!((v - 100.0).abs() < 0.01, "at middle kf: expected ~100.0, got {v}");
+    }
+
+    // ---- 8. Bezier interpolation ----
+
+    #[test]
+    fn bezier_no_tangents_hits_endpoints() {
+        let kfs = [
+            kf_bezier(0.0, 0.0, (0.0, 0.0), (0.0, 0.0)),
+            kf_bezier(1.0, 100.0, (0.0, 0.0), (0.0, 0.0)),
+        ];
+        let v0 = evaluate(&kfs, 0.0, -1.0);
+        let v1 = evaluate(&kfs, 1.0, -1.0);
+        assert!((v0 - 0.0).abs() < 0.01, "start: expected ~0.0, got {v0}");
+        assert!((v1 - 100.0).abs() < 0.01, "end: expected ~100.0, got {v1}");
+    }
+
+    #[test]
+    fn bezier_with_time_tangents_smooth_curve() {
+        // Ease-in-out curve with time handles
+        let kfs = [
+            kf_bezier(0.0, 0.0, (0.3, 0.0), (0.0, 0.0)),
+            {
+                let mut k = kf_bezier(1.0, 100.0, (0.0, 0.0), (-0.3, 0.0));
+                k.interpolation = Interpolation::Linear; // irrelevant, first kf drives
+                k
+            },
+        ];
+        let v = evaluate(&kfs, 0.5, -1.0);
+        assert!(v > 30.0 && v < 70.0, "bezier mid: expected 30..70, got {v}");
+        assert!((evaluate(&kfs, 0.0, -1.0) - 0.0).abs() < 0.01);
+        assert!((evaluate(&kfs, 1.0, -1.0) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bezier_with_value_tangents() {
+        // Zero time tangents, value tangents create overshoot shape
+        // P0=0, P1=0+80=80, P2=100+(-80)=20, P3=100
+        // At t=0.5: (1-t)^3*0 + 3*(1-t)^2*t*80 + 3*(1-t)*t^2*20 + t^3*100
+        // = 0 + 30 + 7.5 + 12.5 = 50
+        let kfs = [
+            kf_bezier(0.0, 0.0, (0.0, 80.0), (0.0, 0.0)),
+            kf_bezier(1.0, 100.0, (0.0, 0.0), (0.0, -80.0)),
+        ];
+        let v = evaluate(&kfs, 0.5, -1.0);
+        assert!((v - 50.0).abs() < 1.0, "bezier value tangents mid: expected ~50, got {v}");
+    }
+
+    #[test]
+    fn bezier_monotonic_with_ease() {
+        let kfs = [
+            kf_bezier(0.0, 0.0, (0.33, 0.0), (0.0, 0.0)),
+            kf_bezier(1.0, 100.0, (0.0, 0.0), (-0.33, 0.0)),
+        ];
+        let mut prev = evaluate(&kfs, 0.0, -1.0);
+        for i in 1..=20 {
+            let t = i as f64 / 20.0;
+            let v = evaluate(&kfs, t, -1.0);
+            assert!(
+                v >= prev - 0.1,
+                "bezier should be monotonic: at t={t}, v={v} < prev={prev}"
+            );
+            prev = v;
+        }
+    }
+
+    // ---- 9. Negative time ----
+
+    #[test]
+    fn negative_time_returns_first_keyframe() {
+        let kfs = [kf_linear(0.0, 42.0), kf_linear(1.0, 100.0)];
+        assert_eq!(evaluate(&kfs, -1.0, -1.0), 42.0);
+        assert_eq!(evaluate(&kfs, -1000.0, -1.0), 42.0);
+    }
+
+    #[test]
+    fn negative_time_empty_returns_default() {
+        assert_eq!(evaluate(&[], -5.0, 99.0), 99.0);
+    }
+
+    // ---- 10. Zero-duration segment ----
+
+    #[test]
+    fn zero_duration_segment_returns_first_value() {
+        let kfs = [kf_linear(1.0, 10.0), kf_linear(1.0, 90.0)];
+        let v = evaluate(&kfs, 1.0, -1.0);
+        assert_eq!(v, 10.0);
+    }
+
+    #[test]
+    fn zero_duration_segment_before_and_after() {
+        let kfs = [kf_linear(1.0, 10.0), kf_linear(1.0, 90.0)];
+        assert_eq!(evaluate(&kfs, 0.5, -1.0), 10.0);
+        assert_eq!(evaluate(&kfs, 1.5, -1.0), 90.0);
+    }
+
+    #[test]
+    fn zero_duration_step() {
+        let kfs = [kf_step(1.0, 10.0), kf_step(1.0, 90.0)];
+        let v = evaluate(&kfs, 1.0, -1.0);
+        assert_eq!(v, 10.0);
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn very_large_time_values() {
+        let kfs = [kf_linear(0.0, 1.0), kf_linear(1.0, 2.0)];
+        assert_eq!(evaluate(&kfs, 1e12, -1.0), 2.0);
+    }
+
+    #[test]
+    fn many_keyframes_correct_segment_lookup() {
+        let kfs: Vec<Keyframe> = (0..10)
+            .map(|i| kf_linear(i as f64, i as f32 * 10.0))
+            .collect();
+        let v = evaluate(&kfs, 4.5, -1.0);
+        assert!((v - 45.0).abs() < 0.01, "expected ~45.0, got {v}");
+    }
+
+    #[test]
+    fn default_interpolation_is_linear() {
+        assert_eq!(Interpolation::default(), Interpolation::Linear);
+    }
+}
+

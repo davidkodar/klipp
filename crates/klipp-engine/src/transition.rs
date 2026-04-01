@@ -389,6 +389,10 @@ pub fn render_transition(
 mod tests {
     use super::*;
 
+    const W: u32 = 16;
+    const H: u32 = 16;
+    const TOLERANCE: i32 = 2; // rounding tolerance for blending
+
     fn make_solid(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
         let mut buf = Vec::with_capacity((w * h * 4) as usize);
         for _ in 0..w * h {
@@ -397,48 +401,678 @@ mod tests {
         buf
     }
 
+    /// Check that output length matches expected dimensions.
+    fn assert_dimensions(output: &[u8], w: u32, h: u32) {
+        assert_eq!(output.len(), (w * h * 4) as usize);
+    }
+
+    /// Check that every pixel's RGB channels are approximately equal to expected values.
+    /// Alpha is checked separately since some transitions handle it differently.
+    fn assert_approx_rgb(output: &[u8], r: u8, g: u8, b: u8, tolerance: i32) {
+        for i in (0..output.len()).step_by(4) {
+            assert!(
+                (output[i] as i32 - r as i32).abs() <= tolerance,
+                "pixel {}: R expected ~{}, got {} (delta {})",
+                i / 4, r, output[i], (output[i] as i32 - r as i32).abs()
+            );
+            assert!(
+                (output[i + 1] as i32 - g as i32).abs() <= tolerance,
+                "pixel {}: G expected ~{}, got {} (delta {})",
+                i / 4, g, output[i + 1], (output[i + 1] as i32 - g as i32).abs()
+            );
+            assert!(
+                (output[i + 2] as i32 - b as i32).abs() <= tolerance,
+                "pixel {}: B expected ~{}, got {} (delta {})",
+                i / 4, b, output[i + 2], (output[i + 2] as i32 - b as i32).abs()
+            );
+        }
+    }
+
+    /// Check that the output is NOT all-black (all RGB=0).
+    fn assert_not_all_black(output: &[u8]) {
+        let has_color = (0..output.len()).step_by(4).any(|i| {
+            output[i] > 0 || output[i + 1] > 0 || output[i + 2] > 0
+        });
+        assert!(has_color, "output is unexpectedly all black");
+    }
+
+    /// Check that the output is NOT all-white (all RGB=255).
+    fn assert_not_all_white(output: &[u8]) {
+        let has_non_white = (0..output.len()).step_by(4).any(|i| {
+            output[i] < 255 || output[i + 1] < 255 || output[i + 2] < 255
+        });
+        assert!(has_non_white, "output is unexpectedly all white");
+    }
+
+    /// Get pixel RGBA at (x, y).
+    fn pixel_at(buf: &[u8], x: u32, y: u32, w: u32) -> (u8, u8, u8, u8) {
+        let idx = (y * w + x) as usize * 4;
+        (buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3])
+    }
+
+    // ========================================================================
+    // CrossDissolve
+    // ========================================================================
+
     #[test]
     fn cross_dissolve_at_zero() {
-        let from = make_solid(255, 0, 0, 255, 4, 4);
-        let to = make_solid(0, 0, 255, 255, 4, 4);
-        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.0, 4, 4);
-        assert_eq!(result[0], 255); // R from 'from'
-        assert_eq!(result[2], 0);   // B from 'from'
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 255, 255, W, H);
+        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, TOLERANCE);
     }
 
     #[test]
     fn cross_dissolve_at_one() {
-        let from = make_solid(255, 0, 0, 255, 4, 4);
-        let to = make_solid(0, 0, 255, 255, 4, 4);
-        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 1.0, 4, 4);
-        assert_eq!(result[0], 0);   // R from 'to'
-        assert_eq!(result[2], 255); // B from 'to'
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 255, 255, W, H);
+        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 0, 0, 255, TOLERANCE);
     }
 
     #[test]
     fn cross_dissolve_midpoint() {
-        let from = make_solid(200, 0, 0, 255, 4, 4);
-        let to = make_solid(0, 0, 200, 255, 4, 4);
-        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.5, 4, 4);
-        assert!((result[0] as i32 - 100).abs() <= 1);
-        assert!((result[2] as i32 - 100).abs() <= 1);
+        let from = make_solid(200, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 200, 255, W, H);
+        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 100, 0, 100, TOLERANCE);
+    }
+
+    // ========================================================================
+    // WipeLeft
+    // ========================================================================
+
+    #[test]
+    fn wipe_left_at_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeLeft, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, 0); // all from
     }
 
     #[test]
-    fn wipe_left_halfway() {
+    fn wipe_left_at_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeLeft, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 0, 255, 0, 0); // all to
+    }
+
+    #[test]
+    fn wipe_left_midpoint() {
         let from = make_solid(255, 0, 0, 255, 10, 1);
         let to = make_solid(0, 255, 0, 255, 10, 1);
         let result = render_transition(TransitionKind::WipeLeft, &from, &to, 0.5, 10, 1);
-        // First half should be 'to' (green), second half 'from' (red)
-        assert_eq!(result[0], 0);    // pixel 0: to (green R=0)
-        assert_eq!(result[1], 255);  // pixel 0: to (green G=255)
-        assert_eq!(result[24], 255); // pixel 6: from (red R=255)
-        assert_eq!(result[25], 0);   // pixel 6: from (red G=0)
+        assert_dimensions(&result, 10, 1);
+        // Left half should be 'to', right half 'from'
+        assert_eq!(pixel_at(&result, 0, 0, 10), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 4, 0, 10), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 6, 0, 10), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 9, 0, 10), (255, 0, 0, 255));
     }
+
+    // ========================================================================
+    // WipeRight
+    // ========================================================================
+
+    #[test]
+    fn wipe_right_at_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeRight, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, 0);
+    }
+
+    #[test]
+    fn wipe_right_at_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeRight, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 0, 255, 0, 0);
+    }
+
+    #[test]
+    fn wipe_right_midpoint() {
+        let from = make_solid(255, 0, 0, 255, 10, 1);
+        let to = make_solid(0, 255, 0, 255, 10, 1);
+        let result = render_transition(TransitionKind::WipeRight, &from, &to, 0.5, 10, 1);
+        assert_dimensions(&result, 10, 1);
+        // Right half should be 'to', left half 'from' (opposite of WipeLeft)
+        assert_eq!(pixel_at(&result, 0, 0, 10), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 4, 0, 10), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 6, 0, 10), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 9, 0, 10), (0, 255, 0, 255));
+    }
+
+    // ========================================================================
+    // WipeUp
+    // ========================================================================
+
+    #[test]
+    fn wipe_up_at_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeUp, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, 0);
+    }
+
+    #[test]
+    fn wipe_up_at_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeUp, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 0, 255, 0, 0);
+    }
+
+    #[test]
+    fn wipe_up_midpoint() {
+        let from = make_solid(255, 0, 0, 255, 1, 10);
+        let to = make_solid(0, 255, 0, 255, 1, 10);
+        let result = render_transition(TransitionKind::WipeUp, &from, &to, 0.5, 1, 10);
+        assert_dimensions(&result, 1, 10);
+        // Top half should be 'to', bottom half 'from'
+        assert_eq!(pixel_at(&result, 0, 0, 1), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 4, 1), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 6, 1), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 9, 1), (255, 0, 0, 255));
+    }
+
+    // ========================================================================
+    // WipeDown
+    // ========================================================================
+
+    #[test]
+    fn wipe_down_at_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeDown, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, 0);
+    }
+
+    #[test]
+    fn wipe_down_at_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::WipeDown, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        assert_approx_rgb(&result, 0, 255, 0, 0);
+    }
+
+    #[test]
+    fn wipe_down_midpoint() {
+        let from = make_solid(255, 0, 0, 255, 1, 10);
+        let to = make_solid(0, 255, 0, 255, 1, 10);
+        let result = render_transition(TransitionKind::WipeDown, &from, &to, 0.5, 1, 10);
+        assert_dimensions(&result, 1, 10);
+        // Bottom half should be 'to', top half 'from' (opposite of WipeUp)
+        assert_eq!(pixel_at(&result, 0, 0, 1), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 4, 1), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 6, 1), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&result, 0, 9, 1), (0, 255, 0, 255));
+    }
+
+    // ========================================================================
+    // DipToBlack
+    // ========================================================================
+
+    #[test]
+    fn dip_to_black_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToBlack, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0, t=0*2=0, inv=1.0 so RGB = from * 1.0
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn dip_to_black_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToBlack, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1.0, second branch: t=(1.0-0.5)*2=1.0, RGB = to * 1.0
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn dip_to_black_midpoint_is_black() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToBlack, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0.5, first branch: t=0.5*2=1.0, inv=0.0, so RGB = from * 0 = 0 (black)
+        assert_approx_rgb(&result, 0, 0, 0, TOLERANCE);
+    }
+
+    // ========================================================================
+    // DipToWhite
+    // ========================================================================
+
+    #[test]
+    fn dip_to_white_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToWhite, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0, t=0, inv=1.0, RGB = from * 1.0 + 255 * 0
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn dip_to_white_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToWhite, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1.0, second branch: t=1.0, inv=0, RGB = 255*0 + to*1.0
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn dip_to_white_midpoint_is_white() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::DipToWhite, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0.5 (first branch edge): t=1.0, RGB = from*0 + 255*1 = 255
+        assert_approx_rgb(&result, 255, 255, 255, TOLERANCE);
+    }
+
+    // ========================================================================
+    // PushLeft
+    // ========================================================================
+
+    #[test]
+    fn push_left_at_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::PushLeft, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // offset=0, all pixels src_x = x + 0 < width, so all from
+        assert_approx_rgb(&result, 255, 0, 0, 0);
+    }
+
+    #[test]
+    fn push_left_at_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::PushLeft, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // offset=W, all pixels src_x = x + W >= W, so all to
+        assert_approx_rgb(&result, 0, 255, 0, 0);
+    }
+
+    #[test]
+    fn push_left_midpoint() {
+        let from = make_solid(255, 0, 0, 255, 10, 1);
+        let to = make_solid(0, 255, 0, 255, 10, 1);
+        let result = render_transition(TransitionKind::PushLeft, &from, &to, 0.5, 10, 1);
+        assert_dimensions(&result, 10, 1);
+        // offset=5: pixels 0-4 show from[5..9], pixels 5-9 show to[0..4]
+        assert_eq!(pixel_at(&result, 0, 0, 10), (255, 0, 0, 255)); // from shifted
+        assert_eq!(pixel_at(&result, 4, 0, 10), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&result, 5, 0, 10), (0, 255, 0, 255)); // to entering
+        assert_eq!(pixel_at(&result, 9, 0, 10), (0, 255, 0, 255));
+    }
+
+    // ========================================================================
+    // FilmDissolve
+    // ========================================================================
+
+    #[test]
+    fn film_dissolve_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::FilmDissolve, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0: blended = sqrt(f^2 * 1 + t^2 * 0) = sqrt(f^2) = f
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn film_dissolve_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::FilmDissolve, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1: blended = sqrt(f^2 * 0 + t^2 * 1) = t
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn film_dissolve_midpoint_is_blend() {
+        let from = make_solid(200, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 200, 255, W, H);
+        let result = render_transition(TransitionKind::FilmDissolve, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_not_all_black(&result);
+        assert_not_all_white(&result);
+        // Should be a mix: R > 0 (from contributes) and B > 0 (to contributes)
+        let (r, _, b, _) = pixel_at(&result, 0, 0, W);
+        assert!(r > 0 && r < 200, "R should be partial, got {}", r);
+        assert!(b > 0 && b < 200, "B should be partial, got {}", b);
+    }
+
+    // ========================================================================
+    // BlurDissolve
+    // ========================================================================
+
+    #[test]
+    fn blur_dissolve_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::BlurDissolve, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0, standard dissolve = from, blur radius = 0 (no blur)
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn blur_dissolve_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::BlurDissolve, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1, dissolve = to, blur radius = 0 (no blur)
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn blur_dissolve_midpoint_is_blend() {
+        // With solid colors, blur won't change values (all neighbors same)
+        let from = make_solid(200, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 200, 255, W, H);
+        let result = render_transition(TransitionKind::BlurDissolve, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_not_all_black(&result);
+        assert_not_all_white(&result);
+        // Solid input means blur doesn't change anything: just dissolve at 0.5
+        assert_approx_rgb(&result, 100, 0, 100, TOLERANCE);
+    }
+
+    // ========================================================================
+    // Flash
+    // ========================================================================
+
+    #[test]
+    fn flash_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Flash, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0: white_intensity=0, src=from, base=from
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn flash_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Flash, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1.0: white_intensity=0, blend_p=1.0, base = to
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn flash_midpoint_is_white() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Flash, &from, &to, 0.4, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0.4: white_intensity = 1.0 (p>0.3 and p<0.5 => hold white)
+        // base = from (p<0.4 is false at 0.4 exactly, so blend_p=(0.4-0.4)/0.6=0)
+        // output = base * 0 + 255 * 1.0 = 255
+        assert_approx_rgb(&result, 255, 255, 255, TOLERANCE);
+    }
+
+    #[test]
+    fn flash_midpoint_not_black() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Flash, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_not_all_black(&result);
+    }
+
+    // ========================================================================
+    // Spin
+    // ========================================================================
+
+    #[test]
+    fn spin_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Spin, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0: angle=0, scale=1, no rotation. inv=1.0 so output = from*1 + to*0
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn spin_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Spin, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1: angle=2*PI (full rotation back to identity), scale=1, inv=0
+        // So output = from*0 + to*1 = to
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn spin_midpoint_is_blend() {
+        let from = make_solid(200, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 200, 255, W, H);
+        let result = render_transition(TransitionKind::Spin, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_not_all_black(&result);
+        assert_not_all_white(&result);
+        // With solid colors, rotation doesn't matter; it's just 50/50 blend
+        assert_approx_rgb(&result, 100, 0, 100, TOLERANCE);
+    }
+
+    // ========================================================================
+    // LightLeak
+    // ========================================================================
+
+    #[test]
+    fn light_leak_at_zero() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::LightLeak, &from, &to, 0.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=0: leak_intensity = (0*1*4)^0.7 = 0, inv=1, so output = from
+        assert_approx_rgb(&result, 200, 100, 50, TOLERANCE);
+    }
+
+    #[test]
+    fn light_leak_at_one() {
+        let from = make_solid(200, 100, 50, 255, W, H);
+        let to = make_solid(50, 100, 200, 255, W, H);
+        let result = render_transition(TransitionKind::LightLeak, &from, &to, 1.0, W, H);
+        assert_dimensions(&result, W, H);
+        // At p=1: leak_intensity = 0, inv=0, so output = to
+        assert_approx_rgb(&result, 50, 100, 200, TOLERANCE);
+    }
+
+    #[test]
+    fn light_leak_midpoint_has_warm_tint() {
+        let from = make_solid(0, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 0, 255, W, H);
+        let result = render_transition(TransitionKind::LightLeak, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        // With black input, the warm tint should add color: R > G > B (amber)
+        let (r, g, b, _) = pixel_at(&result, 0, 0, W);
+        assert!(r > 0, "light leak should add red, got R={}", r);
+        assert!(g > 0, "light leak should add green, got G={}", g);
+        assert!(r > g, "R should be > G for warm tint, R={} G={}", r, g);
+        assert!(g > b, "G should be > B for warm tint, G={} B={}", g, b);
+    }
+
+    #[test]
+    fn light_leak_midpoint_not_black() {
+        let from = make_solid(100, 80, 60, 255, W, H);
+        let to = make_solid(60, 80, 100, 255, W, H);
+        let result = render_transition(TransitionKind::LightLeak, &from, &to, 0.5, W, H);
+        assert_dimensions(&result, W, H);
+        assert_not_all_black(&result);
+        assert_not_all_white(&result);
+    }
+
+    // ========================================================================
+    // Wipe symmetry: WipeLeft/WipeRight and WipeUp/WipeDown are inverses
+    // ========================================================================
+
+    #[test]
+    fn wipe_left_right_symmetry() {
+        let from = make_solid(255, 0, 0, 255, 20, 1);
+        let to = make_solid(0, 255, 0, 255, 20, 1);
+        let left = render_transition(TransitionKind::WipeLeft, &from, &to, 0.5, 20, 1);
+        let right = render_transition(TransitionKind::WipeRight, &from, &to, 0.5, 20, 1);
+        // WipeLeft reveals to from left; WipeRight reveals to from right
+        // They should cover complementary regions
+        // Pixel 0: WipeLeft=to, WipeRight=from
+        assert_eq!(pixel_at(&left, 0, 0, 20), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&right, 0, 0, 20), (255, 0, 0, 255));
+        // Pixel 19: WipeLeft=from, WipeRight=to
+        assert_eq!(pixel_at(&left, 19, 0, 20), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&right, 19, 0, 20), (0, 255, 0, 255));
+    }
+
+    #[test]
+    fn wipe_up_down_symmetry() {
+        let from = make_solid(255, 0, 0, 255, 1, 20);
+        let to = make_solid(0, 255, 0, 255, 1, 20);
+        let up = render_transition(TransitionKind::WipeUp, &from, &to, 0.5, 1, 20);
+        let down = render_transition(TransitionKind::WipeDown, &from, &to, 0.5, 1, 20);
+        // WipeUp reveals to from top; WipeDown reveals to from bottom
+        assert_eq!(pixel_at(&up, 0, 0, 1), (0, 255, 0, 255));
+        assert_eq!(pixel_at(&down, 0, 0, 1), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&up, 0, 19, 1), (255, 0, 0, 255));
+        assert_eq!(pixel_at(&down, 0, 19, 1), (0, 255, 0, 255));
+    }
+
+    // ========================================================================
+    // Kind ID round-trip
+    // ========================================================================
 
     #[test]
     fn kind_to_id_mapping() {
         assert_eq!(transition_kind_to_id(TransitionKind::CrossDissolve), 0);
+        assert_eq!(transition_kind_to_id(TransitionKind::WipeLeft), 1);
+        assert_eq!(transition_kind_to_id(TransitionKind::WipeRight), 2);
+        assert_eq!(transition_kind_to_id(TransitionKind::WipeUp), 3);
+        assert_eq!(transition_kind_to_id(TransitionKind::WipeDown), 4);
+        assert_eq!(transition_kind_to_id(TransitionKind::DipToBlack), 5);
         assert_eq!(transition_kind_to_id(TransitionKind::DipToWhite), 6);
+        assert_eq!(transition_kind_to_id(TransitionKind::PushLeft), 7);
+        assert_eq!(transition_kind_to_id(TransitionKind::FilmDissolve), 8);
+        assert_eq!(transition_kind_to_id(TransitionKind::BlurDissolve), 9);
+        assert_eq!(transition_kind_to_id(TransitionKind::Flash), 10);
+        assert_eq!(transition_kind_to_id(TransitionKind::Spin), 11);
+        assert_eq!(transition_kind_to_id(TransitionKind::LightLeak), 12);
+    }
+
+    #[test]
+    fn kind_id_round_trip() {
+        for id in 0..=12u8 {
+            let kind = transition_kind_from_id(id);
+            assert_eq!(transition_kind_to_id(kind), id as u32);
+        }
+    }
+
+    #[test]
+    fn unknown_kind_id_defaults_to_cross_dissolve() {
+        assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(13), TransitionKind::CrossDissolve);
+    }
+
+    #[test]
+    fn all_transition_kinds_returns_13() {
+        assert_eq!(all_transition_kinds().len(), 13);
+    }
+
+    // ========================================================================
+    // Edge cases
+    // ========================================================================
+
+    #[test]
+    fn progress_clamped_below_zero() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 255, 255, W, H);
+        // Negative progress should be treated as 0
+        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, -0.5, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn progress_clamped_above_one() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 0, 255, 255, W, H);
+        // Progress > 1.0 should be treated as 1.0
+        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 1.5, W, H);
+        assert_approx_rgb(&result, 0, 0, 255, TOLERANCE);
+    }
+
+    #[test]
+    fn single_pixel_frame() {
+        let from = make_solid(255, 128, 64, 255, 1, 1);
+        let to = make_solid(64, 128, 255, 255, 1, 1);
+        // Every transition should work on a 1x1 frame without panicking
+        let kinds = [
+            TransitionKind::CrossDissolve, TransitionKind::WipeLeft,
+            TransitionKind::WipeRight, TransitionKind::WipeUp,
+            TransitionKind::WipeDown, TransitionKind::DipToBlack,
+            TransitionKind::DipToWhite, TransitionKind::PushLeft,
+            TransitionKind::FilmDissolve, TransitionKind::BlurDissolve,
+            TransitionKind::Flash, TransitionKind::Spin,
+            TransitionKind::LightLeak,
+        ];
+        for kind in &kinds {
+            let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
+            assert_eq!(result.len(), 4, "1x1 frame should produce 4 bytes for {:?}", kind);
+        }
+    }
+
+    #[test]
+    fn all_transitions_preserve_dimensions() {
+        let from = make_solid(128, 64, 32, 255, 32, 24);
+        let to = make_solid(32, 64, 128, 255, 32, 24);
+        let kinds = [
+            TransitionKind::CrossDissolve, TransitionKind::WipeLeft,
+            TransitionKind::WipeRight, TransitionKind::WipeUp,
+            TransitionKind::WipeDown, TransitionKind::DipToBlack,
+            TransitionKind::DipToWhite, TransitionKind::PushLeft,
+            TransitionKind::FilmDissolve, TransitionKind::BlurDissolve,
+            TransitionKind::Flash, TransitionKind::Spin,
+            TransitionKind::LightLeak,
+        ];
+        for kind in &kinds {
+            for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                let result = render_transition(*kind, &from, &to, p, 32, 24);
+                assert_dimensions(&result, 32, 24);
+            }
+        }
+    }
+
+    #[test]
+    fn identical_frames_produce_same_output() {
+        let frame = make_solid(100, 150, 200, 255, W, H);
+        // When from == to, any transition at any progress should produce the same frame
+        // (with possible minor deviations for effects like LightLeak/Flash)
+        let result = render_transition(TransitionKind::CrossDissolve, &frame, &frame, 0.5, W, H);
+        assert_approx_rgb(&result, 100, 150, 200, TOLERANCE);
     }
 }

@@ -254,4 +254,497 @@ mod tests {
         let m_out = sample_matte(&masks, 0.5, 0.5);
         assert!(m_out <= 0.05, "outside both circles: got {m_out}");
     }
+
+    // ── SDF unit tests (shape_sdf directly) ──────────────────────────────
+
+    /// Helper: evaluate shape_sdf with aspect=1 (square frame) for simplicity.
+    fn sdf(nx: f32, ny: f32, shape: &MaskShape) -> f32 {
+        shape_sdf(nx, ny, shape, 1.0)
+    }
+
+    /// Helper: evaluate shape_sdf with a non-square aspect ratio.
+    fn sdf_aspect(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
+        shape_sdf(nx, ny, shape, aspect)
+    }
+
+    // ── 1. Circle: center inside, far away outside ───────────────────────
+
+    #[test]
+    fn sdf_circle_center_is_inside() {
+        let shape = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 };
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d < 0.0, "center should be inside (negative): got {d}");
+        assert!((d - (-0.3)).abs() < 1e-5, "distance at center should be -radius: got {d}");
+    }
+
+    #[test]
+    fn sdf_circle_far_away_is_outside() {
+        let shape = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.1 };
+        let d = sdf(1.0, 1.0, &shape);
+        assert!(d > 0.0, "far corner should be outside (positive): got {d}");
+    }
+
+    // ── 2. Circle: boundary ≈ 0 ─────────────────────────────────────────
+
+    #[test]
+    fn sdf_circle_boundary_approximately_zero() {
+        let shape = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.25 };
+        // Point exactly on boundary (right edge): (0.75, 0.5)
+        let d = sdf(0.75, 0.5, &shape);
+        assert!(d.abs() < 1e-5, "boundary point should be ~0: got {d}");
+        // Point on boundary (top): (0.5, 0.25) — requires aspect=1
+        let d_top = sdf(0.5, 0.25, &shape);
+        assert!(d_top.abs() < 1e-5, "top boundary point should be ~0: got {d_top}");
+    }
+
+    #[test]
+    fn sdf_circle_boundary_with_aspect_ratio() {
+        // With aspect = 0.5625 (16:9), the circle in pixel space is an ellipse.
+        // Boundary along x-axis: center_x + radius = 0.5 + 0.2 = 0.7
+        let shape = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 };
+        let d = sdf_aspect(0.7, 0.5, &shape, 0.5625);
+        assert!(d.abs() < 1e-5, "x-axis boundary with aspect should be ~0: got {d}");
+    }
+
+    // ── 3. Rectangle: center inside, outside positive ────────────────────
+
+    #[test]
+    fn sdf_rectangle_center_is_inside() {
+        let shape = MaskShape::Rectangle {
+            center_x: 0.5, center_y: 0.5, width: 0.4, height: 0.3, rotation: 0.0,
+        };
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d < 0.0, "rect center should be inside: got {d}");
+        // Distance to nearest edge = min(hw, hh) = min(0.2, 0.15) = -0.15
+        assert!((d - (-0.15)).abs() < 1e-5, "distance at center should be -0.15: got {d}");
+    }
+
+    #[test]
+    fn sdf_rectangle_outside_is_positive() {
+        let shape = MaskShape::Rectangle {
+            center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.2, rotation: 0.0,
+        };
+        // Point (0.0, 0.0) is well outside
+        let d = sdf(0.0, 0.0, &shape);
+        assert!(d > 0.0, "outside rect should be positive: got {d}");
+    }
+
+    #[test]
+    fn sdf_rectangle_edge_approximately_zero() {
+        let shape = MaskShape::Rectangle {
+            center_x: 0.5, center_y: 0.5, width: 0.4, height: 0.4, rotation: 0.0,
+        };
+        // Right edge: center_x + width/2 = 0.5 + 0.2 = 0.7
+        let d = sdf(0.7, 0.5, &shape);
+        assert!(d.abs() < 1e-5, "right edge should be ~0: got {d}");
+    }
+
+    // ── 4. Rotated rectangle still contains expected points ──────────────
+
+    #[test]
+    fn sdf_rectangle_rotated_45_degrees() {
+        let shape = MaskShape::Rectangle {
+            center_x: 0.5, center_y: 0.5, width: 0.4, height: 0.4, rotation: 45.0,
+        };
+        // Center should still be inside
+        let d_center = sdf(0.5, 0.5, &shape);
+        assert!(d_center < 0.0, "rotated rect center should be inside: got {d_center}");
+
+        // Point just right of center (0.65, 0.5) — was inside unrotated rect.
+        // After 45deg rotation, this point at local coords:
+        // lx = |0.15 * cos45 + 0 * sin45| = |0.106|
+        // ly = |-0.15 * sin45 + 0 * cos45| = |0.106|
+        // hw = hh = 0.2, so 0.106 < 0.2 → inside
+        let d_nearby = sdf(0.65, 0.5, &shape);
+        assert!(d_nearby < 0.0, "point near center of rotated rect should be inside: got {d_nearby}");
+
+        // Corner of the unrotated rect (0.7, 0.7) is outside the 45deg rotated rect.
+        // lx = |0.2 * cos45 + 0.2 * sin45| = |0.283|
+        // hw = 0.2, so 0.283 > 0.2 → outside
+        let d_corner = sdf(0.7, 0.7, &shape);
+        assert!(d_corner > 0.0, "corner of unrotated rect should be outside rotated rect: got {d_corner}");
+    }
+
+    #[test]
+    fn sdf_rectangle_rotated_90_degrees() {
+        // A non-square rect: 0.6 wide, 0.2 tall, rotated 90deg → effectively 0.2 wide, 0.6 tall
+        let shape = MaskShape::Rectangle {
+            center_x: 0.5, center_y: 0.5, width: 0.6, height: 0.2, rotation: 90.0,
+        };
+        // Point (0.5, 0.25) is above center by 0.25 — should be inside rotated rect
+        // (original width/2 = 0.3, now becomes half-height after rotation)
+        let d = sdf(0.5, 0.25, &shape);
+        assert!(d < 0.0, "point along long axis of 90deg rotated rect should be inside: got {d}");
+
+        // Point (0.8, 0.5) is right of center by 0.3 — should be outside
+        // (original height/2 = 0.1, now becomes half-width)
+        let d_out = sdf(0.8, 0.5, &shape);
+        assert!(d_out > 0.0, "point along short axis of 90deg rotated rect should be outside: got {d_out}");
+    }
+
+    // ── 5. LinearGradient: start inside, past end outside ────────────────
+
+    #[test]
+    fn sdf_linear_gradient_at_start() {
+        let shape = MaskShape::LinearGradient {
+            start_x: 0.2, start_y: 0.5, end_x: 0.8, end_y: 0.5,
+        };
+        // At start point t=0, sdf = 0 - 0.5 = -0.5 (inside)
+        let d = sdf(0.2, 0.5, &shape);
+        assert!(d < 0.0, "start of gradient should be inside: got {d}");
+    }
+
+    #[test]
+    fn sdf_linear_gradient_past_end() {
+        let shape = MaskShape::LinearGradient {
+            start_x: 0.2, start_y: 0.5, end_x: 0.8, end_y: 0.5,
+        };
+        // At end point t=1, sdf = 1 - 0.5 = 0.5 (outside)
+        let d = sdf(0.8, 0.5, &shape);
+        assert!(d > 0.0, "end of gradient should be outside: got {d}");
+    }
+
+    #[test]
+    fn sdf_linear_gradient_midpoint_is_zero() {
+        let shape = MaskShape::LinearGradient {
+            start_x: 0.0, start_y: 0.5, end_x: 1.0, end_y: 0.5,
+        };
+        // At midpoint t=0.5, sdf = 0.5 - 0.5 = 0
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d.abs() < 1e-5, "gradient midpoint should be ~0: got {d}");
+    }
+
+    #[test]
+    fn sdf_linear_gradient_vertical() {
+        let shape = MaskShape::LinearGradient {
+            start_x: 0.5, start_y: 0.0, end_x: 0.5, end_y: 1.0,
+        };
+        // At top (start), t=0 → sdf = -0.5
+        let d_top = sdf(0.5, 0.0, &shape);
+        assert!(d_top < 0.0, "top of vertical gradient should be inside: got {d_top}");
+        // At bottom (end), t=1 → sdf = 0.5
+        let d_bot = sdf(0.5, 1.0, &shape);
+        assert!(d_bot > 0.0, "bottom of vertical gradient should be outside: got {d_bot}");
+    }
+
+    // ── 6. Bezier polygon (triangle): inside/outside ─────────────────────
+
+    #[test]
+    fn sdf_bezier_triangle_inside() {
+        // Triangle with vertices at (0.5, 0.2), (0.2, 0.8), (0.8, 0.8)
+        let shape = MaskShape::Bezier {
+            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
+        };
+        // Centroid at (0.5, 0.6) should be inside
+        let d = sdf(0.5, 0.6, &shape);
+        assert!(d < 0.0, "centroid of triangle should be inside: got {d}");
+    }
+
+    #[test]
+    fn sdf_bezier_triangle_outside() {
+        let shape = MaskShape::Bezier {
+            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
+        };
+        // Point far above apex should be outside
+        let d = sdf(0.5, 0.05, &shape);
+        assert!(d > 0.0, "point above triangle apex should be outside: got {d}");
+        // Point to the far left should be outside
+        let d_left = sdf(0.05, 0.5, &shape);
+        assert!(d_left > 0.0, "point far left of triangle should be outside: got {d_left}");
+    }
+
+    #[test]
+    fn sdf_bezier_triangle_vertex_approximately_zero() {
+        let shape = MaskShape::Bezier {
+            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
+        };
+        // A vertex is on the boundary, so distance should be ~0
+        let d = sdf(0.5, 0.2, &shape);
+        assert!(d.abs() < 1e-4, "vertex of triangle should be ~0: got {d}");
+    }
+
+    // ── 7. Bezier polygon (square): winding number for 4 vertices ────────
+
+    #[test]
+    fn sdf_bezier_square_inside() {
+        // Square from (0.3,0.3) to (0.7,0.7) — CCW winding
+        let shape = MaskShape::Bezier {
+            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
+        };
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d < 0.0, "center of bezier square should be inside: got {d}");
+    }
+
+    #[test]
+    fn sdf_bezier_square_outside() {
+        let shape = MaskShape::Bezier {
+            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
+        };
+        let d = sdf(0.1, 0.1, &shape);
+        assert!(d > 0.0, "point outside bezier square should be positive: got {d}");
+    }
+
+    #[test]
+    fn sdf_bezier_square_near_edge() {
+        let shape = MaskShape::Bezier {
+            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
+        };
+        // Point on edge midpoint: (0.7, 0.5) should be ~0
+        let d = sdf(0.7, 0.5, &shape);
+        assert!(d.abs() < 1e-4, "edge midpoint of bezier square should be ~0: got {d}");
+    }
+
+    #[test]
+    fn sdf_bezier_square_winding_both_orderings() {
+        // CW winding order
+        let shape_cw = MaskShape::Bezier {
+            points: vec![(0.3, 0.3), (0.3, 0.7), (0.7, 0.7), (0.7, 0.3)],
+        };
+        let d_cw = sdf(0.5, 0.5, &shape_cw);
+        assert!(d_cw < 0.0, "CW square center should be inside: got {d_cw}");
+
+        // CCW winding order
+        let shape_ccw = MaskShape::Bezier {
+            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
+        };
+        let d_ccw = sdf(0.5, 0.5, &shape_ccw);
+        assert!(d_ccw < 0.0, "CCW square center should be inside: got {d_ccw}");
+    }
+
+    // ── 8. Feathering: intermediate values in feather zone ───────────────
+
+    #[test]
+    fn feather_zone_has_intermediate_values() {
+        let masks = MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
+                feather: 0.15,
+                invert: false,
+                opacity: 1.0,
+                enabled: true,
+            }],
+        };
+        // Use a larger grid for precision
+        let w = 200u32;
+        let h = 200u32;
+        let matte = generate_mask_matte(w, h, &masks);
+
+        // Sample a ring of points at varying distances from center
+        let mut found_intermediate = false;
+        for px in 0..w {
+            let _nx = px as f32 / (w - 1) as f32;
+            let ny = 0.5; // horizontal slice through center
+            let idx = ((ny * (h - 1) as f32) as u32 * w + px) as usize;
+            let v = matte[idx];
+            if v > 0.05 && v < 0.95 {
+                found_intermediate = true;
+                break;
+            }
+        }
+        assert!(found_intermediate, "should find intermediate matte values in feather zone");
+    }
+
+    #[test]
+    fn feather_smooth_step_hermite_values() {
+        // Directly test smooth_step function
+        // dist <= 0 → 1.0
+        assert_eq!(smooth_step(-0.1, 0.1), 1.0);
+        assert_eq!(smooth_step(0.0, 0.1), 1.0);
+        // dist >= feather → 0.0
+        assert_eq!(smooth_step(0.1, 0.1), 0.0);
+        assert_eq!(smooth_step(0.2, 0.1), 0.0);
+        // dist at midpoint: t=0.5, hermite = 1 - 0.25*(3-1) = 0.5
+        let mid = smooth_step(0.05, 0.1);
+        assert!((mid - 0.5).abs() < 1e-5, "hermite midpoint should be 0.5: got {mid}");
+        // Monotonicity: closer to edge → smaller matte
+        let near = smooth_step(0.02, 0.1);
+        let far = smooth_step(0.08, 0.1);
+        assert!(near > far, "closer to shape should have higher matte: near={near}, far={far}");
+    }
+
+    #[test]
+    fn feather_zero_gives_hard_edge() {
+        let masks_hard = make_circle_mask(0.5, 0.5, 0.2, 0.0);
+        let m_inside = sample_matte(&masks_hard, 0.5, 0.5);
+        let m_outside = sample_matte(&masks_hard, 0.9, 0.5);
+        assert!((m_inside - 1.0).abs() < 0.01, "inside hard edge: got {m_inside}");
+        assert!(m_outside < 0.01, "outside hard edge: got {m_outside}");
+    }
+
+    // ── 9. Invert: opposite values ───────────────────────────────────────
+
+    #[test]
+    fn invert_produces_opposite_values() {
+        // Normal mask
+        let masks_normal = make_circle_mask(0.5, 0.5, 0.25, 0.0);
+        let normal_center = sample_matte(&masks_normal, 0.5, 0.5);
+        let normal_outside = sample_matte(&masks_normal, 0.95, 0.95);
+
+        // Inverted mask
+        let mut masks_inv = make_circle_mask(0.5, 0.5, 0.25, 0.0);
+        masks_inv.masks[0].invert = true;
+        let inv_center = sample_matte(&masks_inv, 0.5, 0.5);
+        let inv_outside = sample_matte(&masks_inv, 0.95, 0.95);
+
+        // Values should be complements
+        assert!((normal_center + inv_center - 1.0).abs() < 0.02,
+            "inverted center should complement normal: {normal_center} + {inv_center}");
+        assert!((normal_outside + inv_outside - 1.0).abs() < 0.02,
+            "inverted outside should complement normal: {normal_outside} + {inv_outside}");
+    }
+
+    #[test]
+    fn invert_rectangle() {
+        let masks = MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Rectangle {
+                    center_x: 0.5, center_y: 0.5,
+                    width: 0.4, height: 0.4, rotation: 0.0,
+                },
+                feather: 0.0, invert: true, opacity: 1.0, enabled: true,
+            }],
+        };
+        // Center of inverted rect should be 0
+        let m_center = sample_matte(&masks, 0.5, 0.5);
+        assert!(m_center < 0.05, "inverted rect center should be ~0: got {m_center}");
+        // Outside inverted rect should be 1
+        let m_outside = sample_matte(&masks, 0.05, 0.05);
+        assert!(m_outside > 0.95, "inverted rect outside should be ~1: got {m_outside}");
+    }
+
+    // ── 10. Opacity: half opacity halves matte ───────────────────────────
+
+    #[test]
+    fn opacity_scales_matte_value() {
+        // Full opacity
+        let masks_full = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        let v_full = sample_matte(&masks_full, 0.5, 0.5);
+
+        // Half opacity
+        let mut masks_half = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        masks_half.masks[0].opacity = 0.5;
+        let v_half = sample_matte(&masks_half, 0.5, 0.5);
+
+        assert!((v_full - 1.0).abs() < 0.01, "full opacity inside: got {v_full}");
+        assert!((v_half - 0.5).abs() < 0.01, "half opacity inside: got {v_half}");
+    }
+
+    #[test]
+    fn opacity_zero_produces_zero_matte() {
+        let mut masks = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        masks.masks[0].opacity = 0.0;
+        let m = sample_matte(&masks, 0.5, 0.5);
+        assert!(m < 0.01, "zero opacity should produce zero matte: got {m}");
+    }
+
+    #[test]
+    fn opacity_scales_feathered_values() {
+        let mut masks = make_circle_mask(0.5, 0.5, 0.2, 0.15);
+        masks.masks[0].opacity = 0.5;
+        // Inside: matte = 1.0 * 0.5 = 0.5
+        let m_inside = sample_matte(&masks, 0.5, 0.5);
+        assert!((m_inside - 0.5).abs() < 0.02, "half opacity inside feathered: got {m_inside}");
+        // Outside: matte = 0.0 * 0.5 = 0.0
+        let m_outside = sample_matte(&masks, 0.95, 0.95);
+        assert!(m_outside < 0.01, "half opacity outside feathered: got {m_outside}");
+    }
+
+    // ── 11. Multiple masks: union (max) behavior ─────────────────────────
+
+    #[test]
+    fn mask_union_takes_max_value() {
+        // Two circles with different opacities overlapping at center
+        let masks = MaskStack {
+            masks: vec![
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
+                    feather: 0.0, invert: false, opacity: 0.3, enabled: true,
+                },
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
+                    feather: 0.0, invert: false, opacity: 0.7, enabled: true,
+                },
+            ],
+        };
+        // Union = max(0.3, 0.7) = 0.7, not additive 1.0
+        let m = sample_matte(&masks, 0.5, 0.5);
+        assert!((m - 0.7).abs() < 0.02, "union should be max(0.3, 0.7) = 0.7: got {m}");
+    }
+
+    #[test]
+    fn mask_union_disjoint_regions() {
+        // Left circle and right rectangle — no overlap
+        let masks = MaskStack {
+            masks: vec![
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.15, center_y: 0.5, radius: 0.1 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                },
+                Mask {
+                    shape: MaskShape::Rectangle {
+                        center_x: 0.85, center_y: 0.5, width: 0.2, height: 0.2, rotation: 0.0,
+                    },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                },
+            ],
+        };
+        // Inside circle
+        let m_circle = sample_matte(&masks, 0.15, 0.5);
+        assert!(m_circle > 0.95, "inside circle region: got {m_circle}");
+        // Inside rectangle
+        let m_rect = sample_matte(&masks, 0.85, 0.5);
+        assert!(m_rect > 0.95, "inside rect region: got {m_rect}");
+        // Between them
+        let m_gap = sample_matte(&masks, 0.5, 0.5);
+        assert!(m_gap < 0.05, "gap between shapes: got {m_gap}");
+    }
+
+    #[test]
+    fn disabled_mask_is_ignored() {
+        let masks = MaskStack {
+            masks: vec![Mask {
+                shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
+                feather: 0.0, invert: false, opacity: 1.0, enabled: false,
+            }],
+        };
+        // Everything should be 0 since mask is disabled
+        let m = sample_matte(&masks, 0.5, 0.5);
+        assert!(m < 0.01, "disabled mask should produce zero matte: got {m}");
+    }
+
+    #[test]
+    fn empty_mask_stack_produces_zero_matte() {
+        let masks = MaskStack { masks: vec![] };
+        let matte = generate_mask_matte(10, 10, &masks);
+        assert!(matte.iter().all(|&v| v == 0.0), "empty stack should be all zeros");
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────
+
+    #[test]
+    fn bezier_with_fewer_than_3_points_returns_outside() {
+        let shape = MaskShape::Bezier { points: vec![(0.5, 0.5), (0.6, 0.6)] };
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d > 0.0, "degenerate bezier (2 points) should return outside: got {d}");
+    }
+
+    #[test]
+    fn linear_gradient_degenerate_zero_length() {
+        let shape = MaskShape::LinearGradient {
+            start_x: 0.5, start_y: 0.5, end_x: 0.5, end_y: 0.5,
+        };
+        // Zero-length gradient → returns 0.0
+        let d = sdf(0.5, 0.5, &shape);
+        assert!(d.abs() < 1e-4, "zero-length gradient should return 0: got {d}");
+    }
+
+    #[test]
+    fn single_pixel_image() {
+        let masks = make_circle_mask(0.5, 0.5, 0.3, 0.0);
+        let matte = generate_mask_matte(1, 1, &masks);
+        assert_eq!(matte.len(), 1);
+        // Single pixel at (0,0) → normalized (0,0), circle at (0.5,0.5) with r=0.3
+        // Distance = sqrt(0.25+0.25) - 0.3 = 0.707 - 0.3 = 0.407 > 0 → outside
+        assert!(matte[0] < 0.01, "single pixel outside circle: got {}", matte[0]);
+    }
 }

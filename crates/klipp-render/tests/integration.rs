@@ -24,8 +24,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         crf: 28, // Fast quality for tests
         preset: EncoderPreset::Fast,
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
-        audio_bitrate_kbps: None,
-    }
+        audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -344,8 +343,7 @@ fn export_real_media_h264() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None,
-            }],
+                smoothed_trajectory: None, }],
             transitions: vec![],
         }],
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
@@ -452,8 +450,7 @@ fn export_real_media_with_color_grade() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None,
-            }],
+                smoothed_trajectory: None, }],
             transitions: vec![],
         }],
         audio_tracks: vec![],
@@ -521,8 +518,7 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None,
-                },
+                    smoothed_trajectory: None, },
                 // Title for second second
                 snapshot::ClipSnapshot {
                     id: ClipId::new(),
@@ -537,8 +533,7 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None,
-                },
+                    smoothed_trajectory: None, },
             ],
             transitions: vec![],
         }],

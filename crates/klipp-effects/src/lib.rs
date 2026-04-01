@@ -1532,4 +1532,371 @@ mod tests {
         let differs = rgba.chunks_exact(4).zip(result.chunks_exact(4)).any(|(a, b)| a != b);
         assert!(differs, "expected some pixels to be shifted");
     }
+
+    // ── Opacity tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn opacity_half_on_white() {
+        // White pixel (255,255,255,255) at 0.5 opacity → all channels halved (premultiplied alpha)
+        let rgba = vec![255, 255, 255, 255];
+        let result = apply_effects(&[BuiltinEffect::Opacity { value: 0.5 }], rgba, 1, 1);
+        assert_eq!(result[0], 127); // 255 * 0.5
+        assert_eq!(result[1], 127);
+        assert_eq!(result[2], 127);
+        assert_eq!(result[3], 127); // alpha also scaled (premultiplied)
+    }
+
+    #[test]
+    fn opacity_zero_fully_transparent() {
+        let rgba = vec![200, 150, 100, 255];
+        let result = apply_effects(&[BuiltinEffect::Opacity { value: 0.0 }], rgba, 1, 1);
+        assert_eq!(result, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn opacity_one_unchanged() {
+        let rgba = vec![200, 150, 100, 255];
+        let result = apply_effects(&[BuiltinEffect::Opacity { value: 1.0 }], rgba.clone(), 1, 1);
+        assert_eq!(result, rgba);
+    }
+
+    // ── GaussianBlur tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn gaussian_blur_solid_color_unchanged() {
+        // Blurring a uniform image should produce the same image (constant signal is its own blur)
+        let w = 8u32;
+        let h = 8u32;
+        let rgba = vec![120, 80, 200, 255].repeat((w * h) as usize);
+        let result = apply_effects(
+            &[BuiltinEffect::GaussianBlur { radius: 3.0 }],
+            rgba.clone(), w, h,
+        );
+        assert_eq!(result.len(), rgba.len());
+        for (i, chunk) in result.chunks_exact(4).enumerate() {
+            assert!((chunk[0] as i32 - 120).abs() <= 1, "pixel {i} r={}", chunk[0]);
+            assert!((chunk[1] as i32 - 80).abs() <= 1, "pixel {i} g={}", chunk[1]);
+            assert!((chunk[2] as i32 - 200).abs() <= 1, "pixel {i} b={}", chunk[2]);
+            assert_eq!(chunk[3], 255, "pixel {i} alpha changed");
+        }
+    }
+
+    // ── Sharpen tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sharpen_solid_color_unchanged() {
+        // Sharpening a uniform image: no edges to enhance, result should match input
+        let w = 8u32;
+        let h = 8u32;
+        let rgba = vec![100, 150, 200, 255].repeat((w * h) as usize);
+        let result = apply_effects(
+            &[BuiltinEffect::Sharpen { amount: 1.0 }],
+            rgba.clone(), w, h,
+        );
+        assert_eq!(result.len(), rgba.len());
+        for (i, chunk) in result.chunks_exact(4).enumerate() {
+            assert!((chunk[0] as i32 - 100).abs() <= 1, "pixel {i} r={}", chunk[0]);
+            assert!((chunk[1] as i32 - 150).abs() <= 1, "pixel {i} g={}", chunk[1]);
+            assert!((chunk[2] as i32 - 200).abs() <= 1, "pixel {i} b={}", chunk[2]);
+        }
+    }
+
+    // ── Crop tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn crop_outside_region_transparent() {
+        // 4x4 image, crop left 50%: left 2 columns become transparent
+        let w = 4u32;
+        let h = 4u32;
+        let rgba = vec![180, 90, 45, 255].repeat((w * h) as usize);
+        let result = apply_effects(
+            &[BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }],
+            rgba, w, h,
+        );
+        assert_eq!(result.len(), (w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                if x < 2 {
+                    // Outside crop region: transparent
+                    assert_eq!(result[idx], 0, "({x},{y}) R should be 0");
+                    assert_eq!(result[idx + 1], 0, "({x},{y}) G should be 0");
+                    assert_eq!(result[idx + 2], 0, "({x},{y}) B should be 0");
+                    assert_eq!(result[idx + 3], 0, "({x},{y}) A should be 0");
+                } else {
+                    // Inside crop region: preserved
+                    assert_eq!(result[idx], 180, "({x},{y}) R should be 180");
+                    assert_eq!(result[idx + 3], 255, "({x},{y}) A should be 255");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crop_output_dimensions_match() {
+        let w = 4u32;
+        let h = 4u32;
+        let rgba = vec![128; (w * h * 4) as usize];
+        let result = apply_effects(
+            &[BuiltinEffect::Crop { left: 0.25, right: 0.25, top: 0.25, bottom: 0.25, feather: 0.0 }],
+            rgba, w, h,
+        );
+        // Crop does not resize; output buffer has same dimensions
+        assert_eq!(result.len(), (w * h * 4) as usize);
+    }
+
+    // ── Transform identity tests ───────────────────────────────────────────
+
+    #[test]
+    fn transform_identity_unchanged() {
+        // Identity transform: position 0, scale 1, rotation 0 -> output matches input
+        let w = 4u32;
+        let h = 4u32;
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+            chunk[0] = (i * 17 % 256) as u8;
+            chunk[1] = (i * 31 % 256) as u8;
+            chunk[2] = (i * 53 % 256) as u8;
+            chunk[3] = 255;
+        }
+        let result = apply_effects(
+            &[BuiltinEffect::Transform {
+                position_x: 0.0, position_y: 0.0,
+                scale_x: 1.0, scale_y: 1.0,
+                rotation: 0.0,
+                anchor_x: 0.5, anchor_y: 0.5,
+                rotation_x: 0.0, rotation_y: 0.0,
+                perspective: 0.0,
+            }],
+            rgba.clone(), w, h,
+        );
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn transform_90_rotation_moves_pixels() {
+        // Verify rotation actually moves pixels around. Use a small 90-degree rotation
+        // to confirm the transform is not identity. We check that some interior pixels differ.
+        let w = 8u32;
+        let h = 8u32;
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+            let x = i % w as usize;
+            let y = i / w as usize;
+            chunk[0] = (x * 30) as u8;
+            chunk[1] = (y * 30) as u8;
+            chunk[2] = 0;
+            chunk[3] = 255;
+        }
+        let result = apply_effects(
+            &[BuiltinEffect::Transform {
+                position_x: 0.0, position_y: 0.0,
+                scale_x: 1.0, scale_y: 1.0,
+                rotation: 90.0,
+                anchor_x: 0.5, anchor_y: 0.5,
+                rotation_x: 0.0, rotation_y: 0.0,
+                perspective: 0.0,
+            }],
+            rgba.clone(), w, h,
+        );
+        assert_eq!(result.len(), rgba.len());
+        // The rotated image should differ from the original
+        let differ_count = rgba.chunks_exact(4).zip(result.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(differ_count > (w * h / 2) as usize,
+            "90 rotation should change most pixels, only {differ_count} differed");
+    }
+
+    // ── ChromaKey tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn chroma_key_green_pixel_keyed_out() {
+        // Pure green pixel with green key -> fully transparent
+        let rgba = vec![0, 255, 0, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::ChromaKey {
+                key_color: [0, 255, 0],
+                tolerance: 0.3,
+                spill_suppression: 0.2,
+            }],
+            rgba, 1, 1,
+        );
+        assert_eq!(result[3], 0, "green pixel should be fully keyed out");
+        assert_eq!(result[0], 0);
+        assert_eq!(result[1], 0);
+        assert_eq!(result[2], 0);
+    }
+
+    #[test]
+    fn chroma_key_non_key_preserved() {
+        // Red pixel with green key -> should stay opaque
+        let rgba = vec![255, 0, 0, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::ChromaKey {
+                key_color: [0, 255, 0],
+                tolerance: 0.3,
+                spill_suppression: 0.2,
+            }],
+            rgba.clone(), 1, 1,
+        );
+        assert_eq!(result, rgba);
+    }
+
+    // ── Invert tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn invert_white_to_black() {
+        let rgba = vec![255, 255, 255, 255];
+        let result = apply_effects(&[BuiltinEffect::Invert { mix: 1.0 }], rgba, 1, 1);
+        assert_eq!(result[0], 0);
+        assert_eq!(result[1], 0);
+        assert_eq!(result[2], 0);
+        assert_eq!(result[3], 255); // alpha unchanged
+    }
+
+    #[test]
+    fn invert_black_to_white() {
+        let rgba = vec![0, 0, 0, 255];
+        let result = apply_effects(&[BuiltinEffect::Invert { mix: 1.0 }], rgba, 1, 1);
+        assert!((result[0] as i32 - 255).abs() <= 1);
+        assert!((result[1] as i32 - 255).abs() <= 1);
+        assert!((result[2] as i32 - 255).abs() <= 1);
+        assert_eq!(result[3], 255);
+    }
+
+    #[test]
+    fn invert_gray_is_inverse() {
+        // Gray (128,128,128) inverted should be ~(127,127,127)
+        let rgba = vec![128, 128, 128, 255];
+        let result = apply_effects(&[BuiltinEffect::Invert { mix: 1.0 }], rgba, 1, 1);
+        assert!((result[0] as i32 - 127).abs() <= 1, "r={}", result[0]);
+        assert!((result[1] as i32 - 127).abs() <= 1, "g={}", result[1]);
+        assert!((result[2] as i32 - 127).abs() <= 1, "b={}", result[2]);
+    }
+
+    // ── Vibrance tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn vibrance_zero_unchanged() {
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_effects(&[BuiltinEffect::Vibrance { amount: 0.0 }], rgba.clone(), 1, 1);
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn vibrance_positive_increases_saturation_of_muted() {
+        // A muted color (low saturation) should become more saturated with positive vibrance
+        // Use a desaturated blueish-gray: (100, 110, 130) — low saturation
+        let rgba = vec![100, 110, 130, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::Vibrance { amount: 1.0 }],
+            rgba.clone(), 1, 1,
+        );
+        // The range (max - min) should increase: more spread between channels
+        let orig_range = 130i32 - 100;
+        let result_range = result[0..3].iter().map(|&v| v as i32).max().unwrap()
+            - result[0..3].iter().map(|&v| v as i32).min().unwrap();
+        assert!(result_range > orig_range,
+            "vibrance should increase channel spread: orig={orig_range}, result={result_range}");
+        assert_eq!(result[3], 255, "alpha unchanged");
+    }
+
+    // ── HSVAdjust tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn hsv_adjust_identity() {
+        // Hue shift 0, saturation 1, value 1 -> unchanged
+        let rgba = vec![100, 150, 200, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 1.0 }],
+            rgba.clone(), 1, 1,
+        );
+        for i in 0..4 {
+            assert!((result[i] as i32 - rgba[i] as i32).abs() <= 1,
+                "channel {i}: expected ~{}, got {}", rgba[i], result[i]);
+        }
+    }
+
+    #[test]
+    fn hsv_adjust_desaturate() {
+        // Saturation 0 should produce grayscale
+        let rgba = vec![200, 50, 100, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            rgba, 1, 1,
+        );
+        // All RGB channels should be equal (grayscale)
+        assert!((result[0] as i32 - result[1] as i32).abs() <= 1, "not grayscale: r={} g={}", result[0], result[1]);
+        assert!((result[1] as i32 - result[2] as i32).abs() <= 1, "not grayscale: g={} b={}", result[1], result[2]);
+    }
+
+    // ── Levels tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn levels_default_params_unchanged() {
+        // Default levels: in_black=0, in_white=1, gamma=1, out_black=0, out_white=1 -> passthrough
+        let rgba = vec![64, 128, 192, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::Levels {
+                in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
+            }],
+            rgba.clone(), 1, 1,
+        );
+        assert_eq!(result, rgba);
+    }
+
+    #[test]
+    fn levels_crush_blacks() {
+        // Set in_black to 0.5: everything below 128 maps to 0
+        let rgba = vec![64, 128, 192, 255];
+        let result = apply_effects(
+            &[BuiltinEffect::Levels {
+                in_black: 0.5, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
+            }],
+            rgba, 1, 1,
+        );
+        assert_eq!(result[0], 0, "64/255 < 0.5 should map to 0");
+        assert!(result[2] > 128, "192/255 > 0.5 should map high");
+        assert_eq!(result[3], 255, "alpha unchanged");
+    }
+
+    // ── apply_effects chain and dimensions tests ───────────────────────────
+
+    #[test]
+    fn effect_chain_preserves_dimensions() {
+        // Apply multiple effects; output should always have same dimensions as input
+        let w = 8u32;
+        let h = 8u32;
+        let rgba = vec![128, 64, 32, 255].repeat((w * h) as usize);
+        let effects = vec![
+            BuiltinEffect::Opacity { value: 0.8 },
+            BuiltinEffect::GaussianBlur { radius: 2.0 },
+            BuiltinEffect::Sharpen { amount: 0.5 },
+            BuiltinEffect::Invert { mix: 0.5 },
+        ];
+        let result = apply_effects(&effects, rgba, w, h);
+        assert_eq!(result.len(), (w * h * 4) as usize,
+            "chained effects should preserve buffer size");
+    }
+
+    #[test]
+    fn single_pixel_effects_do_not_panic() {
+        // Edge case: 1x1 image through every effect that matters
+        let rgba = vec![128, 128, 128, 255];
+        let effects: Vec<BuiltinEffect> = vec![
+            BuiltinEffect::Opacity { value: 0.5 },
+            BuiltinEffect::GaussianBlur { radius: 2.0 },
+            BuiltinEffect::Sharpen { amount: 1.0 },
+            BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+            BuiltinEffect::Invert { mix: 1.0 },
+            BuiltinEffect::Vibrance { amount: 0.5 },
+            BuiltinEffect::HSVAdjust { hue_shift: 45.0, saturation: 1.5, value: 0.8 },
+            BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
+        ];
+        for effect in &effects {
+            let r = apply_effects(&[effect.clone()], rgba.clone(), 1, 1);
+            assert_eq!(r.len(), 4, "1x1 output should be 4 bytes for {:?}", effect);
+        }
+    }
 }

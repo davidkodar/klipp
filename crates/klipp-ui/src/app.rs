@@ -13648,3 +13648,190 @@ fn format_srt_time(secs: f64) -> String {
     let ms = ((secs % 1.0) * 1000.0) as u32;
     format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
 }
+
+#[cfg(test)]
+mod subtitle_tests {
+    use super::*;
+
+    // ── parse_srt_vtt tests ──
+
+    #[test]
+    fn parse_standard_srt() {
+        let input = "\
+1
+00:00:01,000 --> 00:00:04,000
+Hello world
+
+2
+00:00:05,000 --> 00:00:08,000
+Second subtitle
+";
+        let subs = parse_srt_vtt(input);
+        assert_eq!(subs.len(), 2);
+        assert!((subs[0].start_secs - 1.0).abs() < 0.001);
+        assert!((subs[0].end_secs - 4.0).abs() < 0.001);
+        assert_eq!(subs[0].text, "Hello world");
+        assert!((subs[1].start_secs - 5.0).abs() < 0.001);
+        assert!((subs[1].end_secs - 8.0).abs() < 0.001);
+        assert_eq!(subs[1].text, "Second subtitle");
+    }
+
+    #[test]
+    fn parse_multiline_subtitle() {
+        let input = "\
+1
+00:00:01,000 --> 00:00:04,000
+Line one
+Line two
+Line three
+
+";
+        let subs = parse_srt_vtt(input);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].text, "Line one\nLine two\nLine three");
+    }
+
+    #[test]
+    fn parse_html_tags_stripped() {
+        let input = "\
+1
+00:00:01,000 --> 00:00:04,000
+<i>Italic</i> and <b>bold</b> and <u>underline</u>
+
+";
+        let subs = parse_srt_vtt(input);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].text, "Italic and bold and underline");
+    }
+
+    #[test]
+    fn parse_vtt_format() {
+        let input = "\
+WEBVTT
+
+00:00:01.000 --> 00:00:04.000
+Hello from VTT
+
+00:00:05.000 --> 00:00:08.000
+Second VTT cue
+";
+        let subs = parse_srt_vtt(input);
+        assert_eq!(subs.len(), 2);
+        assert!((subs[0].start_secs - 1.0).abs() < 0.001);
+        assert_eq!(subs[0].text, "Hello from VTT");
+        assert_eq!(subs[1].text, "Second VTT cue");
+    }
+
+    #[test]
+    fn parse_empty_file() {
+        let subs = parse_srt_vtt("");
+        assert!(subs.is_empty());
+    }
+
+    #[test]
+    fn parse_malformed_timestamps_skipped() {
+        let input = "\
+1
+not:a:timestamp --> also:bad
+This should be skipped
+
+2
+00:00:05,000 --> 00:00:08,000
+This is valid
+";
+        let subs = parse_srt_vtt(input);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].text, "This is valid");
+    }
+
+    // ── parse_srt_timestamp tests ──
+
+    #[test]
+    fn parse_srt_timestamp_hhmmss_comma() {
+        let result = parse_srt_timestamp("00:01:02,500").unwrap();
+        assert!((result - 62.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_vtt_timestamp_hhmmss_dot() {
+        let result = parse_srt_timestamp("00:01:02.500").unwrap();
+        assert!((result - 62.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_short_timestamp_mmss() {
+        let result = parse_srt_timestamp("01:02.500").unwrap();
+        assert!((result - 62.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_timestamp_invalid_returns_none() {
+        assert!(parse_srt_timestamp("garbage").is_none());
+        assert!(parse_srt_timestamp("").is_none());
+        assert!(parse_srt_timestamp("00:xx:02,500").is_none());
+    }
+
+    // ── generate_srt tests ──
+
+    #[test]
+    fn generate_srt_single_entry() {
+        let subs = vec![SubtitleEntry {
+            start_secs: 1.0,
+            end_secs: 4.0,
+            text: "Hello".to_string(),
+        }];
+        let output = generate_srt(&subs);
+        assert!(output.starts_with("1\n"));
+        assert!(output.contains("00:00:01,000 --> 00:00:04,000"));
+        assert!(output.contains("Hello"));
+    }
+
+    #[test]
+    fn generate_srt_multiple_entries_sequential_numbering() {
+        let subs = vec![
+            SubtitleEntry { start_secs: 1.0, end_secs: 4.0, text: "First".to_string() },
+            SubtitleEntry { start_secs: 5.0, end_secs: 8.0, text: "Second".to_string() },
+            SubtitleEntry { start_secs: 10.0, end_secs: 12.0, text: "Third".to_string() },
+        ];
+        let output = generate_srt(&subs);
+        assert!(output.contains("1\n00:00:01,000 --> 00:00:04,000\nFirst"));
+        assert!(output.contains("2\n00:00:05,000 --> 00:00:08,000\nSecond"));
+        assert!(output.contains("3\n00:00:10,000 --> 00:00:12,000\nThird"));
+    }
+
+    // ── format_srt_time tests ──
+
+    #[test]
+    fn format_srt_time_zero() {
+        assert_eq!(format_srt_time(0.0), "00:00:00,000");
+    }
+
+    #[test]
+    fn format_srt_time_62_5() {
+        assert_eq!(format_srt_time(62.5), "00:01:02,500");
+    }
+
+    #[test]
+    fn format_srt_time_3661() {
+        assert_eq!(format_srt_time(3661.0), "01:01:01,000");
+    }
+
+    // ── Roundtrip test ──
+
+    #[test]
+    fn roundtrip_generate_then_parse() {
+        let original = vec![
+            SubtitleEntry { start_secs: 1.5, end_secs: 3.0, text: "First cue".to_string() },
+            SubtitleEntry { start_secs: 5.0, end_secs: 7.25, text: "Second cue".to_string() },
+        ];
+        let srt = generate_srt(&original);
+        let parsed = parse_srt_vtt(&srt);
+        assert_eq!(parsed.len(), 2);
+        assert!((parsed[0].start_secs - 1.5).abs() < 0.001);
+        assert!((parsed[0].end_secs - 3.0).abs() < 0.001);
+        assert_eq!(parsed[0].text, "First cue");
+        assert!((parsed[1].start_secs - 5.0).abs() < 0.001);
+        assert!((parsed[1].end_secs - 7.25).abs() < 0.001);
+        assert_eq!(parsed[1].text, "Second cue");
+    }
+}

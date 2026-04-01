@@ -812,8 +812,7 @@ mod tests {
             crf: 23,
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
-            audio_bitrate_kbps: Some(128),
-        }
+            audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf }
     }
 
     fn make_snapshot() -> SequenceSnapshot {

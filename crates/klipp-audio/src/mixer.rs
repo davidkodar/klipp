@@ -236,6 +236,17 @@ impl AudioMixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use klipp_core::PanLaw;
+
+    const EPS: f32 = 1e-4;
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < EPS
+    }
+
+    // ---------------------------------------------------------------
+    // Basic mixer tests
+    // ---------------------------------------------------------------
 
     #[test]
     fn silence_in_silence_out() {
@@ -364,5 +375,592 @@ mod tests {
         assert_eq!(mixer.tracks.len(), 1);
         mixer.ensure_tracks(3);
         assert_eq!(mixer.tracks.len(), 3);
+    }
+
+    // ---------------------------------------------------------------
+    // Pan law: Linear
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pan_linear_center_equal_gains() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Linear);
+        assert!(approx(l, 1.0), "Linear center L={l}, expected 1.0");
+        assert!(approx(r, 1.0), "Linear center R={r}, expected 1.0");
+    }
+
+    #[test]
+    fn pan_linear_hard_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-1.0, PanLaw::Linear);
+        assert!(approx(l, 1.0), "Linear hard-left L={l}");
+        assert!(approx(r, 0.0), "Linear hard-left R={r}");
+    }
+
+    #[test]
+    fn pan_linear_hard_right() {
+        let (l, r) = AudioMixer::pan_gains_for(1.0, PanLaw::Linear);
+        assert!(approx(l, 0.0), "Linear hard-right L={l}");
+        assert!(approx(r, 1.0), "Linear hard-right R={r}");
+    }
+
+    #[test]
+    fn pan_linear_quarter_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-0.5, PanLaw::Linear);
+        assert!(approx(l, 1.0), "Linear pan=-0.5 L={l}");
+        assert!(approx(r, 0.5), "Linear pan=-0.5 R={r}");
+    }
+
+    #[test]
+    fn pan_linear_quarter_right() {
+        let (l, r) = AudioMixer::pan_gains_for(0.5, PanLaw::Linear);
+        assert!(approx(l, 0.5), "Linear pan=0.5 L={l}");
+        assert!(approx(r, 1.0), "Linear pan=0.5 R={r}");
+    }
+
+    // ---------------------------------------------------------------
+    // Pan law: ConstantPower
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pan_constant_power_center_equal_gains() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::ConstantPower);
+        assert!(approx(l, r), "ConstantPower center L={l} != R={r}");
+    }
+
+    #[test]
+    fn pan_constant_power_center_energy_preserved() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::ConstantPower);
+        let energy = l * l + r * r;
+        assert!(
+            approx(energy, 1.0),
+            "ConstantPower center energy={energy}, expected 1.0"
+        );
+    }
+
+    #[test]
+    fn pan_constant_power_hard_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-1.0, PanLaw::ConstantPower);
+        assert!(approx(l, 1.0), "ConstantPower hard-left L={l}");
+        assert!(r.abs() < EPS, "ConstantPower hard-left R={r}");
+    }
+
+    #[test]
+    fn pan_constant_power_hard_right() {
+        let (l, r) = AudioMixer::pan_gains_for(1.0, PanLaw::ConstantPower);
+        assert!(l.abs() < EPS, "ConstantPower hard-right L={l}");
+        assert!(approx(r, 1.0), "ConstantPower hard-right R={r}");
+    }
+
+    #[test]
+    fn pan_constant_power_energy_preserved_across_range() {
+        // Energy (L^2 + R^2) should be ~1.0 at every pan position
+        for i in -10..=10 {
+            let pan = i as f32 / 10.0;
+            let (l, r) = AudioMixer::pan_gains_for(pan, PanLaw::ConstantPower);
+            let energy = l * l + r * r;
+            assert!(
+                (energy - 1.0).abs() < 0.01,
+                "ConstantPower energy={energy} at pan={pan}"
+            );
+        }
+    }
+
+    #[test]
+    fn pan_constant_power_symmetry() {
+        // pan_gains_for(-x) should mirror pan_gains_for(x): L and R swap
+        for i in 1..=10 {
+            let pan = i as f32 / 10.0;
+            let (l_pos, r_pos) = AudioMixer::pan_gains_for(pan, PanLaw::ConstantPower);
+            let (l_neg, r_neg) = AudioMixer::pan_gains_for(-pan, PanLaw::ConstantPower);
+            assert!(
+                approx(l_pos, r_neg),
+                "Symmetry: L(+{pan})={l_pos} != R(-{pan})={r_neg}"
+            );
+            assert!(
+                approx(r_pos, l_neg),
+                "Symmetry: R(+{pan})={r_pos} != L(-{pan})={l_neg}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Pan law: Minus3dB
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pan_minus3db_center_equal_gains() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus3dB);
+        assert!(approx(l, r), "Minus3dB center L={l} != R={r}");
+    }
+
+    #[test]
+    fn pan_minus3db_center_value() {
+        // At center, t=0.5, linear_l = (0.5*2).min(1) = 1, sqrt(1) = 1
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus3dB);
+        assert!(approx(l, 1.0), "Minus3dB center L={l}");
+        assert!(approx(r, 1.0), "Minus3dB center R={r}");
+    }
+
+    #[test]
+    fn pan_minus3db_hard_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-1.0, PanLaw::Minus3dB);
+        // t=0, l = sqrt(min(2,1)) = sqrt(1) = 1, r = sqrt(min(0,1)) = 0
+        assert!(approx(l, (2.0f32).min(1.0).sqrt()), "Minus3dB hard-left L={l}");
+        assert!(r.abs() < EPS, "Minus3dB hard-left R={r}");
+    }
+
+    #[test]
+    fn pan_minus3db_hard_right() {
+        let (l, r) = AudioMixer::pan_gains_for(1.0, PanLaw::Minus3dB);
+        assert!(l.abs() < EPS, "Minus3dB hard-right L={l}");
+        assert!(approx(r, 1.0), "Minus3dB hard-right R={r}");
+    }
+
+    #[test]
+    fn pan_minus3db_monotonic() {
+        // L gain should decrease monotonically as pan goes left-to-right
+        let mut prev_l = f32::MAX;
+        for i in -10..=10 {
+            let pan = i as f32 / 10.0;
+            let (l, _) = AudioMixer::pan_gains_for(pan, PanLaw::Minus3dB);
+            assert!(l <= prev_l + EPS, "Minus3dB L not monotonically decreasing at pan={pan}");
+            prev_l = l;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Pan law: Minus4_5dB
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pan_minus4_5db_center_equal_gains() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus4_5dB);
+        assert!(approx(l, r), "Minus4_5dB center L={l} != R={r}");
+    }
+
+    #[test]
+    fn pan_minus4_5db_center_value() {
+        // t=0.5, linear = min(1,1) = 1.0, 1.0^0.75 = 1.0
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus4_5dB);
+        assert!(approx(l, 1.0), "Minus4_5dB center L={l}");
+        assert!(approx(r, 1.0), "Minus4_5dB center R={r}");
+    }
+
+    #[test]
+    fn pan_minus4_5db_hard_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-1.0, PanLaw::Minus4_5dB);
+        assert!(approx(l, 1.0), "Minus4_5dB hard-left L={l}");
+        assert!(r.abs() < EPS, "Minus4_5dB hard-left R={r}");
+    }
+
+    #[test]
+    fn pan_minus4_5db_hard_right() {
+        let (l, r) = AudioMixer::pan_gains_for(1.0, PanLaw::Minus4_5dB);
+        assert!(l.abs() < EPS, "Minus4_5dB hard-right L={l}");
+        assert!(approx(r, 1.0), "Minus4_5dB hard-right R={r}");
+    }
+
+    #[test]
+    fn pan_minus4_5db_quarter_pan() {
+        // At pan=-0.5, t=0.25: l = (0.75*2).min(1) = 1.0, r = (0.25*2).min(1) = 0.5
+        let (l, r) = AudioMixer::pan_gains_for(-0.5, PanLaw::Minus4_5dB);
+        let expected_l = ((0.75 * 2.0f32).min(1.0)).powf(0.75);
+        let expected_r = ((0.25 * 2.0f32).min(1.0)).powf(0.75);
+        assert!(approx(l, expected_l), "Minus4_5dB pan=-0.5 L={l}, expected {expected_l}");
+        assert!(approx(r, expected_r), "Minus4_5dB pan=-0.5 R={r}, expected {expected_r}");
+    }
+
+    // ---------------------------------------------------------------
+    // Pan law: Minus6dB
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pan_minus6db_center_equal_gains() {
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus6dB);
+        assert!(approx(l, r), "Minus6dB center L={l} != R={r}");
+    }
+
+    #[test]
+    fn pan_minus6db_center_value() {
+        // pan=0: l = 1 - max(0,0) = 1, r = 1 + min(0,0) = 1
+        let (l, r) = AudioMixer::pan_gains_for(0.0, PanLaw::Minus6dB);
+        assert!(approx(l, 1.0), "Minus6dB center L={l}");
+        assert!(approx(r, 1.0), "Minus6dB center R={r}");
+    }
+
+    #[test]
+    fn pan_minus6db_hard_left() {
+        let (l, r) = AudioMixer::pan_gains_for(-1.0, PanLaw::Minus6dB);
+        assert!(approx(l, 1.0), "Minus6dB hard-left L={l}");
+        assert!(approx(r, 0.0), "Minus6dB hard-left R={r}");
+    }
+
+    #[test]
+    fn pan_minus6db_hard_right() {
+        let (l, r) = AudioMixer::pan_gains_for(1.0, PanLaw::Minus6dB);
+        assert!(approx(l, 0.0), "Minus6dB hard-right L={l}");
+        assert!(approx(r, 1.0), "Minus6dB hard-right R={r}");
+    }
+
+    #[test]
+    fn pan_minus6db_half_pan() {
+        // pan=0.5: l = 1 - 0.5 = 0.5, r = 1 + 0 = 1 (min(0.5,0) = 0)
+        let (l, r) = AudioMixer::pan_gains_for(0.5, PanLaw::Minus6dB);
+        assert!(approx(l, 0.5), "Minus6dB pan=0.5 L={l}");
+        assert!(approx(r, 1.0), "Minus6dB pan=0.5 R={r}");
+    }
+
+    #[test]
+    fn pan_minus6db_symmetry() {
+        for i in 1..=10 {
+            let pan = i as f32 / 10.0;
+            let (l_pos, r_pos) = AudioMixer::pan_gains_for(pan, PanLaw::Minus6dB);
+            let (l_neg, r_neg) = AudioMixer::pan_gains_for(-pan, PanLaw::Minus6dB);
+            assert!(approx(l_pos, r_neg), "Minus6dB symmetry L(+{pan})={l_pos} != R(-{pan})={r_neg}");
+            assert!(approx(r_pos, l_neg), "Minus6dB symmetry R(+{pan})={r_pos} != L(-{pan})={l_neg}");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // All pan laws: common invariants
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn all_laws_gains_in_0_to_1_range() {
+        let laws = [
+            PanLaw::Linear,
+            PanLaw::ConstantPower,
+            PanLaw::Minus3dB,
+            PanLaw::Minus4_5dB,
+            PanLaw::Minus6dB,
+        ];
+        for law in &laws {
+            for i in -10..=10 {
+                let pan = i as f32 / 10.0;
+                let (l, r) = AudioMixer::pan_gains_for(pan, *law);
+                assert!(
+                    l >= -EPS && l <= 1.0 + EPS,
+                    "{law:?} L={l} out of range at pan={pan}"
+                );
+                assert!(
+                    r >= -EPS && r <= 1.0 + EPS,
+                    "{law:?} R={r} out of range at pan={pan}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_laws_center_l_equals_r() {
+        let laws = [
+            PanLaw::Linear,
+            PanLaw::ConstantPower,
+            PanLaw::Minus3dB,
+            PanLaw::Minus4_5dB,
+            PanLaw::Minus6dB,
+        ];
+        for law in &laws {
+            let (l, r) = AudioMixer::pan_gains_for(0.0, *law);
+            assert!(approx(l, r), "{law:?} center L={l} != R={r}");
+        }
+    }
+
+    #[test]
+    fn all_laws_hard_left_zero_right() {
+        let laws = [
+            PanLaw::Linear,
+            PanLaw::ConstantPower,
+            PanLaw::Minus3dB,
+            PanLaw::Minus4_5dB,
+            PanLaw::Minus6dB,
+        ];
+        for law in &laws {
+            let (l, r) = AudioMixer::pan_gains_for(-1.0, *law);
+            assert!(l > 0.5, "{law:?} hard-left L={l} should be high");
+            assert!(r.abs() < EPS, "{law:?} hard-left R={r} should be ~0");
+        }
+    }
+
+    #[test]
+    fn all_laws_hard_right_zero_left() {
+        let laws = [
+            PanLaw::Linear,
+            PanLaw::ConstantPower,
+            PanLaw::Minus3dB,
+            PanLaw::Minus4_5dB,
+            PanLaw::Minus6dB,
+        ];
+        for law in &laws {
+            let (l, r) = AudioMixer::pan_gains_for(1.0, *law);
+            assert!(l.abs() < EPS, "{law:?} hard-right L={l} should be ~0");
+            assert!(r > 0.5, "{law:?} hard-right R={r} should be high");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: single track at unity passthrough
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_single_track_unity_passthrough() {
+        let mut mixer = AudioMixer::new(1);
+        // Default: volume=1.0, pan=0.0, Linear law -> L=1, R=1
+        let input = vec![0.25, -0.5, 0.75, -0.125];
+        let out = mixer.mix(&[(0, &input)]);
+        assert_eq!(out.len(), input.len());
+        for (i, (&o, &inp)) in out.iter().zip(input.iter()).enumerate() {
+            assert!(approx(o, inp), "Sample {i}: out={o}, input={inp}");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: two tracks summed before clipping
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_two_tracks_sum_before_clip() {
+        let mut mixer = AudioMixer::new(2);
+        let buf1 = vec![0.4, 0.3, 0.2, 0.1];
+        let buf2 = vec![0.1, 0.2, 0.3, 0.4];
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
+        assert!(approx(out[0], 0.5), "L0: {}", out[0]);
+        assert!(approx(out[1], 0.5), "R0: {}", out[1]);
+        assert!(approx(out[2], 0.5), "L1: {}", out[2]);
+        assert!(approx(out[3], 0.5), "R1: {}", out[3]);
+    }
+
+    #[test]
+    fn mixer_two_tracks_clipping() {
+        let mut mixer = AudioMixer::new(2);
+        let buf1 = vec![0.8, 0.8];
+        let buf2 = vec![0.8, 0.8];
+        let out = mixer.mix(&[(0, &buf1), (1, &buf2)]);
+        // 0.8 + 0.8 = 1.6, should be clamped to 1.0
+        assert!(approx(out[0], 1.0), "Clipped L: {}", out[0]);
+        assert!(approx(out[1], 1.0), "Clipped R: {}", out[1]);
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: mute flag
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_muted_track_produces_silence() {
+        let mut mixer = AudioMixer::new(1);
+        mixer.tracks[0].muted = true;
+        let buf = vec![0.9, 0.8, 0.7, 0.6];
+        let out = mixer.mix(&[(0, &buf)]);
+        for (i, &s) in out.iter().enumerate() {
+            assert!(s.abs() < EPS, "Muted output sample {i}={s} should be 0");
+        }
+    }
+
+    #[test]
+    fn mixer_muted_among_multiple() {
+        let mut mixer = AudioMixer::new(3);
+        mixer.tracks[1].muted = true;
+        let buf0 = vec![0.1, 0.1];
+        let buf1 = vec![0.5, 0.5]; // muted
+        let buf2 = vec![0.2, 0.2];
+        let out = mixer.mix(&[(0, &buf0), (1, &buf1), (2, &buf2)]);
+        assert!(approx(out[0], 0.3), "L: {}", out[0]);
+        assert!(approx(out[1], 0.3), "R: {}", out[1]);
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: solo flag
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_solo_isolates_single_track() {
+        let mut mixer = AudioMixer::new(3);
+        mixer.tracks[1].solo = true;
+        let buf0 = vec![0.5, 0.5];
+        let buf1 = vec![0.2, 0.2];
+        let buf2 = vec![0.3, 0.3];
+        let out = mixer.mix(&[(0, &buf0), (1, &buf1), (2, &buf2)]);
+        // Only track 1 should pass through
+        assert!(approx(out[0], 0.2), "Solo L: {}", out[0]);
+        assert!(approx(out[1], 0.2), "Solo R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_multiple_solos() {
+        let mut mixer = AudioMixer::new(3);
+        mixer.tracks[0].solo = true;
+        mixer.tracks[2].solo = true;
+        let buf0 = vec![0.1, 0.1];
+        let buf1 = vec![0.5, 0.5]; // not solo'd
+        let buf2 = vec![0.2, 0.2];
+        let out = mixer.mix(&[(0, &buf0), (1, &buf1), (2, &buf2)]);
+        assert!(approx(out[0], 0.3), "Multi-solo L: {}", out[0]);
+        assert!(approx(out[1], 0.3), "Multi-solo R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_solo_zeroes_non_solo_peaks() {
+        let mut mixer = AudioMixer::new(2);
+        mixer.tracks[1].solo = true;
+        let buf0 = vec![0.9, 0.9];
+        let buf1 = vec![0.3, 0.3];
+        let _ = mixer.mix(&[(0, &buf0), (1, &buf1)]);
+        assert_eq!(mixer.tracks[0].peak_left, 0.0);
+        assert_eq!(mixer.tracks[0].peak_right, 0.0);
+        assert!(mixer.tracks[1].peak_left > 0.0);
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: bus routing
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_bus_routing_to_master() {
+        let mut mixer = AudioMixer::new(2);
+        let bus_idx = mixer.add_bus("Submix A");
+
+        // Route track 0 to bus, track 1 direct to master
+        mixer.tracks[0].bus = Some(bus_idx);
+
+        let buf0 = vec![0.3, 0.3];
+        let buf1 = vec![0.2, 0.2];
+        let out = mixer.mix(&[(0, &buf0), (1, &buf1)]);
+
+        // Track 0 -> bus -> master, track 1 -> master
+        // Both at unity volume/pan so result is 0.3 + 0.2 = 0.5
+        assert!(approx(out[0], 0.5), "Bus+direct L: {}", out[0]);
+        assert!(approx(out[1], 0.5), "Bus+direct R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_bus_volume_scales() {
+        let mut mixer = AudioMixer::new(1);
+        let bus_idx = mixer.add_bus("FX Bus");
+        mixer.tracks[0].bus = Some(bus_idx);
+        mixer.buses[bus_idx].volume = 0.5;
+
+        let buf = vec![0.8, 0.8];
+        let out = mixer.mix(&[(0, &buf)]);
+        // Track at unity through bus at 0.5 volume: 0.8 * 0.5 = 0.4
+        assert!(approx(out[0], 0.4), "Bus volume L: {}", out[0]);
+        assert!(approx(out[1], 0.4), "Bus volume R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_bus_muted() {
+        let mut mixer = AudioMixer::new(1);
+        let bus_idx = mixer.add_bus("Muted Bus");
+        mixer.tracks[0].bus = Some(bus_idx);
+        mixer.buses[bus_idx].muted = true;
+
+        let buf = vec![0.8, 0.8];
+        let out = mixer.mix(&[(0, &buf)]);
+        // Bus is muted, nothing reaches master
+        assert!(out[0].abs() < EPS, "Muted bus L: {}", out[0]);
+        assert!(out[1].abs() < EPS, "Muted bus R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_bus_pan() {
+        let mut mixer = AudioMixer::new(1);
+        let bus_idx = mixer.add_bus("Panned Bus");
+        mixer.tracks[0].bus = Some(bus_idx);
+        mixer.buses[bus_idx].pan = 1.0; // hard right
+
+        let buf = vec![0.6, 0.6];
+        let out = mixer.mix(&[(0, &buf)]);
+        assert!(out[0].abs() < EPS, "Bus pan hard-right L: {}", out[0]);
+        assert!(approx(out[1], 0.6), "Bus pan hard-right R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_multiple_tracks_same_bus() {
+        let mut mixer = AudioMixer::new(2);
+        let bus_idx = mixer.add_bus("Group");
+        mixer.tracks[0].bus = Some(bus_idx);
+        mixer.tracks[1].bus = Some(bus_idx);
+
+        let buf0 = vec![0.2, 0.2];
+        let buf1 = vec![0.3, 0.3];
+        let out = mixer.mix(&[(0, &buf0), (1, &buf1)]);
+        // Both tracks sum in bus, bus at unity -> 0.5
+        assert!(approx(out[0], 0.5), "Multi-track bus L: {}", out[0]);
+        assert!(approx(out[1], 0.5), "Multi-track bus R: {}", out[1]);
+    }
+
+    #[test]
+    fn mixer_bus_peak_levels_updated() {
+        let mut mixer = AudioMixer::new(1);
+        let bus_idx = mixer.add_bus("Metered Bus");
+        mixer.tracks[0].bus = Some(bus_idx);
+
+        let buf = vec![0.7, 0.9];
+        let _ = mixer.mix(&[(0, &buf)]);
+        assert!(
+            mixer.buses[bus_idx].peak_left > 0.0,
+            "Bus peak L should be set"
+        );
+        assert!(
+            mixer.buses[bus_idx].peak_right > 0.0,
+            "Bus peak R should be set"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: RMS metering
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_rms_levels_computed() {
+        let mut mixer = AudioMixer::new(1);
+        let buf = vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+        let _ = mixer.mix(&[(0, &buf)]);
+        // Constant 0.5 signal: RMS should be 0.5
+        assert!(approx(mixer.tracks[0].rms_left, 0.5), "RMS L: {}", mixer.tracks[0].rms_left);
+        assert!(approx(mixer.tracks[0].rms_right, 0.5), "RMS R: {}", mixer.tracks[0].rms_right);
+    }
+
+    // ---------------------------------------------------------------
+    // Mixer: pan law integration (mix uses correct law)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mixer_uses_configured_pan_law() {
+        // With ConstantPower law and center pan, gains are cos(pi/4) = sin(pi/4) ~ 0.7071
+        let mut mixer = AudioMixer::new(1);
+        mixer.pan_law = PanLaw::ConstantPower;
+        let buf = vec![1.0, 1.0];
+        let out = mixer.mix(&[(0, &buf)]);
+        let expected = std::f32::consts::FRAC_PI_4.cos();
+        assert!(
+            approx(out[0], expected),
+            "ConstantPower mix L={}, expected {}",
+            out[0],
+            expected,
+        );
+        assert!(
+            approx(out[1], expected),
+            "ConstantPower mix R={}, expected {}",
+            out[1],
+            expected,
+        );
+    }
+
+    #[test]
+    fn mixer_invalid_bus_index_falls_through_to_master() {
+        let mut mixer = AudioMixer::new(1);
+        // No buses added, but track points to bus 99
+        mixer.tracks[0].bus = Some(99);
+        let buf = vec![0.5, 0.5];
+        let out = mixer.mix(&[(0, &buf)]);
+        // Should fall through to master
+        assert!(approx(out[0], 0.5), "Invalid bus fallthrough L: {}", out[0]);
+    }
+
+    #[test]
+    fn mixer_out_of_range_track_index_ignored() {
+        let mut mixer = AudioMixer::new(1);
+        let buf = vec![0.5, 0.5];
+        // Track index 5 has no settings, should be skipped
+        let out = mixer.mix(&[(5, &buf)]);
+        assert!(out[0].abs() < EPS, "Unknown track should not contribute");
     }
 }

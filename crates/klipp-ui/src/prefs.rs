@@ -737,3 +737,673 @@ impl Default for AdvancedPrefs {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: serialize to JSON string and deserialize back.
+    fn round_trip(prefs: &Preferences) -> Preferences {
+        let json = serde_json::to_string(prefs).expect("serialize");
+        serde_json::from_str(&json).expect("deserialize")
+    }
+
+    // ── 1. Default round-trip ──
+
+    #[test]
+    fn default_round_trip() {
+        let orig = Preferences::default();
+        let rt = round_trip(&orig);
+
+        // GeneralPrefs
+        assert_eq!(rt.general.auto_save_interval_secs, 300);
+        assert!(rt.general.default_project_dir.is_none());
+        assert!(rt.general.recent_projects.is_empty());
+        assert!(rt.general.remember_inspector_layout);
+        assert!(rt.general.collapsed_sections.is_empty());
+
+        // PlaybackPrefs
+        assert!(rt.playback.scrub_audio);
+        assert!(rt.playback.skim_audio);
+        assert_eq!(rt.playback.jkl_audio_mute_threshold, 4.0);
+        assert!(!rt.playback.loop_playback);
+        assert_eq!(rt.playback.skim_resolution, 480);
+
+        // EditingPrefs
+        assert!(rt.editing.auto_create_tracks);
+        assert!(rt.editing.auto_generate_filmstrips);
+        assert!(rt.editing.auto_generate_skim);
+        assert_eq!(rt.editing.default_still_duration_secs, 5.0);
+        assert_eq!(rt.editing.undo_limit, 100);
+        assert_eq!(rt.editing.default_transition_frames, 24);
+        assert_eq!(rt.editing.default_video_track_height, 50.0);
+        assert_eq!(rt.editing.default_audio_track_height, 48.0);
+        assert_eq!(rt.editing.snap_threshold_px, 10.0);
+        assert_eq!(rt.editing.zoom_step, 1.5);
+        assert_eq!(rt.editing.backup_count, 5);
+
+        // AudioPrefs
+        assert_eq!(rt.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
+        assert!(rt.audio.show_rubber_band);
+        assert!(rt.audio.show_waveform);
+        assert!(rt.audio.anti_click_fade);
+        assert!(rt.audio.show_crossfade_indicators);
+        assert_eq!(rt.audio.pan_law, klipp_core::PanLaw::Linear);
+        assert_eq!(rt.audio.metering_ballistics, klipp_core::MeteringBallistics::Peak);
+        assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Linear);
+        assert_eq!(rt.audio.default_fade_duration_ms, 0);
+        assert_eq!(rt.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128);
+        assert_eq!(rt.audio.normalize_target_lufs, -14.0);
+
+        // ExportPrefs
+        assert!(rt.export.default_output_dir.is_none());
+        assert!(rt.export.last_preset_id.is_none());
+        assert!(rt.export.custom_presets.is_empty());
+
+        // ProxyPrefs
+        assert!(rt.proxy.auto_generate_on_import);
+        assert_eq!(rt.proxy.proxy_resolution, ProxyResolution::Half);
+        assert!(rt.proxy.proxy_cache_dir.is_none());
+
+        // SystemPrefs
+        assert_eq!(rt.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
+        assert_eq!(rt.system.decode_threads, 0);
+        assert_eq!(rt.system.max_playback_height, 1080);
+        assert_eq!(rt.system.frame_queue_size, 16);
+
+        // AudioHardwarePrefs
+        assert!(rt.audio_hardware.output_device.is_none());
+        assert_eq!(rt.audio_hardware.sample_rate, 48000);
+        assert_eq!(rt.audio_hardware.buffer_size, 512);
+
+        // AppearancePrefs
+        assert_eq!(rt.appearance.ui_text_size, 13.0);
+        assert_eq!(rt.appearance.accent_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(rt.appearance.playhead_color, [0xe8, 0xa0, 0x20]);
+
+        // MediaCachePrefs
+        assert!(rt.media_cache.filmstrip_cache_dir.is_none());
+        assert!(rt.media_cache.audio_cache_dir.is_none());
+        assert_eq!(rt.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(rt.media_cache.skim_transcode_quality, 23);
+        assert_eq!(rt.media_cache.thumbnail_height, 120);
+
+        // ColorPrefs
+        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec709);
+        assert!(rt.color.viewer_lut_path.is_none());
+        assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::Medium);
+        assert_eq!(rt.color.scope_update_interval_ms, 32);
+
+        // TitlePrefs
+        assert!(rt.title.default_font.is_empty());
+        assert_eq!(rt.title.default_size_pt, 48.0);
+        assert!(rt.title.font_search_paths.is_empty());
+
+        // TimelinePrefs
+        assert_eq!(rt.timeline.clip_colors.len(), 6);
+        assert_eq!(rt.timeline.clip_gap_px, 3.0);
+        assert_eq!(rt.timeline.trim_handle_width, 14.0);
+        assert_eq!(rt.timeline.ruler_height, 24.0);
+        assert_eq!(rt.timeline.clip_corner_radius, 4.0);
+        assert_eq!(rt.timeline.overview_bar_height, 24.0);
+        assert_eq!(rt.timeline.min_track_height, 24.0);
+        assert_eq!(rt.timeline.max_track_height, 200.0);
+        assert_eq!(rt.timeline.text_track_height, 32.0);
+
+        // ViewerPrefs
+        assert_eq!(rt.viewer.action_safe_pct, 0.9);
+        assert_eq!(rt.viewer.title_safe_pct, 0.8);
+        assert_eq!(rt.viewer.grid_color, [200, 200, 200, 80]);
+        assert_eq!(rt.viewer.checkerboard_tile_size, 12.0);
+        assert_eq!(rt.viewer.transform_handle_size, 8.0);
+        assert_eq!(rt.viewer.fullscreen_overlay_timeout_secs, 3.0);
+
+        // AdvancedPrefs
+        assert_eq!(rt.advanced.toast_duration_secs, 2.2);
+        assert_eq!(rt.advanced.modal_backdrop_alpha, 120);
+        assert_eq!(rt.advanced.perf_overlay_interval_ms, 500);
+        assert_eq!(rt.advanced.anti_click_fade_ms, 2.0);
+        assert_eq!(rt.advanced.pre_roll_secs, 1.5);
+    }
+
+    // ── 2. Backward compatibility: minimal JSON with required sections ──
+
+    /// Minimal JSON that satisfies non-defaulted top-level fields.
+    /// Note: `general`, `playback`, `export`, `proxy` lack `#[serde(default)]`
+    /// on the Preferences struct, so they must be present. All `#[serde(default)]`
+    /// sections (editing, audio, system, appearance, etc.) can be omitted.
+    const MINIMAL_JSON: &str = r#"{
+        "general": {
+            "auto_save_interval_secs": 300,
+            "recent_projects": []
+        },
+        "playback": {
+            "scrub_audio": true,
+            "jkl_audio_mute_threshold": 4.0
+        },
+        "export": {
+            "custom_presets": []
+        },
+        "proxy": {
+            "auto_generate_on_import": true,
+            "proxy_resolution": "Half"
+        }
+    }"#;
+
+    #[test]
+    fn minimal_json_gives_defaults_for_optional_sections() {
+        let prefs: Preferences = serde_json::from_str(MINIMAL_JSON)
+            .expect("deserialize minimal");
+        // Required sections present with their values
+        assert_eq!(prefs.general.auto_save_interval_secs, 300);
+        assert!(prefs.playback.scrub_audio);
+        assert!(prefs.export.custom_presets.is_empty());
+        assert!(prefs.proxy.auto_generate_on_import);
+
+        // All #[serde(default)] sections get defaults
+        assert!(prefs.editing.auto_create_tracks);
+        assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
+        assert_eq!(prefs.system.max_playback_height, 1080);
+        assert_eq!(prefs.audio_hardware.sample_rate, 48000);
+        assert_eq!(prefs.appearance.ui_text_size, 13.0);
+        assert_eq!(prefs.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
+        assert!(prefs.title.default_font.is_empty());
+        assert_eq!(prefs.timeline.clip_colors.len(), 6);
+        assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);
+        assert_eq!(prefs.advanced.toast_duration_secs, 2.2);
+    }
+
+    #[test]
+    fn missing_fields_within_required_sections_get_serde_defaults() {
+        // export section with empty object - custom_presets has no serde(default)
+        // but default_output_dir and last_preset_id are Option so they default to null
+        let json = r#"{
+            "general": {
+                "auto_save_interval_secs": 300,
+                "recent_projects": []
+            },
+            "playback": {
+                "scrub_audio": true,
+                "jkl_audio_mute_threshold": 4.0
+            },
+            "export": {
+                "custom_presets": []
+            },
+            "proxy": {
+                "auto_generate_on_import": true,
+                "proxy_resolution": "Half"
+            }
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
+        // Fields with serde(default) within playback
+        assert!(prefs.playback.skim_audio); // default_true
+        assert!(!prefs.playback.loop_playback); // default false
+        assert_eq!(prefs.playback.skim_resolution, 480); // default_skim_resolution
+        // Fields with serde(default) within general
+        assert!(prefs.general.remember_inspector_layout);
+        assert!(prefs.general.collapsed_sections.is_empty());
+    }
+
+    // ── 3. Partial JSON: custom values in required sections, defaults elsewhere ──
+
+    #[test]
+    fn partial_json_custom_required_defaults_optional() {
+        let json = r#"{
+            "general": { "auto_save_interval_secs": 60, "recent_projects": [] },
+            "playback": { "scrub_audio": false, "jkl_audio_mute_threshold": 2.0 },
+            "export": { "custom_presets": [] },
+            "proxy": { "auto_generate_on_import": false, "proxy_resolution": "Half" }
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).expect("deserialize partial");
+
+        // Explicitly set values
+        assert_eq!(prefs.general.auto_save_interval_secs, 60);
+        assert!(!prefs.playback.scrub_audio);
+        assert_eq!(prefs.playback.jkl_audio_mute_threshold, 2.0);
+        assert!(!prefs.proxy.auto_generate_on_import);
+
+        // Optional sections not in JSON get defaults
+        assert!(prefs.editing.auto_create_tracks);
+        assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
+        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
+        assert_eq!(prefs.audio_hardware.buffer_size, 512);
+        assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(prefs.media_cache.thumbnail_height, 120);
+        assert_eq!(prefs.color.scope_update_interval_ms, 32);
+        assert_eq!(prefs.title.default_size_pt, 48.0);
+        assert_eq!(prefs.timeline.trim_handle_width, 14.0);
+        assert_eq!(prefs.viewer.action_safe_pct, 0.9);
+        assert_eq!(prefs.advanced.modal_backdrop_alpha, 120);
+    }
+
+    // ── 4. Custom values round-trip ──
+
+    #[test]
+    fn custom_values_round_trip() {
+        let mut prefs = Preferences::default();
+
+        // GeneralPrefs
+        prefs.general.auto_save_interval_secs = 120;
+        prefs.general.default_project_dir = Some(PathBuf::from("/home/user/projects"));
+        prefs.general.remember_inspector_layout = false;
+        prefs.general.collapsed_sections = vec!["Effects".into(), "Audio".into()];
+
+        // PlaybackPrefs
+        prefs.playback.scrub_audio = false;
+        prefs.playback.skim_audio = false;
+        prefs.playback.jkl_audio_mute_threshold = 8.0;
+        prefs.playback.loop_playback = true;
+        prefs.playback.skim_resolution = 720;
+
+        // EditingPrefs
+        prefs.editing.auto_create_tracks = false;
+        prefs.editing.auto_generate_filmstrips = false;
+        prefs.editing.auto_generate_skim = false;
+        prefs.editing.default_still_duration_secs = 10.0;
+        prefs.editing.undo_limit = 50;
+        prefs.editing.default_transition_frames = 12;
+        prefs.editing.default_video_track_height = 80.0;
+        prefs.editing.default_audio_track_height = 60.0;
+        prefs.editing.snap_threshold_px = 20.0;
+        prefs.editing.zoom_step = 2.0;
+        prefs.editing.backup_count = 10;
+
+        // AudioPrefs
+        prefs.audio.fade_overlay_mode = FadeOverlayMode::Both;
+        prefs.audio.show_rubber_band = false;
+        prefs.audio.show_waveform = false;
+        prefs.audio.anti_click_fade = false;
+        prefs.audio.show_crossfade_indicators = false;
+        prefs.audio.pan_law = klipp_core::PanLaw::ConstantPower;
+        prefs.audio.metering_ballistics = klipp_core::MeteringBallistics::Vu;
+        prefs.audio.default_fade_curve = klipp_core::FadeCurve::Exponential;
+        prefs.audio.default_fade_duration_ms = 50;
+        prefs.audio.normalize_target_lufs = -23.0;
+
+        // ExportPrefs
+        prefs.export.default_output_dir = Some(PathBuf::from("/tmp/exports"));
+        prefs.export.last_preset_id = Some("h264-fast".into());
+
+        // ProxyPrefs
+        prefs.proxy.auto_generate_on_import = false;
+        prefs.proxy.proxy_resolution = ProxyResolution::Quarter;
+        prefs.proxy.proxy_cache_dir = Some(PathBuf::from("/data/proxies"));
+
+        // SystemPrefs
+        prefs.system.gpu_preference = klipp_core::GpuPreference::LowPower;
+        prefs.system.decode_threads = 4;
+        prefs.system.max_playback_height = 2160;
+        prefs.system.frame_queue_size = 32;
+
+        // AudioHardwarePrefs
+        prefs.audio_hardware.output_device = Some("HDMI Audio".into());
+        prefs.audio_hardware.sample_rate = 44100;
+        prefs.audio_hardware.buffer_size = 1024;
+
+        // AppearancePrefs
+        prefs.appearance.ui_text_size = 16.0;
+        prefs.appearance.accent_color = [255, 0, 128];
+        prefs.appearance.playhead_color = [0, 255, 0];
+        prefs.appearance.role_video = [10, 20, 30];
+        prefs.appearance.role_dialogue = [40, 50, 60];
+        prefs.appearance.role_music = [70, 80, 90];
+        prefs.appearance.role_sfx = [100, 110, 120];
+        prefs.appearance.role_title = [130, 140, 150];
+        prefs.appearance.role_broll = [160, 170, 180];
+        prefs.appearance.role_ambience = [190, 200, 210];
+        prefs.appearance.role_foley = [220, 230, 240];
+        prefs.appearance.role_voiceover = [11, 22, 33];
+        prefs.appearance.role_graphics = [44, 55, 66];
+
+        // MediaCachePrefs
+        prefs.media_cache.filmstrip_cache_dir = Some(PathBuf::from("/data/filmstrips"));
+        prefs.media_cache.audio_cache_dir = Some(PathBuf::from("/data/audio-cache"));
+        prefs.media_cache.max_cache_size_mb = 8192;
+        prefs.media_cache.skim_transcode_quality = 28;
+        prefs.media_cache.thumbnail_height = 200;
+
+        // ColorPrefs
+        prefs.color.working_color_space = klipp_core::ColorSpace::Rec2020;
+        prefs.color.viewer_lut_path = Some(PathBuf::from("/luts/my.cube"));
+        prefs.color.scope_quality = klipp_core::ScopeQuality::High;
+        prefs.color.scope_update_interval_ms = 64;
+
+        // TitlePrefs
+        prefs.title.default_font = "Inter".into();
+        prefs.title.default_size_pt = 72.0;
+        prefs.title.font_search_paths = vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/home/user/.fonts"),
+        ];
+
+        // TimelinePrefs
+        prefs.timeline.clip_colors = vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+        prefs.timeline.clip_gap_px = 5.0;
+        prefs.timeline.trim_handle_width = 20.0;
+        prefs.timeline.ruler_height = 32.0;
+        prefs.timeline.clip_corner_radius = 8.0;
+        prefs.timeline.overview_bar_height = 30.0;
+        prefs.timeline.min_track_height = 16.0;
+        prefs.timeline.max_track_height = 300.0;
+        prefs.timeline.text_track_height = 48.0;
+
+        // ViewerPrefs
+        prefs.viewer.action_safe_pct = 0.85;
+        prefs.viewer.title_safe_pct = 0.75;
+        prefs.viewer.grid_color = [255, 128, 64, 200];
+        prefs.viewer.checkerboard_tile_size = 24.0;
+        prefs.viewer.transform_handle_size = 12.0;
+        prefs.viewer.fullscreen_overlay_timeout_secs = 5.0;
+
+        // AdvancedPrefs
+        prefs.advanced.toast_duration_secs = 4.0;
+        prefs.advanced.modal_backdrop_alpha = 200;
+        prefs.advanced.perf_overlay_interval_ms = 250;
+        prefs.advanced.anti_click_fade_ms = 5.0;
+        prefs.advanced.pre_roll_secs = 3.0;
+
+        let rt = round_trip(&prefs);
+
+        // Verify every custom value survived
+        assert_eq!(rt.general.auto_save_interval_secs, 120);
+        assert_eq!(rt.general.default_project_dir.as_ref().unwrap().to_str().unwrap(), "/home/user/projects");
+        assert!(!rt.general.remember_inspector_layout);
+        assert_eq!(rt.general.collapsed_sections, vec!["Effects", "Audio"]);
+
+        assert!(!rt.playback.scrub_audio);
+        assert!(!rt.playback.skim_audio);
+        assert_eq!(rt.playback.jkl_audio_mute_threshold, 8.0);
+        assert!(rt.playback.loop_playback);
+        assert_eq!(rt.playback.skim_resolution, 720);
+
+        assert!(!rt.editing.auto_create_tracks);
+        assert!(!rt.editing.auto_generate_filmstrips);
+        assert!(!rt.editing.auto_generate_skim);
+        assert_eq!(rt.editing.default_still_duration_secs, 10.0);
+        assert_eq!(rt.editing.undo_limit, 50);
+        assert_eq!(rt.editing.default_transition_frames, 12);
+        assert_eq!(rt.editing.default_video_track_height, 80.0);
+        assert_eq!(rt.editing.default_audio_track_height, 60.0);
+        assert_eq!(rt.editing.snap_threshold_px, 20.0);
+        assert_eq!(rt.editing.zoom_step, 2.0);
+        assert_eq!(rt.editing.backup_count, 10);
+
+        assert_eq!(rt.audio.fade_overlay_mode, FadeOverlayMode::Both);
+        assert!(!rt.audio.show_rubber_band);
+        assert!(!rt.audio.show_waveform);
+        assert!(!rt.audio.anti_click_fade);
+        assert!(!rt.audio.show_crossfade_indicators);
+        assert_eq!(rt.audio.pan_law, klipp_core::PanLaw::ConstantPower);
+        assert_eq!(rt.audio.metering_ballistics, klipp_core::MeteringBallistics::Vu);
+        assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Exponential);
+        assert_eq!(rt.audio.default_fade_duration_ms, 50);
+        assert_eq!(rt.audio.normalize_target_lufs, -23.0);
+
+        assert_eq!(rt.export.default_output_dir.as_ref().unwrap().to_str().unwrap(), "/tmp/exports");
+        assert_eq!(rt.export.last_preset_id.as_deref(), Some("h264-fast"));
+
+        assert!(!rt.proxy.auto_generate_on_import);
+        assert_eq!(rt.proxy.proxy_resolution, ProxyResolution::Quarter);
+        assert_eq!(rt.proxy.proxy_cache_dir.as_ref().unwrap().to_str().unwrap(), "/data/proxies");
+
+        assert_eq!(rt.system.gpu_preference, klipp_core::GpuPreference::LowPower);
+        assert_eq!(rt.system.decode_threads, 4);
+        assert_eq!(rt.system.max_playback_height, 2160);
+        assert_eq!(rt.system.frame_queue_size, 32);
+
+        assert_eq!(rt.audio_hardware.output_device.as_deref(), Some("HDMI Audio"));
+        assert_eq!(rt.audio_hardware.sample_rate, 44100);
+        assert_eq!(rt.audio_hardware.buffer_size, 1024);
+
+        assert_eq!(rt.appearance.ui_text_size, 16.0);
+        assert_eq!(rt.appearance.accent_color, [255, 0, 128]);
+        assert_eq!(rt.appearance.playhead_color, [0, 255, 0]);
+        assert_eq!(rt.appearance.role_video, [10, 20, 30]);
+        assert_eq!(rt.appearance.role_dialogue, [40, 50, 60]);
+        assert_eq!(rt.appearance.role_music, [70, 80, 90]);
+        assert_eq!(rt.appearance.role_sfx, [100, 110, 120]);
+        assert_eq!(rt.appearance.role_title, [130, 140, 150]);
+        assert_eq!(rt.appearance.role_broll, [160, 170, 180]);
+        assert_eq!(rt.appearance.role_ambience, [190, 200, 210]);
+        assert_eq!(rt.appearance.role_foley, [220, 230, 240]);
+        assert_eq!(rt.appearance.role_voiceover, [11, 22, 33]);
+        assert_eq!(rt.appearance.role_graphics, [44, 55, 66]);
+
+        assert_eq!(rt.media_cache.filmstrip_cache_dir.as_ref().unwrap().to_str().unwrap(), "/data/filmstrips");
+        assert_eq!(rt.media_cache.audio_cache_dir.as_ref().unwrap().to_str().unwrap(), "/data/audio-cache");
+        assert_eq!(rt.media_cache.max_cache_size_mb, 8192);
+        assert_eq!(rt.media_cache.skim_transcode_quality, 28);
+        assert_eq!(rt.media_cache.thumbnail_height, 200);
+
+        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec2020);
+        assert_eq!(rt.color.viewer_lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/my.cube");
+        assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::High);
+        assert_eq!(rt.color.scope_update_interval_ms, 64);
+
+        assert_eq!(rt.title.default_font, "Inter");
+        assert_eq!(rt.title.default_size_pt, 72.0);
+        assert_eq!(rt.title.font_search_paths.len(), 2);
+        assert_eq!(rt.title.font_search_paths[0].to_str().unwrap(), "/usr/share/fonts");
+        assert_eq!(rt.title.font_search_paths[1].to_str().unwrap(), "/home/user/.fonts");
+
+        assert_eq!(rt.timeline.clip_colors, vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+        assert_eq!(rt.timeline.clip_gap_px, 5.0);
+        assert_eq!(rt.timeline.trim_handle_width, 20.0);
+        assert_eq!(rt.timeline.ruler_height, 32.0);
+        assert_eq!(rt.timeline.clip_corner_radius, 8.0);
+        assert_eq!(rt.timeline.overview_bar_height, 30.0);
+        assert_eq!(rt.timeline.min_track_height, 16.0);
+        assert_eq!(rt.timeline.max_track_height, 300.0);
+        assert_eq!(rt.timeline.text_track_height, 48.0);
+
+        assert_eq!(rt.viewer.action_safe_pct, 0.85);
+        assert_eq!(rt.viewer.title_safe_pct, 0.75);
+        assert_eq!(rt.viewer.grid_color, [255, 128, 64, 200]);
+        assert_eq!(rt.viewer.checkerboard_tile_size, 24.0);
+        assert_eq!(rt.viewer.transform_handle_size, 12.0);
+        assert_eq!(rt.viewer.fullscreen_overlay_timeout_secs, 5.0);
+
+        assert_eq!(rt.advanced.toast_duration_secs, 4.0);
+        assert_eq!(rt.advanced.modal_backdrop_alpha, 200);
+        assert_eq!(rt.advanced.perf_overlay_interval_ms, 250);
+        assert_eq!(rt.advanced.anti_click_fade_ms, 5.0);
+        assert_eq!(rt.advanced.pre_roll_secs, 3.0);
+    }
+
+    // ── 5. New fields compatibility (old-format JSON missing new sections) ──
+
+    #[test]
+    fn old_format_json_gets_new_field_defaults() {
+        // Simulate a preferences file from before the new sections were added.
+        // Only contains general, playback, export, proxy (the original required fields).
+        let json = r#"{
+            "general": {
+                "auto_save_interval_secs": 180,
+                "default_project_dir": null,
+                "recent_projects": [],
+                "remember_inspector_layout": true,
+                "collapsed_sections": []
+            },
+            "playback": {
+                "scrub_audio": false,
+                "jkl_audio_mute_threshold": 3.0
+            },
+            "export": {
+                "custom_presets": []
+            },
+            "proxy": {
+                "auto_generate_on_import": true,
+                "proxy_resolution": "W1280"
+            }
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).expect("deserialize old format");
+
+        // Old fields preserved
+        assert_eq!(prefs.general.auto_save_interval_secs, 180);
+        assert!(!prefs.playback.scrub_audio);
+        assert_eq!(prefs.playback.jkl_audio_mute_threshold, 3.0);
+        assert_eq!(prefs.proxy.proxy_resolution, ProxyResolution::W1280);
+
+        // New sections get defaults
+        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
+        assert_eq!(prefs.system.frame_queue_size, 16);
+        assert_eq!(prefs.audio_hardware.sample_rate, 48000);
+        assert_eq!(prefs.appearance.ui_text_size, 13.0);
+        assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(prefs.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
+        assert!(prefs.title.default_font.is_empty());
+        assert_eq!(prefs.timeline.clip_colors.len(), 6);
+        assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);
+        assert_eq!(prefs.advanced.toast_duration_secs, 2.2);
+
+        // Editing and audio sections (also serde(default)) get defaults
+        assert!(prefs.editing.auto_create_tracks);
+        assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
+    }
+
+    // ── 6. Color values: [u8;3] and [u8;4] round-trip ──
+
+    #[test]
+    fn color_arrays_round_trip() {
+        let mut prefs = Preferences::default();
+
+        // Edge cases: all zeros, all max, specific values
+        prefs.appearance.accent_color = [0, 0, 0];
+        prefs.appearance.playhead_color = [255, 255, 255];
+        prefs.appearance.role_video = [1, 128, 254];
+        prefs.viewer.grid_color = [0, 0, 0, 0]; // fully transparent
+
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.appearance.accent_color, [0, 0, 0]);
+        assert_eq!(rt.appearance.playhead_color, [255, 255, 255]);
+        assert_eq!(rt.appearance.role_video, [1, 128, 254]);
+        assert_eq!(rt.viewer.grid_color, [0, 0, 0, 0]);
+
+        // Also verify the JSON representation is a plain array
+        let json = serde_json::to_value(&prefs).expect("to value");
+        let accent = &json["appearance"]["accent_color"];
+        assert!(accent.is_array());
+        assert_eq!(accent[0], 0);
+        assert_eq!(accent[1], 0);
+        assert_eq!(accent[2], 0);
+
+        let grid = &json["viewer"]["grid_color"];
+        assert!(grid.is_array());
+        assert_eq!(grid.as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn color_array_max_values() {
+        let mut prefs = Preferences::default();
+        prefs.appearance.accent_color = [255, 255, 255];
+        prefs.viewer.grid_color = [255, 255, 255, 255];
+
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.appearance.accent_color, [255, 255, 255]);
+        assert_eq!(rt.viewer.grid_color, [255, 255, 255, 255]);
+    }
+
+    // ── 7. Vec fields: clip_colors and font_search_paths round-trip ──
+
+    #[test]
+    fn vec_clip_colors_round_trip() {
+        let mut prefs = Preferences::default();
+
+        // Empty vec
+        prefs.timeline.clip_colors = vec![];
+        let rt = round_trip(&prefs);
+        assert!(rt.timeline.clip_colors.is_empty());
+
+        // Single element
+        prefs.timeline.clip_colors = vec![[42, 43, 44]];
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.timeline.clip_colors, vec![[42, 43, 44]]);
+
+        // Many elements
+        prefs.timeline.clip_colors = (0..20).map(|i| [i, i * 2, i * 3]).collect();
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.timeline.clip_colors.len(), 20);
+        assert_eq!(rt.timeline.clip_colors[0], [0, 0, 0]);
+        assert_eq!(rt.timeline.clip_colors[19], [19, 38, 57]);
+    }
+
+    #[test]
+    fn vec_font_search_paths_round_trip() {
+        let mut prefs = Preferences::default();
+
+        // Empty
+        prefs.title.font_search_paths = vec![];
+        let rt = round_trip(&prefs);
+        assert!(rt.title.font_search_paths.is_empty());
+
+        // Multiple paths including ones with special characters
+        prefs.title.font_search_paths = vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/home/user/.local/share/fonts"),
+            PathBuf::from("/mnt/data/My Fonts"),
+        ];
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.title.font_search_paths.len(), 3);
+        assert_eq!(rt.title.font_search_paths[0], PathBuf::from("/usr/share/fonts"));
+        assert_eq!(rt.title.font_search_paths[2], PathBuf::from("/mnt/data/My Fonts"));
+    }
+
+    #[test]
+    fn vec_collapsed_sections_round_trip() {
+        let mut prefs = Preferences::default();
+        prefs.general.collapsed_sections = vec![
+            "Transform".into(),
+            "Effects".into(),
+            "Color".into(),
+        ];
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.general.collapsed_sections, vec!["Transform", "Effects", "Color"]);
+    }
+
+    #[test]
+    fn vec_recent_projects_round_trip() {
+        let mut prefs = Preferences::default();
+        prefs.general.recent_projects = vec![
+            RecentProject {
+                path: PathBuf::from("/projects/a.klipp"),
+                name: "Project A".into(),
+                last_saved: Some("2026-03-31".into()),
+                duration_secs: Some(120.5),
+                fps: Some("24fps".into()),
+                resolution: Some("1920x1080".into()),
+                thumbnail_path: Some(PathBuf::from("/tmp/thumb.png")),
+                total_size_bytes: Some(1_000_000),
+            },
+            RecentProject::from_path(PathBuf::from("/projects/b.klipp")),
+        ];
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.general.recent_projects.len(), 2);
+        assert_eq!(rt.general.recent_projects[0].name, "Project A");
+        assert_eq!(rt.general.recent_projects[0].duration_secs, Some(120.5));
+        assert_eq!(rt.general.recent_projects[0].total_size_bytes, Some(1_000_000));
+        assert_eq!(rt.general.recent_projects[1].name, "b");
+        assert!(rt.general.recent_projects[1].duration_secs.is_none());
+    }
+
+    // ── Bonus: recent_projects backward compat with old Vec<PathBuf> format ──
+
+    #[test]
+    fn recent_projects_old_pathbuf_format() {
+        let json = r#"{
+            "general": {
+                "auto_save_interval_secs": 300,
+                "recent_projects": ["/projects/old1.klipp", "/projects/old2.klipp"]
+            },
+            "playback": { "scrub_audio": true, "jkl_audio_mute_threshold": 4.0 },
+            "export": { "custom_presets": [] },
+            "proxy": { "auto_generate_on_import": true, "proxy_resolution": "Half" }
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).expect("deserialize old recent format");
+        assert_eq!(prefs.general.recent_projects.len(), 2);
+        assert_eq!(prefs.general.recent_projects[0].path, PathBuf::from("/projects/old1.klipp"));
+        assert_eq!(prefs.general.recent_projects[0].name, "old1");
+        assert!(prefs.general.recent_projects[0].duration_secs.is_none());
+    }
+}

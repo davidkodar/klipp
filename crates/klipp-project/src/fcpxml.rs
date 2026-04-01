@@ -326,3 +326,465 @@ fn escape_xml(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::{
+        ClipId, Fps, MarkerColor, MarkerId, MediaId, RationalTime, Resolution, SequenceId,
+    };
+    use klipp_media::{MediaItem, MediaPool};
+    use klipp_timeline::{
+        Clip, ClipKind, ClipMarker, Marker, Sequence, TitleData, Track, TrackKind,
+    };
+    use std::path::PathBuf;
+
+    /// Build a minimal Sequence with the given fps/resolution and a single empty Video track.
+    fn empty_sequence(fps: Fps) -> Sequence {
+        Sequence {
+            id: SequenceId::new(),
+            name: "Test Sequence".into(),
+            fps,
+            resolution: Resolution::hd_1080(),
+            tracks: vec![Track::new("Video 1", TrackKind::Video)],
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+        }
+    }
+
+    /// Create a MediaItem with the given id, filename, and duration (in frames at the given rate).
+    fn make_media_item(id: MediaId, filename: &str, frames: i64, rate: u32) -> MediaItem {
+        MediaItem {
+            id,
+            path: PathBuf::from(format!("/media/{filename}")),
+            filename: filename.into(),
+            duration: RationalTime { value: frames, rate },
+            fps: Fps { num: rate, den: 1 },
+            resolution: Resolution::hd_1080(),
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            has_audio: true,
+            file_size_bytes: 1000,
+            sample_rate: Some(48000),
+            audio_channels: Some(2),
+            offline: false,
+            is_still: false,
+            proxy_path: None,
+            proxy_ready: false,
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: Default::default(),
+            colour_space: Default::default(),
+            log_format: Default::default(),
+            source_rotation: 0,
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
+    /// Create a media Clip with full control over timing.
+    fn make_media_clip(
+        media_id: MediaId,
+        timeline_in: RationalTime,
+        timeline_out: RationalTime,
+        source_in: RationalTime,
+        source_out: RationalTime,
+    ) -> Clip {
+        Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in,
+            timeline_out,
+            source_in,
+            source_out,
+            node_graph: Default::default(),
+            effects: Vec::new(),
+            builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
+            linked_clip_id: None,
+            group_id: None,
+            magnetic_anchor: None,
+            gain: 1.0,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
+            fade_in_curve: Default::default(),
+            fade_out_curve: Default::default(),
+            channel_config: Default::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: Default::default(),
+            role: Default::default(),
+            param_modifiers: Default::default(),
+            speed: 1.0,
+            speed_keyframes: Vec::new(),
+            audio_effects: Vec::new(),
+            source_rotation: 0,
+            enabled: true,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
+        }
+    }
+
+    /// Create a gap or title clip.
+    fn make_clip_with_kind(
+        kind: ClipKind,
+        timeline_in: RationalTime,
+        timeline_out: RationalTime,
+    ) -> Clip {
+        let mut clip = make_media_clip(
+            MediaId::new(),
+            timeline_in,
+            timeline_out,
+            RationalTime { value: 0, rate: timeline_in.rate },
+            timeline_out - timeline_in,
+        );
+        clip.kind = kind;
+        clip
+    }
+
+    // ── FCPXML Tests ──
+
+    #[test]
+    fn fcpxml_empty_sequence() {
+        let seq = empty_sequence(Fps::film_24());
+        let pool = MediaPool::new();
+        let xml = generate_fcpxml(&seq, &pool);
+
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("<fcpxml version=\"1.9\">"));
+        assert!(xml.contains("<spine>\n          </spine>"));
+        assert!(xml.contains("</fcpxml>"));
+        // Verify structure: resources, library, event, project, sequence
+        assert!(xml.contains("<resources>"));
+        assert!(xml.contains("<library>"));
+        assert!(xml.contains("<event name=\"Klipp Export\">"));
+        assert!(xml.contains("<project name=\"Test Sequence\">"));
+    }
+
+    #[test]
+    fn fcpxml_single_media_clip() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "clip_a.mov", 48, 24));
+
+        // 48 frames at 24fps = 2 seconds, starting at frame 0 on timeline
+        let clip = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Check asset resource
+        assert!(xml.contains("name=\"clip_a.mov\""));
+        assert!(xml.contains("src=\"file:///media/clip_a.mov\""));
+        // Check asset-clip element with correct timing
+        assert!(xml.contains("offset=\"0/24s\""));
+        assert!(xml.contains("duration=\"48/24s\""));
+        assert!(xml.contains("start=\"0/24s\""));
+        // Self-closing (no markers)
+        assert!(xml.contains("/>\n"));
+    }
+
+    #[test]
+    fn fcpxml_title_clip() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        let mut td = TitleData::default();
+        td.text = "Hello World".into();
+        let clip = make_clip_with_kind(
+            ClipKind::Title(td),
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 72, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        assert!(xml.contains("<title name=\"Hello World\""));
+        assert!(xml.contains("offset=\"0/24s\""));
+        assert!(xml.contains("duration=\"72/24s\""));
+        assert!(xml.contains("<text>Hello World</text>"));
+        assert!(xml.contains("</title>"));
+    }
+
+    #[test]
+    fn fcpxml_gap_clip() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        let clip = make_clip_with_kind(
+            ClipKind::Gap,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        assert!(xml.contains("<gap offset=\"0/24s\" duration=\"24/24s\"/>"));
+    }
+
+    #[test]
+    fn fcpxml_disabled_clip() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "disabled.mov", 24, 24));
+
+        let mut clip = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+        );
+        clip.enabled = false;
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        assert!(xml.contains("enabled=\"0\""));
+    }
+
+    #[test]
+    fn fcpxml_sequence_markers() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        seq.markers.push(Marker {
+            id: MarkerId::new(),
+            position: RationalTime { value: 48, rate: 24 },
+            label: "Scene 2".into(),
+            color: MarkerColor::Green,
+        });
+        seq.markers.push(Marker {
+            id: MarkerId::new(),
+            position: RationalTime { value: 120, rate: 24 },
+            label: "End".into(),
+            color: MarkerColor::Red,
+        });
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Markers appear after </spine> but inside <sequence>
+        assert!(xml.contains("<marker start=\"48/24s\" duration=\"1/24s\" value=\"Scene 2\"/>"));
+        assert!(xml.contains("<marker start=\"120/24s\" duration=\"1/24s\" value=\"End\"/>"));
+    }
+
+    #[test]
+    fn fcpxml_clip_markers() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "marked.mov", 96, 24));
+
+        let mut clip = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 96, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 96, rate: 24 },
+        );
+        clip.clip_markers.push(ClipMarker {
+            time_secs: 1.0,
+            name: "Beat Drop".into(),
+            color: MarkerColor::Blue,
+        });
+        clip.clip_markers.push(ClipMarker {
+            time_secs: 2.5,
+            name: "Cut Here".into(),
+            color: MarkerColor::Orange,
+        });
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Clip markers are children of asset-clip (not self-closing)
+        assert!(xml.contains("<asset-clip"));
+        assert!(xml.contains("<marker start=\"1s\" duration=\"1/24s\" value=\"Beat Drop\"/>"));
+        assert!(xml.contains("<marker start=\"2.500s\" duration=\"1/24s\" value=\"Cut Here\"/>"));
+        assert!(xml.contains("</asset-clip>"));
+    }
+
+    #[test]
+    fn fcpxml_rational_time_format() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "test.mov", 48, 24));
+
+        // 48 frames at 24fps = exactly 2 seconds -> "48/24s"
+        let clip = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Verify "frames/rate" format: "48/24s" for 2 seconds at 24fps
+        assert!(xml.contains("duration=\"48/24s\""));
+        assert!(xml.contains("offset=\"0/24s\""));
+        assert!(xml.contains("start=\"0/24s\""));
+
+        // Also verify the sequence duration
+        assert!(xml.contains("duration=\"48/24s\""));
+    }
+
+    #[test]
+    fn fcpxml_xml_escaping() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        seq.name = "Tom & Jerry's \"Great\" <Adventure>".into();
+        let pool = MediaPool::new();
+
+        let mut td = TitleData::default();
+        td.text = "Rock & Roll <Live> \"Show\"".into();
+        let clip = make_clip_with_kind(
+            ClipKind::Title(td),
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Sequence name must be escaped in project element
+        assert!(xml.contains("Tom &amp; Jerry&apos;s &quot;Great&quot; &lt;Adventure&gt;"));
+        // Title text must be escaped
+        assert!(xml.contains("Rock &amp; Roll &lt;Live&gt; &quot;Show&quot;"));
+        // Resulting XML must be well-formed (no raw &, <, >, " in attribute/text positions)
+        assert!(!xml.contains("<project name=\"Tom & Jerry"));
+    }
+
+    // ── EDL Tests ──
+
+    #[test]
+    fn edl_single_clip() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "scene01.mov", 72, 24));
+
+        // 72 frames = 3 seconds, starting at frame 24 (1s) on timeline
+        let clip = make_media_clip(
+            mid,
+            RationalTime { value: 24, rate: 24 },  // timeline_in = 1s
+            RationalTime { value: 96, rate: 24 },   // timeline_out = 4s
+            RationalTime { value: 0, rate: 24 },    // source_in = 0s
+            RationalTime { value: 72, rate: 24 },   // source_out = 3s
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let edl = generate_edl(&seq, &pool);
+
+        // Title line
+        assert!(edl.starts_with("TITLE: Test Sequence\n"));
+        // Event line: CMX 3600 format
+        // event_num(3) reel_name(8) V/A(whitespace)C(whitespace) src_in src_out rec_in rec_out
+        assert!(edl.contains("001  scene01  V     C        00:00:00:00 00:00:03:00 00:00:01:00 00:00:04:00\n"));
+        // Clip name comment
+        assert!(edl.contains("* FROM CLIP NAME: scene01.mov"));
+    }
+
+    #[test]
+    fn edl_drop_frame_header() {
+        let fps = Fps::ntsc_29970(); // 29.97fps -> 30000/1001
+        let seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        let edl = generate_edl(&seq, &pool);
+
+        assert!(edl.contains("FCM: DROP FRAME"));
+    }
+
+    #[test]
+    fn edl_non_drop_frame_header() {
+        let fps = Fps::film_24();
+        let seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        let edl = generate_edl(&seq, &pool);
+
+        assert!(edl.contains("FCM: NON-DROP FRAME"));
+    }
+
+    #[test]
+    fn edl_reel_name_truncation() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        // Filename longer than 8 chars (stem = "very_long_clip_name")
+        pool.add(make_media_item(mid, "very_long_clip_name.mov", 24, 24));
+
+        let clip = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+        );
+        seq.tracks[0].clips.push(clip);
+
+        let edl = generate_edl(&seq, &pool);
+
+        // Reel name should be truncated to 8 chars: "very_lon"
+        assert!(edl.contains("very_lon"));
+        // Full name should NOT appear in the event line (only in FROM CLIP NAME comment)
+        let event_line = edl.lines()
+            .find(|l| l.starts_with("001"))
+            .expect("should have event line");
+        assert!(!event_line.contains("very_long_clip_name"));
+        assert!(event_line.contains("very_lon"));
+    }
+}
