@@ -5,9 +5,10 @@ use crate::theme::KlippTheme;
 pub struct ToastState {
     message: Option<String>,
     appear_time: Option<std::time::Instant>,
+    /// Configurable visible duration (set from prefs.advanced.toast_duration_secs).
+    pub visible_duration: f64,
 }
 
-const TOAST_VISIBLE_DURATION: f64 = 2.2; // seconds
 const TOAST_FADE_IN: f64 = 0.15;
 const TOAST_FADE_OUT: f64 = 0.2;
 
@@ -26,7 +27,7 @@ impl ToastState {
         };
 
         let elapsed = appear.elapsed().as_secs_f64();
-        let total_duration = TOAST_FADE_IN + TOAST_VISIBLE_DURATION + TOAST_FADE_OUT;
+        let total_duration = TOAST_FADE_IN + self.visible_duration.max(0.5) + TOAST_FADE_OUT;
         if elapsed > total_duration {
             return;
         }
@@ -35,12 +36,12 @@ impl ToastState {
         let alpha = if elapsed < TOAST_FADE_IN {
             // Fade in
             (elapsed / TOAST_FADE_IN) as f32
-        } else if elapsed < TOAST_FADE_IN + TOAST_VISIBLE_DURATION {
+        } else if elapsed < TOAST_FADE_IN + self.visible_duration.max(0.5) {
             // Fully visible
             1.0
         } else {
             // Fade out
-            let fade_elapsed = elapsed - TOAST_FADE_IN - TOAST_VISIBLE_DURATION;
+            let fade_elapsed = elapsed - TOAST_FADE_IN - self.visible_duration.max(0.5);
             1.0 - (fade_elapsed / TOAST_FADE_OUT) as f32
         }
         .clamp(0.0, 1.0);
@@ -112,7 +113,7 @@ impl ToastState {
     /// Clear expired toast messages.
     pub fn cleanup(&mut self) {
         if let Some(appear) = self.appear_time {
-            let total = TOAST_FADE_IN + TOAST_VISIBLE_DURATION + TOAST_FADE_OUT;
+            let total = TOAST_FADE_IN + self.visible_duration.max(0.5) + TOAST_FADE_OUT;
             if appear.elapsed().as_secs_f64() > total {
                 self.message = None;
                 self.appear_time = None;

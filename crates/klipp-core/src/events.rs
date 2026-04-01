@@ -418,6 +418,8 @@ pub enum AppCommand {
     CreateMulticamClip,
     /// Switch multicam angle (1-indexed).
     SwitchMulticamAngle { angle: usize },
+    /// Set the audio mixer's pan law.
+    SetPanLaw(crate::config::PanLaw),
     /// Zoom timeline to fit all clips.
     FitTimelineToWindow,
     /// Apply a motion preset (Ken Burns / PiP) to selected clip.

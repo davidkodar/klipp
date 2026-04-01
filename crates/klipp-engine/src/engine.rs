@@ -668,6 +668,11 @@ impl PlaybackEngine {
                     active.source.set_anti_click(enabled);
                 }
             }
+            AppCommand::SetPanLaw(law) => {
+                if let Ok(mut mixer) = self.mixer.lock() {
+                    mixer.pan_law = law;
+                }
+            }
 
             AppCommand::ToggleBeforeAfter => {
                 self.bypass_color_grade = !self.bypass_color_grade;

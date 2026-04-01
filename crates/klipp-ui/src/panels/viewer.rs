@@ -153,7 +153,7 @@ impl ViewerPanel {
         let dt = ui.input(|i| i.unstable_dt) as f64;
         if resp.hovered() && ui.input(|i| i.pointer.velocity().length() > 1.0) {
             state.fullscreen_overlay_visible = true;
-            state.fullscreen_overlay_timer = 3.0;
+            state.fullscreen_overlay_timer = state.viewer_prefs.fullscreen_overlay_timeout_secs as f64;
         }
         if state.fullscreen_overlay_timer > 0.0 {
             state.fullscreen_overlay_timer -= dt;
@@ -716,7 +716,8 @@ impl ViewerPanel {
         if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Grid) {
             let w = image_rect.width();
             let h = image_rect.height();
-            let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(200, 200, 200, 80));
+            let gc = state.viewer_prefs.grid_color;
+            let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], gc[3]));
             // Rule of thirds: vertical lines
             for i in 1..=2 {
                 let x = image_rect.left() + w * i as f32 / 3.0;

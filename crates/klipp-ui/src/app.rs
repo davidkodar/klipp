@@ -271,6 +271,8 @@ impl KlippApp {
         app.state.timeline_prefs = app.prefs.timeline.clone();
         app.state.viewer_prefs = app.prefs.viewer.clone();
         app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
+        app.state.toast.visible_duration = app.prefs.advanced.toast_duration_secs;
+        let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         app.state.modal_backdrop_alpha = app.prefs.advanced.modal_backdrop_alpha;
         app.state.scope_quality = app.prefs.color.scope_quality;
         app.state.scope_update_interval_ms = app.prefs.color.scope_update_interval_ms;
@@ -8965,7 +8967,7 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_with_color(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref()) {
+        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), self.prefs.editing.backup_count) {
             Ok(()) => {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -10185,7 +10187,7 @@ impl KlippApp {
             {
                 let playhead_secs = self.state.playhead_smooth_secs as f32;
                 let old_zoom = self.state.timeline_zoom;
-                let new_zoom = (old_zoom * 1.5).clamp(0.1, 2000.0);
+                let new_zoom = (old_zoom * self.state.zoom_step).clamp(0.1, 2000.0);
                 self.state.timeline_scroll_x = (playhead_secs * new_zoom
                     - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
                     .max(0.0);
@@ -10195,7 +10197,7 @@ impl KlippApp {
             if i.key_pressed(egui::Key::Minus) && !i.modifiers.ctrl {
                 let playhead_secs = self.state.playhead_smooth_secs as f32;
                 let old_zoom = self.state.timeline_zoom;
-                let new_zoom = (old_zoom / 1.5).clamp(0.1, 2000.0);
+                let new_zoom = (old_zoom / self.state.zoom_step).clamp(0.1, 2000.0);
                 self.state.timeline_scroll_x = (playhead_secs * new_zoom
                     - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
                     .max(0.0);

@@ -85,7 +85,7 @@ impl PreferencesPanel {
             .show(ctx, |ui| {
                 let screen = ctx.screen_rect();
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
-                ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+                ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(prefs.advanced.modal_backdrop_alpha));
                 if resp.clicked() {
                     open = false;
                 }
