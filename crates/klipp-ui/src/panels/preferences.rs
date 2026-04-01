@@ -1133,7 +1133,7 @@ impl PreferencesPanel {
         ui.add_space(4.0);
 
         // Helper to edit [u8;3] as Color32
-        let mut color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool| {
+        let color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool| {
             ui.horizontal(|ui| {
                 let mut c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
                 ui.label(label);
@@ -1207,7 +1207,7 @@ impl PreferencesPanel {
         ui.label(egui::RichText::new("Cache Directories").strong().size(12.0));
         ui.add_space(4.0);
 
-        let mut dir_picker = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default: &str, dirty: &mut bool| {
+        let dir_picker = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default: &str, dirty: &mut bool| {
             ui.horizontal(|ui| {
                 ui.label(label);
                 let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| format!("(default: {default})"));
@@ -1345,7 +1345,7 @@ impl PreferencesPanel {
         ui.label(egui::RichText::new("Dimensions").strong().size(12.0));
         ui.add_space(4.0);
 
-        let mut dim_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, min: f32, max: f32, suffix: &str, dirty: &mut bool| {
+        let dim_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, min: f32, max: f32, suffix: &str, dirty: &mut bool| {
             ui.horizontal(|ui| {
                 ui.label(label);
                 let mut v = *val;
@@ -1467,7 +1467,7 @@ impl PreferencesPanel {
     }
 
     fn show_keyboard(&mut self, ui: &mut egui::Ui, key_bindings: &mut crate::keybindings::KeyBindings) {
-        use crate::keybindings::{KeyBindings, KeyCombo, key_event_to_combo};
+        use crate::keybindings::{KeyBindings, key_event_to_combo};
 
         ui.heading("Keyboard Shortcuts");
         ui.add_space(4.0);

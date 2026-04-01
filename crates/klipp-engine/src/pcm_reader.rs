@@ -15,7 +15,7 @@ const CHANNELS: usize = 2;
 /// Minimum fade duration (seconds) applied at clip boundaries to prevent click/pop artifacts.
 /// Configurable via preferences (default 2.0ms). Set via `set_anti_click_fade_ms()`.
 static ANTI_CLICK_FADE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
-    unsafe { std::mem::transmute::<f64, u64>(2.0) }
+    { (2.0f64).to_bits() }
 );
 
 /// Set the anti-click fade duration from preferences.

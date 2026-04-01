@@ -10567,35 +10567,33 @@ impl eframe::App for KlippApp {
                     ui.label("Select which attributes to paste:");
                     ui.add_space(6.0);
 
-                    // Use persistent checkboxes stored as statics (simple approach)
-                    // These default to true on first show
-                    static mut PA_EFFECTS: bool = true;
-                    static mut PA_COLOR: bool = true;
-                    static mut PA_AUDIO: bool = true;
-                    static mut PA_TRANSFORM: bool = true;
-                    static mut PA_SPEED: bool = false;
+                    // Persistent checkboxes via egui's data store (no unsafe statics)
+                    let pa_id = egui::Id::new("paste_attributes_checkboxes");
+                    let mut pa_effects = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("fx"), || true));
+                    let mut pa_color = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("col"), || true));
+                    let mut pa_audio = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("aud"), || true));
+                    let mut pa_transform = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("tfm"), || true));
+                    let mut pa_speed = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("spd"), || false));
 
-                    // SAFETY: single-threaded UI
-                    unsafe {
-                        ui.checkbox(&mut PA_EFFECTS, "Effects (built-in + OFX)");
-                        ui.checkbox(&mut PA_COLOR, "Color Grade (node graph)");
-                        ui.checkbox(&mut PA_AUDIO, "Audio (volume, pan, gain, fades, FX)");
-                        ui.checkbox(&mut PA_TRANSFORM, "Transform (position, scale, rotation, opacity)");
-                        ui.checkbox(&mut PA_SPEED, "Speed");
-                    }
+                    ui.checkbox(&mut pa_effects, "Effects (built-in + OFX)");
+                    ui.checkbox(&mut pa_color, "Color Grade (node graph)");
+                    ui.checkbox(&mut pa_audio, "Audio (volume, pan, gain, fades, FX)");
+                    ui.checkbox(&mut pa_transform, "Transform (position, scale, rotation, opacity)");
+                    ui.checkbox(&mut pa_speed, "Speed");
+
+                    // Write back to egui data store
+                    ctx.data_mut(|d| { d.insert_temp(pa_id.with("fx"), pa_effects); d.insert_temp(pa_id.with("col"), pa_color); d.insert_temp(pa_id.with("aud"), pa_audio); d.insert_temp(pa_id.with("tfm"), pa_transform); d.insert_temp(pa_id.with("spd"), pa_speed); });
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Paste").clicked() {
-                            unsafe {
-                                all_cmds.push(AppCommand::PasteAttributes {
-                                    effects: PA_EFFECTS,
-                                    color_grade: PA_COLOR,
-                                    audio: PA_AUDIO,
-                                    transform: PA_TRANSFORM,
-                                    speed: PA_SPEED,
-                                });
-                            }
+                            all_cmds.push(AppCommand::PasteAttributes {
+                                effects: pa_effects,
+                                color_grade: pa_color,
+                                audio: pa_audio,
+                                transform: pa_transform,
+                                speed: pa_speed,
+                            });
                             self.state.show_paste_attributes_dialog = false;
                         }
                         if ui.button("Cancel").clicked() {

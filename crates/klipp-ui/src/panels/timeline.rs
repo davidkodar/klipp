@@ -25,6 +25,7 @@ fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
 }
 
 /// Get effective track height using preferences for defaults.
+#[allow(dead_code)]
 fn effective_track_height_with_prefs(track: &klipp_timeline::Track, tl: &crate::prefs::TimelinePrefs) -> f32 {
     track.custom_height.unwrap_or(match track.kind {
         TrackKind::Audio => tl.min_track_height.max(AUDIO_TRACK_HEIGHT), // use pref default
@@ -65,6 +66,7 @@ fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
 
 // Accessor functions replacing the old consts
 fn clip_gap() -> f32 { TL_CLIP_GAP.get() }
+#[allow(dead_code)]
 fn trim_handle_width() -> f32 { TL_TRIM_HANDLE_WIDTH.get() }
 
 // Keep const for backward compat in places that can't use function calls

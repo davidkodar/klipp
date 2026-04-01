@@ -4,7 +4,7 @@
 //! clip timing, transitions, and markers.
 
 use klipp_media::MediaPool;
-use klipp_timeline::{ClipKind, Sequence, TrackKind, TransitionKind};
+use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
 
 /// Export a sequence as FCPXML 1.9 to the given path.
@@ -22,7 +22,7 @@ pub fn export_fcpxml(
 pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
     let mut xml = String::with_capacity(8192);
     let fps = &seq.fps;
-    let framerate_str = format!("{}fps", fps_display(fps));
+    let _framerate_str = format!("{}fps", fps_display(fps));
     let frame_dur = rational_time_str(1, fps.num, fps.den);
 
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -87,7 +87,7 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
         .find(|t| matches!(t.kind, TrackKind::Video));
 
     if let Some(track) = primary_track {
-        let mut asset_idx = 0;
+        let mut _asset_idx = 0;
         for clip in &track.clips {
             match &clip.kind {
                 ClipKind::Media { media_id } => {
@@ -126,7 +126,7 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
                     } else {
                         xml.push_str("/>\n");
                     }
-                    asset_idx += 1;
+                    _asset_idx += 1;
                 }
                 ClipKind::Title(td) => {
                     let offset = tc_str(clip.timeline_in, fps);

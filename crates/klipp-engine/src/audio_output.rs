@@ -82,7 +82,7 @@ impl AudioOutput {
     /// Create a cpal output stream that reads from the ring buffer consumer.
     /// Pure consumer — no clock duties. The master clock is external.
     /// `skim_consumer` is shared with the app layer so it can inject skim audio.
-    pub fn new(mut consumer: AudioConsumer, skim_consumer: SkimConsumer) -> Result<Self, AudioOutputError> {
+    pub fn new(consumer: AudioConsumer, skim_consumer: SkimConsumer) -> Result<Self, AudioOutputError> {
         Self::new_with_device(consumer, skim_consumer, None)
     }
 
