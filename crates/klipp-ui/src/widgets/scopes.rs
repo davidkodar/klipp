@@ -1,6 +1,14 @@
 use crate::state::ScopeMode;
 use klipp_engine::SharedFrameBuffer;
 
+/// Pre-computed scope data — avoids cloning the entire 8MB frame.
+enum ScopeBins {
+    Waveform(klipp_color::scopes::WaveformData),
+    Parade(klipp_color::scopes::ParadeData),
+    Histogram(klipp_color::scopes::HistogramData),
+    Raw(Vec<u8>, u32, u32, u32), // vectorscope needs raw RGBA
+}
+
 /// Persistent state for scope rendering (texture cache + throttling).
 pub struct ScopeState {
     /// One cached texture per scope mode — switching is instant.
@@ -42,14 +50,14 @@ pub fn show_scopes(
 ) {
     let available = ui.available_size();
     let ppp = ui.ctx().pixels_per_point();
-    let render_w = ((available.x * ppp) as usize).clamp(100, 640);
-    let render_h = ((available.y * ppp) as usize).clamp(60, 400);
+    let render_w = ((available.x * ppp) as usize).clamp(100, 400);
+    let render_h = ((available.y * ppp) as usize).clamp(60, 256);
 
     let mi = mode_index(mode);
 
-    // ── Brief lock: snapshot frame data only if generation changed ─────────
-    // Release the lock BEFORE computing — never hold it during scope work.
-    let snapshot = {
+    // ── Compute scope bins directly from locked frame buffer (no 8MB clone) ──
+    // Hold the lock only during bin computation (fast integer ops), then release.
+    let scope_result = {
         let fb = frame_buffer.lock().unwrap();
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
@@ -59,32 +67,50 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
-                Some((fb.data.clone(), fb.width, fb.height, gen))
+                let w = fb.width;
+                let h = fb.height;
+                let base_step: u32 = if w > 1280 { 3 } else if w > 640 { 2 } else { 1 };
+                let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
+
+                // Compute bins while holding lock — integer ops only, no allocation
+                let bins = match mode {
+                    ScopeMode::Waveform => {
+                        ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(&fb.data, w, h, render_w as u32, step))
+                    }
+                    ScopeMode::Parade => {
+                        let gap = 4;
+                        let section_w = (render_w - gap * 2) / 3;
+                        ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(&fb.data, w, h, section_w as u32, step))
+                    }
+                    ScopeMode::Histogram => {
+                        ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(&fb.data, w, h, step))
+                    }
+                    ScopeMode::Vectorscope => {
+                        // Vectorscope needs the raw data — clone only for this mode
+                        ScopeBins::Raw(fb.data.clone(), w, h, step)
+                    }
+                };
+                Some((bins, gen))
             } else {
                 None
             }
         }
-        // Lock dropped here — engine is free to write new frames
+        // Lock dropped here
     };
 
-    if let Some((rgba, width, height, gen)) = snapshot {
+    if let Some((bins, gen)) = scope_result {
         state.frame_generations[mi] = gen;
         state.render_sizes[mi] = (render_w, render_h);
-        // Invalidate other modes so they re-render when switched to
         for idx in 0..4 {
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        let base_step: u32 = if width > 1280 { 3 } else if width > 640 { 2 } else { 1 };
-        let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
-
-        // CPU scope computation — fast enough (<2ms for 1080p) and avoids GPU
-        // device contention with the color grading pipeline which causes stalls.
-        let image = match mode {
-            ScopeMode::Waveform => render_waveform(&rgba, width, height, step, render_w, render_h),
-            ScopeMode::Parade => render_parade(&rgba, width, height, step, render_w, render_h),
-            ScopeMode::Histogram => render_histogram(&rgba, width, height, step, render_w, render_h),
-            ScopeMode::Vectorscope => render_vectorscope(&rgba, width, height, step, render_w, render_h, skin_tone_angle),
+        // Render from pre-computed bins (no frame data needed, lock already released)
+        let image = match bins {
+            ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, render_w, render_h),
+            ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h),
+            ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h),
+            ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, render_w, render_h, skin_tone_angle),
         };
 
         if let Some(ref mut tex) = state.textures[mi] {
@@ -276,28 +302,36 @@ impl AccumBuffer {
         }
     }
 
-    /// Convert to ColorImage with tone mapping + gamma correction.
-    /// Uses filmic tone mapping for vivid, saturated output (not Reinhard which is too dull).
+    /// Convert to ColorImage with tone mapping + fast gamma approximation.
     fn to_image(&self, bg: [f32; 3], gamma: f32) -> egui::ColorImage {
+        // Pre-compute gamma LUT (256 entries) — avoids powf() per pixel per channel
+        let inv_gamma = 1.0 / gamma;
+        let gamma_lut: [u8; 256] = {
+            let mut lut = [0u8; 256];
+            for i in 0..256 {
+                let v = i as f32 / 255.0;
+                lut[i] = (v.powf(inv_gamma) * 255.0).min(255.0) as u8;
+            }
+            lut
+        };
+
         let pixels = self.data.iter().map(|p| {
-            // Filmic/ACES-like tone mapping — preserves saturation better than Reinhard
-            // Attempt to keep vivid colors while controlling highlights
+            // Fast filmic tone mapping (no powf, just rational approximation)
             let tone = |x: f32| -> f32 {
                 let x = x.max(0.0);
-                // Lift shadows, preserve midtones, gentle highlight rolloff
                 let a = x * (x * 0.6 + 0.4);
                 let b = x * (x * 0.6 + 0.85) + 0.15;
                 (a / b).min(1.0)
             };
 
-            let r = tone(p[0]);
-            let g = tone(p[1]);
-            let b = tone(p[2]);
+            let r = (tone(p[0]) * 255.0).min(255.0) as u8;
+            let g = (tone(p[1]) * 255.0).min(255.0) as u8;
+            let b = (tone(p[2]) * 255.0).min(255.0) as u8;
 
-            // Gamma correction — higher gamma = brighter midtones
-            let r = (r.powf(1.0 / gamma) * 255.0 + bg[0]).min(255.0) as u8;
-            let g = (g.powf(1.0 / gamma) * 255.0 + bg[1]).min(255.0) as u8;
-            let b = (b.powf(1.0 / gamma) * 255.0 + bg[2]).min(255.0) as u8;
+            // Gamma via LUT + background add
+            let r = gamma_lut[r as usize].saturating_add(bg[0] as u8);
+            let g = gamma_lut[g as usize].saturating_add(bg[1] as u8);
+            let b = gamma_lut[b as usize].saturating_add(bg[2] as u8);
             egui::Color32::from_rgb(r, g, b)
         }).collect();
 
@@ -306,22 +340,17 @@ impl AccumBuffer {
 }
 
 #[inline(never)]
-fn render_waveform(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
-    let wf = klipp_color::scopes::compute_waveform_sampled(rgba, width, height, rw as u32, step);
-    render_waveform_from_bins(&wf.bins, rw, rh)
-}
-
-#[inline(never)]
 fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
     let mut buf = AccumBuffer::new(rw, rh);
 
-    let mut all_counts: Vec<u32> = bins.iter().flat_map(|c| c.iter()).copied().filter(|&c| c > 0).collect();
-    all_counts.sort_unstable();
-    let p95 = if all_counts.len() > 20 {
-        all_counts[all_counts.len() * 95 / 100] as f32
-    } else {
-        all_counts.last().copied().unwrap_or(1) as f32
-    }.max(1.0);
+    // Fast max-based normalization (avoids expensive sort for p95)
+    let max_count = bins.iter()
+        .flat_map(|c| c.iter())
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+    let p95 = max_count * 0.7; // approximate p95 as 70% of max
 
     for (col_idx, col) in bins.iter().enumerate() {
         if col_idx >= rw { continue; }
@@ -342,18 +371,9 @@ fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui:
         }
     }
 
-    buf.apply_bloom(3, 0.3, 0.5);
     let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
-}
-
-#[inline(never)]
-fn render_parade(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
-    let gap = 4;
-    let section_w = (rw - gap * 2) / 3;
-    let parade = klipp_color::scopes::compute_parade_sampled(rgba, width, height, section_w as u32, step);
-    render_parade_from_bins(&parade.red, &parade.green, &parade.blue, rw, rh)
 }
 
 #[inline(never)]
@@ -407,7 +427,6 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
         }
     }
 
-    buf.apply_bloom(3, 0.3, 0.5);
     let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
 
     // Channel separator lines — subtle
@@ -421,12 +440,6 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
 
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
-}
-
-#[inline(never)]
-fn render_histogram(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
-    let hist = klipp_color::scopes::compute_histogram_sampled(rgba, width, height, step);
-    render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, rw, rh)
 }
 
 #[inline(never)]
@@ -460,7 +473,6 @@ fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: 
         }
     }
 
-    buf.apply_bloom(2, 0.3, 0.5);
     buf.to_image([6.0, 6.0, 10.0], 1.6)
 }
 
@@ -598,7 +610,6 @@ fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize
         }
     }
 
-    buf.apply_bloom(3, 0.15, 0.7);
     buf.to_image([4.0, 4.0, 7.0], 2.2)
 }
 
