@@ -844,6 +844,16 @@ pub enum AppCommand {
     DeleteGradeVersion { clip_id: ClipId, version_index: usize },
     /// Rename a grade version.
     RenameGradeVersion { clip_id: ClipId, version_index: usize, name: String },
+
+    // Grade stills (reference frame comparison)
+    /// Capture the current viewer frame as a grade reference still.
+    CaptureGradeStill { name: String },
+    /// Delete a saved grade still by index.
+    DeleteGradeStill { index: usize },
+    /// Set the active grade still for comparison.
+    SetActiveGradeStill { index: Option<usize> },
+    /// Toggle split-view comparison with the active grade still.
+    ToggleGradeStillCompare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

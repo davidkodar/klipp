@@ -283,6 +283,64 @@ pub fn parse_csp(text: &str) -> Result<LutData, LutError> {
     Ok(LutData { size, data })
 }
 
+/// Generate a small reference image (64x64 RGBA) with color ramps for LUT preview.
+/// The image contains: top third = warm skin tones to cool sky, middle = full hue sweep, bottom = grayscale ramp.
+pub fn generate_lut_reference_image() -> Vec<u8> {
+    let w = 64usize;
+    let h = 64usize;
+    let mut rgba = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            let fx = x as f32 / w as f32;
+            let fy = y as f32 / h as f32;
+            let (r, g, b) = if fy < 0.33 {
+                // Top: warm to cool gradient (skin tones -> sky)
+                let r = 0.85 - fx * 0.5;
+                let g = 0.65 - fx * 0.15;
+                let b = 0.55 + fx * 0.4;
+                (r, g, b)
+            } else if fy < 0.66 {
+                // Middle: full hue sweep
+                let hue = fx * 360.0;
+                hsv_to_rgb(hue, 0.7, 0.8)
+            } else {
+                // Bottom: grayscale ramp
+                (fx, fx, fx)
+            };
+            rgba[idx] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+            rgba[idx + 1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+            rgba[idx + 2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+            rgba[idx + 3] = 255;
+        }
+    }
+    rgba
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let c = v * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + m, g + m, b + m)
+}
+
+/// Generate a LUT preview thumbnail by applying the LUT to a reference image.
+/// Returns 64x64 RGBA data.
+pub fn generate_lut_preview(lut: &LutData) -> Vec<u8> {
+    let mut rgba = generate_lut_reference_image();
+    apply_3d_lut(&mut rgba, lut, 1.0);
+    rgba
+}
+
 /// Apply a 3D LUT with trilinear interpolation to an RGBA buffer.
 /// `opacity` controls blend: 0.0 = original, 1.0 = fully graded.
 pub fn apply_3d_lut(rgba: &mut [u8], lut: &LutData, opacity: f32) {

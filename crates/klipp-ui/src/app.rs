@@ -2836,6 +2836,65 @@ impl KlippApp {
                     // Fall through to forward to engine (sets bypass_color_grade)
                 }
 
+                // Grade stills (reference frame comparison)
+                AppCommand::CaptureGradeStill { ref name } => {
+                    let fb = self.frame_buffer.lock().unwrap();
+                    if !fb.data.is_empty() && fb.width > 0 {
+                        let src_w = fb.width;
+                        let src_h = fb.height;
+                        // Downscale to 480px wide for memory efficiency
+                        let scale = (480.0 / src_w as f32).min(1.0);
+                        let tw = (src_w as f32 * scale) as u32;
+                        let th = (src_h as f32 * scale) as u32;
+                        // Simple nearest-neighbor downscale
+                        let mut rgba = vec![0u8; (tw * th * 4) as usize];
+                        for y in 0..th {
+                            for x in 0..tw {
+                                let sx = (x as f32 / scale) as u32;
+                                let sy = (y as f32 / scale) as u32;
+                                let si = ((sy * src_w + sx) * 4) as usize;
+                                let di = ((y * tw + x) * 4) as usize;
+                                if si + 3 < fb.data.len() && di + 3 < rgba.len() {
+                                    rgba[di..di + 4].copy_from_slice(&fb.data[si..si + 4]);
+                                }
+                            }
+                        }
+                        let still_name = name.clone();
+                        drop(fb);
+                        self.state.grade_stills.push(crate::state::GradeStill {
+                            name: still_name.clone(),
+                            rgba,
+                            width: tw,
+                            height: th,
+                            texture: None,
+                        });
+                        self.state.toast.show(format!("Grade still '{}' captured", still_name));
+                    }
+                    continue;
+                }
+                AppCommand::DeleteGradeStill { index } => {
+                    if *index < self.state.grade_stills.len() {
+                        self.state.grade_stills.remove(*index);
+                        if self.state.active_grade_still == Some(*index) {
+                            self.state.active_grade_still = None;
+                            self.state.grade_still_compare = false;
+                        } else if let Some(active) = self.state.active_grade_still {
+                            if active > *index {
+                                self.state.active_grade_still = Some(active - 1);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                AppCommand::SetActiveGradeStill { index } => {
+                    self.state.active_grade_still = *index;
+                    continue;
+                }
+                AppCommand::ToggleGradeStillCompare => {
+                    self.state.grade_still_compare = !self.state.grade_still_compare;
+                    continue;
+                }
+
                 // Global LUT — update UI state and forward to engine
                 AppCommand::LoadGlobalLut { ref path } => {
                     self.state.global_lut_path = Some(path.clone());
@@ -11499,6 +11558,89 @@ impl eframe::App for KlippApp {
                                 // Separator
                                 let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
                                 ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
+
+                                // ── Grade Stills reference section ──
+                                {
+                                    let stills_h = 28.0;
+                                    ui.horizontal(|ui| {
+                                        ui.set_height(stills_h);
+                                        ui.add_space(8.0);
+                                        ui.label(egui::RichText::new("Stills").size(10.0).color(self.theme.text_dim));
+                                        ui.add_space(4.0);
+
+                                        // Thumbnail buttons for each saved still
+                                        let mut delete_idx = None;
+                                        for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
+                                            let is_active = self.state.active_grade_still == Some(i);
+                                            // Upload texture lazily
+                                            if still.texture.is_none() && !still.rgba.is_empty() {
+                                                let sw = still.width as usize;
+                                                let sh = still.height as usize;
+                                                let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
+                                                    .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
+                                                    .collect();
+                                                let image = egui::ColorImage { size: [sw, sh], pixels };
+                                                still.texture = Some(ui.ctx().load_texture(
+                                                    format!("grade_still_thumb_{}", i),
+                                                    image,
+                                                    egui::TextureOptions::LINEAR,
+                                                ));
+                                            }
+                                            let btn_size = egui::vec2(36.0, 22.0);
+                                            let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                                            // Draw thumbnail
+                                            if let Some(tex) = &still.texture {
+                                                ui.painter().image(
+                                                    tex.id(),
+                                                    rect,
+                                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                                    egui::Color32::WHITE,
+                                                );
+                                            }
+                                            // Active border
+                                            if is_active {
+                                                ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, self.theme.text_accent));
+                                            } else {
+                                                ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5, self.theme.border));
+                                            }
+                                            if resp.clicked() {
+                                                all_cmds.push(AppCommand::SetActiveGradeStill {
+                                                    index: if is_active { None } else { Some(i) },
+                                                });
+                                            }
+                                            let resp = resp.on_hover_text(&still.name);
+                                            resp.context_menu(|ui| {
+                                                if ui.button("Delete").clicked() {
+                                                    delete_idx = Some(i);
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                        }
+                                        if let Some(idx) = delete_idx {
+                                            all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
+                                        }
+
+                                        // Capture button
+                                        if ui.small_button("\u{1F4F7}").on_hover_text("Capture current frame as grade still").clicked() {
+                                            let name = format!("Still {}", self.state.grade_stills.len() + 1);
+                                            all_cmds.push(AppCommand::CaptureGradeStill { name });
+                                        }
+
+                                        // Compare toggle
+                                        let compare_active = self.state.grade_still_compare;
+                                        let compare_label = if compare_active { "Compare ON" } else { "Compare" };
+                                        let compare_color = if compare_active { self.theme.text_accent } else { self.theme.text_dim };
+                                        if ui.add(egui::Button::new(egui::RichText::new(compare_label).size(10.0).color(compare_color)).frame(false))
+                                            .on_hover_text("Toggle split-view comparison with active still")
+                                            .clicked()
+                                        {
+                                            all_cmds.push(AppCommand::ToggleGradeStillCompare);
+                                        }
+                                    });
+                                    // Separator
+                                    let sep_rect2 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                                    ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
+                                }
 
                                 if self.state.show_node_strip && self.state.selected_node_id.is_some() {
                                     // Node strip visible + node selected → show that node's params

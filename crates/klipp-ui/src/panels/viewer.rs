@@ -303,14 +303,64 @@ impl ViewerPanel {
             egui::vec2(display_w, display_h),
         );
 
-        // Draw video frame
-        if let Some(tex) = &self.video_texture {
-            ui.painter().image(
-                tex.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+        // Grade still split-view comparison (takes priority over before/after)
+        let grade_still_active = state.grade_still_compare
+            && state.active_grade_still.is_some()
+            && state.active_grade_still.unwrap() < state.grade_stills.len();
+
+        if grade_still_active {
+            let split_frac = state.split_position;
+            let split_x = image_rect.min.x + split_frac * image_rect.width();
+
+            // Left side: grade still reference
+            let still_idx = state.active_grade_still.unwrap();
+            let still = &mut state.grade_stills[still_idx];
+            // Lazily upload texture
+            if still.texture.is_none() && !still.rgba.is_empty() {
+                let sw = still.width as usize;
+                let sh = still.height as usize;
+                let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
+                    .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
+                    .collect();
+                let image = egui::ColorImage { size: [sw, sh], pixels };
+                still.texture = Some(ui.ctx().load_texture(
+                    format!("grade_still_{}", still_idx),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+            if let Some(tex) = &still.texture {
+                let left_rect = egui::Rect::from_min_max(image_rect.min, egui::pos2(split_x, image_rect.max.y));
+                let uv_right = split_frac;
+                ui.painter().image(
+                    tex.id(),
+                    left_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(uv_right, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+
+            // Right side: current graded frame
+            if let Some(tex) = &self.video_texture {
+                let right_rect = egui::Rect::from_min_max(egui::pos2(split_x, image_rect.min.y), image_rect.max);
+                let uv_left = split_frac;
+                ui.painter().image(
+                    tex.id(),
+                    right_rect,
+                    egui::Rect::from_min_max(egui::pos2(uv_left, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        } else {
+            // Normal: draw full video frame
+            if let Some(tex) = &self.video_texture {
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         }
 
         // Draw title overlay (separate texture, alpha-blended on top of video)
@@ -542,10 +592,15 @@ impl ViewerPanel {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 
-        // ── Before/After split divider ──
-        if state.before_after_active {
+        // ── Before/After or Grade Still split divider ──
+        let show_split_divider = state.before_after_active || grade_still_active;
+        if show_split_divider {
             let split_x = image_rect.min.x + state.split_position * image_rect.width();
-            let divider_color = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+            let divider_color = if grade_still_active {
+                egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
+            } else {
+                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+            };
 
             // Vertical divider line
             ui.painter().vline(
@@ -557,10 +612,16 @@ impl ViewerPanel {
             // Labels
             let label_font = egui::FontId::proportional(10.0);
             let label_y = image_rect.min.y + 14.0;
+            let left_label = if grade_still_active {
+                let idx = state.active_grade_still.unwrap();
+                state.grade_stills[idx].name.as_str()
+            } else {
+                "Original"
+            };
             ui.painter().text(
                 egui::pos2(split_x - 8.0, label_y),
                 egui::Align2::RIGHT_CENTER,
-                "Original",
+                left_label,
                 label_font.clone(),
                 egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
             );

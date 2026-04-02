@@ -3,6 +3,10 @@ use crate::icons::Icon;
 use crate::state::AppState;
 use klipp_core::AppCommand;
 
+/// Cache for LUT preview thumbnails, stored in egui context data.
+#[derive(Clone, Default)]
+struct LutPreviewCache(std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
     Info,
@@ -1220,7 +1224,6 @@ impl InspectorPanel {
     }
 
     /// Show the Color tab content: color redirect, global LUT, and LUT presets.
-    /// Called from both panels/inspector.rs and inspector/mod.rs.
     pub fn show_color_and_luts(
         ui: &mut egui::Ui,
         state: &AppState,
@@ -1381,13 +1384,15 @@ impl InspectorPanel {
                                     .is_some_and(|ext| ext == "cube" || ext == "3dl" || ext == "csp"))
                                 .collect();
                             entries.sort_by_key(|e| e.file_name());
+                            let ctx = ui.ctx().clone();
                             for entry in entries {
                                 let path = entry.path();
                                 let name = path.file_stem()
                                     .map(|s| s.to_string_lossy().to_string())
                                     .unwrap_or_default();
                                 let is_active = state.global_lut_path.as_ref() == Some(&path);
-                                let row_h = 22.0;
+                                let thumb_size = 32.0;
+                                let row_h = thumb_size + 4.0;
                                 let (rect, resp) = ui.allocate_exact_size(
                                     egui::vec2(ui.available_width(), row_h),
                                     egui::Sense::click(),
@@ -1398,22 +1403,40 @@ impl InspectorPanel {
                                 } else if resp.hovered() {
                                     ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12));
                                 }
+                                // LUT preview thumbnail (lazy-loaded only when visible)
+                                let thumb_rect = egui::Rect::from_min_size(
+                                    egui::pos2(rect.min.x + 4.0, rect.min.y + 2.0),
+                                    egui::vec2(thumb_size, thumb_size),
+                                );
+                                if ui.is_rect_visible(thumb_rect) {
+                                    if let Some(tex) = Self::get_lut_preview(&ctx, &path) {
+                                        ui.painter().image(
+                                            tex.id(),
+                                            thumb_rect,
+                                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                            egui::Color32::WHITE,
+                                        );
+                                        // Subtle border around thumbnail
+                                        ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(60, 60, 65)));
+                                    }
+                                }
                                 // Text: white for active, dim for others
                                 let text_color = if is_active {
                                     egui::Color32::from_rgb(255, 255, 255)
                                 } else {
                                     egui::Color32::from_rgb(180, 180, 190)
                                 };
+                                let text_x = rect.min.x + thumb_size + 12.0;
                                 // Active indicator dot
                                 if is_active {
                                     ui.painter().circle_filled(
-                                        egui::pos2(rect.min.x + 8.0, rect.center().y),
+                                        egui::pos2(text_x, rect.center().y),
                                         3.0,
                                         egui::Color32::from_rgb(232, 160, 32),
                                     );
                                 }
                                 ui.painter().text(
-                                    egui::pos2(rect.min.x + if is_active { 16.0 } else { 8.0 }, rect.center().y),
+                                    egui::pos2(text_x + if is_active { 8.0 } else { 0.0 }, rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     &name,
                                     egui::FontId::proportional(11.0),
@@ -1431,6 +1454,40 @@ impl InspectorPanel {
                 }
             }
         });
+    }
+
+    /// Get or create a LUT preview thumbnail texture for the given LUT file path.
+    /// Returns None if the LUT cannot be loaded. Uses lazy loading (only generates
+    /// preview when first requested). Cache is stored in egui context data so it
+    /// is shared across all inspector instances.
+    fn get_lut_preview(
+        ctx: &egui::Context,
+        path: &std::path::Path,
+    ) -> Option<egui::TextureHandle> {
+        let cache_id = egui::Id::new("lut_preview_cache");
+        // Check if already cached
+        let existing: Option<egui::TextureHandle> = ctx.data_mut(|d| {
+            d.get_temp::<LutPreviewCache>(cache_id)
+                .and_then(|c| c.0.get(path).cloned())
+        });
+        if let Some(handle) = existing {
+            return Some(handle);
+        }
+        // Load LUT and generate preview
+        let lut = klipp_color::load_lut(path).ok()?;
+        let rgba = klipp_color::generate_lut_preview(&lut);
+        let image = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rgba);
+        let name = path.file_stem()
+            .map(|s| format!("lut_preview_{}", s.to_string_lossy()))
+            .unwrap_or_else(|| "lut_preview".into());
+        let handle = ctx.load_texture(&name, image, egui::TextureOptions::LINEAR);
+        ctx.data_mut(|d| {
+            let mut cache = d.get_temp::<LutPreviewCache>(cache_id)
+                .unwrap_or_default();
+            cache.0.insert(path.to_path_buf(), handle.clone());
+            d.insert_temp(cache_id, cache);
+        });
+        Some(handle)
     }
 
     /// Find the bundled LUTs directory. Checks:
@@ -1542,13 +1599,63 @@ impl InspectorPanel {
                             .collect();
                         entries.sort_by_key(|e| e.file_name());
 
+                        let ctx = ui.ctx().clone();
                         for entry in entries {
                             let path = entry.path();
                             let name = path.file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_default();
                             let is_active = state.global_lut_path.as_ref() == Some(&path);
-                            if ui.selectable_label(is_active, &name).clicked() {
+                            let thumb_size = 32.0;
+                            let row_h = thumb_size + 4.0;
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), row_h),
+                                egui::Sense::click(),
+                            );
+                            // Background highlight
+                            if is_active {
+                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12));
+                            }
+                            // LUT preview thumbnail (lazy-loaded only when visible)
+                            let thumb_rect = egui::Rect::from_min_size(
+                                egui::pos2(rect.min.x + 4.0, rect.min.y + 2.0),
+                                egui::vec2(thumb_size, thumb_size),
+                            );
+                            if ui.is_rect_visible(thumb_rect) {
+                                if let Some(tex) = Self::get_lut_preview(&ctx, &path) {
+                                    ui.painter().image(
+                                        tex.id(),
+                                        thumb_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(60, 60, 65)));
+                                }
+                            }
+                            // Text
+                            let text_color = if is_active {
+                                egui::Color32::from_rgb(255, 255, 255)
+                            } else {
+                                egui::Color32::from_rgb(180, 180, 190)
+                            };
+                            let text_x = rect.min.x + thumb_size + 12.0;
+                            if is_active {
+                                ui.painter().circle_filled(
+                                    egui::pos2(text_x, rect.center().y),
+                                    3.0,
+                                    egui::Color32::from_rgb(232, 160, 32),
+                                );
+                            }
+                            ui.painter().text(
+                                egui::pos2(text_x + if is_active { 8.0 } else { 0.0 }, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                &name,
+                                egui::FontId::proportional(11.0),
+                                text_color,
+                            );
+                            if resp.clicked() {
                                 if is_active {
                                     cmds.push(AppCommand::ClearGlobalLut);
                                 } else {

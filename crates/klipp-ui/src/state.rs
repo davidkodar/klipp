@@ -428,6 +428,14 @@ pub struct AppState {
     pub before_after_active: bool,
     pub split_position: f32, // 0.0-1.0, default 0.5
 
+    // Grade stills (reference frame comparison)
+    /// Saved grade reference stills for comparison.
+    pub grade_stills: Vec<GradeStill>,
+    /// Index of the active grade still being compared (None = no comparison).
+    pub active_grade_still: Option<usize>,
+    /// Whether split-view comparison with a grade still is active.
+    pub grade_still_compare: bool,
+
     // Viewer overlay (zebra / false color)
     pub viewer_overlay: ViewerOverlay,
     pub frame_count: u64, // for zebra animation
@@ -637,6 +645,28 @@ pub struct AppState {
     pub viewer_text_cursor_font_size: Option<f32>,
     /// Color at current cursor position (resolved from style runs).
     pub viewer_text_cursor_color: Option<[u8; 4]>,
+}
+
+/// A saved reference frame for grading comparison.
+#[derive(Clone)]
+pub struct GradeStill {
+    pub name: String,
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub texture: Option<egui::TextureHandle>,
+}
+
+impl std::fmt::Debug for GradeStill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GradeStill")
+            .field("name", &self.name)
+            .field("rgba_len", &self.rgba.len())
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("has_texture", &self.texture.is_some())
+            .finish()
+    }
 }
 
 /// Eyedropper mode — determines what happens when the user clicks the viewer.
@@ -908,6 +938,9 @@ impl Default for AppState {
             matte_preview_active: false,
             before_after_active: false,
             split_position: 0.5,
+            grade_stills: Vec::new(),
+            active_grade_still: None,
+            grade_still_compare: false,
             viewer_overlay: ViewerOverlay::None,
             frame_count: 0,
             available_plugins: Vec::new(),
