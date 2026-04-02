@@ -162,7 +162,7 @@ pub struct KlippApp {
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
-    ui_executor: klipp_nodes::GraphExecutor,
+    // UI executor removed — engine handles re-grading on its own thread
     /// File watcher for external media modification detection.
     /// Must be kept alive — dropping stops watching.
     #[allow(dead_code)]
@@ -254,7 +254,7 @@ impl KlippApp {
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
-            ui_executor: klipp_nodes::GraphExecutor::new(),
+            // ui_executor removed — engine re-grades on its own thread
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
         };
@@ -1656,46 +1656,10 @@ impl KlippApp {
     /// Zero latency — scopes see the result on the same frame as the slider change.
     fn sync_and_refresh_frame(&mut self) {
         self.sync_sequence_to_engine();
-
-        // Re-grade on UI thread using the pre-grade frame from the shared buffer
-        let pregrade = {
-            let fb = self.frame_buffer.lock().unwrap();
-            if fb.pregrade_data.is_empty() { return; }
-            (fb.pregrade_data.clone(), fb.width, fb.height)
-        };
-
-        // Find the current clip's node graph and re-grade
-        let mut graded: Option<Vec<u8>> = None;
-        if let Some(cid) = self.state.selected_clip {
-            let seq_idx = self.state.active_sequence_idx;
-            if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
-                .find_map(|t| t.clips.iter().find(|c| c.id == cid))
-            {
-                let graph = &clip.node_graph;
-                if !graph.is_identity() {
-                    let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                    match self.ui_executor.execute(
-                        &pregrade.0, graph, pregrade.1, pregrade.2,
-                        clip_time, 0, None, None,
-                    ) {
-                        Ok((result, _)) => { graded = Some(result); }
-                        Err(e) => {
-                            tracing::warn!("UI re-grade failed: {:?}, using pregrade", e);
-                        }
-                    }
-                }
-            }
-        }
-
-        // ALWAYS write a frame to bump generation — scopes must see the change.
-        // If grading succeeded, use the graded result; otherwise use pregrade unchanged.
-        let output = graded.unwrap_or_else(|| pregrade.0.clone());
-        {
-            let mut fb = self.frame_buffer.lock().unwrap();
-            fb.write_frame(output, pregrade.1, pregrade.2);
-        }
-
-        // Also tell the engine so it stays in sync
+        // Tell the engine to re-grade the cached frame. The engine does this on
+        // its own thread with its own GPU pipeline — no UI-thread blocking.
+        // The engine calls write_frame() which bumps generation, and scopes
+        // detect the change on the next UI frame.
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
