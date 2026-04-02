@@ -2,6 +2,7 @@ pub mod blur;
 mod chroma_key;
 mod crop;
 pub mod gpu;
+pub mod gpu_scopes;
 mod light;
 pub mod nv12_gpu;
 mod opacity;

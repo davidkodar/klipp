@@ -10,6 +10,9 @@ pub struct ScopeState {
     frame_hashes: [u64; 4],
     /// Render sizes used for each cached texture.
     render_sizes: [(usize, usize); 4],
+    /// GPU scopes pipeline (lazy-initialized on first use).
+    gpu_scopes: Option<klipp_effects::gpu_scopes::GpuScopesPipeline>,
+    gpu_scopes_init_attempted: bool,
 }
 
 fn mode_index(mode: ScopeMode) -> usize {
@@ -28,6 +31,8 @@ impl Default for ScopeState {
             last_update: std::time::Instant::now(),
             frame_hashes: [0; 4],
             render_sizes: [(0, 0); 4],
+            gpu_scopes: None,
+            gpu_scopes_init_attempted: false,
         }
     }
 }
@@ -90,10 +95,42 @@ pub fn show_scopes(
             state.frame_hashes[mi] = frame_hash;
             state.render_sizes[mi] = (render_w, render_h);
 
+            // Lazy-init GPU scopes pipeline
+            if !state.gpu_scopes_init_attempted {
+                state.gpu_scopes_init_attempted = true;
+                state.gpu_scopes = klipp_effects::gpu_scopes::GpuScopesPipeline::new();
+                if state.gpu_scopes.is_some() {
+                    tracing::info!("GPU scopes pipeline initialized");
+                }
+            }
+
             let image = match mode {
-                ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                ScopeMode::Waveform => {
+                    if let Some(gpu) = &mut state.gpu_scopes {
+                        let wf = gpu.compute_waveform(&fb.data, fb.width, fb.height, render_w as u32, step);
+                        render_waveform_from_bins(&wf.bins, render_w, render_h)
+                    } else {
+                        render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                    }
+                }
+                ScopeMode::Parade => {
+                    if let Some(gpu) = &mut state.gpu_scopes {
+                        let gap = 4;
+                        let section_w = (render_w - gap * 2) / 3;
+                        let p = gpu.compute_parade(&fb.data, fb.width, fb.height, section_w as u32, step);
+                        render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
+                    } else {
+                        render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                    }
+                }
+                ScopeMode::Histogram => {
+                    if let Some(gpu) = &mut state.gpu_scopes {
+                        let h = gpu.compute_histogram(&fb.data, fb.width, fb.height, step);
+                        render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
+                    } else {
+                        render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                    }
+                }
                 ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
             };
 
@@ -119,9 +156,32 @@ pub fn show_scopes(
                     state.frame_hashes[idx] = frame_hash;
                     state.render_sizes[idx] = (render_w, render_h);
                     let image = match m {
-                        ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                        ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                        ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                        ScopeMode::Waveform => {
+                            if let Some(gpu) = &mut state.gpu_scopes {
+                                let wf = gpu.compute_waveform(&fb.data, fb.width, fb.height, render_w as u32, step);
+                                render_waveform_from_bins(&wf.bins, render_w, render_h)
+                            } else {
+                                render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                            }
+                        }
+                        ScopeMode::Parade => {
+                            if let Some(gpu) = &mut state.gpu_scopes {
+                                let gap = 4;
+                                let section_w = (render_w - gap * 2) / 3;
+                                let p = gpu.compute_parade(&fb.data, fb.width, fb.height, section_w as u32, step);
+                                render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
+                            } else {
+                                render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                            }
+                        }
+                        ScopeMode::Histogram => {
+                            if let Some(gpu) = &mut state.gpu_scopes {
+                                let h = gpu.compute_histogram(&fb.data, fb.width, fb.height, step);
+                                render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
+                            } else {
+                                render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h)
+                            }
+                        }
                         ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
                     };
                     if let Some(ref mut tex) = state.textures[idx] {
@@ -353,10 +413,14 @@ impl AccumBuffer {
 #[inline(never)]
 fn render_waveform(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
     let wf = klipp_color::scopes::compute_waveform_sampled(rgba, width, height, rw as u32, step);
+    render_waveform_from_bins(&wf.bins, rw, rh)
+}
+
+#[inline(never)]
+fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
     let mut buf = AccumBuffer::new(rw, rh);
 
-    // Use percentile-based normalization for better contrast (not max which makes everything dim)
-    let mut all_counts: Vec<u32> = wf.bins.iter().flat_map(|c| c.iter()).copied().filter(|&c| c > 0).collect();
+    let mut all_counts: Vec<u32> = bins.iter().flat_map(|c| c.iter()).copied().filter(|&c| c > 0).collect();
     all_counts.sort_unstable();
     let p95 = if all_counts.len() > 20 {
         all_counts[all_counts.len() * 95 / 100] as f32
@@ -364,13 +428,12 @@ fn render_waveform(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, r
         all_counts.last().copied().unwrap_or(1) as f32
     }.max(1.0);
 
-    for (col_idx, col) in wf.bins.iter().enumerate() {
+    for (col_idx, col) in bins.iter().enumerate() {
         if col_idx >= rw { continue; }
         for (bin_idx, &count) in col.iter().enumerate() {
             if count == 0 { continue; }
             let y = rh - 1 - (bin_idx * rh / 256);
             if y >= rh { continue; }
-            // Normalize to p95 so most traces are visible, hot spots bloom
             let raw = count as f32 / p95;
             let intensity = raw.min(4.0);
 
@@ -395,10 +458,17 @@ fn render_parade(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh:
     let gap = 4;
     let section_w = (rw - gap * 2) / 3;
     let parade = klipp_color::scopes::compute_parade_sampled(rgba, width, height, section_w as u32, step);
+    render_parade_from_bins(&parade.red, &parade.green, &parade.blue, rw, rh)
+}
+
+#[inline(never)]
+fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]], parade_blue: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
+    let gap = 4;
+    let section_w = (rw - gap * 2) / 3;
     let mut buf = AccumBuffer::new(rw, rh);
 
     // Percentile normalization for each channel independently for best contrast
-    let all_data: Vec<&Vec<[u32; 256]>> = vec![&parade.red, &parade.green, &parade.blue];
+    let all_data: [&[[u32; 256]]; 3] = [parade_red, parade_green, parade_blue];
     let mut all_counts: Vec<u32> = all_data.iter()
         .flat_map(|d| d.iter().flat_map(|c| c.iter()))
         .copied().filter(|&c| c > 0).collect();
@@ -413,11 +483,11 @@ fn render_parade(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh:
     // - Sparse traces: pure vivid saturated color
     // - Dense traces: color shifts toward bright white (white-hot core)
     // - Very high primary color values (1.6+) with secondary bleed for shimmering
-    let channels: [(&Vec<[u32; 256]>, usize, (f32, f32, f32), (f32, f32, f32)); 3] = [
+    let channels: [(&[[u32; 256]], usize, (f32, f32, f32), (f32, f32, f32)); 3] = [
         //                                      base color          white-hot secondary bleed
-        (&parade.red,   0,                    (1.6, 0.08, 0.05),  (0.3, 0.5, 0.6)),
-        (&parade.green, section_w + gap,       (0.05, 1.6, 0.08),  (0.5, 0.3, 0.6)),
-        (&parade.blue,  (section_w + gap) * 2, (0.08, 0.15, 1.6),  (0.6, 0.5, 0.3)),
+        (parade_red,   0,                    (1.6, 0.08, 0.05),  (0.3, 0.5, 0.6)),
+        (parade_green, section_w + gap,       (0.05, 1.6, 0.08),  (0.5, 0.3, 0.6)),
+        (parade_blue,  (section_w + gap) * 2, (0.08, 0.15, 1.6),  (0.6, 0.5, 0.3)),
     ];
 
     for (data, x_off, (cr, cg, cb), (wr, wg, wb)) in &channels {
@@ -461,17 +531,22 @@ fn render_parade(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh:
 #[inline(never)]
 fn render_histogram(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
     let hist = klipp_color::scopes::compute_histogram_sampled(rgba, width, height, step);
+    render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, rw, rh)
+}
+
+#[inline(never)]
+fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: &[u32; 256], luma_bins: &[u32; 256], rw: usize, rh: usize) -> egui::ColorImage {
     let mut buf = AccumBuffer::new(rw, rh);
 
-    let max_count = hist.r.iter().chain(hist.g.iter()).chain(hist.b.iter())
+    let max_count = r_bins.iter().chain(g_bins.iter()).chain(b_bins.iter())
         .copied().max().unwrap_or(1).max(1) as f32;
 
     let bin_scale = rw as f32 / 256.0;
     let channels: [(&[u32; 256], f32, f32, f32); 4] = [
-        (&hist.luma, 0.4, 0.4, 0.4),
-        (&hist.r,    1.0, 0.12, 0.08),
-        (&hist.g,    0.08, 0.95, 0.12),
-        (&hist.b,    0.12, 0.25, 1.0),
+        (luma_bins, 0.4, 0.4, 0.4),
+        (r_bins,    1.0, 0.12, 0.08),
+        (g_bins,    0.08, 0.95, 0.12),
+        (b_bins,    0.12, 0.25, 1.0),
     ];
 
     for (data, cr, cg, cb) in &channels {
