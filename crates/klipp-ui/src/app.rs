@@ -1664,9 +1664,9 @@ impl KlippApp {
             (fb.pregrade_data.clone(), fb.width, fb.height)
         };
 
-        // Find the current clip's node graph
-        let clip_id = self.state.selected_clip;
-        if let Some(cid) = clip_id {
+        // Find the current clip's node graph and re-grade
+        let mut graded: Option<Vec<u8>> = None;
+        if let Some(cid) = self.state.selected_clip {
             let seq_idx = self.state.active_sequence_idx;
             if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
                 .find_map(|t| t.clips.iter().find(|c| c.id == cid))
@@ -1674,18 +1674,25 @@ impl KlippApp {
                 let graph = &clip.node_graph;
                 if !graph.is_identity() {
                     let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                    if let Ok((graded, _)) = self.ui_executor.execute(
+                    match self.ui_executor.execute(
                         &pregrade.0, graph, pregrade.1, pregrade.2,
                         clip_time, 0, None, None,
                     ) {
-                        let mut fb = self.frame_buffer.lock().unwrap();
-                        fb.write_frame(graded, pregrade.1, pregrade.2);
+                        Ok((result, _)) => { graded = Some(result); }
+                        Err(e) => {
+                            tracing::warn!("UI re-grade failed: {:?}, using pregrade", e);
+                        }
                     }
-                } else {
-                    let mut fb = self.frame_buffer.lock().unwrap();
-                    fb.write_frame(pregrade.0, pregrade.1, pregrade.2);
                 }
             }
+        }
+
+        // ALWAYS write a frame to bump generation — scopes must see the change.
+        // If grading succeeded, use the graded result; otherwise use pregrade unchanged.
+        let output = graded.unwrap_or_else(|| pregrade.0.clone());
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame(output, pregrade.1, pregrade.2);
         }
 
         // Also tell the engine so it stays in sync

@@ -9,11 +9,6 @@ pub struct ScopeState {
     frame_generations: [u64; 4],
     /// Render sizes used for each cached texture.
     render_sizes: [(usize, usize); 4],
-    /// GPU scopes pipeline (lazy-initialized on first use).
-    gpu_scopes: Option<klipp_effects::gpu_scopes::GpuScopesPipeline>,
-    gpu_scopes_init_attempted: bool,
-    /// Receiver for background scope renders (mode_index, image).
-    bg_receiver: Option<std::sync::mpsc::Receiver<(usize, egui::ColorImage)>>,
 }
 
 fn mode_index(mode: ScopeMode) -> usize {
@@ -31,9 +26,6 @@ impl Default for ScopeState {
             textures: [None, None, None, None],
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             render_sizes: [(0, 0); 4],
-            gpu_scopes: None,
-            gpu_scopes_init_attempted: false,
-            bg_receiver: None,
         }
     }
 }
@@ -86,43 +78,12 @@ pub fn show_scopes(
         let base_step: u32 = if width > 1280 { 3 } else if width > 640 { 2 } else { 1 };
         let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
-        // Lazy-init GPU scopes pipeline
-        if !state.gpu_scopes_init_attempted {
-            state.gpu_scopes_init_attempted = true;
-            state.gpu_scopes = klipp_effects::gpu_scopes::GpuScopesPipeline::new();
-            if state.gpu_scopes.is_some() {
-                tracing::info!("GPU scopes pipeline initialized");
-            }
-        }
-
-        // Only compute the ACTIVE scope mode — don't waste time on inactive ones
+        // CPU scope computation — fast enough (<2ms for 1080p) and avoids GPU
+        // device contention with the color grading pipeline which causes stalls.
         let image = match mode {
-            ScopeMode::Waveform => {
-                if let Some(gpu) = &mut state.gpu_scopes {
-                    let wf = gpu.compute_waveform(&rgba, width, height, render_w as u32, step);
-                    render_waveform_from_bins(&wf.bins, render_w, render_h)
-                } else {
-                    render_waveform(&rgba, width, height, step, render_w, render_h)
-                }
-            }
-            ScopeMode::Parade => {
-                if let Some(gpu) = &mut state.gpu_scopes {
-                    let gap = 4;
-                    let section_w = (render_w - gap * 2) / 3;
-                    let p = gpu.compute_parade(&rgba, width, height, section_w as u32, step);
-                    render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
-                } else {
-                    render_parade(&rgba, width, height, step, render_w, render_h)
-                }
-            }
-            ScopeMode::Histogram => {
-                if let Some(gpu) = &mut state.gpu_scopes {
-                    let h = gpu.compute_histogram(&rgba, width, height, step);
-                    render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
-                } else {
-                    render_histogram(&rgba, width, height, step, render_w, render_h)
-                }
-            }
+            ScopeMode::Waveform => render_waveform(&rgba, width, height, step, render_w, render_h),
+            ScopeMode::Parade => render_parade(&rgba, width, height, step, render_w, render_h),
+            ScopeMode::Histogram => render_histogram(&rgba, width, height, step, render_w, render_h),
             ScopeMode::Vectorscope => render_vectorscope(&rgba, width, height, step, render_w, render_h, skin_tone_angle),
         };
 
@@ -132,19 +93,6 @@ pub fn show_scopes(
             state.textures[mi] = Some(ui.ctx().load_texture(
                 format!("scope_{mi}"), image, egui::TextureOptions::LINEAR,
             ));
-        }
-    }
-
-    // Check for pending background results (async scope renders)
-    if let Some(rx) = &state.bg_receiver {
-        if let Ok((idx, image)) = rx.try_recv() {
-            if let Some(ref mut tex) = state.textures[idx] {
-                tex.set(image, egui::TextureOptions::LINEAR);
-            } else {
-                state.textures[idx] = Some(ui.ctx().load_texture(
-                    format!("scope_{idx}"), image, egui::TextureOptions::LINEAR,
-                ));
-            }
         }
     }
 

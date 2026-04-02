@@ -887,7 +887,7 @@ impl GpuEffectsPipeline {
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
     pub fn apply_clarity_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
         let byte_size = (width * height * 4) as u64;
-        let luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
+        let _luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
         self.ensure_buffers(byte_size);
         // Need a third buffer for blur intermediate
         if self.buf_c.is_none() || self.current_buf_size < byte_size {
