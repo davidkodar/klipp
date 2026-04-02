@@ -421,7 +421,10 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             if ui.add_enabled(has_clip, egui::Button::new("Solo").shortcut_text("Ctrl+L")).clicked() {
-                // TODO: wire to clip solo when AppCommand::SetClipSolo is added
+                if let Some(cid) = state.selected_clip {
+                    let soloed = state.sequence().all_clips().find(|c| c.id == cid).is_some_and(|c| c.solo);
+                    cmds.push(AppCommand::SetClipSolo { clip_id: cid, solo: !soloed });
+                }
                 ui.close_menu();
             }
             ui.separator();
@@ -457,7 +460,13 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Speed...")).clicked() {
-                // TODO: wire to speed dialog when implemented
+                // Read current clip speed to pre-fill dialog
+                if let Some(cid) = state.selected_clip {
+                    let spd = state.sequence().all_clips().find(|c| c.id == cid).map(|c| c.speed).unwrap_or(1.0);
+                    state.speed_dialog_value = spd.abs() * 100.0;
+                    state.speed_dialog_reverse = spd < 0.0;
+                }
+                state.show_speed_dialog = true;
                 ui.close_menu();
             }
             ui.menu_button("Motion Presets", |ui| {
@@ -655,8 +664,23 @@ impl ToolbarPanel {
                 let c = if state.active_workspace == *ws { "\u{2713} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
+            // Show user-saved workspaces
+            for (i, ws) in state.custom_workspaces.clone().iter().enumerate() {
+                if ui.button(&ws.name).clicked() {
+                    let ws = &state.custom_workspaces[i];
+                    state.show_browser_panel = ws.show_browser;
+                    state.show_inspector_panel = ws.show_inspector;
+                    state.show_history_panel = ws.show_history;
+                    state.show_markers_panel = ws.show_markers;
+                    state.show_curve_editor = ws.show_curve_editor;
+                    state.show_scopes = ws.show_scopes;
+                    state.show_color_panel = ws.show_color_panel;
+                    ui.close_menu();
+                }
+            }
             if ui.button("Save Workspace...").clicked() {
-                // Save current panel layout as a workspace preset
+                state.save_workspace_name = "My Workspace".into();
+                state.show_save_workspace_dialog = true;
                 ui.close_menu();
             }
             ui.separator();

@@ -397,6 +397,8 @@ pub enum AppCommand {
     },
     /// Toggle a clip's enabled state (disabled clips are dimmed and skipped in render).
     SetClipEnabled { clip_id: ClipId, enabled: bool },
+    /// Solo a clip — mute all other clips on the same track.
+    SetClipSolo { clip_id: ClipId, solo: bool },
     SelectAllClips,
     /// Select all clips that start after the playhead.
     SelectClipsForward,

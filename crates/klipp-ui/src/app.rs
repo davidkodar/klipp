@@ -249,6 +249,14 @@ impl KlippApp {
         app.state.audio_sample_rate = app.cpal_sample_rate;
         app.state.audio_backend_ok = klipp_engine::audio_output::probe_audio_available();
 
+        // Load saved workspaces
+        let ws_path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
+        if let Ok(data) = std::fs::read_to_string(&ws_path) {
+            if let Ok(workspaces) = serde_json::from_str::<Vec<crate::state::SavedWorkspaceLayout>>(&data) {
+                app.state.custom_workspaces = workspaces;
+            }
+        }
+
         // Sync preferences to state
         app.state.remember_inspector_layout = app.prefs.general.remember_inspector_layout;
         if app.state.remember_inspector_layout {
@@ -5059,6 +5067,7 @@ impl KlippApp {
                         speed_keyframes: Vec::new(),
                         source_rotation: 0,
                         enabled: true,
+                        solo: false,
                         multicam_group: None,
                         multicam_angle: 0,
                         multicam_cuts: Vec::new(),
@@ -5796,6 +5805,7 @@ impl KlippApp {
                                     speed_keyframes: clip.speed_keyframes.clone(),
                                     source_rotation: clip.source_rotation,
                                     enabled: clip.enabled,
+                                    solo: clip.solo,
                                     multicam_group: clip.multicam_group,
                                     multicam_angle: clip.multicam_angle,
                                     multicam_cuts: clip.multicam_cuts.clone(),
@@ -5954,6 +5964,7 @@ impl KlippApp {
                             speed_keyframes: clip.speed_keyframes.clone(),
                             source_rotation: clip.source_rotation,
                             enabled: clip.enabled,
+                            solo: clip.solo,
                             multicam_group: clip.multicam_group,
                             multicam_angle: clip.multicam_angle,
                             multicam_cuts: clip.multicam_cuts.clone(),
@@ -5984,6 +5995,17 @@ impl KlippApp {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.enabled = en;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SetClipSolo { clip_id, solo } => {
+                    let cid = *clip_id;
+                    let s = *solo;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.solo = s;
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
@@ -6668,6 +6690,7 @@ impl KlippApp {
                                     speed_keyframes: Vec::new(),
                                     source_rotation: 0,
                                     enabled: true,
+                                    solo: false,
                                     multicam_group: None,
                                     multicam_angle: 0,
                                     multicam_cuts: Vec::new(),
@@ -6757,6 +6780,7 @@ impl KlippApp {
                                     speed_keyframes: Vec::new(),
                                     source_rotation: 0,
                                     enabled: true,
+                                    solo: false,
                                     multicam_group: None,
                                     multicam_angle: 0,
                                     multicam_cuts: Vec::new(),
@@ -8861,6 +8885,7 @@ impl KlippApp {
                 speed_keyframes: clip.speed_keyframes.clone(),
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
+                solo: clip.solo,
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
@@ -8975,6 +9000,7 @@ impl KlippApp {
                 speed_keyframes: clip.speed_keyframes.clone(),
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
+                solo: clip.solo,
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
@@ -10641,6 +10667,109 @@ impl eframe::App for KlippApp {
                 });
             if !open {
                 self.state.show_paste_attributes_dialog = false;
+            }
+        }
+
+        // Speed dialog
+        if self.state.show_speed_dialog {
+            let mut open = true;
+            egui::Window::new("Set Clip Speed")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(280.0);
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Speed:");
+                        ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
+                            .range(1.0..=1000.0).speed(1.0).suffix("%").fixed_decimals(0));
+                    });
+                    ui.add_space(4.0);
+
+                    // Preset buttons
+                    ui.horizontal(|ui| {
+                        for (label, pct) in [("25%", 25.0), ("50%", 50.0), ("100%", 100.0), ("200%", 200.0), ("400%", 400.0)] {
+                            if ui.selectable_label((self.state.speed_dialog_value - pct).abs() < 0.5, label).clicked() {
+                                self.state.speed_dialog_value = pct;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+
+                    ui.checkbox(&mut self.state.speed_dialog_reverse, "Reverse playback");
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() {
+                            if let Some(clip_id) = self.state.selected_clip {
+                                let mut speed = self.state.speed_dialog_value / 100.0;
+                                if self.state.speed_dialog_reverse { speed = -speed; }
+                                all_cmds.push(AppCommand::SetClipSpeed { clip_id, speed });
+                            }
+                            self.state.show_speed_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_speed_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_speed_dialog = false;
+            }
+        }
+
+        // Save Workspace dialog
+        if self.state.show_save_workspace_dialog {
+            let mut open = true;
+            egui::Window::new("Save Workspace")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut self.state.save_workspace_name);
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            let layout = crate::state::SavedWorkspaceLayout {
+                                name: self.state.save_workspace_name.clone(),
+                                show_browser: self.state.show_browser_panel,
+                                show_inspector: self.state.show_inspector_panel,
+                                show_history: self.state.show_history_panel,
+                                show_markers: self.state.show_markers_panel,
+                                show_curve_editor: self.state.show_curve_editor,
+                                show_scopes: self.state.show_scopes,
+                                show_color_panel: self.state.show_color_panel,
+                            };
+                            // Replace if name exists, otherwise add
+                            if let Some(existing) = self.state.custom_workspaces.iter_mut().find(|w| w.name == layout.name) {
+                                *existing = layout;
+                            } else {
+                                self.state.custom_workspaces.push(layout);
+                            }
+                            self.state.show_save_workspace_dialog = false;
+                            self.state.toast.show("Workspace saved".to_string());
+                            // Persist to prefs file
+                            if let Ok(json) = serde_json::to_string_pretty(&self.state.custom_workspaces) {
+                                let path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
+                                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                                let _ = std::fs::write(&path, json);
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_save_workspace_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_save_workspace_dialog = false;
             }
         }
 

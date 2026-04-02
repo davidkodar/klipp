@@ -295,6 +295,7 @@ impl NewInspectorPanel {
                             speed_keyframes: Vec::new(),
                             source_rotation: 0,
                             enabled: true,
+                            solo: false,
                             multicam_group: None,
                             multicam_angle: 0,
                             multicam_cuts: Vec::new(),

@@ -152,6 +152,19 @@ pub enum Workspace {
     Export,
 }
 
+/// A saved workspace layout (panel visibility + name).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedWorkspaceLayout {
+    pub name: String,
+    pub show_browser: bool,
+    pub show_inspector: bool,
+    pub show_history: bool,
+    pub show_markers: bool,
+    pub show_curve_editor: bool,
+    pub show_scopes: bool,
+    pub show_color_panel: bool,
+}
+
 /// Active tab in the simple color inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorTab {
@@ -171,6 +184,12 @@ pub struct AppState {
 
     // Active workspace
     pub active_workspace: Workspace,
+    /// User-saved workspace layouts.
+    pub custom_workspaces: Vec<SavedWorkspaceLayout>,
+    /// Show the save workspace name dialog.
+    pub show_save_workspace_dialog: bool,
+    /// Name for the workspace being saved.
+    pub save_workspace_name: String,
 
     // Project
     pub sequences: Vec<Sequence>,
@@ -250,6 +269,12 @@ pub struct AppState {
     pub attributes_clipboard: Option<AttributesClipboard>,
     /// Whether to show the Paste Attributes dialog.
     pub show_paste_attributes_dialog: bool,
+    /// Whether to show the Set Clip Speed dialog.
+    pub show_speed_dialog: bool,
+    /// Current value in the speed dialog (percentage, e.g. 100.0 = normal).
+    pub speed_dialog_value: f64,
+    /// Whether speed dialog reverse is checked.
+    pub speed_dialog_reverse: bool,
 
     // Phase 4: Source monitor
     pub source_media_id: Option<MediaId>,
@@ -752,6 +777,9 @@ impl Default for AppState {
             playback_speed: 1.0,
             loop_playback_enabled: false,
             active_workspace: Workspace::default(),
+            custom_workspaces: Vec::new(),
+            show_save_workspace_dialog: false,
+            save_workspace_name: String::new(),
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
             compound_clip_stack: Vec::new(),
@@ -799,6 +827,9 @@ impl Default for AppState {
             clipboard: None,
             attributes_clipboard: None,
             show_paste_attributes_dialog: false,
+            show_speed_dialog: false,
+            speed_dialog_value: 100.0,
+            speed_dialog_reverse: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
             selected_media_ids: std::collections::HashSet::new(),

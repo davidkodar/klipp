@@ -385,6 +385,7 @@ impl Track {
             audio_effects: Vec::new(),
             source_rotation: 0,
             enabled: true,
+            solo: false,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -573,6 +574,7 @@ impl Track {
             speed_keyframes: clip.speed_keyframes.clone(),
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
+            solo: clip.solo,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -618,6 +620,7 @@ impl Track {
             speed_keyframes: clip.speed_keyframes.clone(),
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
+            solo: clip.solo,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -762,6 +765,9 @@ pub struct Clip {
     /// but remain visible (dimmed) on the timeline.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Solo: when true, only this clip's audio plays on its track (others muted).
+    #[serde(default)]
+    pub solo: bool,
     /// Multicam group ID: clips sharing this ID are different angles of the same event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam_group: Option<GroupId>,
@@ -862,6 +868,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
+            solo: false,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -917,6 +924,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
+            solo: false,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -971,6 +979,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             source_rotation: 0,
             enabled: true,
+            solo: false,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
