@@ -1,6 +1,5 @@
 use crate::prefs::Preferences;
-use klipp_core::{AppCommand, ExportPreset, ExportPresetSettings, ProxyResolution, builtin_presets};
-use klipp_core::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec};
+use klipp_core::{AppCommand, ProxyResolution};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefsTab {
@@ -25,44 +24,18 @@ enum PrefsTab {
 
 pub struct PreferencesPanel {
     active_tab: PrefsTab,
-    // New preset dialog state
-    new_preset_name: String,
-    show_new_preset: bool,
-    editing_preset_id: Option<String>,
     /// Action currently being remapped (waiting for key press). (action_name, combo_index)
     remapping: Option<(String, usize)>,
     /// Search filter for keyboard shortcuts
     kb_search: String,
-    // Editing preset fields
-    edit_format: ExportFormat,
-    edit_video_codec: ExportVideoCodec,
-    edit_crf: u32,
-    edit_preset: EncoderPreset,
-    edit_audio_codec: ExportAudioCodec,
-    edit_audio_bitrate: u32,
-    edit_res_w: u32,
-    edit_res_h: u32,
-    edit_use_custom_res: bool,
 }
 
 impl Default for PreferencesPanel {
     fn default() -> Self {
         Self {
             active_tab: PrefsTab::General,
-            new_preset_name: String::new(),
-            show_new_preset: false,
-            editing_preset_id: None,
             remapping: None,
             kb_search: String::new(),
-            edit_format: ExportFormat::Mp4,
-            edit_video_codec: ExportVideoCodec::H264,
-            edit_crf: 23,
-            edit_preset: EncoderPreset::default(),
-            edit_audio_codec: ExportAudioCodec::Aac,
-            edit_audio_bitrate: 192,
-            edit_res_w: 1920,
-            edit_res_h: 1080,
-            edit_use_custom_res: false,
         }
     }
 }
