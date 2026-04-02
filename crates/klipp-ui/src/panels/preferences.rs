@@ -67,6 +67,15 @@ impl Default for PreferencesPanel {
 }
 
 impl PreferencesPanel {
+    // ── Design constants ──
+    const SIDEBAR_W: f32 = 270.0;
+    const ACCENT: egui::Color32 = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+    const SECTION_BG: egui::Color32 = egui::Color32::from_rgb(0x1e, 0x1e, 0x24);
+    const ROW_BG: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1a, 0x20);
+    const CATEGORY_TEXT: egui::Color32 = egui::Color32::from_rgb(0x80, 0x70, 0x50);
+    const DIM_TEXT: egui::Color32 = egui::Color32::from_rgb(0x70, 0x70, 0x80);
+    const NORMAL_TEXT: egui::Color32 = egui::Color32::from_rgb(0xd0, 0xd0, 0xd8);
+
     /// Show the preferences window. Returns (still_open, commands).
     pub fn show(
         &mut self,
@@ -78,7 +87,7 @@ impl PreferencesPanel {
         let mut open = true;
         let mut cmds = Vec::new();
 
-        // Modal backdrop — block interaction with background
+        // Modal backdrop
         egui::Area::new(egui::Id::new("prefs_modal_backdrop"))
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::PanelResizeLine)
@@ -86,81 +95,276 @@ impl PreferencesPanel {
                 let screen = ctx.screen_rect();
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(prefs.advanced.modal_backdrop_alpha));
-                if resp.clicked() {
-                    open = false;
-                }
+                if resp.clicked() { open = false; }
             });
 
         let screen = ctx.screen_rect();
+        let win_w = 900.0_f32.min(screen.width() - 40.0);
+        let win_h = 650.0_f32.min(screen.height() - 40.0);
+
         egui::Window::new("Preferences")
-            .open(&mut open)
-            .default_width(550.0)
-            .default_height(500.0)
-            .min_width(400.0)
-            .min_height(300.0)
+            .title_bar(false)
             .resizable(true)
             .collapsible(false)
-            .default_pos(egui::pos2(screen.center().x - 275.0, screen.center().y - 250.0))
+            .default_width(win_w)
+            .default_height(win_h)
+            .min_width(700.0)
+            .min_height(400.0)
+            .default_pos(egui::pos2(screen.center().x - win_w / 2.0, screen.center().y - win_h / 2.0))
+            .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::from_rgb(0x14, 0x14, 0x18)).rounding(10.0).inner_margin(0.0))
             .show(ctx, |ui| {
-                // Tab bar
-                ui.horizontal(|ui| {
-                    for (tab, label) in [
-                        (PrefsTab::General, "General"),
-                        (PrefsTab::System, "System"),
-                        (PrefsTab::Appearance, "Appearance"),
-                        (PrefsTab::Playback, "Playback"),
-                        (PrefsTab::Editing, "Editing"),
-                        (PrefsTab::Audio, "Audio"),
-                        (PrefsTab::AudioHardware, "Audio HW"),
-                        (PrefsTab::Export, "Export"),
-                        (PrefsTab::MediaCache, "Cache"),
-                        (PrefsTab::Color, "Color"),
-                        (PrefsTab::Title, "Title"),
-                        (PrefsTab::Timeline, "Timeline"),
-                        (PrefsTab::Viewer, "Viewer"),
-                        (PrefsTab::Proxy, "Proxy"),
-                        (PrefsTab::Advanced, "Advanced"),
-                        (PrefsTab::Keyboard, "Keyboard"),
-                    ] {
-                        let style = if self.active_tab == tab {
-                            egui::RichText::new(label).strong().size(13.0)
-                                .color(egui::Color32::from_rgb(0x0a, 0x0a, 0x0c))
-                        } else {
-                            egui::RichText::new(label)
-                                .size(13.0)
-                                .color(egui::Color32::from_rgb(190, 190, 200))
-                        };
-                        if ui.selectable_label(self.active_tab == tab, style).clicked() {
-                            self.active_tab = tab;
-                        }
-                    }
-                });
-                ui.separator();
-                ui.add_space(8.0);
+                let win_rect = ui.max_rect();
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    match self.active_tab {
-                        PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
-                        PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
-                        PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
-                        PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
-                        PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
-                        PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
-                        PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
-                        PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
-                        PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
-                        PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty),
-                        PrefsTab::Color => self.show_color(ui, prefs, prefs_dirty),
-                        PrefsTab::Title => self.show_title(ui, prefs, prefs_dirty),
-                        PrefsTab::Timeline => self.show_timeline(ui, prefs, prefs_dirty),
-                        PrefsTab::Viewer => self.show_viewer(ui, prefs, prefs_dirty),
-                        PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty),
-                        PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
-                    }
+                // ── Title bar ──
+                let title_h = 40.0;
+                let title_rect = egui::Rect::from_min_size(win_rect.min, egui::vec2(win_rect.width(), title_h));
+                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10.0, ne: 10.0, sw: 0.0, se: 0.0 }, egui::Color32::from_rgb(0x1a, 0x1a, 0x1e));
+                // Close button (red circle)
+                let close_center = egui::pos2(title_rect.left() + 20.0, title_rect.center().y);
+                let close_resp = ui.allocate_rect(egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0)), egui::Sense::click());
+                ui.painter().circle_filled(close_center, 7.0, egui::Color32::from_rgb(0xf0, 0x40, 0x40));
+                if close_resp.hovered() {
+                    ui.painter().text(close_center, egui::Align2::CENTER_CENTER, "\u{2715}", egui::FontId::proportional(8.0), egui::Color32::BLACK);
+                }
+                if close_resp.clicked() { open = false; }
+                // Title text
+                ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, "Preferences", egui::FontId::proportional(14.0), Self::NORMAL_TEXT);
+
+                // ── Search bar ──
+                let search_h = 36.0;
+                let search_rect = egui::Rect::from_min_size(
+                    egui::pos2(win_rect.left() + 12.0, title_rect.bottom() + 4.0),
+                    egui::vec2(win_rect.width() - 24.0, search_h),
+                );
+                ui.painter().rect_filled(search_rect, 6.0, egui::Color32::from_rgb(0x20, 0x20, 0x26));
+                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+                // Search icon + text
+                ui.painter().text(
+                    egui::pos2(search_rect.left() + 14.0, search_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "\u{1F50D}  Search preferences...",
+                    egui::FontId::proportional(12.0),
+                    Self::DIM_TEXT,
+                );
+
+                // ── Main content area ──
+                let content_top = search_rect.bottom() + 8.0;
+                let bottom_bar_h = 44.0;
+                let content_bottom = win_rect.bottom() - bottom_bar_h;
+
+                // Left sidebar
+                let sidebar_rect = egui::Rect::from_min_max(
+                    egui::pos2(win_rect.left(), content_top),
+                    egui::pos2(win_rect.left() + Self::SIDEBAR_W, content_bottom),
+                );
+
+                // Right content
+                let content_rect = egui::Rect::from_min_max(
+                    egui::pos2(sidebar_rect.right() + 1.0, content_top),
+                    egui::pos2(win_rect.right(), content_bottom),
+                );
+
+                // Draw sidebar divider
+                ui.painter().line_segment(
+                    [egui::pos2(sidebar_rect.right(), sidebar_rect.top()), egui::pos2(sidebar_rect.right(), sidebar_rect.bottom())],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                );
+
+                // ── Sidebar navigation ──
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                    ui.set_clip_rect(sidebar_rect);
+                    egui::ScrollArea::vertical().id_salt("prefs_sidebar").show(ui, |ui| {
+                        ui.add_space(4.0);
+                        self.sidebar_category(ui, "PROJECT");
+                        self.sidebar_item(ui, PrefsTab::General, "\u{1F4C4}", "General");
+                        self.sidebar_item(ui, PrefsTab::Appearance, "\u{2699}", "Appearance");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "PERFORMANCE");
+                        self.sidebar_item(ui, PrefsTab::System, "\u{1F5A5}", "System");
+                        self.sidebar_item(ui, PrefsTab::Playback, "\u{25B6}", "Playback");
+                        self.sidebar_item(ui, PrefsTab::MediaCache, "\u{1F4BE}", "Cache");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "EDITING");
+                        self.sidebar_item(ui, PrefsTab::Editing, "\u{2702}", "Editing");
+                        self.sidebar_item(ui, PrefsTab::Timeline, "\u{1F39E}", "Timeline");
+                        self.sidebar_item(ui, PrefsTab::Viewer, "\u{1F5B5}", "Viewer");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "MEDIA & AUDIO");
+                        self.sidebar_item(ui, PrefsTab::Audio, "\u{1F3B5}", "Audio");
+                        self.sidebar_item(ui, PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW");
+                        self.sidebar_item(ui, PrefsTab::Proxy, "\u{1F4F9}", "Proxy");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "COLOR & EXPORT");
+                        self.sidebar_item(ui, PrefsTab::Color, "\u{1F3A8}", "Color");
+                        self.sidebar_item(ui, PrefsTab::Export, "\u{2B07}", "Export");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "INTERFACE");
+                        self.sidebar_item(ui, PrefsTab::Title, "\u{1D413}", "Titles");
+                        self.sidebar_item(ui, PrefsTab::Keyboard, "\u{2328}", "Keyboard");
+                        self.sidebar_item(ui, PrefsTab::Advanced, "\u{2699}", "Advanced");
+                    });
                 });
+
+                // ── Right content panel ──
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                    ui.set_clip_rect(content_rect);
+                    egui::ScrollArea::vertical().id_salt("prefs_content").show(ui, |ui| {
+                        ui.add_space(8.0);
+                        match self.active_tab {
+                            PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
+                            PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
+                            PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
+                            PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
+                            PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
+                            PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
+                            PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
+                            PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
+                            PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
+                            PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty),
+                            PrefsTab::Color => self.show_color(ui, prefs, prefs_dirty),
+                            PrefsTab::Title => self.show_title(ui, prefs, prefs_dirty),
+                            PrefsTab::Timeline => self.show_timeline(ui, prefs, prefs_dirty),
+                            PrefsTab::Viewer => self.show_viewer(ui, prefs, prefs_dirty),
+                            PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty),
+                            PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
+                        }
+                    });
+                });
+
+                // ── Bottom bar ──
+                let bottom_rect = egui::Rect::from_min_max(
+                    egui::pos2(win_rect.left(), content_bottom),
+                    win_rect.max,
+                );
+                ui.painter().rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
+                // Separator line
+                ui.painter().line_segment(
+                    [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                );
+                // "Changes saved automatically" text
+                ui.painter().text(
+                    egui::pos2(bottom_rect.left() + 16.0, bottom_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Changes saved automatically",
+                    egui::FontId::proportional(11.0),
+                    Self::DIM_TEXT,
+                );
+                // Done button (amber)
+                let done_rect = egui::Rect::from_min_size(
+                    egui::pos2(bottom_rect.right() - 80.0, bottom_rect.top() + 8.0),
+                    egui::vec2(66.0, 28.0),
+                );
+                let done_resp = ui.allocate_rect(done_rect, egui::Sense::click());
+                let done_bg = if done_resp.hovered() { egui::Color32::from_rgb(0xf0, 0xb0, 0x30) } else { Self::ACCENT };
+                ui.painter().rect_filled(done_rect, 6.0, done_bg);
+                ui.painter().text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), egui::Color32::BLACK);
+                if done_resp.clicked() { open = false; }
+                // Reset defaults button
+                let reset_rect = egui::Rect::from_min_size(
+                    egui::pos2(done_rect.left() - 120.0, bottom_rect.top() + 8.0),
+                    egui::vec2(106.0, 28.0),
+                );
+                let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
+                let reset_bg = if reset_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+                ui.painter().rect_filled(reset_rect, 6.0, reset_bg);
+                ui.painter().rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
+                ui.painter().text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+                if reset_resp.clicked() {
+                    *prefs = Preferences::default();
+                    *prefs_dirty = true;
+                }
             });
 
         (open, cmds)
+    }
+
+    /// Draw a category header in the sidebar (e.g., "PROJECT", "PERFORMANCE").
+    fn sidebar_category(&self, ui: &mut egui::Ui, label: &str) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(label).size(10.0).color(Self::CATEGORY_TEXT).strong());
+        });
+        ui.add_space(2.0);
+    }
+
+    /// Draw a clickable sidebar item with icon.
+    fn sidebar_item(&mut self, ui: &mut egui::Ui, tab: PrefsTab, icon: &str, label: &str) {
+        let is_active = self.active_tab == tab;
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(Self::SIDEBAR_W - 16.0, 26.0), egui::Sense::click());
+        let rect = rect.translate(egui::vec2(8.0, 0.0));
+
+        if is_active {
+            ui.painter().rect_filled(rect, 5.0, egui::Color32::from_rgba_premultiplied(0xe8, 0xa0, 0x20, 50));
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect, 5.0, egui::Color32::from_rgb(0x22, 0x22, 0x28));
+        }
+
+        let text_color = if is_active { Self::ACCENT } else { Self::NORMAL_TEXT };
+        ui.painter().text(
+            egui::pos2(rect.left() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            icon,
+            egui::FontId::proportional(13.0),
+            text_color,
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 30.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(12.0),
+            text_color,
+        );
+
+        if resp.clicked() { self.active_tab = tab; }
+    }
+
+    /// Draw a section header (e.g., "PROJECT", "INSPECTOR") with subtle background.
+    fn section_header(ui: &mut egui::Ui, label: &str) {
+        ui.add_space(8.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, Self::SECTION_BG);
+        ui.painter().text(
+            egui::pos2(rect.left() + 14.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(10.0),
+            Self::CATEGORY_TEXT,
+        );
+    }
+
+    /// Draw a setting row with label on left and a widget on right (returned via closure).
+    fn setting_row(ui: &mut egui::Ui, label: &str, add_right: impl FnOnce(&mut egui::Ui)) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+        // Subtle separator
+        ui.painter().line_segment(
+            [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+            egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+        );
+        // Label
+        ui.painter().text(
+            egui::pos2(rect.left() + 14.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(12.0),
+            Self::NORMAL_TEXT,
+        );
+        // Right-aligned widget area
+        let widget_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - 250.0, rect.top() + 4.0),
+            egui::pos2(rect.right() - 14.0, rect.bottom() - 4.0),
+        );
+        let mut widget_ui = ui.new_child(egui::UiBuilder::new().max_rect(widget_rect));
+        widget_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_right(ui);
+        });
     }
 
     fn show_general(
@@ -169,93 +373,84 @@ impl PreferencesPanel {
         prefs: &mut Preferences,
         dirty: &mut bool,
     ) {
-        ui.label(egui::RichText::new("Auto-Save").strong().size(12.0));
-        ui.add_space(4.0);
-
-        let intervals = [
-            (0, "Off"),
-            (60, "Every 1 minute"),
-            (300, "Every 5 minutes"),
-            (600, "Every 10 minutes"),
-            (1800, "Every 30 minutes"),
-        ];
-        let current_label = intervals
-            .iter()
-            .find(|(v, _)| *v == prefs.general.auto_save_interval_secs)
-            .map(|(_, l)| *l)
-            .unwrap_or("Custom");
-
-        egui::ComboBox::from_id_salt("autosave_interval")
-            .selected_text(current_label)
-            .show_ui(ui, |ui| {
-                for (val, label) in &intervals {
-                    if ui
-                        .selectable_value(
-                            &mut prefs.general.auto_save_interval_secs,
-                            *val,
-                            *label,
-                        )
-                        .changed()
-                    {
-                        *dirty = true;
-                    }
-                }
-            });
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Default Project Folder").strong().size(12.0));
-        ui.add_space(4.0);
-
+        // Page heading
         ui.horizontal(|ui| {
-            let dir_text = prefs
-                .general
-                .default_project_dir
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "(not set)".into());
-            ui.label(&dir_text);
-            if ui.button("Browse...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Default Project Folder")
-                    .pick_folder()
-                {
-                    prefs.general.default_project_dir = Some(path);
-                    *dirty = true;
-                }
-            }
-            if prefs.general.default_project_dir.is_some() && ui.small_button("Clear").clicked() {
-                prefs.general.default_project_dir = None;
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("General").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+
+        // ── PROJECT section ──
+        Self::section_header(ui, "PROJECT");
+
+        Self::setting_row(ui, "Auto-save interval", |ui| {
+            let intervals = [
+                (0u32, "Off"),
+                (60, "Every 1 minute"),
+                (300, "Every 5 minutes"),
+                (600, "Every 10 minutes"),
+                (1800, "Every 30 minutes"),
+            ];
+            let current_label = intervals.iter()
+                .find(|(v, _)| *v == prefs.general.auto_save_interval_secs)
+                .map(|(_, l)| *l).unwrap_or("Custom");
+            egui::ComboBox::from_id_salt("autosave_interval")
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &intervals {
+                        if ui.selectable_value(&mut prefs.general.auto_save_interval_secs, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Backup versions to keep", |ui| {
+            let mut v = prefs.editing.backup_count;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=20).speed(0.5)).changed() {
+                prefs.editing.backup_count = v;
                 *dirty = true;
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Recent Projects").strong().size(12.0));
-        ui.add_space(4.0);
+        Self::setting_row(ui, "Default project folder", |ui| {
+            if ui.button("Browse...").clicked() {
+                if let Some(path) = rfd::FileDialog::new().set_title("Default Project Folder").pick_folder() {
+                    prefs.general.default_project_dir = Some(path);
+                    *dirty = true;
+                }
+            }
+            let dir_text = prefs.general.default_project_dir.as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "(not set)".into());
+            ui.label(egui::RichText::new(&dir_text).size(11.0).color(Self::DIM_TEXT));
+        });
 
-        if prefs.general.recent_projects.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(80, 80, 90),
-                "No recent projects",
-            );
-        } else {
-            ui.label(format!("{} recent project(s)", prefs.general.recent_projects.len()));
-            if ui.small_button("Clear List").clicked() {
-                prefs.general.recent_projects.clear();
+        Self::setting_row(ui, "Recent projects to show", |ui| {
+            let count = prefs.general.recent_projects.len();
+            let display_counts = [5u32, 10, 15, 20];
+            // For now show current count — this is informational
+            egui::ComboBox::from_id_salt("recent_count")
+                .selected_text(format!("{}", count.min(20)))
+                .width(50.0)
+                .show_ui(ui, |_ui| {
+                    // Placeholder — recent project count is managed by the max in add_recent_project
+                });
+        });
+
+        // ── INSPECTOR section ──
+        Self::section_header(ui, "INSPECTOR");
+
+        Self::setting_row(ui, "Remember collapsed sections", |ui| {
+            if ui.checkbox(&mut prefs.general.remember_inspector_layout, "").changed() {
                 *dirty = true;
             }
-        }
+        });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Inspector").strong().size(12.0));
-        ui.add_space(4.0);
-
-        if ui.checkbox(&mut prefs.general.remember_inspector_layout, "Remember collapsed sections")
-            .on_hover_text("When enabled, inspector sections you collapse stay collapsed across restarts. When disabled, all sections open fresh each launch.")
-            .changed()
-        {
-            *dirty = true;
-        }
+        Self::setting_row(ui, "Show keyboard shortcut hints", |ui| {
+            // Placeholder toggle — add a pref field for this later
+            let mut show_hints = true;
+            ui.checkbox(&mut show_hints, "");
+        });
     }
 
     fn show_playback(
