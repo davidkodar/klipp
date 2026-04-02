@@ -919,6 +919,16 @@ pub enum AppEvent {
         media_created_at: Option<u64>,
         colour_space: u8,
         source_rotation: i32,
+        // Extended metadata
+        camera_make: Option<String>,
+        camera_model: Option<String>,
+        encoder: Option<String>,
+        bit_depth: Option<u8>,
+        video_bitrate_kbps: Option<u32>,
+        audio_bitrate_kbps: Option<u32>,
+        color_primaries: Option<String>,
+        color_transfer: Option<String>,
+        pixel_format: Option<String>,
     },
     MediaLoadFailed {
         media_id: MediaId,

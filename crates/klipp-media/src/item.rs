@@ -175,6 +175,33 @@ pub struct MediaItem {
     /// Phone videos often have 90° or 270° rotation.
     #[serde(default)]
     pub source_rotation: i32,
+    /// Camera make (e.g. "Canon", "Sony", "Apple"). From container metadata.
+    #[serde(default)]
+    pub camera_make: Option<String>,
+    /// Camera model (e.g. "EOS R5", "FX6", "iPhone 15 Pro"). From container metadata.
+    #[serde(default)]
+    pub camera_model: Option<String>,
+    /// Encoder software (e.g. "Lavf60.3.100", "HandBrake"). From container/stream metadata.
+    #[serde(default)]
+    pub encoder: Option<String>,
+    /// Video bit depth (8, 10, 12). From pixel format.
+    #[serde(default)]
+    pub bit_depth: Option<u8>,
+    /// Video bitrate in kbps. From stream or container.
+    #[serde(default)]
+    pub video_bitrate_kbps: Option<u32>,
+    /// Audio bitrate in kbps.
+    #[serde(default)]
+    pub audio_bitrate_kbps: Option<u32>,
+    /// Color primaries name (e.g. "BT.709", "BT.2020"). From ffmpeg.
+    #[serde(default)]
+    pub color_primaries: Option<String>,
+    /// Color transfer name (e.g. "sRGB", "PQ", "HLG", "S-Log3"). From ffmpeg.
+    #[serde(default)]
+    pub color_transfer: Option<String>,
+    /// Pixel format string (e.g. "yuv420p", "yuv420p10le"). From ffmpeg.
+    #[serde(default)]
+    pub pixel_format: Option<String>,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,

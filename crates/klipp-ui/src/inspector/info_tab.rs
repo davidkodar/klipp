@@ -442,6 +442,59 @@ pub fn show_bin_media(
             });
         }
 
+        // Camera info (if available from metadata)
+        if media.camera_make.is_some() || media.camera_model.is_some() {
+            info_row_custom(ui, theme, pad, row_h, w, "Camera", |ui, rx, cy| {
+                let make = media.camera_make.as_deref().unwrap_or("");
+                let model = media.camera_model.as_deref().unwrap_or("");
+                let text = if !make.is_empty() && !model.is_empty() {
+                    format!("{make} {model}")
+                } else {
+                    format!("{make}{model}")
+                };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
+            });
+        }
+
+        // Encoder
+        if let Some(ref enc) = media.encoder {
+            info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, enc, egui::FontId::proportional(12.0), dim);
+            });
+        }
+
+        // Bit depth + pixel format
+        if media.bit_depth.is_some() || media.pixel_format.is_some() {
+            info_row_custom(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
+                let mut parts = Vec::new();
+                if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
+                if let Some(ref pf) = media.pixel_format { parts.push(pf.clone()); }
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, parts.join(" \u{00B7} "), egui::FontId::proportional(12.0), dim);
+            });
+        }
+
+        // Video bitrate
+        if let Some(vbr) = media.video_bitrate_kbps {
+            info_row_custom(ui, theme, pad, row_h, w, "Bitrate", |ui, rx, cy| {
+                let text = if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
+            });
+        }
+
+        // Color transfer / primaries
+        if media.color_transfer.is_some() || media.color_primaries.is_some() {
+            info_row_custom(ui, theme, pad, row_h, w, "Color", |ui, rx, cy| {
+                let transfer = media.color_transfer.as_deref().unwrap_or("Unspecified");
+                let primaries = media.color_primaries.as_deref().unwrap_or("");
+                let text = if !primaries.is_empty() && primaries != "Unspecified" && primaries != transfer {
+                    format!("{transfer} / {primaries}")
+                } else {
+                    transfer.to_string()
+                };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
+            });
+        }
+
         // Proxy
         info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
             if media.proxy_ready {
@@ -816,6 +869,39 @@ pub fn show_clip(
                     format_epoch_date(epoch_secs),
                     egui::FontId::proportional(13.0), value_color,
                 );
+            });
+        }
+
+        // Camera info (if available from metadata)
+        if media.camera_make.is_some() || media.camera_model.is_some() {
+            info_row_custom(ui, theme, pad, row_h, w, "Camera", |ui, rx, cy| {
+                let make = media.camera_make.as_deref().unwrap_or("");
+                let model = media.camera_model.as_deref().unwrap_or("");
+                let text = if !make.is_empty() && !model.is_empty() {
+                    format!("{make} {model}")
+                } else {
+                    format!("{make}{model}")
+                };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
+            });
+        }
+        if let Some(ref enc) = media.encoder {
+            info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, enc, egui::FontId::proportional(12.0), dim);
+            });
+        }
+        if media.bit_depth.is_some() || media.pixel_format.is_some() {
+            info_row_custom(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
+                let mut parts = Vec::new();
+                if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
+                if let Some(ref pf) = media.pixel_format { parts.push(pf.clone()); }
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, parts.join(" \u{00B7} "), egui::FontId::proportional(12.0), dim);
+            });
+        }
+        if let Some(vbr) = media.video_bitrate_kbps {
+            info_row_custom(ui, theme, pad, row_h, w, "Bitrate", |ui, rx, cy| {
+                let text = if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") };
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
             });
         }
 

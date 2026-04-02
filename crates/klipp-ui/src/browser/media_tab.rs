@@ -95,6 +95,18 @@ pub fn show(
                 .or(m.file_modified_at)
                 .unwrap_or(m.added_at),
             color_label: m.color_label,
+            resolution: m.resolution,
+            camera: {
+                let make = m.camera_make.as_deref().unwrap_or("");
+                let model = m.camera_model.as_deref().unwrap_or("");
+                if make.is_empty() && model.is_empty() { None }
+                else if make.is_empty() { Some(model.to_string()) }
+                else if model.is_empty() { Some(make.to_string()) }
+                else { Some(format!("{make} {model}")) }
+            },
+            bit_depth: m.bit_depth,
+            pixel_format: m.pixel_format.clone(),
+            video_bitrate_kbps: m.video_bitrate_kbps,
         })
         .collect();
 
@@ -357,6 +369,19 @@ fn render_list_view(
                     egui::Color32::from_rgb(232, 160, 32),
                 );
             }
+
+            // Tooltip with extended metadata on hover
+            resp.clone().on_hover_ui(|ui| {
+                ui.label(egui::RichText::new(&item.filename).strong());
+                ui.label(format!("{} x {}", item.resolution.width, item.resolution.height));
+                if let Some(ref cam) = item.camera { ui.label(format!("Camera: {cam}")); }
+                if let Some(bd) = item.bit_depth { ui.label(format!("Bit depth: {bd}-bit")); }
+                if let Some(ref pf) = item.pixel_format { ui.label(format!("Pixel format: {pf}")); }
+                if let Some(vbr) = item.video_bitrate_kbps {
+                    if vbr >= 1000 { ui.label(format!("Bitrate: {:.1} Mbps", vbr as f64 / 1000.0)); }
+                    else { ui.label(format!("Bitrate: {vbr} kbps")); }
+                }
+            });
 
             if resp.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
@@ -895,6 +920,11 @@ struct MediaRow {
     /// Effective shoot date: media_created_at > file_modified_at > added_at
     shoot_date: u64,
     color_label: klipp_media::ColorLabel,
+    resolution: klipp_core::Resolution,
+    camera: Option<String>,
+    bit_depth: Option<u8>,
+    pixel_format: Option<String>,
+    video_bitrate_kbps: Option<u32>,
 }
 
 fn show_context_menu(

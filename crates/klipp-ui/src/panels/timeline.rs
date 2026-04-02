@@ -4961,6 +4961,29 @@ impl TimelinePanel {
                 if clip_rect.contains(pos) && content_rect.contains(pos) && !state.has_modal_open() {
                     state.hovered_clip = Some(clip.id);
 
+                    // Show metadata tooltip on clip hover (only when not skimming)
+                    if !state.skimming_enabled {
+                        if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+                            egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("clip_meta_tooltip"), |ui| {
+                                ui.label(egui::RichText::new(&media.filename).strong());
+                                ui.label(format!("{} x {} \u{00b7} {}", media.resolution.width, media.resolution.height, media.video_codec));
+                                if let Some(ref cam) = media.camera_make.as_ref().or(media.camera_model.as_ref()) {
+                                    let make = media.camera_make.as_deref().unwrap_or("");
+                                    let model = media.camera_model.as_deref().unwrap_or("");
+                                    ui.label(format!("Camera: {make} {model}").trim().to_string());
+                                }
+                                if let Some(bd) = media.bit_depth {
+                                    let pf = media.pixel_format.as_deref().unwrap_or("");
+                                    ui.label(format!("{bd}-bit {pf}"));
+                                }
+                                if let Some(vbr) = media.video_bitrate_kbps {
+                                    if vbr >= 1000 { ui.label(format!("{:.1} Mbps", vbr as f64 / 1000.0)); }
+                                    else { ui.label(format!("{vbr} kbps")); }
+                                }
+                            });
+                        }
+                    }
+
                     // Timeline skimming: show frame at hover position in viewer
                     if state.skimming_enabled && !state.has_modal_open() {
                         if let Some(media_id) = clip.media_id() {

@@ -3931,6 +3931,79 @@ impl PlaybackEngine {
                 let media_created_at = format_ctx.metadata().get("creation_time")
                     .and_then(|s| parse_iso8601_timestamp(s));
 
+                // Extract extended metadata from container and stream tags
+                let fmt_meta = &format_ctx.metadata();
+                let camera_make = fmt_meta.get("com.apple.quicktime.make")
+                    .or_else(|| fmt_meta.get("make"))
+                    .or_else(|| fmt_meta.get("manufacturer"))
+                    .map(|s| s.to_string());
+                let camera_model = fmt_meta.get("com.apple.quicktime.model")
+                    .or_else(|| fmt_meta.get("model"))
+                    .map(|s| s.to_string());
+                let encoder = fmt_meta.get("encoder")
+                    .or_else(|| fmt_meta.get("encoding_tool"))
+                    .or_else(|| fmt_meta.get("com.apple.quicktime.software"))
+                    .map(|s| s.to_string());
+
+                // Extract bit depth, bitrate, pixel format, color info from video stream
+                let mut bit_depth: Option<u8> = None;
+                let mut video_bitrate_kbps: Option<u32> = None;
+                let mut audio_bitrate_kbps: Option<u32> = None;
+                let mut color_primaries_name: Option<String> = None;
+                let mut color_transfer_name: Option<String> = None;
+                let mut pixel_format_name: Option<String> = None;
+
+                for stream in format_ctx.streams() {
+                    let params = stream.parameters();
+                    match params.medium() {
+                        ffmpeg_next::media::Type::Video => {
+                            unsafe {
+                                let par = params.as_ptr();
+                                if !par.is_null() {
+                                    // Bit depth from pixel format
+                                    let pix_fmt = (*par).format;
+                                    let desc = ffmpeg_next::ffi::av_pix_fmt_desc_get(std::mem::transmute::<_, ffmpeg_next::ffi::AVPixelFormat>(pix_fmt));
+                                    if !desc.is_null() {
+                                        bit_depth = Some((*desc).comp[0].depth as u8);
+                                        let name_ptr = ffmpeg_next::ffi::av_get_pix_fmt_name(std::mem::transmute::<_, ffmpeg_next::ffi::AVPixelFormat>(pix_fmt));
+                                        if !name_ptr.is_null() {
+                                            pixel_format_name = Some(std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().to_string());
+                                        }
+                                    }
+                                    // Color primaries and transfer names
+                                    let prim = (*par).color_primaries as i32;
+                                    color_primaries_name = Some(match prim {
+                                        1 => "BT.709", 4 => "BT.470M", 5 => "BT.470BG",
+                                        6 => "SMPTE 170M", 9 => "BT.2020", 11 => "DCI-P3", 12 => "P3-D65",
+                                        _ => "Unspecified",
+                                    }.to_string());
+                                    let trc = (*par).color_trc as i32;
+                                    color_transfer_name = Some(match trc {
+                                        1 => "BT.709", 4 => "Gamma 2.2", 5 => "Gamma 2.8",
+                                        6 => "SMPTE 170M", 8 => "Linear", 13 => "sRGB",
+                                        14 => "BT.2020 10-bit", 15 => "BT.2020 12-bit",
+                                        16 => "PQ (ST 2084)", 18 => "HLG (ARIB STD-B67)",
+                                        _ => "Unspecified",
+                                    }.to_string());
+                                    // Video bitrate
+                                    let br = (*par).bit_rate;
+                                    if br > 0 { video_bitrate_kbps = Some((br / 1000) as u32); }
+                                }
+                            }
+                        }
+                        ffmpeg_next::media::Type::Audio => {
+                            unsafe {
+                                let par = params.as_ptr();
+                                if !par.is_null() {
+                                    let br = (*par).bit_rate;
+                                    if br > 0 { audio_bitrate_kbps = Some((br / 1000) as u32); }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
                 let _ = self.event_tx.send(AppEvent::MediaLoaded {
                     media_id,
                     path,
@@ -3951,6 +4024,15 @@ impl PlaybackEngine {
                     media_created_at,
                     colour_space,
                     source_rotation,
+                    camera_make,
+                    camera_model,
+                    encoder,
+                    bit_depth,
+                    video_bitrate_kbps,
+                    audio_bitrate_kbps,
+                    color_primaries: color_primaries_name,
+                    color_transfer: color_transfer_name,
+                    pixel_format: pixel_format_name,
                 });
 
                 self.grab_first_frame();
