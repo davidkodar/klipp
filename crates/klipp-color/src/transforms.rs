@@ -308,6 +308,42 @@ pub fn apply_lift_gamma_gain_offset(
     }
 }
 
+/// Apply log-domain color wheels (Low/Mid/High).
+/// Unlike linear wheels, these operate in log space with smoother, overlapping
+/// tonal ranges — better for HDR and log-encoded footage.
+/// Low = shadows, Mid = midtones, High = highlights.
+pub fn apply_log_wheels(
+    rgba: &mut [u8],
+    low: (f32, f32, f32),
+    mid: (f32, f32, f32),
+    high: (f32, f32, f32),
+) {
+    let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
+    if is_zero(low) && is_zero(mid) && is_zero(high) {
+        return;
+    }
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        // Convert to log space for tonal range weighting
+        // Use a simple log encoding: log_val = log2(linear + 0.001) mapped to ~0-1
+        let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).max(0.001);
+        let log_luma = ((luma + 0.001).log2() + 10.0) / 10.0; // maps ~0.001-1.0 to ~0.0-1.0
+
+        // Smooth overlapping tonal weights using Gaussian-like curves in log space
+        // Low peaks at log_luma=0.15, Mid at 0.5, High at 0.85
+        let low_w = (-(log_luma - 0.15).powi(2) / (2.0 * 0.15_f32.powi(2))).exp();
+        let mid_w = (-(log_luma - 0.50).powi(2) / (2.0 * 0.20_f32.powi(2))).exp();
+        let high_w = (-(log_luma - 0.85).powi(2) / (2.0 * 0.15_f32.powi(2))).exp();
+
+        pixel[0] = ((r + low.0 * low_w + mid.0 * mid_w + high.0 * high_w).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = ((g + low.1 * low_w + mid.1 * mid_w + high.1 * high_w).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = ((b + low.2 * low_w + mid.2 * mid_w + high.2 * high_w).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
 /// Apply per-wheel saturation and brightness adjustments.
 /// Each parameter pair (sat, bri) is weighted by the corresponding tonal range.
 #[allow(clippy::too_many_arguments)]

@@ -16,6 +16,10 @@ pub struct NodeInspectorPanel {
     pub gamma_wheel: ColorWheelState,
     pub gain_wheel: ColorWheelState,
     pub offset_wheel: ColorWheelState,
+    // Log wheel states (HDR mode)
+    pub log_low_wheel: ColorWheelState,
+    pub log_mid_wheel: ColorWheelState,
+    pub log_high_wheel: ColorWheelState,
     pub active_curve_channel: CurveChannel,
 }
 
@@ -26,6 +30,9 @@ impl Default for NodeInspectorPanel {
             gamma_wheel: ColorWheelState::default(),
             gain_wheel: ColorWheelState::default(),
             offset_wheel: ColorWheelState::default(),
+            log_low_wheel: ColorWheelState::default(),
+            log_mid_wheel: ColorWheelState::default(),
+            log_high_wheel: ColorWheelState::default(),
             active_curve_channel: CurveChannel::Master,
         }
     }
@@ -460,8 +467,6 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::ColorWheels => {
-                // Determine wheel diameter from available width.
-                // 4-across if >520px, 2x2 if >280px, vertical stack otherwise.
                 let avail_w = ui.available_width();
                 let two_col = avail_w >= 250.0;
                 let wheel_d = if two_col {
@@ -469,6 +474,23 @@ impl NodeInspectorPanel {
                 } else {
                     (avail_w - 10.0).clamp(60.0, 140.0)
                 };
+
+                // Linear / Log mode toggle tabs
+                let log_mode = params.wheels_log_mode.unwrap_or(false);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let linear_sel = !log_mode;
+                    let log_sel = log_mode;
+                    if ui.selectable_label(linear_sel, "Linear").clicked() && !linear_sel {
+                        params.wheels_log_mode = Some(false);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 0.0 });
+                    }
+                    if ui.selectable_label(log_sel, "Log (HDR)").clicked() && !log_sel {
+                        params.wheels_log_mode = Some(true);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 1.0 });
+                    }
+                });
+                ui.add_space(4.0);
 
                 // Helper closure for each wheel
                 let mut show_wheel = |ui: &mut egui::Ui, label: &str,
@@ -487,43 +509,74 @@ impl NodeInspectorPanel {
                     }
                 };
 
-                if two_col {
-                    // 2x2 grid, centered horizontally
-                    let pair_w = (wheel_d + 10.0) * 2.0;
-                    let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
-
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_space(center_pad);
-                        ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                            show_wheel(ui, "Lift", &mut self.lift_wheel,
-                                &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
+                if log_mode {
+                    // Log wheels: Low / Mid / High (3 wheels for HDR)
+                    if two_col {
+                        let pair_w = (wheel_d + 10.0) * 2.0;
+                        let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(center_pad);
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Low", &mut self.log_low_wheel,
+                                    &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low");
+                            });
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Mid", &mut self.log_mid_wheel,
+                                    &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid");
+                            });
                         });
-                        ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                            show_wheel(ui, "Gamma", &mut self.gamma_wheel,
-                                &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(center_pad);
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "High", &mut self.log_high_wheel,
+                                    &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high");
+                            });
                         });
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_space(center_pad);
-                        ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                            show_wheel(ui, "Gain", &mut self.gain_wheel,
-                                &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
-                        });
-                        ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                            show_wheel(ui, "Offset", &mut self.offset_wheel,
-                                &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
-                        });
-                    });
+                    } else {
+                        show_wheel(ui, "Low", &mut self.log_low_wheel,
+                            &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low");
+                        show_wheel(ui, "Mid", &mut self.log_mid_wheel,
+                            &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid");
+                        show_wheel(ui, "High", &mut self.log_high_wheel,
+                            &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high");
+                    }
                 } else {
-                    // Vertical stack for narrow panels
-                    show_wheel(ui, "Lift", &mut self.lift_wheel,
-                        &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
-                    show_wheel(ui, "Gamma", &mut self.gamma_wheel,
-                        &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
-                    show_wheel(ui, "Gain", &mut self.gain_wheel,
-                        &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
-                    show_wheel(ui, "Offset", &mut self.offset_wheel,
-                        &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
+                    // Linear wheels: Lift / Gamma / Gain / Offset (traditional)
+                    if two_col {
+                        let pair_w = (wheel_d + 10.0) * 2.0;
+                        let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(center_pad);
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Lift", &mut self.lift_wheel,
+                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
+                            });
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Gamma", &mut self.gamma_wheel,
+                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
+                            });
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(center_pad);
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Gain", &mut self.gain_wheel,
+                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
+                            });
+                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Offset", &mut self.offset_wheel,
+                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
+                            });
+                        });
+                    } else {
+                        show_wheel(ui, "Lift", &mut self.lift_wheel,
+                            &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
+                        show_wheel(ui, "Gamma", &mut self.gamma_wheel,
+                            &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
+                        show_wheel(ui, "Gain", &mut self.gain_wheel,
+                            &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
+                        show_wheel(ui, "Offset", &mut self.offset_wheel,
+                            &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
+                    }
                 }
             }
             NodeKind::WheelSatBri => {

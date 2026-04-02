@@ -68,6 +68,29 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_master: Option<f32>,
 
+    // Log Wheels (HDR mode: Low/Mid/High)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_low_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_low_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_low_master: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_mid_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_mid_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_mid_master: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_high_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_high_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_high_master: Option<f32>,
+    /// Whether wheels operate in log mode (true) or linear mode (false/default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheels_log_mode: Option<bool>,
+
     // WheelSatBri
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lift_sat: Option<f32>,
@@ -200,6 +223,16 @@ impl NodeParams {
             "offset_x" => self.offset_x = Some(value),
             "offset_y" => self.offset_y = Some(value),
             "offset_master" => self.offset_master = Some(value),
+            "log_low_x" => self.log_low_x = Some(value),
+            "log_low_y" => self.log_low_y = Some(value),
+            "log_low_master" => self.log_low_master = Some(value),
+            "log_mid_x" => self.log_mid_x = Some(value),
+            "log_mid_y" => self.log_mid_y = Some(value),
+            "log_mid_master" => self.log_mid_master = Some(value),
+            "log_high_x" => self.log_high_x = Some(value),
+            "log_high_y" => self.log_high_y = Some(value),
+            "log_high_master" => self.log_high_master = Some(value),
+            "wheels_log_mode" => self.wheels_log_mode = Some(value > 0.5),
             "lift_sat" => self.lift_sat = Some(value),
             "lift_bri" => self.lift_bri = Some(value),
             "gamma_sat" => self.gamma_sat = Some(value),

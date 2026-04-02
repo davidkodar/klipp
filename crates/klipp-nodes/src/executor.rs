@@ -252,39 +252,63 @@ impl GraphExecutor {
             }
 
             NodeKind::ColorWheels => {
-                let lift = klipp_color::wheel_offset_to_rgb(
-                    params.lift_x.unwrap_or(0.0),
-                    params.lift_y.unwrap_or(0.0),
-                    params.lift_master.unwrap_or(0.0),
-                );
-                let gamma = klipp_color::wheel_offset_to_rgb(
-                    params.gamma_x.unwrap_or(0.0),
-                    params.gamma_y.unwrap_or(0.0),
-                    params.gamma_master.unwrap_or(0.0),
-                );
-                let gain = klipp_color::wheel_offset_to_rgb(
-                    params.gain_x.unwrap_or(0.0),
-                    params.gain_y.unwrap_or(0.0),
-                    params.gain_master.unwrap_or(0.0),
-                );
-                let offset = klipp_color::wheel_offset_to_rgb(
-                    params.offset_x.unwrap_or(0.0),
-                    params.offset_y.unwrap_or(0.0),
-                    params.offset_master.unwrap_or(0.0),
-                );
-                // GPU path: SHADER_COLOR_GRADE applies wheels in a single dispatch
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.apply_color_grade(
-                        primary_input.to_vec(), width, height,
-                        0.0, 0.0, 1.0, 0.0, 0.0,       // exposure/contrast/sat/temp/tint = identity
-                        0.0, 0.0, 0.0, 0.0,               // tone controls = identity
-                        lift, gamma, gain, offset,
-                        0.0, 1.0,                          // hue=0, global_mix=1
-                    )
-                } else {
+                let log_mode = params.wheels_log_mode.unwrap_or(false);
+                if log_mode {
+                    // HDR Log wheels: Low/Mid/High with log-space tonal weighting
+                    let low = klipp_color::wheel_offset_to_rgb(
+                        params.log_low_x.unwrap_or(0.0),
+                        params.log_low_y.unwrap_or(0.0),
+                        params.log_low_master.unwrap_or(0.0),
+                    );
+                    let mid = klipp_color::wheel_offset_to_rgb(
+                        params.log_mid_x.unwrap_or(0.0),
+                        params.log_mid_y.unwrap_or(0.0),
+                        params.log_mid_master.unwrap_or(0.0),
+                    );
+                    let high = klipp_color::wheel_offset_to_rgb(
+                        params.log_high_x.unwrap_or(0.0),
+                        params.log_high_y.unwrap_or(0.0),
+                        params.log_high_master.unwrap_or(0.0),
+                    );
                     let mut frame = primary_input.to_vec();
-                    klipp_color::apply_lift_gamma_gain_offset(&mut frame, lift, gamma, gain, offset);
+                    klipp_color::apply_log_wheels(&mut frame, low, mid, high);
                     frame
+                } else {
+                    // Linear wheels: Lift/Gamma/Gain/Offset (traditional)
+                    let lift = klipp_color::wheel_offset_to_rgb(
+                        params.lift_x.unwrap_or(0.0),
+                        params.lift_y.unwrap_or(0.0),
+                        params.lift_master.unwrap_or(0.0),
+                    );
+                    let gamma = klipp_color::wheel_offset_to_rgb(
+                        params.gamma_x.unwrap_or(0.0),
+                        params.gamma_y.unwrap_or(0.0),
+                        params.gamma_master.unwrap_or(0.0),
+                    );
+                    let gain = klipp_color::wheel_offset_to_rgb(
+                        params.gain_x.unwrap_or(0.0),
+                        params.gain_y.unwrap_or(0.0),
+                        params.gain_master.unwrap_or(0.0),
+                    );
+                    let offset = klipp_color::wheel_offset_to_rgb(
+                        params.offset_x.unwrap_or(0.0),
+                        params.offset_y.unwrap_or(0.0),
+                        params.offset_master.unwrap_or(0.0),
+                    );
+                    // GPU path: SHADER_COLOR_GRADE applies wheels in a single dispatch
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_color_grade(
+                            primary_input.to_vec(), width, height,
+                            0.0, 0.0, 1.0, 0.0, 0.0,
+                            0.0, 0.0, 0.0, 0.0,
+                            lift, gamma, gain, offset,
+                            0.0, 1.0,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_lift_gamma_gain_offset(&mut frame, lift, gamma, gain, offset);
+                        frame
+                    }
                 }
             }
 
