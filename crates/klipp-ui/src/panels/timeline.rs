@@ -4967,7 +4967,7 @@ impl TimelinePanel {
                             egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("clip_meta_tooltip"), |ui| {
                                 ui.label(egui::RichText::new(&media.filename).strong());
                                 ui.label(format!("{} x {} \u{00b7} {}", media.resolution.width, media.resolution.height, media.video_codec));
-                                if let Some(ref cam) = media.camera_make.as_ref().or(media.camera_model.as_ref()) {
+                                if media.camera_make.is_some() || media.camera_model.is_some() {
                                     let make = media.camera_make.as_deref().unwrap_or("");
                                     let model = media.camera_model.as_deref().unwrap_or("");
                                     ui.label(format!("Camera: {make} {model}").trim().to_string());
