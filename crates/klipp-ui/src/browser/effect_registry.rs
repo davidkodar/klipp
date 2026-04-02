@@ -18,6 +18,8 @@ pub struct EffectEntry {
     pub source: EffectSource,
     pub source_label: &'static str,
     pub grouping: String,
+    /// Human-readable description (from OFX Describe, empty for built-ins).
+    pub description: String,
 }
 
 /// A downscaled reference frame used as source for effect thumbnails.
@@ -48,6 +50,7 @@ impl EffectRegistry {
                 category: EffectCategory::Color,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Opacity { value: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -55,6 +58,7 @@ impl EffectRegistry {
                 category: EffectCategory::Blur,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -62,6 +66,7 @@ impl EffectRegistry {
                 category: EffectCategory::Blur,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -71,6 +76,7 @@ impl EffectRegistry {
                     left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Distort".into(),
             },
             EffectEntry {
@@ -82,6 +88,7 @@ impl EffectRegistry {
                     rotation: 0.0,
                     anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Distort".into(),
             },
             EffectEntry {
@@ -93,6 +100,7 @@ impl EffectRegistry {
                     spill_suppression: 0.1,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Keying".into(),
             },
             // Light effects
@@ -103,6 +111,7 @@ impl EffectRegistry {
                     threshold: 0.7, radius: 20.0, intensity: 0.5,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -112,6 +121,7 @@ impl EffectRegistry {
                     radius: 30.0, intensity: 0.4,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -123,6 +133,7 @@ impl EffectRegistry {
                     decay: 0.3, intensity: 0.5,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -132,6 +143,7 @@ impl EffectRegistry {
                     amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -141,6 +153,7 @@ impl EffectRegistry {
                     amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -152,6 +165,7 @@ impl EffectRegistry {
                     chromatic_aberration: 0.4,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -161,6 +175,7 @@ impl EffectRegistry {
                     width: 15.0, intensity: 0.5, softness: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -170,6 +185,7 @@ impl EffectRegistry {
                     threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -179,6 +195,7 @@ impl EffectRegistry {
                     threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Light".into(),
             },
             EffectEntry {
@@ -186,6 +203,7 @@ impl EffectRegistry {
                 category: EffectCategory::Color,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Invert { mix: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -193,6 +211,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Posterize { levels: 8.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -200,6 +219,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Mosaic { block_size: 10.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -207,6 +227,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -214,6 +235,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Emboss { angle: 135.0, strength: 1.0, mix: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -225,6 +247,7 @@ impl EffectRegistry {
                     blue_red: 0.0, blue_green: 0.0, blue_blue: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -234,6 +257,7 @@ impl EffectRegistry {
                     angle: 0.0, distance: 20.0, samples: 8,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -243,6 +267,7 @@ impl EffectRegistry {
                     horizontal: 1, vertical: 0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Transform".into(),
             },
             EffectEntry {
@@ -252,6 +277,7 @@ impl EffectRegistry {
                     distortion: 0.0, scale: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Distort".into(),
             },
             EffectEntry {
@@ -261,6 +287,7 @@ impl EffectRegistry {
                     strength: 0.5, readout_ratio: 0.5,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Distort".into(),
             },
             EffectEntry {
@@ -270,6 +297,7 @@ impl EffectRegistry {
                     smoothing: 0.5, crop_ratio: 0.05, zoom: true,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Distort".into(),
             },
             EffectEntry {
@@ -277,6 +305,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Dilate { radius: 1 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -284,6 +313,7 @@ impl EffectRegistry {
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Erode { radius: 1 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -293,6 +323,7 @@ impl EffectRegistry {
                     spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -300,6 +331,7 @@ impl EffectRegistry {
                 category: EffectCategory::Color,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -309,6 +341,7 @@ impl EffectRegistry {
                     hue_shift: 0.0, saturation: 1.0, value: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -318,6 +351,7 @@ impl EffectRegistry {
                     amount: 0.1, monochrome: 0, seed: 0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -325,6 +359,7 @@ impl EffectRegistry {
                 category: EffectCategory::Blur,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::MedianFilter { radius: 1 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -334,6 +369,7 @@ impl EffectRegistry {
                     center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Blur".into(),
             },
             EffectEntry {
@@ -343,6 +379,7 @@ impl EffectRegistry {
                     in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -350,6 +387,7 @@ impl EffectRegistry {
                 category: EffectCategory::Color,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Equalize { strength: 1.0 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Color".into(),
             },
             EffectEntry {
@@ -359,6 +397,7 @@ impl EffectRegistry {
                     aspect_ratio: 2.39, bar_color: 0, opacity: 1.0,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -368,6 +407,7 @@ impl EffectRegistry {
                     red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             EffectEntry {
@@ -379,6 +419,7 @@ impl EffectRegistry {
                     freeze_at: 0.0, freeze: false,
                 }),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Stylize".into(),
             },
             // ── Audio effects ──
@@ -387,6 +428,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioEQ,
                 source: EffectSource::Audio("eq".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "EQ".into(),
             },
             EffectEntry {
@@ -394,6 +436,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioEQ,
                 source: EffectSource::Audio("pitch_shift".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "EQ".into(),
             },
             EffectEntry {
@@ -401,6 +444,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("compressor".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -408,6 +452,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("limiter".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -415,6 +460,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("gate".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -422,6 +468,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("deesser".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -429,6 +476,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("normalize".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -436,6 +484,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("noise_reduction".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -443,6 +492,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("declick".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
@@ -450,6 +500,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioReverb,
                 source: EffectSource::Audio("reverb".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Reverb".into(),
             },
             EffectEntry {
@@ -457,6 +508,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioReverb,
                 source: EffectSource::Audio("delay".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Reverb".into(),
             },
             EffectEntry {
@@ -464,6 +516,7 @@ impl EffectRegistry {
                 category: EffectCategory::AudioReverb,
                 source: EffectSource::Audio("chorus".into()),
                 source_label: "Built-in",
+                description: String::new(),
                 grouping: "Reverb".into(),
             },
         ];
@@ -488,6 +541,7 @@ impl EffectRegistry {
                 category,
                 source: EffectSource::Ofx(plugin.name.clone()),
                 source_label: "OFX",
+                description: plugin.description.clone(),
                 grouping: plugin.grouping.clone(),
             });
         }
@@ -537,7 +591,8 @@ impl EffectRegistry {
                 cat_match
                     && (search_lower.is_empty()
                         || e.name.to_lowercase().contains(&search_lower)
-                        || e.grouping.to_lowercase().contains(&search_lower))
+                        || e.grouping.to_lowercase().contains(&search_lower)
+                        || e.description.to_lowercase().contains(&search_lower))
             })
             .collect();
         result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));

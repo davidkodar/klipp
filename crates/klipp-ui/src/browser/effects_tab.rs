@@ -482,6 +482,10 @@ fn effect_card(
         if !fx.grouping.is_empty() {
             ui.label(egui::RichText::new(&fx.grouping).size(10.0).color(theme.text_dim));
         }
+        if !fx.description.is_empty() {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(&fx.description).size(10.0).color(theme.text_secondary));
+        }
         ui.label(
             egui::RichText::new(fx.source_label)
                 .size(9.0)

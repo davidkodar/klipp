@@ -81,6 +81,8 @@ pub struct OfxPluginInfo {
     pub grouping: String,
     /// Contexts this plugin supports (Filter, Transition, Generator).
     pub supported_contexts: Vec<OfxCategory>,
+    /// Human-readable description from the plugin's Describe action.
+    pub description: String,
 }
 
 // ── Loaded plugin ────────────────────────────────────────────────────
@@ -139,6 +141,7 @@ impl OfxPlugin {
             parameters: self.param_descriptors.clone(),
             grouping: self.grouping.clone(),
             supported_contexts: self.supported_contexts.clone(),
+            description: self.description.clone(),
         }
     }
 }

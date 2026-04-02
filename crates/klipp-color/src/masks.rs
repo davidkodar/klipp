@@ -142,6 +142,7 @@ mod tests {
                 invert: false,
                 opacity: 1.0,
                 enabled: true,
+                keyframes: Default::default(),
             }],
         }
     }
@@ -207,7 +208,7 @@ mod tests {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
                 },
-                feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
             }],
         };
         let m = sample_matte(&masks, 0.5, 0.5);
@@ -222,7 +223,7 @@ mod tests {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
                 },
-                feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
             }],
         };
         let m = sample_matte(&masks, 0.05, 0.05);
@@ -236,11 +237,11 @@ mod tests {
             masks: vec![
                 Mask {
                     shape: MaskShape::Circle { center_x: 0.2, center_y: 0.5, radius: 0.1 },
-                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
                 Mask {
                     shape: MaskShape::Circle { center_x: 0.8, center_y: 0.5, radius: 0.1 },
-                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
             ],
         };
@@ -522,6 +523,7 @@ mod tests {
                 invert: false,
                 opacity: 1.0,
                 enabled: true,
+                keyframes: Default::default(),
             }],
         };
         // Use a larger grid for precision
@@ -601,7 +603,7 @@ mod tests {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
                 },
-                feather: 0.0, invert: true, opacity: 1.0, enabled: true,
+                feather: 0.0, invert: true, opacity: 1.0, enabled: true, keyframes: Default::default(),
             }],
         };
         // Center of inverted rect should be 0
@@ -658,11 +660,11 @@ mod tests {
             masks: vec![
                 Mask {
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
-                    feather: 0.0, invert: false, opacity: 0.3, enabled: true,
+                    feather: 0.0, invert: false, opacity: 0.3, enabled: true, keyframes: Default::default(),
                 },
                 Mask {
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
-                    feather: 0.0, invert: false, opacity: 0.7, enabled: true,
+                    feather: 0.0, invert: false, opacity: 0.7, enabled: true, keyframes: Default::default(),
                 },
             ],
         };
@@ -678,13 +680,13 @@ mod tests {
             masks: vec![
                 Mask {
                     shape: MaskShape::Circle { center_x: 0.15, center_y: 0.5, radius: 0.1 },
-                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
                 Mask {
                     shape: MaskShape::Rectangle {
                         center_x: 0.85, center_y: 0.5, width: 0.2, height: 0.2, rotation: 0.0,
                     },
-                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
             ],
         };
@@ -704,7 +706,7 @@ mod tests {
         let masks = MaskStack {
             masks: vec![Mask {
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
-                feather: 0.0, invert: false, opacity: 1.0, enabled: false,
+                feather: 0.0, invert: false, opacity: 1.0, enabled: false, keyframes: Default::default(),
             }],
         };
         // Everything should be 0 since mask is disabled
