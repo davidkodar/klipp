@@ -199,11 +199,22 @@ impl GraphExecutor {
             NodeKind::Source => source_frame.to_vec(),
 
             NodeKind::InputTransform => {
-                let mut frame = primary_input.to_vec();
                 if let Some(fmt) = params.log_format {
-                    klipp_color::apply_input_transform(&mut frame, fmt);
+                    use klipp_core::LogFormat;
+                    if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
+                        primary_input.to_vec()
+                    } else if let Some(gpu) = &mut self.gpu {
+                        // Pre-compute 1D LUT on CPU (256 entries, fast), apply on GPU
+                        let lut = klipp_color::build_input_transform_lut(fmt);
+                        gpu.apply_input_transform_gpu(primary_input.to_vec(), width, height, &lut)
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_input_transform(&mut frame, fmt);
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::Exposure => {
@@ -249,9 +260,13 @@ impl GraphExecutor {
                         primary_input.to_vec()
                     };
                     if clarity != 0.0 {
-                        let mut f = frame;
-                        klipp_color::apply_clarity_inplace(&mut f, width, height, clarity);
-                        f
+                        if let Some(gpu) = &mut self.gpu {
+                            gpu.apply_clarity_gpu(frame, width, height, clarity)
+                        } else {
+                            let mut f = frame;
+                            klipp_color::apply_clarity_inplace(&mut f, width, height, clarity);
+                            f
+                        }
                     } else {
                         frame
                     }
@@ -282,9 +297,13 @@ impl GraphExecutor {
                         primary_input.to_vec()
                     };
                     if vib != 0.0 {
-                        let mut f = frame;
-                        klipp_color::apply_vibrance_buffer(&mut f, vib);
-                        f
+                        if let Some(gpu) = &mut self.gpu {
+                            gpu.apply_vibrance_gpu(frame, width, height, vib)
+                        } else {
+                            let mut f = frame;
+                            klipp_color::apply_vibrance_buffer(&mut f, vib);
+                            f
+                        }
                     } else {
                         frame
                     }
@@ -699,6 +718,11 @@ impl GraphExecutor {
                 let warper = params.warper_params.clone().unwrap_or_default();
                 if warper.is_identity() {
                     primary_input.to_vec()
+                } else if let Some(gpu) = &mut self.gpu {
+                    gpu.apply_color_warper_gpu(
+                        primary_input.to_vec(), width, height,
+                        &warper.hue_shifts, &warper.sat_shifts,
+                    )
                 } else {
                     let mut frame = primary_input.to_vec();
                     klipp_color::apply_color_warper(&mut frame, width, height, &warper);

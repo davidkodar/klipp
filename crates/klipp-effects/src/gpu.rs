@@ -114,6 +114,17 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
     rgb_curves_pipeline: wgpu::ComputePipeline,
     rgb_curves_lut_buf: wgpu::Buffer,
+    // Compute pipeline — vibrance
+    vibrance_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — color warper (12-sector hue/sat)
+    color_warper_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — input transform (log-to-sRGB via 1D LUT, reuses huesat_bgl)
+    input_transform_pipeline: wgpu::ComputePipeline,
+    input_transform_lut_buf: wgpu::Buffer,
+    // Compute pipelines — clarity (3-pass: blur_h, blur_v, apply)
+    clarity_blur_h_pipeline: wgpu::ComputePipeline,
+    clarity_blur_v_pipeline: wgpu::ComputePipeline,
+    clarity_apply_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — mask matte generation (SDF power windows)
     mask_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — qualifier (secondary color correction)
@@ -417,6 +428,12 @@ impl GpuEffectsPipeline {
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE, &pipeline_cache);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER, &pipeline_cache);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION, &pipeline_cache);
+        let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE, &pipeline_cache);
+        let color_warper_pipeline = create_pipeline(&device, &pipeline_layout, "color_warper", SHADER_COLOR_WARPER, &pipeline_cache);
+        let input_transform_pipeline = create_pipeline(&device, &huesat_pl, "input_transform", SHADER_INPUT_TRANSFORM, &pipeline_cache);
+        let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H, &pipeline_cache);
+        let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V, &pipeline_cache);
+        let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY, &pipeline_cache);
         let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK, &pipeline_cache);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE, &pipeline_cache);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI, &pipeline_cache);
@@ -443,9 +460,17 @@ impl GpuEffectsPipeline {
             mapped_at_creation: false,
         });
 
+        // Input transform LUT buffer: 256 entries × 4 bytes = 1024 bytes
+        let input_transform_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("input_transform_lut"),
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION, &pipeline_cache);
 
-        let pipeline_count = 49;
+        let pipeline_count = 55;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -519,6 +544,13 @@ impl GpuEffectsPipeline {
             lut3d_pipeline,
             lut3d_buf: None,
             lut3d_buf_size: 0,
+            vibrance_pipeline,
+            color_warper_pipeline,
+            input_transform_pipeline,
+            input_transform_lut_buf,
+            clarity_blur_h_pipeline,
+            clarity_blur_v_pipeline,
+            clarity_apply_pipeline,
             mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
@@ -789,6 +821,118 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply vibrance on GPU.
+    pub fn apply_vibrance_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        self.queue.write_buffer(buf_a, 0, &rgba);
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
+        self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply 12-sector color warper on GPU.
+    pub fn apply_color_warper_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        self.queue.write_buffer(buf_a, 0, &rgba);
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.write_params(&GpuColorWarperParams {
+            width, height, _pad0: 0, _pad1: 0,
+            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
+        });
+        self.dispatch(&self.color_warper_pipeline, buf_a, buf_b, workgroups);
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply input transform (log-to-sRGB) on GPU using a pre-computed 1D LUT.
+    pub fn apply_input_transform_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, lut_data: &[f32; 256]) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("input_transform_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.input_transform_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
+    pub fn apply_clarity_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        let luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
+        self.ensure_buffers(byte_size);
+        // Need a third buffer for blur intermediate
+        if self.buf_c.is_none() || self.current_buf_size < byte_size {
+            self.buf_c = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("buf_c"), size: byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        let buf_c = self.buf_c.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let radius = 20u32;
+
+        // Pass 1: horizontal blur (input RGBA → buf_b luma)
+        self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0 });
+        self.dispatch(&self.clarity_blur_h_pipeline, buf_a, buf_b, workgroups);
+
+        // Pass 2: vertical blur (buf_b luma → buf_c blurred luma)
+        self.dispatch(&self.clarity_blur_v_pipeline, buf_b, buf_c, workgroups);
+
+        // Pass 3: apply unsharp mask (input RGBA + blurred luma → output RGBA)
+        self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0 });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("clarity_apply_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.clarity_apply_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
         self.download(buf_b, byte_size)
     }
 
@@ -2394,6 +2538,38 @@ struct GpuRgbCurvesParams {
     height: u32,
     preserve_luma: u32,
     mix: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuVibranceParams {
+    width: u32, height: u32, amount: f32, _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuColorWarperParams {
+    width: u32, height: u32, _pad0: u32, _pad1: u32,
+    hue_shifts: [f32; 12],
+    sat_shifts: [f32; 12],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuInputTransformParams {
+    width: u32, height: u32, _pad0: u32, _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuClarityBlurParams {
+    width: u32, height: u32, radius: u32, _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuClarityApplyParams {
+    width: u32, height: u32, amount: f32, _pad: u32,
 }
 
 #[repr(C)]
@@ -5798,5 +5974,245 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let b = u32(clamp(matte, 0.0, 1.0) * 255.0);
     output[idx] = b | (b << 8u) | (b << 16u) | (255u << 24u);
+}
+";
+
+// ── Vibrance (saturation-weighted boost) ──────────────────────────────────────
+const SHADER_VIBRANCE: &str = "
+struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu) / 255.0;
+    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+    let mx = max(max(r, g), b);
+    let mn = min(min(r, g), b);
+    let sat = mx - mn;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let weight = 1.0 - clamp(sat, 0.0, 1.0);
+    let boost = 1.0 + params.amount * weight;
+    let ro = u32(clamp(luma + (r - luma) * boost, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(luma + (g - luma) * boost, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(luma + (b - luma) * boost, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── Color Warper (12-sector hue/sat shifting with cosine interpolation) ───────
+const SHADER_COLOR_WARPER: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    _pad0: u32,
+    _pad1: u32,
+    hue0: f32, hue1: f32, hue2: f32, hue3: f32,
+    hue4: f32, hue5: f32, hue6: f32, hue7: f32,
+    hue8: f32, hue9: f32, hue10: f32, hue11: f32,
+    sat0: f32, sat1: f32, sat2: f32, sat3: f32,
+    sat4: f32, sat5: f32, sat6: f32, sat7: f32,
+    sat8: f32, sat9: f32, sat10: f32, sat11: f32,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn rgb2hsl(r: f32, g: f32, b: f32) -> vec3<f32> {
+    let mx = max(max(r, g), b);
+    let mn = min(min(r, g), b);
+    let d = mx - mn;
+    let l = (mx + mn) * 0.5;
+    if d < 0.0001 { return vec3<f32>(0.0, 0.0, l); }
+    let s = d / (1.0 - abs(2.0 * l - 1.0));
+    var h: f32;
+    if mx == r { h = ((g - b) / d) % 6.0; if h < 0.0 { h += 6.0; } }
+    else if mx == g { h = (b - r) / d + 2.0; }
+    else { h = (r - g) / d + 4.0; }
+    return vec3<f32>(h / 6.0, clamp(s, 0.0, 1.0), l);
+}
+
+fn hsl2rgb(h: f32, s: f32, l: f32) -> vec3<f32> {
+    if s < 0.0001 { return vec3<f32>(l, l, l); }
+    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
+    let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
+    let m = l - c * 0.5;
+    let h6 = u32(h * 6.0);
+    var rgb: vec3<f32>;
+    switch h6 {
+        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
+        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
+        case 2u: { rgb = vec3<f32>(0.0, c, x); }
+        case 3u: { rgb = vec3<f32>(0.0, x, c); }
+        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
+        default: { rgb = vec3<f32>(c, 0.0, x); }
+    }
+    return rgb + vec3<f32>(m, m, m);
+}
+
+fn get_hue_shift(sector: u32) -> f32 {
+    switch sector {
+        case 0u: { return params.hue0; } case 1u: { return params.hue1; }
+        case 2u: { return params.hue2; } case 3u: { return params.hue3; }
+        case 4u: { return params.hue4; } case 5u: { return params.hue5; }
+        case 6u: { return params.hue6; } case 7u: { return params.hue7; }
+        case 8u: { return params.hue8; } case 9u: { return params.hue9; }
+        case 10u: { return params.hue10; } default: { return params.hue11; }
+    }
+}
+fn get_sat_shift(sector: u32) -> f32 {
+    switch sector {
+        case 0u: { return params.sat0; } case 1u: { return params.sat1; }
+        case 2u: { return params.sat2; } case 3u: { return params.sat3; }
+        case 4u: { return params.sat4; } case 5u: { return params.sat5; }
+        case 6u: { return params.sat6; } case 7u: { return params.sat7; }
+        case 8u: { return params.sat8; } case 9u: { return params.sat9; }
+        case 10u: { return params.sat10; } default: { return params.sat11; }
+    }
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu) / 255.0;
+    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+    let hsl = rgb2hsl(r, g, b);
+    let h_deg = hsl.x * 360.0;
+    let sector_f = h_deg / 30.0;
+    let sector_low = u32(floor(sector_f)) % 12u;
+    let sector_high = (sector_low + 1u) % 12u;
+    let t = fract(sector_f);
+    let blend = (1.0 - cos(t * 3.14159265)) * 0.5;
+    let hue_shift = get_hue_shift(sector_low) * (1.0 - blend) + get_hue_shift(sector_high) * blend;
+    let sat_shift = get_sat_shift(sector_low) * (1.0 - blend) + get_sat_shift(sector_high) * blend;
+    let sat_weight = clamp(hsl.y, 0.0, 1.0);
+    let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
+    let new_s = clamp(hsl.y + sat_shift * sat_weight, 0.0, 1.0);
+    let rgb = hsl2rgb(new_h, new_s, hsl.z);
+    let ro = u32(clamp(rgb.x, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(rgb.y, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(rgb.z, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── Input Transform (log-to-linear + sRGB gamma) ─────────────────────────────
+// Uses a 256-entry 1D LUT per channel (pre-computed on CPU from the log format).
+const SHADER_INPUT_TRANSFORM: &str = "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> lut: array<f32>;
+// LUT layout: 256 entries (input 0..255 → output 0..1 sRGB)
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let pixel = input[idx];
+    let ri = pixel & 0xFFu;
+    let gi = (pixel >> 8u) & 0xFFu;
+    let bi = (pixel >> 16u) & 0xFFu;
+    let a = (pixel >> 24u) & 0xFFu;
+    let ro = u32(clamp(lut[ri], 0.0, 1.0) * 255.0);
+    let go = u32(clamp(lut[gi], 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(lut[bi], 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── Clarity (midtone unsharp mask — horizontal blur pass) ─────────────────────
+const SHADER_CLARITY_BLUR_H: &str = "
+struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = i32(idx % params.width);
+    let y = i32(idx / params.width);
+    let r = i32(params.radius);
+    var sum = 0.0;
+    var count = 0u;
+    for (var dx = -r; dx <= r; dx = dx + 1) {
+        let sx = clamp(x + dx, 0, i32(params.width) - 1);
+        let pix = input[u32(y) * params.width + u32(sx)];
+        let pr = f32(pix & 0xFFu) / 255.0;
+        let pg = f32((pix >> 8u) & 0xFFu) / 255.0;
+        let pb = f32((pix >> 16u) & 0xFFu) / 255.0;
+        sum += 0.2126 * pr + 0.7152 * pg + 0.0722 * pb;
+        count += 1u;
+    }
+    let luma = sum / f32(count);
+    output[idx] = u32(clamp(luma * 255.0, 0.0, 255.0));
+}
+";
+
+// ── Clarity (midtone unsharp mask — vertical blur pass) ───────────────────────
+const SHADER_CLARITY_BLUR_V: &str = "
+struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = i32(idx % params.width);
+    let y = i32(idx / params.width);
+    let r = i32(params.radius);
+    var sum = 0.0;
+    var count = 0u;
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        let sy = clamp(y + dy, 0, i32(params.height) - 1);
+        let val = f32(input[u32(sy) * params.width + u32(x)]) / 255.0;
+        sum += val;
+        count += 1u;
+    }
+    output[idx] = u32(clamp(sum / f32(count) * 255.0, 0.0, 255.0));
+}
+";
+
+// ── Clarity (apply unsharp mask with midtone weighting) ───────────────────────
+const SHADER_CLARITY_APPLY: &str = "
+struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> blurred: array<u32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu);
+    let g = f32((pixel >> 8u) & 0xFFu);
+    let b = f32((pixel >> 16u) & 0xFFu);
+    let a = (pixel >> 24u) & 0xFFu;
+    let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+    let blurred_luma = f32(blurred[idx]) / 255.0;
+    let detail = luma - blurred_luma;
+    let midtone_weight = 1.0 - abs(2.0 * luma - 1.0);
+    let adj = detail * params.amount * midtone_weight * 255.0;
+    let ro = u32(clamp(r + adj, 0.0, 255.0));
+    let go = u32(clamp(g + adj, 0.0, 255.0));
+    let bo = u32(clamp(b + adj, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
 }
 ";

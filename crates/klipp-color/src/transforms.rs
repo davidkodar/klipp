@@ -687,6 +687,19 @@ fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
 }
 
 /// Linear → sRGB transfer function.
+/// Pre-compute a 256-entry 1D LUT for input transform (log → sRGB).
+/// Maps input byte value (0-255) to output sRGB value (0.0-1.0).
+/// For non-ACES formats, the transform is per-channel identical so one LUT suffices.
+pub fn build_input_transform_lut(log_format: klipp_core::LogFormat) -> [f32; 256] {
+    let mut lut = [0.0f32; 256];
+    for i in 0..256 {
+        let v = i as f32 / 255.0;
+        let linear = log_to_linear(v, log_format);
+        lut[i] = linear_to_srgb(linear).clamp(0.0, 1.0);
+    }
+    lut
+}
+
 fn linear_to_srgb(v: f32) -> f32 {
     if v <= 0.003_130_8 {
         v * 12.92
