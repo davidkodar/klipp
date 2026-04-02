@@ -2597,7 +2597,6 @@ impl KlippApp {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
                                 node.params.apply_override(param, *value);
-                                node.enabled = true;
                             }
                             break;
                         }
