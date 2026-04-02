@@ -293,6 +293,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     source_rotation: c.source_rotation.unwrap_or(0),
                     enabled: c.enabled.unwrap_or(true),
                     solo: false,
+                    grade_versions: Vec::new(),
+                    active_grade_version: None,
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
                     multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
                     multicam_angle: c.multicam_angle.unwrap_or(0),

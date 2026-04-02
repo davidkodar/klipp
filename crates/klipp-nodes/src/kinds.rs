@@ -56,8 +56,11 @@ pub enum NodeKind {
     /// Colour match (histogram matching). Ports: 0=input, 1=reference frame.
     ColorMatch,
 
+    // ── Noise Reduction ────────────────────────────────────────
+    /// Spatial noise reduction (bilateral filter).
+    Denoise,
+
     // ── Future ──────────────────────────────────────────────────
-    /// Noise reduction (reserved).
     #[serde(other)]
     Unknown,
 }
@@ -105,6 +108,7 @@ impl NodeKind {
             NodeKind::Lut3D => "3D LUT",
             NodeKind::FilmGrain => "Film Grain",
             NodeKind::ColorMatch => "Color Match",
+            NodeKind::Denoise => "Noise Reduction",
             NodeKind::Unknown => "Unknown",
         }
     }

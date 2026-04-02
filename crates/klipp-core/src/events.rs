@@ -834,6 +834,16 @@ pub enum AppCommand {
     // Video stabilization
     AnalyzeStabilization { clip_id: ClipId },
     CancelStabilization { clip_id: ClipId },
+
+    // Grade versioning
+    /// Save the current node_graph as a new named grade version.
+    SaveGradeVersion { clip_id: ClipId, name: String },
+    /// Switch to a different grade version by index.
+    SwitchGradeVersion { clip_id: ClipId, version_index: usize },
+    /// Delete a grade version by index.
+    DeleteGradeVersion { clip_id: ClipId, version_index: usize },
+    /// Rename a grade version.
+    RenameGradeVersion { clip_id: ClipId, version_index: usize, name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

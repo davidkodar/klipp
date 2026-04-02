@@ -547,6 +547,21 @@ impl GraphExecutor {
                 primary_input.to_vec()
             }
 
+            NodeKind::Denoise => {
+                let luma = params.denoise_luma.unwrap_or(0.0);
+                let chroma = params.denoise_chroma.unwrap_or(0.0);
+                let radius = params.denoise_radius.unwrap_or(3);
+                if luma > 0.0 || chroma > 0.0 {
+                    let mut frame = primary_input.to_vec();
+                    klipp_color::denoise::bilateral_denoise(
+                        &mut frame, width, height, luma, chroma, radius,
+                    );
+                    frame
+                } else {
+                    primary_input.to_vec()
+                }
+            }
+
             NodeKind::Output | NodeKind::Unknown => primary_input.to_vec(),
         }
     }

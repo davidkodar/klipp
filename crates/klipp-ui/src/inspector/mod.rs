@@ -296,6 +296,8 @@ impl NewInspectorPanel {
                             source_rotation: 0,
                             enabled: true,
                             solo: false,
+                            grade_versions: Vec::new(),
+                            active_grade_version: None,
                             multicam_group: None,
                             multicam_angle: 0,
                             multicam_cuts: Vec::new(),

@@ -211,6 +211,7 @@ impl NodeGraphPanel {
                             ("Color Balance", "ColorBalance"),
                             ("Qualifier", "Qualifier"),
                             ("Film Grain", "FilmGrain"),
+                            ("Noise Reduction", "Denoise"),
                             ("3D LUT", "Lut3D"),
                         ] {
                             if ui.button(label).clicked() {

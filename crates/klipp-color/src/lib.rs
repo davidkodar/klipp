@@ -1,5 +1,6 @@
 pub mod color_match;
 pub mod curves;
+pub mod denoise;
 pub mod huesat;
 pub mod lut;
 pub mod masks;

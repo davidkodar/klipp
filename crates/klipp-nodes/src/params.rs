@@ -128,6 +128,14 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grain: Option<FilmGrainSettings>,
 
+    // Denoise
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoise_luma: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoise_chroma: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoise_radius: Option<u32>,
+
     // Blend / Layer / ApplyMatte
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mix: Option<f32>,
@@ -207,6 +215,9 @@ impl NodeParams {
             "huesat_mix" => self.huesat_mix = Some(value),
             "lut_opacity" => self.lut_opacity = Some(value),
             "mix" => self.mix = Some(value),
+            "denoise_luma" => self.denoise_luma = Some(value),
+            "denoise_chroma" => self.denoise_chroma = Some(value),
+            "denoise_radius" => self.denoise_radius = Some(value as u32),
             _ => {}
         }
     }

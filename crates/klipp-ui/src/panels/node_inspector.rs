@@ -346,6 +346,40 @@ impl NodeInspectorPanel {
                 }
             } }
         }
+
+        // ── Noise Reduction section ──
+        if let Some((nid, enabled)) = find_node(graph, NodeKind::Denoise) {
+            let (reset, is_open) = section_header(ui, "NOISE REDUCTION", enabled, theme);
+            if is_open {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                    if reset {
+                        node.params.denoise_luma = Some(0.0);
+                        node.params.denoise_chroma = Some(0.0);
+                        node.params.denoise_radius = Some(3);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: 0.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: 0.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: 3.0 });
+                    }
+                    let mut luma = node.params.denoise_luma.unwrap_or(0.0);
+                    if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, "", theme) {
+                        node.params.denoise_luma = Some(luma);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
+                    }
+                    let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
+                    if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, "", theme) {
+                        node.params.denoise_chroma = Some(chroma);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
+                    }
+                    let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
+                    if inspector_row(ui, "Radius", &mut radius, 1.0..=7.0, "px", theme) {
+                        let r = radius.round() as u32;
+                        node.params.denoise_radius = Some(r);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
+                    }
+                }
+                section_divider(ui);
+            }
+        }
     }
 
     // ── Inspector ───────────────────────────────────────────────────────────
@@ -824,6 +858,24 @@ impl NodeInspectorPanel {
                 if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "") {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
+                }
+            }
+            NodeKind::Denoise => {
+                let mut luma = params.denoise_luma.unwrap_or(0.0);
+                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "") {
+                    params.denoise_luma = Some(luma);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_luma".into(), value: luma });
+                }
+                let mut chroma = params.denoise_chroma.unwrap_or(0.0);
+                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "") {
+                    params.denoise_chroma = Some(chroma);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
+                }
+                let mut radius = params.denoise_radius.unwrap_or(3) as f32;
+                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px") {
+                    let r = radius.round() as u32;
+                    params.denoise_radius = Some(r);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
                 }
             }
             NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }

@@ -386,6 +386,8 @@ impl Track {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            grade_versions: Vec::new(),
+            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -575,6 +577,8 @@ impl Track {
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
+            grade_versions: clip.grade_versions.clone(),
+            active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -621,6 +625,8 @@ impl Track {
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
+            grade_versions: clip.grade_versions.clone(),
+            active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -669,6 +675,13 @@ pub enum TrackKind {
     Audio,
     Text,
     Subtitle,
+}
+
+/// A named snapshot of a clip's node graph (color grade).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradeVersion {
+    pub name: String,
+    pub node_graph: klipp_nodes::NodeGraph,
 }
 
 /// A marker placed at a specific time within a clip (relative to source_in).
@@ -768,6 +781,13 @@ pub struct Clip {
     /// Solo: when true, only this clip's audio plays on its track (others muted).
     #[serde(default)]
     pub solo: bool,
+    /// Named grade versions. Each is a complete NodeGraph snapshot.
+    /// The active grade is always `node_graph` — versions are stored copies.
+    #[serde(default)]
+    pub grade_versions: Vec<GradeVersion>,
+    /// Index of the currently active grade version in grade_versions (None = working grade, not saved as version yet).
+    #[serde(default)]
+    pub active_grade_version: Option<usize>,
     /// Multicam group ID: clips sharing this ID are different angles of the same event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam_group: Option<GroupId>,
@@ -869,6 +889,8 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            grade_versions: Vec::new(),
+            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -925,6 +947,8 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            grade_versions: Vec::new(),
+            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -980,6 +1004,8 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            grade_versions: Vec::new(),
+            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),

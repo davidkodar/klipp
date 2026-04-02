@@ -2432,6 +2432,7 @@ impl KlippApp {
                         "Lut3D" => klipp_nodes::NodeKind::Lut3D,
                         "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
                         "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
+                        "Denoise" => klipp_nodes::NodeKind::Denoise,
                         _ => { continue; }
                     };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -5144,6 +5145,8 @@ impl KlippApp {
                         source_rotation: 0,
                         enabled: true,
                         solo: false,
+                        grade_versions: Vec::new(),
+                        active_grade_version: None,
                         multicam_group: None,
                         multicam_angle: 0,
                         multicam_cuts: Vec::new(),
@@ -5882,6 +5885,8 @@ impl KlippApp {
                                     source_rotation: clip.source_rotation,
                                     enabled: clip.enabled,
                                     solo: clip.solo,
+                                    grade_versions: clip.grade_versions.clone(),
+                                    active_grade_version: clip.active_grade_version,
                                     multicam_group: clip.multicam_group,
                                     multicam_angle: clip.multicam_angle,
                                     multicam_cuts: clip.multicam_cuts.clone(),
@@ -6041,6 +6046,8 @@ impl KlippApp {
                             source_rotation: clip.source_rotation,
                             enabled: clip.enabled,
                             solo: clip.solo,
+                            grade_versions: clip.grade_versions.clone(),
+                            active_grade_version: clip.active_grade_version,
                             multicam_group: clip.multicam_group,
                             multicam_angle: clip.multicam_angle,
                             multicam_cuts: clip.multicam_cuts.clone(),
@@ -6085,6 +6092,63 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::SaveGradeVersion { clip_id, name } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        let version = klipp_timeline::GradeVersion {
+                            name: name.clone(),
+                            node_graph: clip.node_graph.clone(),
+                        };
+                        clip.grade_versions.push(version);
+                        clip.active_grade_version = Some(clip.grade_versions.len() - 1);
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SwitchGradeVersion { clip_id, version_index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        // Save current graph back to active version slot before switching
+                        if let Some(active_idx) = clip.active_grade_version {
+                            if active_idx < clip.grade_versions.len() {
+                                clip.grade_versions[active_idx].node_graph = clip.node_graph.clone();
+                            }
+                        }
+                        // Load the target version
+                        if let Some(version) = clip.grade_versions.get(*version_index) {
+                            clip.node_graph = version.node_graph.clone();
+                            clip.active_grade_version = Some(*version_index);
+                        }
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
+                AppCommand::DeleteGradeVersion { clip_id, version_index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        if *version_index < clip.grade_versions.len() {
+                            clip.grade_versions.remove(*version_index);
+                            match clip.active_grade_version {
+                                Some(idx) if idx == *version_index => clip.active_grade_version = None,
+                                Some(idx) if idx > *version_index => clip.active_grade_version = Some(idx - 1),
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RenameGradeVersion { clip_id, version_index, name } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        if let Some(version) = clip.grade_versions.get_mut(*version_index) {
+                            version.name = name.clone();
+                        }
+                    }
+                    self.state.dirty = true;
                     continue;
                 }
                 // Select All clips on timeline
@@ -6767,6 +6831,8 @@ impl KlippApp {
                                     source_rotation: 0,
                                     enabled: true,
                                     solo: false,
+                                    grade_versions: Vec::new(),
+                                    active_grade_version: None,
                                     multicam_group: None,
                                     multicam_angle: 0,
                                     multicam_cuts: Vec::new(),
@@ -6857,6 +6923,8 @@ impl KlippApp {
                                     source_rotation: 0,
                                     enabled: true,
                                     solo: false,
+                                    grade_versions: Vec::new(),
+                                    active_grade_version: None,
                                     multicam_group: None,
                                     multicam_angle: 0,
                                     multicam_cuts: Vec::new(),
@@ -8971,6 +9039,8 @@ impl KlippApp {
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
                 solo: clip.solo,
+                grade_versions: clip.grade_versions.clone(),
+                active_grade_version: clip.active_grade_version,
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
@@ -9086,6 +9156,8 @@ impl KlippApp {
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
                 solo: clip.solo,
+                grade_versions: clip.grade_versions.clone(),
+                active_grade_version: clip.active_grade_version,
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
@@ -11379,6 +11451,55 @@ impl eframe::App for KlippApp {
                             let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                                 .find_map(|t| t.find_clip_mut(clip_id));
                             if let Some(clip) = clip {
+                                // Grade versions bar
+                                let grade_ver_h = 26.0;
+                                let avail_w = ui.available_width();
+                                ui.horizontal(|ui| {
+                                    ui.set_height(grade_ver_h);
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new("Grades").size(10.0).color(self.theme.text_dim));
+                                    ui.add_space(4.0);
+                                    let num_versions = clip.grade_versions.len();
+                                    let active = clip.active_grade_version;
+                                    for i in 0..num_versions {
+                                        let is_active = active == Some(i);
+                                        let label = {
+                                            let name = &clip.grade_versions[i].name;
+                                            if name.is_empty() {
+                                                format!("V{}", i + 1)
+                                            } else {
+                                                name.clone()
+                                            }
+                                        };
+                                        let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(10.0));
+                                        if resp.clicked() && !is_active {
+                                            all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
+                                        }
+                                        resp.context_menu(|ui| {
+                                            if ui.button("Rename...").clicked() {
+                                                all_cmds.push(AppCommand::RenameGradeVersion {
+                                                    clip_id,
+                                                    version_index: i,
+                                                    name: format!("Version {}", i + 1),
+                                                });
+                                                ui.close_menu();
+                                            }
+                                            if !is_active && ui.button("Delete").clicked() {
+                                                all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    }
+                                    if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
+                                        let name = format!("Version {}", num_versions + 1);
+                                        all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                                    }
+                                });
+                                ui.add_space(2.0);
+                                // Separator
+                                let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                                ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
+
                                 if self.state.show_node_strip && self.state.selected_node_id.is_some() {
                                     // Node strip visible + node selected → show that node's params
                                     let cmds = self.node_inspector_panel.show(
