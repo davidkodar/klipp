@@ -11413,11 +11413,23 @@ impl eframe::App for KlippApp {
 
         // Speed dialog
         if self.state.show_speed_dialog {
+            // Modal backdrop
+            egui::Area::new(egui::Id::new("speed_dialog_backdrop"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::PanelResizeLine)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let resp = ui.allocate_rect(screen, egui::Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+                    if resp.clicked() { self.state.show_speed_dialog = false; }
+                });
+
             let mut open = true;
             egui::Window::new("Set Clip Speed")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
+                .order(egui::Order::Foreground)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.set_min_width(280.0);
