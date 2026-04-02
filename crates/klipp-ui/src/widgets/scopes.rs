@@ -1,6 +1,12 @@
 use crate::state::ScopeMode;
 use klipp_engine::SharedFrameBuffer;
 
+/// Either a ready GPU-rendered image or pre-computed bins for CPU rendering.
+enum ScopeImage {
+    Ready(egui::ColorImage),
+    Bins(ScopeBins),
+}
+
 /// Pre-computed scope data — avoids cloning the entire 8MB frame.
 enum ScopeBins {
     Waveform(klipp_color::scopes::WaveformData),
@@ -55,9 +61,7 @@ pub fn show_scopes(
 
     let mi = mode_index(mode);
 
-    // ── Compute scope bins from frame buffer ────────────────────────────────
-    // Use scope_preview (fast reduced-resolution grade from UI thread) if available,
-    // otherwise fall back to full-resolution fb.data (from engine).
+    // ── Check for GPU-rendered scope texture from engine ──────────────────
     let scope_result = {
         let fb = frame_buffer.lock().unwrap();
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
@@ -68,51 +72,59 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
-                // Prefer scope_preview (instant, reduced-res) over full fb.data
-                let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
-                    (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
+                // Use GPU-rendered scope texture from engine if mode matches
+                if !fb.scope_texture.is_empty() && fb.scope_texture_w > 0 && fb.scope_texture_mode == mi as u8 {
+                    let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
+                        .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                        .collect();
+                    let image = egui::ColorImage {
+                        size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
+                        pixels,
+                    };
+                    Some((ScopeImage::Ready(image), gen))
                 } else {
-                    (&fb.data[..], fb.width, fb.height)
-                };
-                let base_step: u32 = if w > 960 { 3 } else if w > 480 { 2 } else { 1 };
-                let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
+                    // CPU fallback: compute from frame data
+                    let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
+                        (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
+                    } else {
+                        (&fb.data[..], fb.width, fb.height)
+                    };
+                    let base_step: u32 = if w > 960 { 3 } else if w > 480 { 2 } else { 1 };
+                    let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
-                let bins = match mode {
-                    ScopeMode::Waveform => {
-                        ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, render_w as u32, step))
-                    }
-                    ScopeMode::Parade => {
-                        let gap = 4;
-                        let section_w = (render_w - gap * 2) / 3;
-                        ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, section_w as u32, step))
-                    }
-                    ScopeMode::Histogram => {
-                        ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step))
-                    }
-                    ScopeMode::Vectorscope => {
-                        ScopeBins::Raw(src.to_vec(), w, h, step)
-                    }
-                };
-                Some((bins, gen))
+                    let bins = match mode {
+                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, render_w as u32, step)),
+                        ScopeMode::Parade => {
+                            let gap = 4;
+                            let section_w = (render_w - gap * 2) / 3;
+                            ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, section_w as u32, step))
+                        }
+                        ScopeMode::Histogram => ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step)),
+                        ScopeMode::Vectorscope => ScopeBins::Raw(src.to_vec(), w, h, step),
+                    };
+                    Some((ScopeImage::Bins(bins), gen))
+                }
             } else {
                 None
             }
         }
     };
 
-    if let Some((bins, gen)) = scope_result {
+    if let Some((scope_img, gen)) = scope_result {
         state.frame_generations[mi] = gen;
         state.render_sizes[mi] = (render_w, render_h);
         for idx in 0..4 {
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        // Render from pre-computed bins (no frame data needed, lock already released)
-        let image = match bins {
-            ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, render_w, render_h),
-            ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h),
-            ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h),
-            ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, render_w, render_h, skin_tone_angle),
+        let image = match scope_img {
+            ScopeImage::Ready(img) => img,
+            ScopeImage::Bins(bins) => match bins {
+                ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, render_w, render_h),
+                ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h),
+                ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h),
+                ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, render_w, render_h, skin_tone_angle),
+            },
         };
 
         if let Some(ref mut tex) = state.textures[mi] {

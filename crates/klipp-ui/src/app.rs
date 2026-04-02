@@ -1721,7 +1721,14 @@ impl KlippApp {
             fb.generation = fb.generation.wrapping_add(1);
         }
 
-        // Also tell the engine to re-grade at full resolution for the viewer
+        // Tell engine to re-grade at full resolution + render scope texture
+        let scope_mode = match self.state.scope_mode {
+            crate::state::ScopeMode::Waveform => 0u8,
+            crate::state::ScopeMode::Parade => 1,
+            crate::state::ScopeMode::Vectorscope => 2,
+            crate::state::ScopeMode::Histogram => 3,
+        };
+        let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: scope_mode });
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 

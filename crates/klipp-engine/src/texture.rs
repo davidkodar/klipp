@@ -12,6 +12,12 @@ pub struct FrameBuffer {
     pub scope_preview: Vec<u8>,
     pub scope_preview_w: u32,
     pub scope_preview_h: u32,
+    /// GPU-rendered scope texture (RGBA) — ready for display.
+    pub scope_texture: Vec<u8>,
+    pub scope_texture_w: u32,
+    pub scope_texture_h: u32,
+    /// Which scope mode was rendered (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
+    pub scope_texture_mode: u8,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -30,6 +36,10 @@ impl FrameBuffer {
             scope_preview: Vec::new(),
             scope_preview_w: 0,
             scope_preview_h: 0,
+            scope_texture: Vec::new(),
+            scope_texture_w: 0,
+            scope_texture_h: 0,
+            scope_texture_mode: 255, // invalid = no texture
             width,
             height,
             dirty: false,

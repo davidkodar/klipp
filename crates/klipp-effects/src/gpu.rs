@@ -137,6 +137,21 @@ pub struct GpuEffectsPipeline {
     alpha_dilate_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
+    // ── Scope rendering (GPU-accelerated visualization) ──
+    scope_histogram_pipeline: wgpu::ComputePipeline,
+    scope_waveform_pipeline: wgpu::ComputePipeline,
+    scope_parade_pipeline: wgpu::ComputePipeline,
+    scope_render_wf_pipeline: wgpu::ComputePipeline,
+    scope_render_parade_pipeline: wgpu::ComputePipeline,
+    scope_render_hist_pipeline: wgpu::ComputePipeline,
+    scope_bgl: wgpu::BindGroupLayout,                    // 3-binding: storage_read, storage_rw, uniform
+    scope_bins_buf: Option<wgpu::Buffer>,
+    scope_bins_size: u64,
+    scope_img_buf: Option<wgpu::Buffer>,
+    scope_img_size: u64,
+    scope_staging_buf: Option<wgpu::Buffer>,
+    scope_staging_size: u64,
+    scope_params_buf: wgpu::Buffer,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -470,7 +485,40 @@ impl GpuEffectsPipeline {
 
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION, &pipeline_cache);
 
-        let pipeline_count = 55;
+        // ── Scope rendering pipelines ──
+        // Scope accumulation: input(read), bins(read_write atomic), params(uniform)
+        let scope_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scope_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let scope_accum_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scope_accum_pl"), bind_group_layouts: &[&scope_bgl], push_constant_ranges: &[],
+        });
+        // Scope render uses same 3-binding layout (bins_read, output_write, params)
+        let scope_render_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scope_render_pl"), bind_group_layouts: &[&scope_bgl], push_constant_ranges: &[],
+        });
+
+        let scope_waveform_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_wf_accum", SHADER_SCOPE_WAVEFORM, &pipeline_cache);
+        let scope_parade_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_parade_accum", SHADER_SCOPE_PARADE, &pipeline_cache);
+        let scope_histogram_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_hist_accum", SHADER_SCOPE_HISTOGRAM, &pipeline_cache);
+        let scope_render_wf_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_wf", SHADER_SCOPE_RENDER_WF, &pipeline_cache);
+        let scope_render_parade_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_parade", SHADER_SCOPE_RENDER_PARADE, &pipeline_cache);
+        let scope_render_hist_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_hist", SHADER_SCOPE_RENDER_HIST, &pipeline_cache);
+
+        let scope_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scope_params"), size: PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+
+        let pipeline_count = 61;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -562,6 +610,20 @@ impl GpuEffectsPipeline {
             alpha_blur_v_pipeline,
             alpha_dilate_pipeline,
             transition_pipeline,
+            scope_histogram_pipeline,
+            scope_waveform_pipeline,
+            scope_parade_pipeline,
+            scope_render_wf_pipeline,
+            scope_render_parade_pipeline,
+            scope_render_hist_pipeline,
+            scope_bgl,
+            scope_bins_buf: None,
+            scope_bins_size: 0,
+            scope_img_buf: None,
+            scope_img_size: 0,
+            scope_staging_buf: None,
+            scope_staging_size: 0,
+            scope_params_buf,
             bind_group_layout,
             transition_bgl,
             buf_a: None,
@@ -822,6 +884,334 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
 
         self.download(buf_b, byte_size)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // GPU Scope Rendering — produces ready-to-display RGBA scope textures
+    // ══════════════════════════════════════════════════════════════════════════
+
+    fn ensure_scope_bufs(&mut self, bins_count: u64, img_pixels: u64) {
+        let bins_bytes = bins_count * 4;
+        let img_bytes = img_pixels * 4;
+        if self.scope_bins_size < bins_bytes {
+            self.scope_bins_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("scope_bins"), size: bins_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.scope_bins_size = bins_bytes;
+        }
+        if self.scope_img_size < img_bytes {
+            self.scope_img_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("scope_img"), size: img_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.scope_img_size = img_bytes;
+        }
+        if self.scope_staging_size < img_bytes {
+            self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("scope_staging"), size: img_bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.scope_staging_size = img_bytes;
+        }
+    }
+
+    fn scope_download(&self, pixels: u64) -> Vec<u8> {
+        let byte_size = pixels * 4;
+        let img_buf = self.scope_img_buf.as_ref().unwrap();
+        let staging = self.scope_staging_buf.as_ref().unwrap();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(img_buf, 0, staging, 0, byte_size);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let slice = staging.slice(..byte_size);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv().ok().and_then(|r| r.ok());
+        let data = slice.get_mapped_range();
+        let result = data.to_vec();
+        drop(data);
+        staging.unmap();
+        result
+    }
+
+    /// Render a waveform scope as RGBA image. Returns (rgba, width, height).
+    pub fn render_scope_waveform(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        let pixel_count = (frame_w * frame_h) as u64;
+        let display_cols = out_w.min(frame_w);
+        let num_bins = (display_cols as u64) * 256;
+        let out_pixels = (out_w * out_h) as u64;
+        let step = if frame_w > 1280 { 2u32 } else { 1 };
+
+        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_scope_bufs(num_bins, out_pixels);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let bins_buf = self.scope_bins_buf.as_ref().unwrap();
+        let img_buf = self.scope_img_buf.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, rgba);
+
+        // 1. Clear bins
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(bins_buf, 0, None);
+
+        // 2. Accumulate waveform bins
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeAccumParams {
+            width: frame_w, height: frame_h, display_columns: display_cols, step,
+        }));
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_waveform_pipeline);
+            pass.set_bind_group(0, &bg1, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // 3. Find max bin count for normalization
+        // (Read back bins to find max — small data, fast)
+        let max_count = {
+            let bins_bytes = num_bins * 4;
+            // Ensure staging is big enough for bins too
+            if self.scope_staging_size < bins_bytes {
+                self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("scope_staging"), size: bins_bytes.max(out_pixels * 4),
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.scope_staging_size = bins_bytes.max(out_pixels * 4);
+            }
+            let staging = self.scope_staging_buf.as_ref().unwrap();
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
+            self.queue.submit(std::iter::once(enc.finish()));
+            let slice = staging.slice(..bins_bytes);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv().ok().and_then(|r| r.ok());
+            let data = slice.get_mapped_range();
+            let bins: &[u32] = bytemuck::cast_slice(&data);
+            let mx = bins.iter().copied().max().unwrap_or(1).max(1);
+            drop(data);
+            staging.unmap();
+            mx
+        };
+
+        // 4. Render visualization
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeRenderParams {
+            out_w, out_h, num_cols: display_cols, max_count,
+        }));
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: img_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_render_wf_pipeline);
+            pass.set_bind_group(0, &bg2, &[]);
+            pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.scope_download(out_pixels)
+    }
+
+    /// Render a parade scope as RGBA image.
+    pub fn render_scope_parade(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        let pixel_count = (frame_w * frame_h) as u64;
+        let gap = 3u32;
+        let section_w = (out_w - gap * 2) / 3;
+        let display_cols = section_w.min(frame_w);
+        let num_bins = (display_cols as u64) * 256 * 3;
+        let out_pixels = (out_w * out_h) as u64;
+        let step = if frame_w > 1280 { 2u32 } else { 1 };
+
+        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_scope_bufs(num_bins, out_pixels);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let bins_buf = self.scope_bins_buf.as_ref().unwrap();
+        let img_buf = self.scope_img_buf.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, rgba);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(bins_buf, 0, None);
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeAccumParams {
+            width: frame_w, height: frame_h, display_columns: display_cols, step,
+        }));
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_parade_pipeline);
+            pass.set_bind_group(0, &bg1, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Find max count
+        let max_count = {
+            let bins_bytes = num_bins * 4;
+            if self.scope_staging_size < bins_bytes {
+                self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("scope_staging"), size: bins_bytes.max(out_pixels * 4),
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.scope_staging_size = bins_bytes.max(out_pixels * 4);
+            }
+            let staging = self.scope_staging_buf.as_ref().unwrap();
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
+            self.queue.submit(std::iter::once(enc.finish()));
+            let slice = staging.slice(..bins_bytes);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv().ok().and_then(|r| r.ok());
+            let data = slice.get_mapped_range();
+            let bins: &[u32] = bytemuck::cast_slice(&data);
+            let mx = bins.iter().copied().max().unwrap_or(1).max(1);
+            drop(data);
+            staging.unmap();
+            mx
+        };
+
+        // Render
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeRenderParams {
+            out_w, out_h, num_cols: display_cols, max_count,
+        }));
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: img_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_render_parade_pipeline);
+            pass.set_bind_group(0, &bg2, &[]);
+            pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.scope_download(out_pixels)
+    }
+
+    /// Render a histogram scope as RGBA image.
+    pub fn render_scope_histogram(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        let pixel_count = (frame_w * frame_h) as u64;
+        let num_bins: u64 = 4 * 256;
+        let out_pixels = (out_w * out_h) as u64;
+        let step = if frame_w > 1280 { 2u32 } else { 1 };
+
+        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_scope_bufs(num_bins, out_pixels);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let bins_buf = self.scope_bins_buf.as_ref().unwrap();
+        let img_buf = self.scope_img_buf.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, rgba);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(bins_buf, 0, None);
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeAccumParams {
+            width: frame_w, height: frame_h, display_columns: 0, step,
+        }));
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_histogram_pipeline);
+            pass.set_bind_group(0, &bg1, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Find max
+        let max_count = {
+            let bins_bytes = num_bins * 4;
+            if self.scope_staging_size < bins_bytes {
+                self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("scope_staging"), size: bins_bytes.max(out_pixels * 4),
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.scope_staging_size = bins_bytes.max(out_pixels * 4);
+            }
+            let staging = self.scope_staging_buf.as_ref().unwrap();
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
+            self.queue.submit(std::iter::once(enc.finish()));
+            let slice = staging.slice(..bins_bytes);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv().ok().and_then(|r| r.ok());
+            let data = slice.get_mapped_range();
+            let bins: &[u32] = bytemuck::cast_slice(&data);
+            let mx = bins.iter().copied().max().unwrap_or(1).max(1);
+            drop(data);
+            staging.unmap();
+            mx
+        };
+
+        // Render
+        self.queue.write_buffer(&self.scope_params_buf, 0, bytemuck::bytes_of(&GpuScopeRenderParams {
+            out_w, out_h, num_cols: 0, max_count,
+        }));
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scope_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: img_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.scope_params_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.scope_render_hist_pipeline);
+            pass.set_bind_group(0, &bg2, &[]);
+            pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.scope_download(out_pixels)
     }
 
     /// Apply vibrance on GPU.
@@ -2570,6 +2960,18 @@ struct GpuClarityBlurParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuClarityApplyParams {
     width: u32, height: u32, amount: f32, _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuScopeAccumParams {
+    width: u32, height: u32, display_columns: u32, step: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuScopeRenderParams {
+    out_w: u32, out_h: u32, num_cols: u32, max_count: u32,
 }
 
 #[repr(C)]
@@ -6214,5 +6616,320 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = u32(clamp(g + adj, 0.0, 255.0));
     let bo = u32(clamp(b + adj, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GPU Scope Rendering Shaders
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Waveform bin accumulation (atomic histogram per column) ───────────────────
+const SHADER_SCOPE_WAVEFORM: &str = "
+struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    if (x % params.step != 0u) { return; }
+    let pixel = input[idx];
+    let r = f32(pixel & 0xFFu) / 255.0;
+    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let luma = clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0);
+    let bin = u32(luma * 255.0);
+    let col = x * params.display_columns / params.width;
+    atomicAdd(&bins[col * 256u + bin], 1u);
+}
+";
+
+// ── Parade bin accumulation (atomic per-channel per-column) ───────────────────
+const SHADER_SCOPE_PARADE: &str = "
+struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    if (x % params.step != 0u) { return; }
+    let pixel = input[idx];
+    let r = pixel & 0xFFu;
+    let g = (pixel >> 8u) & 0xFFu;
+    let b = (pixel >> 16u) & 0xFFu;
+    let col = x * params.display_columns / params.width;
+    let base = col * 256u;
+    let dc256 = params.display_columns * 256u;
+    atomicAdd(&bins[base + r], 1u);
+    atomicAdd(&bins[dc256 + base + g], 1u);
+    atomicAdd(&bins[dc256 * 2u + base + b], 1u);
+}
+";
+
+// ── Histogram bin accumulation (global R/G/B/Luma) ────────────────────────────
+const SHADER_SCOPE_HISTOGRAM: &str = "
+struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    if (x % params.step != 0u) || (y % params.step != 0u) { return; }
+    let pixel = input[idx];
+    let r = pixel & 0xFFu;
+    let g = (pixel >> 8u) & 0xFFu;
+    let b = (pixel >> 16u) & 0xFFu;
+    atomicAdd(&bins[r], 1u);
+    atomicAdd(&bins[256u + g], 1u);
+    atomicAdd(&bins[512u + b], 1u);
+    let luma = u32(clamp(0.2126 * f32(r) + 0.7152 * f32(g) + 0.0722 * f32(b), 0.0, 255.0));
+    atomicAdd(&bins[768u + luma], 1u);
+}
+";
+
+// ── Waveform visualization renderer ──────────────────────────────────────────
+// Reads bin data, produces RGBA image with DaVinci-style glow and white-hot cores.
+const SHADER_SCOPE_RENDER_WF: &str = "
+struct Params {
+    out_w: u32, out_h: u32, num_cols: u32, max_count: u32,
+}
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.out_w * params.out_h { return; }
+    let px = idx % params.out_w;
+    let py = idx / params.out_w;
+    let norm = f32(params.max_count) * 0.5;
+
+    // Map pixel to bin column
+    let col = px * params.num_cols / params.out_w;
+    // Map pixel Y to bin index (0=top=255, bottom=0)
+    let bin = 255u - (py * 256u / params.out_h);
+
+    let count = f32(bins[col * 256u + bin]);
+    if count < 0.5 {
+        // Check neighbors for glow (sample adjacent bins)
+        var glow = 0.0;
+        if bin > 0u { glow += f32(bins[col * 256u + bin - 1u]) * 0.3; }
+        if bin < 255u { glow += f32(bins[col * 256u + bin + 1u]) * 0.3; }
+        if col > 0u { glow += f32(bins[(col - 1u) * 256u + bin]) * 0.15; }
+        if col + 1u < params.num_cols { glow += f32(bins[(col + 1u) * 256u + bin]) * 0.15; }
+        if glow < 0.5 {
+            // Background: very dark with subtle grid
+            let is_grid = (bin % 64u == 0u) || (px % (params.out_w / 4u) == 0u);
+            if is_grid {
+                output[idx] = 0x10u | (0x10u << 8u) | (0x14u << 16u) | (0xFFu << 24u);
+            } else {
+                output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
+            }
+            return;
+        }
+        let raw = glow / norm;
+        let i = min(raw, 3.0) * 0.4;
+        let ro = u32(clamp(0.15 * i * 255.0, 0.0, 255.0));
+        let go = u32(clamp(0.8 * i * 255.0, 0.0, 255.0));
+        let bo = u32(clamp(0.15 * i * 255.0, 0.0, 255.0));
+        output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+        return;
+    }
+
+    let raw = count / norm;
+    let intensity = min(raw, 5.0);
+
+    // IRE range coloring: 16-235 = green, outside = red warning
+    let is_safe = (bin >= 16u) && (bin <= 235u);
+    var cr: f32; var cg: f32; var cb: f32;
+    if is_safe {
+        cr = 0.2; cg = 1.8; cb = 0.2;
+    } else {
+        cr = 1.8; cg = 0.2; cb = 0.1;
+    }
+
+    // White-hot core: dense areas shift toward white (DaVinci look)
+    let white = clamp(raw * 0.5 - 0.1, 0.0, 1.0);
+    let r = cr * intensity + 0.8 * white * intensity;
+    let g = cg * intensity + 0.6 * white * intensity;
+    let b = cb * intensity + 0.8 * white * intensity;
+
+    // Filmic tone mapping
+    let tone_r = min(r * (r * 0.6 + 0.4) / (r * (r * 0.6 + 0.85) + 0.15), 1.0);
+    let tone_g = min(g * (g * 0.6 + 0.4) / (g * (g * 0.6 + 0.85) + 0.15), 1.0);
+    let tone_b = min(b * (b * 0.6 + 0.4) / (b * (b * 0.6 + 0.85) + 0.15), 1.0);
+
+    // Gamma 2.0
+    let ro = u32(clamp(sqrt(tone_r) * 255.0, 0.0, 255.0));
+    let go = u32(clamp(sqrt(tone_g) * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(sqrt(tone_b) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+}
+";
+
+// ── Parade visualization renderer ────────────────────────────────────────────
+const SHADER_SCOPE_RENDER_PARADE: &str = "
+struct Params {
+    out_w: u32, out_h: u32, num_cols: u32, max_count: u32,
+}
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.out_w * params.out_h { return; }
+    let px = idx % params.out_w;
+    let py = idx / params.out_w;
+    let norm = f32(params.max_count) * 0.5;
+    let bin = 255u - (py * 256u / params.out_h);
+
+    // Which channel section? (0=R, 1=G, 2=B)
+    let gap = 3u;
+    let section_w = (params.out_w - gap * 2u) / 3u;
+    var channel = 3u; // 3 = gap area
+    var local_x = 0u;
+    if px < section_w {
+        channel = 0u; local_x = px;
+    } else if px >= section_w + gap && px < section_w * 2u + gap {
+        channel = 1u; local_x = px - section_w - gap;
+    } else if px >= section_w * 2u + gap * 2u {
+        channel = 2u; local_x = px - section_w * 2u - gap * 2u;
+    }
+
+    if channel >= 3u {
+        output[idx] = 0x08u | (0x08u << 8u) | (0x0Cu << 16u) | (0xFFu << 24u);
+        return;
+    }
+
+    let col = local_x * params.num_cols / section_w;
+    let dc256 = params.num_cols * 256u;
+    let count = f32(bins[channel * dc256 + col * 256u + bin]);
+
+    if count < 0.5 {
+        // Glow from neighbors
+        var glow = 0.0;
+        let base = channel * dc256 + col * 256u;
+        if bin > 0u { glow += f32(bins[base + bin - 1u]) * 0.3; }
+        if bin < 255u { glow += f32(bins[base + bin + 1u]) * 0.3; }
+        if col > 0u { glow += f32(bins[channel * dc256 + (col - 1u) * 256u + bin]) * 0.15; }
+        if col + 1u < params.num_cols { glow += f32(bins[channel * dc256 + (col + 1u) * 256u + bin]) * 0.15; }
+        if glow < 0.5 {
+            let is_grid = (bin % 64u == 0u);
+            if is_grid {
+                output[idx] = 0x10u | (0x10u << 8u) | (0x14u << 16u) | (0xFFu << 24u);
+            } else {
+                output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
+            }
+            return;
+        }
+        let raw = glow / norm;
+        let i = min(raw, 3.0) * 0.3;
+        var rr = 0.0; var gg = 0.0; var bb = 0.0;
+        if channel == 0u { rr = i; gg = i * 0.03; bb = i * 0.02; }
+        else if channel == 1u { rr = i * 0.02; gg = i; bb = i * 0.03; }
+        else { rr = i * 0.03; gg = i * 0.05; bb = i; }
+        let ro = u32(clamp(rr * 255.0, 0.0, 255.0));
+        let go = u32(clamp(gg * 255.0, 0.0, 255.0));
+        let bo = u32(clamp(bb * 255.0, 0.0, 255.0));
+        output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+        return;
+    }
+
+    let raw = count / norm;
+    let intensity = min(raw, 5.0);
+    let white = clamp(raw * 0.5 - 0.1, 0.0, 1.0);
+
+    // Channel colors with white-hot core
+    var r = 0.0; var g = 0.0; var b = 0.0;
+    if channel == 0u {
+        r = 2.0 * intensity + 0.8 * white * intensity;
+        g = 0.05 * intensity + 0.6 * white * intensity;
+        b = 0.03 * intensity + 0.5 * white * intensity;
+    } else if channel == 1u {
+        r = 0.03 * intensity + 0.5 * white * intensity;
+        g = 2.0 * intensity + 0.8 * white * intensity;
+        b = 0.05 * intensity + 0.5 * white * intensity;
+    } else {
+        r = 0.05 * intensity + 0.5 * white * intensity;
+        g = 0.08 * intensity + 0.6 * white * intensity;
+        b = 2.0 * intensity + 0.8 * white * intensity;
+    }
+
+    let tone_r = min(r * (r * 0.6 + 0.4) / (r * (r * 0.6 + 0.85) + 0.15), 1.0);
+    let tone_g = min(g * (g * 0.6 + 0.4) / (g * (g * 0.6 + 0.85) + 0.15), 1.0);
+    let tone_b = min(b * (b * 0.6 + 0.4) / (b * (b * 0.6 + 0.85) + 0.15), 1.0);
+
+    let ro = u32(clamp(sqrt(tone_r) * 255.0, 0.0, 255.0));
+    let go = u32(clamp(sqrt(tone_g) * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(sqrt(tone_b) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+}
+";
+
+// ── Histogram visualization renderer ─────────────────────────────────────────
+const SHADER_SCOPE_RENDER_HIST: &str = "
+struct Params {
+    out_w: u32, out_h: u32, num_cols: u32, max_count: u32,
+}
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.out_w * params.out_h { return; }
+    let px = idx % params.out_w;
+    let py = idx / params.out_w;
+    let max_c = f32(params.max_count);
+
+    let bin = px * 256u / params.out_w;
+
+    // Stack channels: luma (back), then R, G, B
+    var r_acc = 0.0; var g_acc = 0.0; var b_acc = 0.0;
+    let channels: array<vec4<f32>, 4> = array<vec4<f32>, 4>(
+        vec4<f32>(0.35, 0.35, 0.35, f32(bins[768u + bin])),  // luma
+        vec4<f32>(1.0, 0.08, 0.05, f32(bins[bin])),           // red
+        vec4<f32>(0.05, 0.9, 0.08, f32(bins[256u + bin])),    // green
+        vec4<f32>(0.08, 0.2, 1.0, f32(bins[512u + bin])),     // blue
+    );
+
+    for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+        let c = channels[ch];
+        let count = c.w;
+        if count < 1.0 { continue; }
+        let height_frac = sqrt(count / max_c);
+        let height_px = u32(height_frac * f32(params.out_h));
+        let from_bottom = params.out_h - 1u - py;
+        if from_bottom < height_px {
+            let fade = 1.0 - f32(from_bottom) / f32(max(height_px, 1u)) * 0.5;
+            r_acc += c.x * fade * 0.6;
+            g_acc += c.y * fade * 0.6;
+            b_acc += c.z * fade * 0.6;
+        }
+    }
+
+    if r_acc < 0.01 && g_acc < 0.01 && b_acc < 0.01 {
+        output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
+        return;
+    }
+
+    let tone = |x: f32| -> f32 { return min(x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15), 1.0); };
+    let ro = u32(clamp(sqrt(tone(r_acc)) * 255.0, 0.0, 255.0));
+    let go = u32(clamp(sqrt(tone(g_acc)) * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(sqrt(tone(b_acc)) * 255.0, 0.0, 255.0));
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";

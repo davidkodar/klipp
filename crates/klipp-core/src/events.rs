@@ -475,6 +475,8 @@ pub enum AppCommand {
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
+    /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
+    SetScopeRenderMode { mode: u8 },
     SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
     SetNodeCurves { clip_id: ClipId, node_id: uuid::Uuid, curves: crate::color_grade::CurveSet },
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },

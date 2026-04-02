@@ -175,6 +175,8 @@ pub struct PlaybackEngine {
     matte_preview: bool,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
+    /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
+    scope_render_mode: u8,
     // Matte preview node — which Qualifier/Mask node's matte to show
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
@@ -297,6 +299,7 @@ impl PlaybackEngine {
             bypass_color_grade: false,
             matte_preview: false,
             scope_tap_node: None,
+            scope_render_mode: 0,
             matte_preview_node: None,
             cached_pregrade_frame: None,
             ofx_host: {
@@ -693,6 +696,9 @@ impl PlaybackEngine {
                 debug!("Matte preview: {}", self.matte_preview);
             }
 
+            AppCommand::SetScopeRenderMode { mode } => {
+                self.scope_render_mode = mode;
+            }
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
@@ -3293,8 +3299,30 @@ impl PlaybackEngine {
                 v1_result
             };
 
+            // Render GPU scope texture from the graded frame
+            let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
+                let scope_w = 400u32;
+                let scope_h = 256u32;
+                // Default to waveform; UI can set mode via scope_render_mode
+                let mode = self.scope_render_mode;
+                let tex = match mode {
+                    1 => gpu.render_scope_parade(&final_result, w, h, scope_w, scope_h),
+                    3 => gpu.render_scope_histogram(&final_result, w, h, scope_w, scope_h),
+                    _ => gpu.render_scope_waveform(&final_result, w, h, scope_w, scope_h),
+                };
+                Some((tex, scope_w, scope_h, mode))
+            } else {
+                None
+            };
+
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(final_result, w, h);
+            if let Some((tex, sw, sh, mode)) = scope_tex {
+                fb.scope_texture = tex;
+                fb.scope_texture_w = sw;
+                fb.scope_texture_h = sh;
+                fb.scope_texture_mode = mode;
+            }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
         } else if let Some(v2_frame) = &self.v2_frame_cache {
