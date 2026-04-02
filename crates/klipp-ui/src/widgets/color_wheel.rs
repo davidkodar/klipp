@@ -117,15 +117,15 @@ pub fn color_wheel_sized(
         if let Some(pos) = wheel_resp.interact_pointer_pos() {
             let dx = pos.x - wc.x;
             let dy = pos.y - wc.y;
-            // Scale: puck at radius*0.5 = offset 1.0
+            // Scale: puck at outer edge = offset 2.0
             let scale = 1.0 / (wheel_radius * 0.5);
             let mut ox = dx * scale;
             let mut oy = dy * scale;
-            // Clamp to unit circle
+            // Clamp to full wheel radius (offset 2.0 = outer edge)
             let mag = (ox * ox + oy * oy).sqrt();
-            if mag > 1.0 {
-                ox /= mag;
-                oy /= mag;
+            if mag > 2.0 {
+                ox = ox / mag * 2.0;
+                oy = oy / mag * 2.0;
             }
             offset[0] = ox;
             offset[1] = oy;
