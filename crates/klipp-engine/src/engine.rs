@@ -3301,6 +3301,7 @@ impl PlaybackEngine {
 
             // Render GPU scope texture from the graded frame
             let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
+                tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
                 let scope_w = 720u32;
                 let scope_h = 256u32;
                 // Default to waveform; UI can set mode via scope_render_mode

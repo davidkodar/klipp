@@ -65,8 +65,11 @@ pub fn show_scopes(
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
                 // Use GPU-rendered scope texture from engine if available and mode matches
-                if !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
-                    && fb.scope_texture_mode == mi as u8 {
+                let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
+                    && fb.scope_texture_mode == mi as u8;
+                tracing::trace!("Scope update: gen={} mode={} gpu_tex={} tex_mode={} tex_size={}x{}",
+                    gen, mi, has_gpu_tex, fb.scope_texture_mode, fb.scope_texture_w, fb.scope_texture_h);
+                if has_gpu_tex {
                     let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                         .collect();
