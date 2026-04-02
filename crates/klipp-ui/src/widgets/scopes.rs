@@ -96,11 +96,10 @@ pub fn show_scopes(
                     let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
 
                     let bins = match mode {
-                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, cpu_w as u32, step)),
+                        // Use source width for display_columns — keeps traces thin (1 col per source col)
+                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, w, step)),
                         ScopeMode::Parade => {
-                            let gap = 3;
-                            let section_w = (cpu_w - gap * 2) / 3;
-                            ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, section_w as u32, step))
+                            ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, w, step))
                         }
                         ScopeMode::Histogram => ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step)),
                         ScopeMode::Vectorscope => ScopeBins::Raw(src.to_vec(), w, h, step),
