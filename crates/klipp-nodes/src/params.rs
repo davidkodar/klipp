@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use klipp_core::{
-    CurveSet, FilmGrainSettings, HueSatCurves, LogFormat, MaskStack, QualifierSettings,
+    ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LogFormat, MaskStack,
+    QualifierSettings,
 };
 
 /// All possible parameter values a node can have.
@@ -151,6 +152,10 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grain: Option<FilmGrainSettings>,
 
+    // ColorWarper
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warper_params: Option<ColorWarperParams>,
+
     // Denoise
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denoise_luma: Option<f32>,
@@ -248,6 +253,22 @@ impl NodeParams {
             "huesat_mix" => self.huesat_mix = Some(value),
             "lut_opacity" => self.lut_opacity = Some(value),
             "mix" => self.mix = Some(value),
+            p if p.starts_with("warper_hue_") => {
+                if let Ok(idx) = p["warper_hue_".len()..].parse::<usize>() {
+                    if idx < 12 {
+                        let w = self.warper_params.get_or_insert_with(Default::default);
+                        w.hue_shifts[idx] = value;
+                    }
+                }
+            }
+            p if p.starts_with("warper_sat_") => {
+                if let Ok(idx) = p["warper_sat_".len()..].parse::<usize>() {
+                    if idx < 12 {
+                        let w = self.warper_params.get_or_insert_with(Default::default);
+                        w.sat_shifts[idx] = value;
+                    }
+                }
+            }
             "denoise_luma" => self.denoise_luma = Some(value),
             "denoise_chroma" => self.denoise_chroma = Some(value),
             "denoise_radius" => self.denoise_radius = Some(value as u32),

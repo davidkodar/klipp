@@ -571,6 +571,17 @@ impl GraphExecutor {
                 primary_input.to_vec()
             }
 
+            NodeKind::ColorWarper => {
+                let warper = params.warper_params.clone().unwrap_or_default();
+                if warper.is_identity() {
+                    primary_input.to_vec()
+                } else {
+                    let mut frame = primary_input.to_vec();
+                    klipp_color::apply_color_warper(&mut frame, width, height, &warper);
+                    frame
+                }
+            }
+
             NodeKind::Denoise => {
                 let luma = params.denoise_luma.unwrap_or(0.0);
                 let chroma = params.denoise_chroma.unwrap_or(0.0);

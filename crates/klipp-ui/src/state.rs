@@ -173,6 +173,7 @@ pub enum ColorTab {
     Wheels,
     Curves,
     HueSat,
+    Warper,
 }
 
 pub struct AppState {

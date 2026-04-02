@@ -191,6 +191,34 @@ impl Default for FilmGrainSettings {
     }
 }
 
+/// Color Warper parameters: 12 hue sectors at 30-degree intervals.
+/// Each sector can shift hue (degrees) and saturation (relative offset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColorWarperParams {
+    /// Per-sector hue shifts in degrees. Index 0 = red (0deg), 1 = orange (30deg), etc.
+    #[serde(default)]
+    pub hue_shifts: [f32; 12],
+    /// Per-sector saturation offsets. 0.0 = no change, -1.0 = desaturate, 1.0 = double.
+    #[serde(default)]
+    pub sat_shifts: [f32; 12],
+}
+
+impl Default for ColorWarperParams {
+    fn default() -> Self {
+        Self {
+            hue_shifts: [0.0; 12],
+            sat_shifts: [0.0; 12],
+        }
+    }
+}
+
+impl ColorWarperParams {
+    pub fn is_identity(&self) -> bool {
+        self.hue_shifts.iter().all(|v| v.abs() < 0.001)
+            && self.sat_shifts.iter().all(|v| v.abs() < 0.001)
+    }
+}
+
 impl HueSatCurves {
     pub fn is_all_identity(&self) -> bool {
         self.hue_vs_hue.is_empty()

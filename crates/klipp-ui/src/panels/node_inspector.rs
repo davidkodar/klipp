@@ -89,7 +89,7 @@ impl NodeInspectorPanel {
         // ── Tab row (equal-width, amber underline on active) ──
         let tab_h = 28.0;
         let avail_w = ui.available_width();
-        let tab_w = avail_w / 4.0;
+        let tab_w = avail_w / 5.0;
 
         let (tab_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, tab_h), egui::Sense::hover());
 
@@ -106,6 +106,7 @@ impl NodeInspectorPanel {
                 (ColorTab::Wheels, "Wheels"),
                 (ColorTab::Curves, "Curves"),
                 (ColorTab::HueSat, "Hue/Sat"),
+                (ColorTab::Warper, "Warper"),
             ].iter().enumerate() {
                 let active = *color_tab == *tab;
                 let x = tab_rect.min.x + i as f32 * tab_w;
@@ -130,6 +131,7 @@ impl NodeInspectorPanel {
             (ColorTab::Wheels, "Wheels"),
             (ColorTab::Curves, "Curves"),
             (ColorTab::HueSat, "Hue/Sat"),
+            (ColorTab::Warper, "Warper"),
         ].iter().enumerate() {
             let x = tab_rect.min.x + i as f32 * tab_w;
             let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
@@ -153,6 +155,7 @@ impl NodeInspectorPanel {
                             ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
                             ColorTab::Curves => vec![NodeKind::RGBCurves],
                             ColorTab::HueSat => vec![NodeKind::HueSatCurves],
+                            ColorTab::Warper => vec![NodeKind::ColorWarper],
                             _ => vec![],
                         };
                         for target_kind in &target_kinds {
@@ -931,11 +934,206 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
                 }
             }
+            NodeKind::ColorWarper => {
+                self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
             NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
             | NodeKind::ColorMatch | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
+        }
+    }
+
+    /// Draw the 2D color warper widget: circular hue/sat grid with 12 draggable control points.
+    fn show_warper_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        params: &mut NodeParams,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        let warper = params.warper_params.get_or_insert_with(Default::default);
+
+        let size = ui.available_width().min(250.0);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+        let center = rect.center();
+        let radius = size / 2.0 - 16.0;
+        let painter = ui.painter();
+
+        // Background circle
+        painter.circle_filled(center, radius + 4.0, egui::Color32::from_rgb(0x18, 0x18, 0x20));
+        painter.circle_stroke(center, radius, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+
+        // Crosshair lines
+        painter.line_segment(
+            [egui::pos2(center.x - radius, center.y), egui::pos2(center.x + radius, center.y)],
+            egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+        );
+        painter.line_segment(
+            [egui::pos2(center.x, center.y - radius), egui::pos2(center.x, center.y + radius)],
+            egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+        );
+
+        // Inner reference circles at 33% and 66% radius
+        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+
+        let sector_labels = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
+        let neutral_r = radius * 0.7;
+
+        // Draw subtle hue wedge markers and sector labels
+        for i in 0..12 {
+            let angle = (i as f32 * 30.0).to_radians();
+            let hue_deg = i as f32 * 30.0;
+            let (hr, hg, hb) = klipp_color::hsv_to_rgb(hue_deg, 1.0, 1.0);
+
+            // Radial line for each sector boundary
+            let line_angle = ((i as f32 * 30.0) - 15.0).to_radians();
+            let lx0 = center.x + line_angle.cos() * radius * 0.15;
+            let ly0 = center.y - line_angle.sin() * radius * 0.15;
+            let lx1 = center.x + line_angle.cos() * radius;
+            let ly1 = center.y - line_angle.sin() * radius;
+            painter.line_segment(
+                [egui::pos2(lx0, ly0), egui::pos2(lx1, ly1)],
+                egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12)),
+            );
+
+            // Subtle hue dot at center of each sector
+            let dot_x = center.x + angle.cos() * radius * 0.5;
+            let dot_y = center.y - angle.sin() * radius * 0.5;
+            painter.circle_filled(
+                egui::pos2(dot_x, dot_y),
+                8.0,
+                egui::Color32::from_rgba_premultiplied(
+                    (hr * 40.0) as u8, (hg * 40.0) as u8, (hb * 40.0) as u8, 40
+                ),
+            );
+
+            // Labels outside circle
+            let lx = center.x + angle.cos() * (radius + 12.0);
+            let ly = center.y - angle.sin() * (radius + 12.0);
+            painter.text(
+                egui::pos2(lx, ly),
+                egui::Align2::CENTER_CENTER,
+                sector_labels[i],
+                egui::FontId::proportional(8.0),
+                egui::Color32::from_rgba_premultiplied(
+                    (hr * 180.0 + 75.0).min(255.0) as u8,
+                    (hg * 180.0 + 75.0).min(255.0) as u8,
+                    (hb * 180.0 + 75.0).min(255.0) as u8,
+                    180,
+                ),
+            );
+        }
+
+        // Draw control points and shift indicators
+        for i in 0..12 {
+            let base_angle = (i as f32 * 30.0).to_radians();
+            let hue_deg = i as f32 * 30.0;
+            let (hr, hg, hb) = klipp_color::hsv_to_rgb(hue_deg, 1.0, 1.0);
+
+            // Neutral position on the circle
+            let nx = center.x + base_angle.cos() * neutral_r;
+            let ny = center.y - base_angle.sin() * neutral_r;
+
+            // Shifted position: tangential = hue shift, radial = sat shift
+            let hue_offset_angle = warper.hue_shifts[i].to_radians() * 0.02; // scale down for UI
+            let sat_offset_r = warper.sat_shifts[i] * radius * 0.25;
+
+            let point_angle = base_angle + hue_offset_angle;
+            let point_r = neutral_r + sat_offset_r;
+
+            let px = center.x + point_angle.cos() * point_r;
+            let py = center.y - point_angle.sin() * point_r;
+
+            // Draw shift line from neutral to current position
+            if warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01 {
+                painter.line_segment(
+                    [egui::pos2(nx, ny), egui::pos2(px, py)],
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(
+                        (hr * 200.0) as u8, (hg * 200.0) as u8, (hb * 200.0) as u8, 100
+                    )),
+                );
+            }
+
+            // Control point dot
+            let point_color = egui::Color32::from_rgb(
+                (hr * 255.0) as u8, (hg * 255.0) as u8, (hb * 255.0) as u8
+            );
+            painter.circle_filled(egui::pos2(px, py), 5.0, point_color);
+            painter.circle_stroke(egui::pos2(px, py), 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+        }
+
+        // Handle drag interaction
+        if resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let dx = pos.x - center.x;
+                let dy = -(pos.y - center.y); // flip Y for math convention
+                let angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+                let dist = (dx * dx + dy * dy).sqrt();
+
+                // Find nearest sector
+                let sector = ((angle / 30.0).round() as usize) % 12;
+
+                // Compute hue shift (tangential displacement) and sat shift (radial)
+                let base_angle = (sector as f32 * 30.0).to_radians();
+
+                // Tangential component = hue shift
+                let tangent_x = -base_angle.sin();
+                let tangent_y = base_angle.cos();
+                let tangent_proj = dx * tangent_x + dy * tangent_y;
+                let new_hue_shift = (tangent_proj / radius * 90.0).clamp(-180.0, 180.0);
+
+                // Radial component = sat shift
+                let new_sat_shift = ((dist - neutral_r) / (radius * 0.25)).clamp(-1.0, 1.0);
+
+                warper.hue_shifts[sector] = new_hue_shift;
+                warper.sat_shifts[sector] = new_sat_shift;
+
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id,
+                    node_id,
+                    param: format!("warper_hue_{sector}"),
+                    value: new_hue_shift,
+                });
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id,
+                    node_id,
+                    param: format!("warper_sat_{sector}"),
+                    value: new_sat_shift,
+                });
+            }
+        }
+
+        // Reset button
+        ui.add_space(6.0);
+        if ui.small_button("Reset Warper").clicked() {
+            warper.hue_shifts = [0.0; 12];
+            warper.sat_shifts = [0.0; 12];
+            for s in 0..12 {
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id,
+                    node_id,
+                    param: format!("warper_hue_{s}"),
+                    value: 0.0,
+                });
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id,
+                    node_id,
+                    param: format!("warper_sat_{s}"),
+                    value: 0.0,
+                });
+            }
+        }
+
+        // Show active sector values as compact readout
+        ui.add_space(4.0);
+        let active_count = (0..12).filter(|&i| warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01).count();
+        if active_count > 0 {
+            ui.label(egui::RichText::new(format!("{active_count} sector(s) adjusted")).size(9.0).color(theme.text_dim));
         }
     }
 }

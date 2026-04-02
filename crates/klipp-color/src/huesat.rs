@@ -93,7 +93,7 @@ pub fn apply_huesat_curves(rgba: &mut [u8], curves: &HueSatCurves, mix: f32) {
     }
 }
 
-fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let delta = max - min;
@@ -112,7 +112,7 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s.clamp(0.0, 1.0), l)
 }
 
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     if s < 0.0001 {
         return (l, l, l);
     }

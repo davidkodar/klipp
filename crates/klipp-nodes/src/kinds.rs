@@ -56,6 +56,10 @@ pub enum NodeKind {
     /// Colour match (histogram matching). Ports: 0=input, 1=reference frame.
     ColorMatch,
 
+    // ── Color Warper ────────────────────────────────────────────
+    /// 2D hue/saturation vector grading with 12 sectors.
+    ColorWarper,
+
     // ── Noise Reduction ────────────────────────────────────────
     /// Spatial noise reduction (bilateral filter).
     Denoise,
@@ -108,6 +112,7 @@ impl NodeKind {
             NodeKind::Lut3D => "3D LUT",
             NodeKind::FilmGrain => "Film Grain",
             NodeKind::ColorMatch => "Color Match",
+            NodeKind::ColorWarper => "Color Warper",
             NodeKind::Denoise => "Noise Reduction",
             NodeKind::Unknown => "Unknown",
         }

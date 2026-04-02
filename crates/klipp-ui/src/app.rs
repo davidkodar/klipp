@@ -2432,6 +2432,7 @@ impl KlippApp {
                         "Lut3D" => klipp_nodes::NodeKind::Lut3D,
                         "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
                         "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
+                        "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
                         "Denoise" => klipp_nodes::NodeKind::Denoise,
                         _ => { continue; }
                     };

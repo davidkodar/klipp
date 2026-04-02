@@ -211,6 +211,7 @@ impl NodeGraphPanel {
                             ("Color Balance", "ColorBalance"),
                             ("Qualifier", "Qualifier"),
                             ("Film Grain", "FilmGrain"),
+                            ("Color Warper", "ColorWarper"),
                             ("Noise Reduction", "Denoise"),
                             ("3D LUT", "Lut3D"),
                         ] {
