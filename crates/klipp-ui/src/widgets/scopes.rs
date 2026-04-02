@@ -252,37 +252,9 @@ impl AccumBuffer {
         }
     }
 
-    /// Add with glow: spreads energy to 3×3 neighborhood for bloom-like effect.
-    /// Core pixel gets full intensity, neighbors get `spread` fraction.
-    #[inline]
-    fn add_glow(&mut self, x: usize, y: usize, r: f32, g: f32, b: f32, spread: f32) {
-        if x < self.w && y < self.h {
-            let idx = y * self.w + x;
-            self.data[idx][0] += r;
-            self.data[idx][1] += g;
-            self.data[idx][2] += b;
-            // Spread to neighbors
-            let sr = r * spread;
-            let sg = g * spread;
-            let sb = b * spread;
-            for &dy in &[-1i32, 0, 1] {
-                for &dx in &[-1i32, 0, 1] {
-                    if dx == 0 && dy == 0 { continue; }
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx >= 0 && nx < self.w as i32 && ny >= 0 && ny < self.h as i32 {
-                        let ni = ny as usize * self.w + nx as usize;
-                        self.data[ni][0] += sr;
-                        self.data[ni][1] += sg;
-                        self.data[ni][2] += sb;
-                    }
-                }
-            }
-        }
-    }
-
     /// Apply bloom: extract bright pixels, blur, blend back
     #[inline(never)]
+    #[allow(dead_code)]
     fn apply_bloom(&mut self, radius: usize, threshold: f32, strength: f32) {
         let w = self.w;
         let h = self.h;
