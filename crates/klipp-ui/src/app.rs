@@ -6192,6 +6192,40 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     continue;
                 }
+                AppCommand::CreateGeneratorClip { generator_type } => {
+                    let ph = self.state.playhead;
+                    let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                    let duration = klipp_core::RationalTime::from_frames(120, fps_rate);
+                    let timeline_out = ph + duration;
+                    let gen_data = match generator_type.as_str() {
+                        "Color Bars" => klipp_timeline::GeneratorData::ColorBars,
+                        "Black" => klipp_timeline::GeneratorData::SolidColor { color: [0, 0, 0, 255] },
+                        _ => klipp_timeline::GeneratorData::SolidColor { color: [128, 128, 128, 255] }, // Solid Color default = grey
+                    };
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                        .unwrap_or_else(|| {
+                            seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
+                            0
+                        });
+                    let clip = klipp_timeline::Clip {
+                        id: klipp_core::ClipId::new(),
+                        kind: klipp_timeline::ClipKind::Generator(gen_data),
+                        timeline_in: ph,
+                        timeline_out,
+                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                        source_out: duration,
+                        ..klipp_timeline::Clip::gap(ph, timeline_out)
+                    };
+                    let clip_id = clip.id;
+                    seq.tracks[track_idx].clips.push(clip);
+                    seq.tracks[track_idx].sort_clips();
+                    self.state.selected_clip = Some(clip_id);
+                    self.state.toast.show(format!("{generator_type} generator created"));
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    continue;
+                }
                 // Create compound clip: move selected clips into a new nested sequence
                 AppCommand::CreateCompoundClip { name } => {
                     let name = name.clone();

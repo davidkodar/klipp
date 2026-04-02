@@ -94,6 +94,12 @@ impl BrowserPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
+        // Transfer reveal_in_browser request from AppState to browser scroll
+        if let Some(mid) = state.reveal_in_browser.take() {
+            self.scroll_to_media_id = Some(mid);
+            *active_tab = BrowserTab::Media; // Switch to media tab
+        }
+
         // ── Tab bar ──
         let tab_rect = ui.available_rect_before_wrap();
         ui.allocate_new_ui(

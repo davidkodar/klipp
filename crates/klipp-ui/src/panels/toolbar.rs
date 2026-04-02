@@ -376,16 +376,19 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
                 if let Some(clip_id) = state.selected_clip {
-                    cmds.push(AppCommand::CopyAttributes { clip_id });
+                    cmds.push(AppCommand::CopyClip { clip_id });
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 }
                 ui.close_menu();
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy").shortcut_text("Ctrl+C")).clicked() {
-                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id }); }
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyClip { clip_id }); }
                 ui.close_menu();
             }
-            if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste").shortcut_text("Ctrl+V")).clicked() { ui.close_menu(); }
+            if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste").shortcut_text("Ctrl+V")).clicked() {
+                cmds.push(AppCommand::PasteClip);
+                ui.close_menu();
+            }
             if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
                 state.show_paste_attributes_dialog = true; ui.close_menu();
             }
@@ -430,7 +433,22 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             if ui.add_enabled(has_clip, egui::Button::new("Close Gap")).clicked() {
-                // Close gap before the selected clip
+                if let Some(cid) = state.selected_clip {
+                    // Find the track and clip, then look for a gap before it
+                    for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                        if let Some((ci, clip)) = track.clips.iter().enumerate().find(|(_, c)| c.id == cid) {
+                            if ci > 0 {
+                                let prev = &track.clips[ci - 1];
+                                let gap_start = prev.timeline_out;
+                                let gap_end = clip.timeline_in;
+                                if gap_end > gap_start {
+                                    cmds.push(AppCommand::CloseGap { track_index: ti, gap_start, gap_end });
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
                 ui.close_menu();
             }
             if ui.add_enabled(has_clip, egui::Button::new("Ripple Delete").shortcut_text("Shift+Del")).clicked() {
@@ -465,7 +483,13 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Reveal in Browser")).clicked() {
-                // Scroll browser to show the source media of the selected clip
+                if let Some(cid) = state.selected_clip {
+                    let mid = state.sequence().all_clips().find(|c| c.id == cid).and_then(|c| c.media_id());
+                    if let Some(mid) = mid {
+                        state.reveal_in_browser = Some(mid);
+                        state.show_browser_panel = true;
+                    }
+                }
                 ui.close_menu();
             }
             if ui.add(egui::Button::new("Open in Color Panel").shortcut_text("C")).clicked() {
@@ -498,7 +522,7 @@ impl ToolbarPanel {
             ui.menu_button("Add Generator", |ui| {
                 for gen_type in ["Solid Color", "Color Bars", "Black"] {
                     if ui.button(gen_type).clicked() {
-                        // TODO: wire to generator creation when AppCommand variant is added
+                        cmds.push(AppCommand::CreateGeneratorClip { generator_type: gen_type.into() });
                         ui.close_menu();
                     }
                 }
@@ -652,8 +676,7 @@ impl ToolbarPanel {
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Help").size(11.0), |ui| {
             if ui.add(egui::Button::new("Klipp Documentation").shortcut_text("F1")).clicked() {
-                // Open documentation — for now show about dialog which has tech info
-                state.show_about_dialog = true;
+                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/wiki").spawn();
                 ui.close_menu();
             }
             if ui.button("Keyboard Shortcuts").clicked() {

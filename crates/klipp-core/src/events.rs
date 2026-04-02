@@ -426,6 +426,8 @@ pub enum AppCommand {
     ApplyMotionPreset { clip_id: ClipId, preset: String },
     /// Create an adjustment layer at the playhead on the top video track.
     CreateAdjustmentLayer,
+    /// Create a generator clip (solid color, color bars, black) on the top video track at playhead.
+    CreateGeneratorClip { generator_type: String },
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.
