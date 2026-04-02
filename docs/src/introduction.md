@@ -1,16 +1,16 @@
 # Introduction
 
-Klipp is a professional non-linear video editor built for Linux. Written in Rust with an egui/eframe interface, it delivers GPU-accelerated editing, color grading, and effects processing without leaving the Linux desktop.
+Klipp is a non-linear video editor built for Linux. Written in Rust with an egui/eframe interface, it delivers GPU-accelerated editing, color grading, and effects processing without leaving the Linux desktop.
 
 ## Why Klipp?
 
-Linux has long lacked a native, professional-grade NLE that takes full advantage of modern hardware. Klipp fills that gap with a ground-up Rust implementation that provides:
+Linux has long lacked a native, fully-featured NLE that takes full advantage of modern hardware. Klipp fills that gap with a ground-up Rust implementation that provides:
 
 - **Hardware-accelerated decode** via CUDA NVDEC, VAAPI, or optimized software fallback
 - **GPU compute effects** through wgpu/Vulkan compute shaders
 - **Low-latency audio** with cpal and PipeWire/ALSA support
 - **Magnetic timeline** editing inspired by Final Cut Pro
-- **Professional color grading** with wheels, curves, scopes, and multiple color space support
+- **Color grading** with wheels, curves, scopes, and multiple color space support
 
 ## Key Features
 
@@ -23,7 +23,7 @@ Linux has long lacked a native, professional-grade NLE that takes full advantage
 
 ## Who Is Klipp For?
 
-Klipp is designed for video editors who work on Linux and need professional editing capabilities without relying on compatibility layers or web-based tools. Whether you are cutting short films, producing YouTube content, or assembling corporate video, Klipp provides the tools you need with native Linux performance.
+Klipp is designed for video editors who work on Linux and want capable editing tools without relying on compatibility layers or web-based apps. Whether you are cutting short films, producing YouTube content, or assembling corporate video, Klipp provides the tools you need with native Linux performance.
 
 ## Author and License
 

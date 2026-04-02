@@ -14,7 +14,7 @@ Both clips must have sufficient handle media (extra frames beyond the visible tr
 
 ## Cross Dissolve
 
-The cross dissolve is the default transition. It gradually blends the outgoing clip into the incoming clip over the transition duration. This is the most commonly used transition in professional editing.
+The cross dissolve is the default transition. It gradually blends the outgoing clip into the incoming clip over the transition duration. This is the most commonly used transition in video editing.
 
 To apply the default cross dissolve:
 - Select an edit point between two clips

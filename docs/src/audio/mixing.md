@@ -1,6 +1,6 @@
 # Audio Mixing
 
-Klipp provides per-clip and per-track audio controls with professional loudness metering.
+Klipp provides per-clip and per-track audio controls with loudness metering.
 
 ## Volume
 

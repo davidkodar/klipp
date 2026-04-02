@@ -76,4 +76,4 @@ FCM: NON-DROP FRAME
 
 ### Compatibility
 
-CMX 3600 EDL is supported by virtually all professional NLEs including DaVinci Resolve, Avid Media Composer, Adobe Premiere Pro, and Final Cut Pro. It is the most reliable interchange format for simple timelines.
+CMX 3600 EDL is supported by virtually all major NLEs including DaVinci Resolve, Avid Media Composer, Adobe Premiere Pro, and Final Cut Pro. It is the most reliable interchange format for simple timelines.
