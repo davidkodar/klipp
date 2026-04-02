@@ -471,14 +471,31 @@ impl GraphExecutor {
                 if let Some(masks) = &params.masks {
                     // Evaluate mask keyframes at current clip time
                     let evaluated = masks.evaluated_at(clip_time_secs);
-                    let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
-                    matte
-                        .iter()
-                        .flat_map(|&v| {
-                            let b = (v * 255.0) as u8;
-                            [b, b, b, 255]
-                        })
-                        .collect()
+
+                    // GPU path: convert masks to GPU format (skip Bezier shapes)
+                    if let Some(gpu) = &mut self.gpu {
+                        let gpu_masks: Vec<klipp_effects::gpu::GpuMaskDef> = evaluated.masks.iter()
+                            .filter(|m| m.enabled)
+                            .filter_map(|m| mask_to_gpu_def(m))
+                            .collect();
+                        let has_bezier = evaluated.masks.iter()
+                            .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. }));
+
+                        if !gpu_masks.is_empty() && !has_bezier {
+                            gpu.generate_mask_gpu(width, height, &gpu_masks)
+                        } else {
+                            // Bezier or mixed shapes: fall back to CPU
+                            let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
+                            matte.iter()
+                                .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
+                                .collect()
+                        }
+                    } else {
+                        let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
+                        matte.iter()
+                            .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
+                            .collect()
+                    }
                 } else {
                     vec![255u8; (width * height * 4) as usize]
                 }
@@ -672,6 +689,21 @@ fn is_curves_identity(curves: &klipp_core::CurveSet) -> bool {
         && klipp_color::curves::is_identity(&curves.red)
         && klipp_color::curves::is_identity(&curves.green)
         && klipp_color::curves::is_identity(&curves.blue)
+}
+
+/// Convert a klipp_core::Mask to a GpuMaskDef. Returns None for Bezier shapes.
+fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMaskDef> {
+    use klipp_core::MaskShape;
+    use klipp_effects::gpu::GpuMaskDef;
+    match &mask.shape {
+        MaskShape::Circle { center_x, center_y, radius } =>
+            Some(GpuMaskDef::circle(*center_x, *center_y, *radius, mask.feather, mask.invert, mask.opacity)),
+        MaskShape::Rectangle { center_x, center_y, width, height, rotation } =>
+            Some(GpuMaskDef::rectangle(*center_x, *center_y, *width, *height, *rotation, mask.feather, mask.invert, mask.opacity)),
+        MaskShape::LinearGradient { start_x, start_y, end_x, end_y } =>
+            Some(GpuMaskDef::linear_gradient(*start_x, *start_y, *end_x, *end_y, mask.feather, mask.invert, mask.opacity)),
+        MaskShape::Bezier { .. } => None,
+    }
 }
 
 fn build_curve_luts(curves: &klipp_core::CurveSet) -> CurveLuts {

@@ -17,6 +17,36 @@ pub fn set_gpu_power_preference(pref: Option<wgpu::PowerPreference>) {
 use crate::BuiltinEffect;
 use tracing::{debug, info, warn};
 
+/// Definition of a single mask for GPU dispatch.
+pub struct GpuMaskDef {
+    /// 0=circle, 1=rectangle, 2=linear_gradient
+    pub shape_type: u32,
+    pub cx: f32,
+    pub cy: f32,
+    pub p1: f32,  // circle: radius, rect: width, grad: end_x
+    pub p2: f32,  // rect: height, grad: end_y
+    pub p3: f32,  // rect: rotation (degrees)
+    pub feather: f32,
+    /// bit 0 = invert, bits 8-15 = opacity (0-255)
+    pub flags: u32,
+}
+
+impl GpuMaskDef {
+    pub fn circle(cx: f32, cy: f32, radius: f32, feather: f32, invert: bool, opacity: f32) -> Self {
+        Self { shape_type: 0, cx, cy, p1: radius, p2: 0.0, p3: 0.0, feather, flags: Self::make_flags(invert, opacity) }
+    }
+    pub fn rectangle(cx: f32, cy: f32, w: f32, h: f32, rotation: f32, feather: f32, invert: bool, opacity: f32) -> Self {
+        Self { shape_type: 1, cx, cy, p1: w, p2: h, p3: rotation, feather, flags: Self::make_flags(invert, opacity) }
+    }
+    pub fn linear_gradient(sx: f32, sy: f32, ex: f32, ey: f32, feather: f32, invert: bool, opacity: f32) -> Self {
+        Self { shape_type: 2, cx: sx, cy: sy, p1: ex, p2: ey, p3: 0.0, feather, flags: Self::make_flags(invert, opacity) }
+    }
+    fn make_flags(invert: bool, opacity: f32) -> u32 {
+        let opacity_byte = (opacity.clamp(0.0, 1.0) * 255.0) as u32;
+        (if invert { 1 } else { 0 }) | (opacity_byte << 8)
+    }
+}
+
 /// GPU effects pipeline — holds device, queue, compute pipelines, and reusable buffers.
 pub struct GpuEffectsPipeline {
     device: wgpu::Device,
@@ -84,6 +114,8 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
     rgb_curves_pipeline: wgpu::ComputePipeline,
     rgb_curves_lut_buf: wgpu::Buffer,
+    // Compute pipeline — mask matte generation (SDF power windows)
+    mask_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
@@ -385,6 +417,7 @@ impl GpuEffectsPipeline {
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE, &pipeline_cache);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER, &pipeline_cache);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION, &pipeline_cache);
+        let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK, &pipeline_cache);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE, &pipeline_cache);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI, &pipeline_cache);
         let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES, &pipeline_cache);
@@ -412,7 +445,7 @@ impl GpuEffectsPipeline {
 
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION, &pipeline_cache);
 
-        let pipeline_count = 48;
+        let pipeline_count = 49;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -486,6 +519,7 @@ impl GpuEffectsPipeline {
             lut3d_pipeline,
             lut3d_buf: None,
             lut3d_buf_size: 0,
+            mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
             rgb_curves_pipeline,
@@ -754,6 +788,52 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Generate a mask matte on GPU. Supports up to 4 masks (circle, rect, linear gradient).
+    /// Returns greyscale RGBA (R=G=B=matte, A=255).
+    pub fn generate_mask_gpu(
+        &mut self,
+        width: u32,
+        height: u32,
+        masks: &[GpuMaskDef],
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        let mut p = GpuMaskParams {
+            width, height, mask_count: masks.len().min(4) as u32, _pad: 0,
+            m0_type: 3, m0_cx: 0.0, m0_cy: 0.0, m0_p1: 0.0, m0_p2: 0.0, m0_p3: 0.0, m0_feather: 0.0, m0_flags: 0,
+            m1_type: 3, m1_cx: 0.0, m1_cy: 0.0, m1_p1: 0.0, m1_p2: 0.0, m1_p3: 0.0, m1_feather: 0.0, m1_flags: 0,
+            m2_type: 3, m2_cx: 0.0, m2_cy: 0.0, m2_p1: 0.0, m2_p2: 0.0, m2_p3: 0.0, m2_feather: 0.0, m2_flags: 0,
+            m3_type: 3, m3_cx: 0.0, m3_cy: 0.0, m3_p1: 0.0, m3_p2: 0.0, m3_p3: 0.0, m3_feather: 0.0, m3_flags: 0,
+        };
+
+        let set = |slot: usize, p: &mut GpuMaskParams, m: &GpuMaskDef| {
+            let (ty, cx, cy, p1, p2, p3, feather, flags) = (m.shape_type, m.cx, m.cy, m.p1, m.p2, m.p3, m.feather, m.flags);
+            match slot {
+                0 => { p.m0_type = ty; p.m0_cx = cx; p.m0_cy = cy; p.m0_p1 = p1; p.m0_p2 = p2; p.m0_p3 = p3; p.m0_feather = feather; p.m0_flags = flags; }
+                1 => { p.m1_type = ty; p.m1_cx = cx; p.m1_cy = cy; p.m1_p1 = p1; p.m1_p2 = p2; p.m1_p3 = p3; p.m1_feather = feather; p.m1_flags = flags; }
+                2 => { p.m2_type = ty; p.m2_cx = cx; p.m2_cy = cy; p.m2_p1 = p1; p.m2_p2 = p2; p.m2_p3 = p3; p.m2_feather = feather; p.m2_flags = flags; }
+                3 => { p.m3_type = ty; p.m3_cx = cx; p.m3_cy = cy; p.m3_p1 = p1; p.m3_p2 = p2; p.m3_p3 = p3; p.m3_feather = feather; p.m3_flags = flags; }
+                _ => {}
+            }
+        };
+
+        for (i, m) in masks.iter().enumerate().take(4) {
+            set(i, &mut p, m);
+        }
+
+        self.write_params(&p);
+        self.dispatch(&self.mask_pipeline, buf_a, buf_b, workgroups);
 
         self.download(buf_b, byte_size)
     }
@@ -2287,6 +2367,21 @@ struct GpuRgbCurvesParams {
     preserve_luma: u32,
     mix: f32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuMaskParams {
+    width: u32,
+    height: u32,
+    mask_count: u32,
+    _pad: u32,
+    // 4 masks × 8 fields = 32 u32s
+    m0_type: u32, m0_cx: f32, m0_cy: f32, m0_p1: f32, m0_p2: f32, m0_p3: f32, m0_feather: f32, m0_flags: u32,
+    m1_type: u32, m1_cx: f32, m1_cy: f32, m1_p1: f32, m1_p2: f32, m1_p3: f32, m1_feather: f32, m1_flags: u32,
+    m2_type: u32, m2_cx: f32, m2_cy: f32, m2_p1: f32, m2_p2: f32, m2_p3: f32, m2_feather: f32, m2_flags: u32,
+    m3_type: u32, m3_cx: f32, m3_cy: f32, m3_p1: f32, m3_p2: f32, m3_p3: f32, m3_feather: f32, m3_flags: u32,
+}
+// 36 fields × 4 bytes = 144 bytes
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -5581,5 +5676,99 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = u32(clamp(g, 0.0, 1.0) * 255.0);
     let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
     output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── Mask matte generation (SDF-based power windows) ───────────────────────────
+const SHADER_MASK: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    mask_count: u32,
+    _pad: u32,
+    m0_type: u32, m0_cx: f32, m0_cy: f32, m0_p1: f32, m0_p2: f32, m0_p3: f32, m0_feather: f32, m0_flags: u32,
+    m1_type: u32, m1_cx: f32, m1_cy: f32, m1_p1: f32, m1_p2: f32, m1_p3: f32, m1_feather: f32, m1_flags: u32,
+    m2_type: u32, m2_cx: f32, m2_cy: f32, m2_p1: f32, m2_p2: f32, m2_p3: f32, m2_feather: f32, m2_flags: u32,
+    m3_type: u32, m3_cx: f32, m3_cy: f32, m3_p1: f32, m3_p2: f32, m3_p3: f32, m3_feather: f32, m3_flags: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
+    if dist <= 0.0 { return 1.0; }
+    if feather > 0.0001 && dist < feather {
+        let t = dist / feather;
+        return 1.0 - t * t * (3.0 - 2.0 * t);
+    }
+    return 0.0;
+}
+
+fn eval_mask(nx: f32, ny: f32, aspect: f32,
+    shape_type: u32, cx: f32, cy: f32, p1: f32, p2: f32, p3: f32,
+    feather: f32, flags: u32) -> f32
+{
+    var dist: f32;
+    switch shape_type {
+        case 0u: {
+            let dx = nx - cx;
+            let dy = (ny - cy) / aspect;
+            dist = sqrt(dx * dx + dy * dy) - p1;
+        }
+        case 1u: {
+            let rad = p3 * 3.14159265 / 180.0;
+            let cos_r = cos(rad);
+            let sin_r = sin(rad);
+            let dx = nx - cx;
+            let dy = (ny - cy) / aspect;
+            let lx = abs(dx * cos_r + dy * sin_r);
+            let ly = abs(-dx * sin_r + dy * cos_r);
+            let hw = p1 / 2.0;
+            let hh = p2 / 2.0;
+            let ox = lx - hw;
+            let oy = ly - hh;
+            let outside = sqrt(max(ox, 0.0) * max(ox, 0.0) + max(oy, 0.0) * max(oy, 0.0));
+            let inside = min(max(ox, oy), 0.0);
+            dist = outside + inside;
+        }
+        case 2u: {
+            let gx = p1 - cx;
+            let gy = (p2 - cy) / aspect;
+            let glen = sqrt(gx * gx + gy * gy);
+            if glen < 0.0001 { dist = 0.0; } else {
+                let dx = nx - cx;
+                let dy = (ny - cy) / aspect;
+                let t = (dx * gx + dy * gy) / (glen * glen);
+                dist = t - 0.5;
+            }
+        }
+        default: { dist = 1.0; }
+    }
+    var m = smooth_step_sdf(dist, feather);
+    if (flags & 1u) != 0u { m = 1.0 - m; }
+    let opacity = f32((flags >> 8u) & 0xFFu) / 255.0;
+    return m * opacity;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let nx = f32(x) / f32(max(params.width - 1u, 1u));
+    let ny = f32(y) / f32(max(params.height - 1u, 1u));
+    let aspect = f32(params.height) / f32(params.width);
+
+    var matte: f32 = 0.0;
+    if params.mask_count >= 1u { matte = max(matte, eval_mask(nx, ny, aspect, params.m0_type, params.m0_cx, params.m0_cy, params.m0_p1, params.m0_p2, params.m0_p3, params.m0_feather, params.m0_flags)); }
+    if params.mask_count >= 2u { matte = max(matte, eval_mask(nx, ny, aspect, params.m1_type, params.m1_cx, params.m1_cy, params.m1_p1, params.m1_p2, params.m1_p3, params.m1_feather, params.m1_flags)); }
+    if params.mask_count >= 3u { matte = max(matte, eval_mask(nx, ny, aspect, params.m2_type, params.m2_cx, params.m2_cy, params.m2_p1, params.m2_p2, params.m2_p3, params.m2_feather, params.m2_flags)); }
+    if params.mask_count >= 4u { matte = max(matte, eval_mask(nx, ny, aspect, params.m3_type, params.m3_cx, params.m3_cy, params.m3_p1, params.m3_p2, params.m3_p3, params.m3_feather, params.m3_flags)); }
+
+    let b = u32(clamp(matte, 0.0, 1.0) * 255.0);
+    output[idx] = b | (b << 8u) | (b << 16u) | (255u << 24u);
 }
 ";
