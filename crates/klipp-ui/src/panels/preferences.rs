@@ -20,6 +20,7 @@ enum PrefsTab {
     Proxy,
     Advanced,
     Keyboard,
+    About,
 }
 
 pub struct PreferencesPanel {
@@ -175,7 +176,7 @@ impl PreferencesPanel {
                 // ── Sidebar navigation ──
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
                     ui.set_clip_rect(sidebar_rect);
-                    egui::ScrollArea::vertical().id_salt("prefs_sidebar").show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("prefs_sidebar").max_height(sidebar_rect.height()).show(ui, |ui| {
                         ui.add_space(4.0);
                         self.sidebar_category(ui, "PROJECT");
                         self.sidebar_item(ui, PrefsTab::General, "\u{1F4C4}", "General");
@@ -209,13 +210,20 @@ impl PreferencesPanel {
                         self.sidebar_item(ui, PrefsTab::Title, "\u{1D413}", "Titles");
                         self.sidebar_item(ui, PrefsTab::Keyboard, "\u{2328}", "Keyboard");
                         self.sidebar_item(ui, PrefsTab::Advanced, "\u{2699}", "Advanced");
+
+                        ui.add_space(8.0);
+                        self.sidebar_category(ui, "ABOUT");
+                        self.sidebar_item(ui, PrefsTab::About, "\u{2139}", "About Klipp");
                     });
                 });
 
                 // ── Right content panel ──
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                     ui.set_clip_rect(content_rect);
-                    egui::ScrollArea::vertical().id_salt("prefs_content").show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("prefs_content")
+                        .max_height(content_rect.height())
+                        .show(ui, |ui| {
                         ui.add_space(8.0);
                         match self.active_tab {
                             PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
@@ -234,6 +242,7 @@ impl PreferencesPanel {
                             PrefsTab::Viewer => self.show_viewer(ui, prefs, prefs_dirty),
                             PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty),
                             PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings),
+                            PrefsTab::About => self.show_about(ui),
                         }
                     });
                 });
@@ -344,21 +353,47 @@ impl PreferencesPanel {
 
     /// Draw a setting row with label on left and a widget on right (returned via closure).
     fn setting_row(ui: &mut egui::Ui, label: &str, add_right: impl FnOnce(&mut egui::Ui)) {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+        Self::setting_row_inner(ui, label, None, add_right);
+    }
+
+    fn setting_row_with_subtitle(ui: &mut egui::Ui, label: &str, subtitle: &str, add_right: impl FnOnce(&mut egui::Ui)) {
+        Self::setting_row_inner(ui, label, Some(subtitle), add_right);
+    }
+
+    fn setting_row_inner(ui: &mut egui::Ui, label: &str, subtitle: Option<&str>, add_right: impl FnOnce(&mut egui::Ui)) {
+        let row_h = if subtitle.is_some() { 48.0 } else { 36.0 };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
         // Subtle separator
         ui.painter().line_segment(
             [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
             egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
         );
-        // Label
-        ui.painter().text(
-            egui::pos2(rect.left() + 14.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(12.0),
-            Self::NORMAL_TEXT,
-        );
+        // Label (+ optional subtitle)
+        if let Some(sub) = subtitle {
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.top() + 16.0),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.top() + 34.0),
+                egui::Align2::LEFT_CENTER,
+                sub,
+                egui::FontId::proportional(10.0),
+                Self::DIM_TEXT,
+            );
+        } else {
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+        }
         // Right-aligned widget area
         let widget_rect = egui::Rect::from_min_max(
             egui::pos2(rect.right() - 250.0, rect.top() + 4.0),
@@ -430,7 +465,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Recent projects to show", |ui| {
             let count = prefs.general.recent_projects.len();
-            let display_counts = [5u32, 10, 15, 20];
+            let _display_counts = [5u32, 10, 15, 20];
             // For now show current count — this is informational
             egui::ComboBox::from_id_salt("recent_count")
                 .selected_text(format!("{}", count.min(20)))
@@ -462,84 +497,75 @@ impl PreferencesPanel {
         prefs: &mut Preferences,
         dirty: &mut bool,
     ) {
-        ui.label(egui::RichText::new("Audio").strong().size(12.0));
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Playback").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
         ui.add_space(4.0);
 
-        if ui
-            .checkbox(&mut prefs.playback.scrub_audio, "Scrub audio during timeline drag")
-            .changed()
-        {
-            *dirty = true;
-        }
-        if ui
-            .checkbox(&mut prefs.playback.skim_audio, "Audio during skimming (Shift+S)")
-            .changed()
-        {
-            *dirty = true;
-        }
+        // ── QUALITY section ──
+        Self::section_header(ui, "QUALITY");
 
-        ui.add_space(8.0);
-        ui.label("Skim resolution");
-        ui.add_space(4.0);
+        Self::setting_row(ui, "Playback quality", |ui| {
+            use klipp_core::PlaybackQuality;
+            egui::ComboBox::from_id_salt("pb_quality")
+                .selected_text(match prefs.playback.playback_quality {
+                    PlaybackQuality::Full => "Full",
+                    PlaybackQuality::Half => "Half",
+                    PlaybackQuality::Quarter => "Quarter",
+                })
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Full, "Full").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Half, "Half").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Quarter, "Quarter").changed() { *dirty = true; }
+                });
+        });
 
-        let resolutions: [(u32, &str); 4] = [
-            (240, "240p (fastest)"),
-            (480, "480p (default)"),
-            (720, "720p"),
-            (1080, "1080p (sharpest)"),
-        ];
-        for (res, label) in &resolutions {
-            if ui
-                .radio(prefs.playback.skim_resolution == *res, *label)
-                .clicked()
-            {
-                prefs.playback.skim_resolution = *res;
+        Self::setting_row_with_subtitle(ui, "Background render", "Pre-render complex sections in background", |ui| {
+            let mut val = prefs.playback.background_render;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.playback.background_render = val;
                 *dirty = true;
             }
-        }
+        });
 
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Playback").strong().size(12.0));
-        ui.add_space(4.0);
-        if ui
-            .checkbox(&mut prefs.playback.loop_playback, "Loop playback (Ctrl+L)")
-            .changed()
-        {
-            *dirty = true;
-        }
+        // ── TRANSPORT section ──
+        Self::section_header(ui, "TRANSPORT");
 
-        ui.add_space(8.0);
-        ui.label("JKL audio mute threshold");
-        ui.add_space(4.0);
+        Self::setting_row(ui, "Pre-roll duration", |ui| {
+            let mut v = prefs.playback.pre_roll_duration;
+            if ui.add(egui::DragValue::new(&mut v).range(0.0..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.playback.pre_roll_duration = v;
+                *dirty = true;
+            }
+        });
 
-        let thresholds = [
-            (2.0_f32, "2\u{00d7} speed"),
-            (4.0, "4\u{00d7} speed"),
-            (8.0, "8\u{00d7} speed"),
-            (0.0, "Always mute"),
-        ];
-        let current_label = thresholds
-            .iter()
-            .find(|(v, _)| (*v - prefs.playback.jkl_audio_mute_threshold).abs() < 0.01)
-            .map(|(_, l)| *l)
-            .unwrap_or("Custom");
-
-        egui::ComboBox::from_id_salt("jkl_threshold")
-            .selected_text(current_label)
-            .show_ui(ui, |ui| {
-                for (val, label) in &thresholds {
-                    if ui
-                        .selectable_value(
-                            &mut prefs.playback.jkl_audio_mute_threshold,
-                            *val,
-                            *label,
-                        )
-                        .changed()
-                    {
-                        *dirty = true;
+        Self::setting_row_with_subtitle(ui, "JKL speed steps", "Multiplier per J/L press", |ui| {
+            let steps = [(2.0_f32, "2\u{00d7}"), (3.0, "3\u{00d7}"), (4.0, "4\u{00d7}")];
+            let current = steps.iter()
+                .find(|(v, _)| (*v - prefs.playback.jkl_speed_step).abs() < 0.01)
+                .map(|(_, l)| *l).unwrap_or("2\u{00d7}");
+            egui::ComboBox::from_id_salt("jkl_step")
+                .selected_text(current)
+                .width(50.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &steps {
+                        if ui.selectable_value(&mut prefs.playback.jkl_speed_step, *val, *label).changed() {
+                            *dirty = true;
+                        }
                     }
-                }
-            });
+                });
+        });
+
+        Self::setting_row(ui, "Loop playback by default", |ui| {
+            let mut val = prefs.playback.loop_playback;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.playback.loop_playback = val;
+                *dirty = true;
+            }
+        });
     }
 
     fn show_editing(
@@ -549,130 +575,79 @@ impl PreferencesPanel {
         dirty: &mut bool,
         cmds: &mut Vec<AppCommand>,
     ) {
-        ui.label(egui::RichText::new("Timeline").strong().size(12.0));
-        ui.add_space(4.0);
-
-        if ui
-            .checkbox(
-                &mut prefs.editing.auto_create_tracks,
-                "Automatically create tracks when dropping clips",
-            )
-            .changed()
-        {
-            *dirty = true;
-            cmds.push(AppCommand::SyncAutoCreateTracks(prefs.editing.auto_create_tracks));
-        }
-        ui.label(
-            egui::RichText::new(
-                "When enabled, dragging a clip above the topmost video track or below the \
-                 bottommost audio track automatically creates a new track.",
-            )
-            .size(10.0)
-            .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Media Import").strong().size(12.0));
-        ui.add_space(4.0);
-
-        if ui
-            .checkbox(
-                &mut prefs.editing.auto_generate_filmstrips,
-                "Generate filmstrip thumbnails on import",
-            )
-            .changed()
-        {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new(
-                "Generates timeline filmstrip frames when media is added. \
-                 Uses GPU decode when available. Disable if import feels slow.",
-            )
-            .size(10.0)
-            .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        ui.add_space(4.0);
-        if ui
-            .checkbox(
-                &mut prefs.editing.auto_generate_skim,
-                "Generate skim transcodes on import",
-            )
-            .changed()
-        {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new(
-                "Creates lightweight transcodes for instant hover skimming in the media browser. \
-                 Disable to save disk space and import time.",
-            )
-            .size(10.0)
-            .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("History").strong().size(12.0));
-        ui.add_space(4.0);
-
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Undo history limit:");
-            let mut limit = prefs.editing.undo_limit;
-            if ui.add(egui::DragValue::new(&mut limit).range(10..=10000).speed(1.0).suffix(" steps")).changed() {
-                prefs.editing.undo_limit = limit;
-                *dirty = true;
-            }
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Editing").strong().size(18.0).color(Self::NORMAL_TEXT));
         });
-        ui.label(
-            egui::RichText::new(
-                "Maximum number of undo steps. Higher values use more memory. \
-                 Set to 0 for unlimited.",
-            )
-            .size(10.0)
-            .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        // Expanded editing fields
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Track Defaults").strong().size(12.0));
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Video track height:");
-            let mut v = prefs.editing.default_video_track_height;
-            if ui.add(egui::DragValue::new(&mut v).range(30.0..=100.0).speed(0.5).suffix(" px")).changed() {
-                prefs.editing.default_video_track_height = v; *dirty = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Audio track height:");
-            let mut v = prefs.editing.default_audio_track_height;
-            if ui.add(egui::DragValue::new(&mut v).range(24.0..=80.0).speed(0.5).suffix(" px")).changed() {
-                prefs.editing.default_audio_track_height = v; *dirty = true;
-            }
-        });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Interaction").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Snap threshold:");
+        // ── TIMELINE BEHAVIOR section ──
+        Self::section_header(ui, "TIMELINE BEHAVIOR");
+
+        Self::setting_row_with_subtitle(ui, "Snap threshold", "Distance in pixels before snapping", |ui| {
             let mut v = prefs.editing.snap_threshold_px;
-            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" px")).changed() {
+            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" px").fixed_decimals(0)).changed() {
                 prefs.editing.snap_threshold_px = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Zoom step:");
-            let mut v = prefs.editing.zoom_step;
-            if ui.add(egui::DragValue::new(&mut v).range(1.1..=2.5).speed(0.05).suffix("x")).changed() {
-                prefs.editing.zoom_step = v; *dirty = true;
+
+        Self::setting_row(ui, "Zoom step multiplier", |ui| {
+            let steps = [(1.25_f32, "1.25\u{00d7}"), (1.5, "1.5\u{00d7}"), (2.0, "2\u{00d7}")];
+            let current = steps.iter()
+                .find(|(v, _)| (*v - prefs.editing.zoom_step).abs() < 0.01)
+                .map(|(_, l)| *l).unwrap_or("1.5\u{00d7}");
+            egui::ComboBox::from_id_salt("zoom_step")
+                .selected_text(current)
+                .width(55.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &steps {
+                        if ui.selectable_value(&mut prefs.editing.zoom_step, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Playhead follows playback", |ui| {
+            let mut val = prefs.editing.playhead_follows_playback;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.editing.playhead_follows_playback = val;
+                *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Backup versions:");
-            let mut v = prefs.editing.backup_count;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=20).speed(1.0)).changed() {
-                prefs.editing.backup_count = v; *dirty = true;
+
+        Self::setting_row(ui, "Magnetic timeline", |ui| {
+            let mut val = prefs.editing.magnetic_timeline;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.editing.magnetic_timeline = val;
+                *dirty = true;
+            }
+        });
+
+        // ── DEFAULTS section ──
+        Self::section_header(ui, "DEFAULTS");
+
+        Self::setting_row(ui, "Default transition", |ui| {
+            // Currently only Cross Dissolve is implemented
+            let transitions = ["Cross Dissolve", "Dip to Black", "Wipe"];
+            let mut selected = 0_usize; // Cross Dissolve
+            egui::ComboBox::from_id_salt("default_trans")
+                .selected_text(transitions[selected])
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in transitions.iter().enumerate() {
+                        if ui.selectable_value(&mut selected, i, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Default transition duration", |ui| {
+            let mut v = prefs.editing.default_transition_frames;
+            if ui.add(egui::DragValue::new(&mut v).range(1..=120).speed(1.0).suffix(" fr")).changed() {
+                prefs.editing.default_transition_frames = v; *dirty = true;
             }
         });
 
@@ -685,139 +660,51 @@ impl PreferencesPanel {
         prefs: &mut Preferences,
         dirty: &mut bool,
     ) {
-        ui.label(egui::RichText::new("Timeline Display").strong().size(12.0));
-        ui.add_space(4.0);
-
-        // Fade overlay mode
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Fade overlay:");
-            let current = prefs.audio.fade_overlay_mode;
-            egui::ComboBox::from_id_salt("fade_overlay_mode")
-                .selected_text(match current {
-                    crate::prefs::FadeOverlayMode::AudioOnly => "Audio track only",
-                    crate::prefs::FadeOverlayMode::Both => "Both video and audio",
-                    crate::prefs::FadeOverlayMode::Hidden => "Hidden",
-                })
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::AudioOnly, "Audio track only").changed() {
-                        *dirty = true;
-                    }
-                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::Both, "Both video and audio").changed() {
-                        *dirty = true;
-                    }
-                    if ui.selectable_value(&mut prefs.audio.fade_overlay_mode, crate::prefs::FadeOverlayMode::Hidden, "Hidden").changed() {
-                        *dirty = true;
-                    }
-                });
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Audio").strong().size(18.0).color(Self::NORMAL_TEXT));
         });
-        ui.label(
-            egui::RichText::new("Controls where audio fade in/out overlays appear on timeline clips.")
-                .size(10.0)
-                .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        ui.add_space(8.0);
-
-        // Show rubber band
-        if ui.checkbox(&mut prefs.audio.show_rubber_band, "Show automation rubber band").changed() {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new("Display the volume/pan/gain automation line on audio clips.")
-                .size(10.0)
-                .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
         ui.add_space(4.0);
 
-        // Show waveform
-        if ui.checkbox(&mut prefs.audio.show_waveform, "Show waveform on audio clips").changed() {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new("Display the audio waveform envelope on audio track clips.")
-                .size(10.0)
-                .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
+        // ── MIXING section ──
+        Self::section_header(ui, "MIXING");
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Crossfades").strong().size(12.0));
-        ui.add_space(4.0);
-
-        if ui.checkbox(&mut prefs.audio.anti_click_fade, "Anti-click crossfade at clip boundaries").changed() {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new("Apply a tiny 2ms fade at clip start/end to prevent click and pop artifacts. \
-                Disable for perfectly clean cuts (may produce audible clicks at edit points).")
-                .size(10.0)
-                .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        ui.add_space(4.0);
-
-        if ui.checkbox(&mut prefs.audio.show_crossfade_indicators, "Show crossfade indicators at clip boundaries").changed() {
-            *dirty = true;
-        }
-        ui.label(
-            egui::RichText::new("Display the X icon where two adjacent audio clips meet.")
-                .size(10.0)
-                .color(egui::Color32::from_rgb(120, 120, 130)),
-        );
-
-        // Expanded audio fields
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Mixing").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Pan law:");
+        Self::setting_row_with_subtitle(ui, "Pan law", "Gain change when panning center to side", |ui| {
             egui::ComboBox::from_id_salt("pan_law")
                 .selected_text(match prefs.audio.pan_law {
-                    klipp_core::PanLaw::Linear => "Linear (Balance)",
-                    klipp_core::PanLaw::ConstantPower => "Constant Power",
-                    klipp_core::PanLaw::Minus3dB => "-3 dB",
-                    klipp_core::PanLaw::Minus4_5dB => "-4.5 dB",
-                    klipp_core::PanLaw::Minus6dB => "-6 dB",
+                    klipp_core::PanLaw::Linear => "Linear (balance)",
+                    klipp_core::PanLaw::ConstantPower => "\u{2013}3 dB (equal power)",
+                    klipp_core::PanLaw::Minus3dB => "\u{2013}3 dB",
+                    klipp_core::PanLaw::Minus4_5dB => "\u{2013}4.5 dB",
+                    klipp_core::PanLaw::Minus6dB => "\u{2013}6 dB",
                 })
+                .width(150.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Linear, "Linear (Balance)").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::ConstantPower, "Constant Power").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus3dB, "-3 dB").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus4_5dB, "-4.5 dB").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus6dB, "-6 dB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::ConstantPower, "\u{2013}3 dB (equal power)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Linear, "Linear (balance)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus3dB, "\u{2013}3 dB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus4_5dB, "\u{2013}4.5 dB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.pan_law, klipp_core::PanLaw::Minus6dB, "\u{2013}6 dB").changed() { *dirty = true; }
                 });
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Metering").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Loudness standard:");
-            egui::ComboBox::from_id_salt("loudness_std")
-                .selected_text(match prefs.audio.loudness_standard {
-                    klipp_core::LoudnessStandard::EbuR128 => "EBU R128 (-23 LUFS)",
-                    klipp_core::LoudnessStandard::AtscA85 => "ATSC A/85 (-24 LKFS)",
-                    klipp_core::LoudnessStandard::Off => "Off",
-                })
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128, "EBU R128 (-23 LUFS)").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::AtscA85, "ATSC A/85 (-24 LKFS)").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::Off, "Off").changed() { *dirty = true; }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label("Normalize target:");
-            let mut v = prefs.audio.normalize_target_lufs;
-            if ui.add(egui::DragValue::new(&mut v).range(-24.0..=-6.0).speed(0.5).suffix(" LUFS")).changed() {
-                prefs.audio.normalize_target_lufs = v; *dirty = true;
+        Self::setting_row_with_subtitle(ui, "Anti-click fade", "Duration of micro-fade at clip edges", |ui| {
+            let mut v = prefs.advanced.anti_click_fade_ms;
+            if ui.add(egui::DragValue::new(&mut v).range(0.0..=20.0).speed(0.5).suffix(" ms").fixed_decimals(0)).changed() {
+                prefs.advanced.anti_click_fade_ms = v; *dirty = true;
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Defaults").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Default fade curve:");
+        Self::setting_row(ui, "Default fade duration", |ui| {
+            let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
+            if ui.add(egui::DragValue::new(&mut v_secs).range(0.0..=5.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.audio.default_fade_duration_ms = (v_secs * 1000.0) as u32;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default fade curve", |ui| {
             egui::ComboBox::from_id_salt("fade_curve")
                 .selected_text(match prefs.audio.default_fade_curve {
                     klipp_core::FadeCurve::Linear => "Linear",
@@ -825,6 +712,7 @@ impl PreferencesPanel {
                     klipp_core::FadeCurve::Logarithmic => "Logarithmic",
                     klipp_core::FadeCurve::SCurve => "S-Curve",
                 })
+                .width(100.0)
                 .show_ui(ui, |ui| {
                     if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Linear, "Linear").changed() { *dirty = true; }
                     if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Exponential, "Exponential").changed() { *dirty = true; }
@@ -832,11 +720,36 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::SCurve, "S-Curve").changed() { *dirty = true; }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label("Default fade duration:");
-            let mut v = prefs.audio.default_fade_duration_ms;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=5000).speed(10.0).suffix(" ms")).changed() {
-                prefs.audio.default_fade_duration_ms = v; *dirty = true;
+
+        // ── LOUDNESS section ──
+        Self::section_header(ui, "LOUDNESS");
+
+        Self::setting_row(ui, "Loudness standard", |ui| {
+            egui::ComboBox::from_id_salt("loudness_std")
+                .selected_text(match prefs.audio.loudness_standard {
+                    klipp_core::LoudnessStandard::EbuR128 => "EBU R128 (\u{2013}23 LUFS)",
+                    klipp_core::LoudnessStandard::AtscA85 => "ATSC A/85 (\u{2013}24 LKFS)",
+                    klipp_core::LoudnessStandard::Off => "Off",
+                })
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128, "EBU R128 (\u{2013}23 LUFS)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::AtscA85, "ATSC A/85 (\u{2013}24 LKFS)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::Off, "Off").changed() { *dirty = true; }
+                });
+        });
+
+        Self::setting_row(ui, "Normalize target", |ui| {
+            let mut v = prefs.audio.normalize_target_lufs;
+            if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-6.0).speed(0.5).suffix(" LUFS").fixed_decimals(0)).changed() {
+                prefs.audio.normalize_target_lufs = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Peak hold time", |ui| {
+            let mut v = prefs.audio.peak_hold_time_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.audio.peak_hold_time_secs = v; *dirty = true;
             }
         });
     }
@@ -848,304 +761,143 @@ impl PreferencesPanel {
         dirty: &mut bool,
         _cmds: &mut Vec<AppCommand>,
     ) {
-        ui.label(egui::RichText::new("Default Output Folder").strong().size(12.0));
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Export").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
         ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
-            let dir_text = prefs
-                .export
-                .default_output_dir
-                .as_ref()
+        // ── DEFAULTS section ──
+        Self::section_header(ui, "DEFAULTS");
+
+        Self::setting_row(ui, "Default encoder preset", |ui| {
+            let presets = ["H.264 High Quality", "H.264 Fast", "H.265 High Quality", "ProRes 422", "ProRes 422 HQ", "DNxHD 145"];
+            egui::ComboBox::from_id_salt("enc_preset")
+                .selected_text(prefs.export.default_encoder_preset.as_str())
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    for p in presets {
+                        if ui.selectable_label(prefs.export.default_encoder_preset == p, p).clicked() {
+                            prefs.export.default_encoder_preset = p.to_string();
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Color space tagging", |ui| {
+            use klipp_core::ColorSpace;
+            let label = match prefs.export.color_space_tag {
+                ColorSpace::Srgb => "sRGB",
+                ColorSpace::Rec709 => "Rec.709",
+                ColorSpace::Rec2020 => "Rec.2020",
+                ColorSpace::P3D65 => "DCI-P3",
+                _ => "Other",
+            };
+            egui::ComboBox::from_id_salt("export_cs")
+                .selected_text(label)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec709, "Rec.709").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec2020, "Rec.2020").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::P3D65, "DCI-P3").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Srgb, "sRGB").changed() { *dirty = true; }
+                });
+        });
+
+        Self::setting_row(ui, "Audio sample rate", |ui| {
+            let rates = [(44100_u32, "44.1 kHz"), (48000, "48 kHz"), (96000, "96 kHz")];
+            let current = rates.iter()
+                .find(|(v, _)| *v == prefs.export.audio_sample_rate)
+                .map(|(_, l)| *l).unwrap_or("48 kHz");
+            egui::ComboBox::from_id_salt("export_sr")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &rates {
+                        if ui.selectable_value(&mut prefs.export.audio_sample_rate, *val, *label).changed() { *dirty = true; }
+                    }
+                });
+        });
+
+        // Default export folder with path + Browse
+        {
+            let row_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Default export folder",
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
+                egui::vec2(66.0, 24.0),
+            );
+            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            let display = prefs.export.default_output_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "(not set)".into());
-            ui.label(&dir_text);
-            if ui.button("Browse...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Default Output Folder")
-                    .pick_folder()
-                {
+                .unwrap_or_else(|| "~/Videos/Exports".into());
+            ui.painter().text(
+                egui::pos2(btn_rect.left() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &display,
+                egui::FontId::proportional(11.0),
+                Self::DIM_TEXT,
+            );
+            if btn_resp.clicked() {
+                if let Some(path) = rfd::FileDialog::new().set_title("Default Export Folder").pick_folder() {
                     prefs.export.default_output_dir = Some(path);
                     *dirty = true;
                 }
             }
-            if prefs.export.default_output_dir.is_some() && ui.small_button("Clear").clicked() {
-                prefs.export.default_output_dir = None;
+        }
+
+        // ── BEHAVIOR section ──
+        Self::section_header(ui, "BEHAVIOR");
+
+        Self::setting_row(ui, "Overwrite existing files", |ui| {
+            use crate::prefs::OverwriteMode;
+            egui::ComboBox::from_id_salt("overwrite_mode")
+                .selected_text(match prefs.export.overwrite_mode {
+                    OverwriteMode::Ask => "Ask",
+                    OverwriteMode::Always => "Always",
+                    OverwriteMode::Never => "Never",
+                })
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Ask, "Ask").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Always, "Always").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Never, "Never").changed() { *dirty = true; }
+                });
+        });
+
+        Self::setting_row(ui, "Parallel render jobs", |ui| {
+            let mut val = prefs.export.parallel_render;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.export.parallel_render = val;
                 *dirty = true;
             }
         });
 
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Presets").strong().size(12.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+ New Preset").clicked() {
-                    self.show_new_preset = true;
-                    self.new_preset_name = "My Preset".into();
-                    self.editing_preset_id = None;
-                    self.edit_format = ExportFormat::Mp4;
-                    self.edit_video_codec = ExportVideoCodec::H264;
-                    self.edit_crf = 23;
-                    self.edit_preset = EncoderPreset::default();
-                    self.edit_audio_codec = ExportAudioCodec::Aac;
-                    self.edit_audio_bitrate = 192;
-                    self.edit_res_w = 1920;
-                    self.edit_res_h = 1080;
-                    self.edit_use_custom_res = false;
-                }
-            });
-        });
-        ui.separator();
-        ui.add_space(4.0);
-
-        // Built-in presets (read-only)
-        let builtins = builtin_presets();
-        for preset in &builtins {
-            ui.horizontal(|ui| {
-                ui.label(format!("\u{25CF} {}", preset.name));
-                ui.colored_label(
-                    egui::Color32::from_rgb(80, 80, 90),
-                    "(built-in)",
-                );
-            });
-        }
-
-        // Custom presets
-        let mut delete_id = None;
-        let mut edit_id = None;
-        for preset in &prefs.export.custom_presets {
-            ui.horizontal(|ui| {
-                ui.label(format!("\u{25CF} {}", preset.name));
-                if ui.small_button("Edit").clicked() {
-                    edit_id = Some(preset.id.clone());
-                }
-                if ui.small_button("Delete").clicked() {
-                    delete_id = Some(preset.id.clone());
-                }
-            });
-        }
-
-        if let Some(id) = delete_id {
-            prefs.export.custom_presets.retain(|p| p.id != id);
-            *dirty = true;
-        }
-
-        if let Some(id) = edit_id {
-            if let Some(preset) = prefs.export.custom_presets.iter().find(|p| p.id == id) {
-                self.show_new_preset = true;
-                self.editing_preset_id = Some(id);
-                self.new_preset_name = preset.name.clone();
-                self.edit_format = preset.settings.format;
-                self.edit_video_codec = preset.settings.video_codec;
-                self.edit_crf = preset.settings.crf;
-                self.edit_audio_codec = preset.settings.audio_codec;
-                self.edit_preset = preset.settings.preset;
-                self.edit_audio_bitrate = preset.settings.audio_bitrate_kbps.unwrap_or(192);
-                if let Some(res) = &preset.settings.resolution {
-                    self.edit_res_w = res.width;
-                    self.edit_res_h = res.height;
-                    self.edit_use_custom_res = true;
-                } else {
-                    self.edit_use_custom_res = false;
-                }
+        Self::setting_row(ui, "Open folder after export", |ui| {
+            let mut val = prefs.export.open_folder_after_export;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.export.open_folder_after_export = val;
+                *dirty = true;
             }
-        }
-
-        // New/Edit preset form
-        if self.show_new_preset {
-            ui.add_space(8.0);
-            ui.separator();
-            let title = if self.editing_preset_id.is_some() {
-                "Edit Preset"
-            } else {
-                "New Preset"
-            };
-            ui.label(egui::RichText::new(title).strong().size(12.0));
-            ui.add_space(4.0);
-
-            egui::Grid::new("preset_edit_grid")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Name:");
-                    ui.text_edit_singleline(&mut self.new_preset_name);
-                    ui.end_row();
-
-                    ui.label("Format:");
-                    egui::ComboBox::from_id_salt("preset_format")
-                        .selected_text(self.edit_format.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.edit_format, ExportFormat::Mp4, "MP4");
-                            ui.selectable_value(&mut self.edit_format, ExportFormat::Mkv, "MKV");
-                            ui.selectable_value(&mut self.edit_format, ExportFormat::Mov, "MOV");
-                        });
-                    ui.end_row();
-
-                    ui.label("Video Codec:");
-                    egui::ComboBox::from_id_salt("preset_vcodec")
-                        .selected_text(self.edit_video_codec.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::H264,
-                                "H.264",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::H265,
-                                "H.265",
-                            );
-                            ui.separator();
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::ProRes422,
-                                "ProRes 422",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::ProRes422HQ,
-                                "ProRes 422 HQ",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::ProRes4444,
-                                "ProRes 4444",
-                            );
-                            ui.separator();
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::DNxHD115,
-                                "DNxHD 115",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_video_codec,
-                                ExportVideoCodec::DNxHD145,
-                                "DNxHD 145",
-                            );
-                        });
-                    ui.end_row();
-
-                    ui.label("CRF:");
-                    ui.add(egui::Slider::new(&mut self.edit_crf, 0..=51));
-                    ui.end_row();
-
-                    ui.label("Audio Codec:");
-                    egui::ComboBox::from_id_salt("preset_acodec")
-                        .selected_text(self.edit_audio_codec.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.edit_audio_codec,
-                                ExportAudioCodec::Aac,
-                                "AAC",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_audio_codec,
-                                ExportAudioCodec::Mp3,
-                                "MP3",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_audio_codec,
-                                ExportAudioCodec::Flac,
-                                "FLAC",
-                            );
-                            ui.selectable_value(
-                                &mut self.edit_audio_codec,
-                                ExportAudioCodec::Copy,
-                                "Copy Source",
-                            );
-                        });
-                    ui.end_row();
-
-                    ui.label("Audio Bitrate:");
-                    egui::ComboBox::from_id_salt("preset_abitrate")
-                        .selected_text(format!("{} kbps", self.edit_audio_bitrate))
-                        .show_ui(ui, |ui| {
-                            for rate in [128, 192, 256, 320] {
-                                ui.selectable_value(
-                                    &mut self.edit_audio_bitrate,
-                                    rate,
-                                    format!("{rate} kbps"),
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label("Resolution:");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.edit_use_custom_res, "Custom");
-                        if self.edit_use_custom_res {
-                            ui.add(
-                                egui::DragValue::new(&mut self.edit_res_w)
-                                    .range(320..=7680)
-                                    .speed(1),
-                            );
-                            ui.label("\u{00d7}");
-                            ui.add(
-                                egui::DragValue::new(&mut self.edit_res_h)
-                                    .range(240..=4320)
-                                    .speed(1),
-                            );
-                        } else {
-                            ui.label("Match source");
-                        }
-                    });
-                    ui.end_row();
-                });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    let settings = ExportPresetSettings {
-                        format: self.edit_format,
-                        video_codec: self.edit_video_codec,
-                        resolution: if self.edit_use_custom_res {
-                            Some(klipp_core::Resolution {
-                                width: self.edit_res_w,
-                                height: self.edit_res_h,
-                            })
-                        } else {
-                            None
-                        },
-                        fps: None,
-                        crf: self.edit_crf,
-                        preset: self.edit_preset,
-                        audio_codec: self.edit_audio_codec,
-                        audio_bitrate_kbps: Some(self.edit_audio_bitrate),
-                        video_bitrate_kbps: None,
-                        rate_control: klipp_core::RateControl::Crf,
-                    };
-
-                    if let Some(ref edit_id) = self.editing_preset_id {
-                        // Update existing preset
-                        if let Some(preset) = prefs
-                            .export
-                            .custom_presets
-                            .iter_mut()
-                            .find(|p| p.id == *edit_id)
-                        {
-                            preset.name = self.new_preset_name.clone();
-                            preset.settings = settings;
-                        }
-                    } else {
-                        // Create new preset
-                        let preset = ExportPreset {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            name: self.new_preset_name.clone(),
-                            built_in: false,
-                            settings,
-                        };
-                        prefs.export.custom_presets.push(preset);
-                    }
-
-                    *dirty = true;
-                    self.show_new_preset = false;
-                    self.editing_preset_id = None;
-                }
-                if ui.button("Cancel").clicked() {
-                    self.show_new_preset = false;
-                    self.editing_preset_id = None;
-                }
-            });
-        }
+        });
     }
 
     fn show_proxy(
@@ -1154,80 +906,96 @@ impl PreferencesPanel {
         prefs: &mut Preferences,
         dirty: &mut bool,
     ) {
-        ui.label(egui::RichText::new("Proxy Media").strong().size(12.0));
-        ui.add_space(4.0);
-
-        if ui
-            .checkbox(
-                &mut prefs.proxy.auto_generate_on_import,
-                "Auto-generate proxies on import",
-            )
-            .changed()
-        {
-            *dirty = true;
-        }
-
-        ui.add_space(8.0);
-        ui.label("Proxy resolution");
-        ui.add_space(4.0);
-
-        egui::ComboBox::from_id_salt("proxy_resolution")
-            .selected_text(prefs.proxy.proxy_resolution.label())
-            .show_ui(ui, |ui| {
-                for res in [
-                    ProxyResolution::Quarter,
-                    ProxyResolution::Half,
-                    ProxyResolution::W960,
-                    ProxyResolution::W1280,
-                ] {
-                    if ui
-                        .selectable_value(&mut prefs.proxy.proxy_resolution, res, res.label())
-                        .changed()
-                    {
-                        *dirty = true;
-                    }
-                }
-            });
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Proxy Cache Folder").strong().size(12.0));
-        ui.add_space(4.0);
-
+        // Page heading
         ui.horizontal(|ui| {
-            let cache_text = prefs
-                .proxy
-                .proxy_cache_dir
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| {
-                    dirs::cache_dir()
-                        .map(|d| d.join("klipp").join("proxies").to_string_lossy().to_string())
-                        .unwrap_or_else(|| "~/.cache/klipp/proxies".into())
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Proxy").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── GENERATION section ──
+        Self::section_header(ui, "GENERATION");
+
+        Self::setting_row(ui, "Auto-generate on import", |ui| {
+            let mut val = prefs.proxy.auto_generate_on_import;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.proxy.auto_generate_on_import = val;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Proxy resolution", |ui| {
+            egui::ComboBox::from_id_salt("proxy_resolution")
+                .selected_text(prefs.proxy.proxy_resolution.label())
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for res in [
+                        ProxyResolution::Quarter,
+                        ProxyResolution::Half,
+                        ProxyResolution::W960,
+                        ProxyResolution::W1280,
+                    ] {
+                        if ui.selectable_value(&mut prefs.proxy.proxy_resolution, res, res.label()).changed() {
+                            *dirty = true;
+                        }
+                    }
                 });
-            ui.label(&cache_text);
-            if ui.button("Browse...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Proxy Cache Folder")
-                    .pick_folder()
-                {
+        });
+
+        // ── STORAGE section ──
+        Self::section_header(ui, "STORAGE");
+
+        // Proxy cache directory with path + Browse
+        {
+            let row_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Proxy cache",
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            // Browse button
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
+                egui::vec2(66.0, 24.0),
+            );
+            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            // Path display
+            let display = prefs.proxy.proxy_cache_dir.as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "~/.cache/klipp/proxies".into());
+            ui.painter().text(
+                egui::pos2(btn_rect.left() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &display,
+                egui::FontId::proportional(11.0),
+                Self::DIM_TEXT,
+            );
+            if btn_resp.clicked() {
+                if let Some(path) = rfd::FileDialog::new().set_title("Proxy Cache Folder").pick_folder() {
                     prefs.proxy.proxy_cache_dir = Some(path);
                     *dirty = true;
                 }
             }
-        });
+        }
 
-        // Show cache disk usage
-        ui.add_space(8.0);
-        let cache_dir = prefs
-            .proxy
-            .proxy_cache_dir
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::cache_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .join("klipp")
-                    .join("proxies")
-            });
+        // ── MANAGEMENT section ──
+        Self::section_header(ui, "MANAGEMENT");
+
+        // Calculate proxy cache usage
+        let cache_dir = prefs.proxy.proxy_cache_dir.clone()
+            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/proxies"));
         let (file_count, total_bytes) = if cache_dir.exists() {
             std::fs::read_dir(&cache_dir)
                 .map(|entries| {
@@ -1235,10 +1003,7 @@ impl PreferencesPanel {
                     let mut bytes = 0u64;
                     for entry in entries.flatten() {
                         if let Ok(meta) = entry.metadata() {
-                            if meta.is_file() {
-                                count += 1;
-                                bytes += meta.len();
-                            }
+                            if meta.is_file() { count += 1; bytes += meta.len(); }
                         }
                     }
                     (count, bytes)
@@ -1250,18 +1015,25 @@ impl PreferencesPanel {
         let size_label = if total_bytes >= 1_073_741_824 {
             format!("{:.1} GB", total_bytes as f64 / 1_073_741_824.0)
         } else {
-            format!("{:.1} MB", total_bytes as f64 / 1_048_576.0)
+            format!("{} MB", total_bytes / 1_048_576)
         };
-        ui.label(format!("{} proxy files — {}", file_count, size_label));
 
-        ui.add_space(4.0);
-        if ui.button("Clear Proxy Cache").clicked() && cache_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                tracing::warn!("Failed to clear proxy cache: {e}");
-            } else {
-                tracing::info!("Proxy cache cleared: {}", cache_dir.display());
+        Self::setting_row_with_subtitle(ui, "Clear proxy cache", &format!("{} files \u{2014} {}", file_count, size_label), |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            // CONTRAST RULE: accent-bordered button uses accent text on dark bg
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() && cache_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                    tracing::warn!("Failed to clear proxy cache: {e}");
+                } else {
+                    tracing::info!("Proxy cache cleared: {}", cache_dir.display());
+                }
             }
-        }
+        });
     }
 
     // ══════════════════════════════════════════════
@@ -1269,256 +1041,683 @@ impl PreferencesPanel {
     // ══════════════════════════════════════════════
 
     fn show_system(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("GPU").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading with "Restart required" badge
         ui.horizontal(|ui| {
-            ui.label("GPU preference:");
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("System").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.add_space(8.0);
+            // Restart required badge
+            let badge_text = "Restart required";
+            let badge_font = egui::FontId::proportional(10.0);
+            let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), Self::ACCENT);
+            let badge_size = egui::vec2(text_galley.size().x + 12.0, 20.0);
+            let (badge_rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
+            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, Self::ACCENT);
+        });
+        ui.add_space(4.0);
+
+        // ── GPU section ──
+        Self::section_header(ui, "GPU");
+
+        Self::setting_row_with_subtitle(ui, "GPU preference", "Affects effects, color grading, and decode", |ui| {
             egui::ComboBox::from_id_salt("gpu_pref")
                 .selected_text(match prefs.system.gpu_preference {
-                    klipp_core::GpuPreference::HighPerformance => "High Performance (discrete GPU)",
-                    klipp_core::GpuPreference::LowPower => "Low Power (integrated GPU)",
-                    klipp_core::GpuPreference::CpuOnly => "CPU Only (disable GPU effects)",
+                    klipp_core::GpuPreference::Auto => "Auto (recommended)",
+                    klipp_core::GpuPreference::HighPerformance => "Prefer discrete",
+                    klipp_core::GpuPreference::LowPower => "Prefer integrated",
+                    klipp_core::GpuPreference::CpuOnly => "CPU only",
                 })
+                .width(140.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance, "High Performance").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::LowPower, "Low Power").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::CpuOnly, "CPU Only").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::Auto, "Auto (recommended)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance, "Prefer discrete").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::LowPower, "Prefer integrated").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.system.gpu_preference, klipp_core::GpuPreference::CpuOnly, "CPU only").changed() { *dirty = true; }
                 });
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Decoding").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Decode threads:");
-            let mut v = prefs.system.decode_threads;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=64).speed(1.0).suffix(" (0 = auto)")).changed() {
-                prefs.system.decode_threads = v; *dirty = true;
+        Self::setting_row_with_subtitle(ui, "Hardware video decode", "NVDEC / VAAPI", |ui| {
+            let mut val = prefs.system.hardware_decode;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.system.hardware_decode = val;
+                *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Max playback height:");
-            egui::ComboBox::from_id_salt("max_pb_h")
-                .selected_text(format!("{}p", prefs.system.max_playback_height))
+
+        // ── THREADING section ──
+        Self::section_header(ui, "THREADING");
+
+        Self::setting_row_with_subtitle(ui, "Decode threads", "Per clip decoder thread count", |ui| {
+            let threads = [
+                (0_u32, "Auto"),
+                (1, "1"),
+                (2, "2"),
+                (4, "4"),
+                (8, "8"),
+                (16, "16"),
+            ];
+            let current = threads.iter()
+                .find(|(v, _)| *v == prefs.system.decode_threads)
+                .map(|(_, l)| *l).unwrap_or("Auto");
+            egui::ComboBox::from_id_salt("decode_threads")
+                .selected_text(current)
+                .width(60.0)
                 .show_ui(ui, |ui| {
-                    for h in [720, 1080, 1440, 2160] {
-                        if ui.selectable_value(&mut prefs.system.max_playback_height, h, format!("{h}p")).changed() { *dirty = true; }
+                    for (val, label) in &threads {
+                        if ui.selectable_value(&mut prefs.system.decode_threads, *val, *label).changed() {
+                            *dirty = true;
+                        }
                     }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label("Frame queue size:");
-            let mut v = prefs.system.frame_queue_size;
-            if ui.add(egui::DragValue::new(&mut v).range(4..=64).speed(1.0).suffix(" frames")).changed() {
-                prefs.system.frame_queue_size = v; *dirty = true;
-            }
+
+        Self::setting_row_with_subtitle(ui, "Frame queue size", "Larger = smoother, more RAM used", |ui| {
+            let sizes: &[u32] = &[4, 8, 16, 24, 32, 48, 64];
+            let current = format!("{}", prefs.system.frame_queue_size);
+            egui::ComboBox::from_id_salt("frame_queue")
+                .selected_text(&current)
+                .width(60.0)
+                .show_ui(ui, |ui| {
+                    for &s in sizes {
+                        if ui.selectable_value(&mut prefs.system.frame_queue_size, s, format!("{s}")).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Max playback resolution", |ui| {
+            let resolutions = [(720_u32, "720p"), (1080, "1080p"), (1440, "1440p"), (2160, "4K")];
+            let current = resolutions.iter()
+                .find(|(v, _)| *v == prefs.system.max_playback_height)
+                .map(|(_, l)| *l).unwrap_or("1080p");
+            egui::ComboBox::from_id_salt("max_pb_h")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &resolutions {
+                        if ui.selectable_value(&mut prefs.system.max_playback_height, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
         });
     }
 
     fn show_appearance(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("UI Size").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Text size:");
-            let mut v = prefs.appearance.ui_text_size;
-            if ui.add(egui::Slider::new(&mut v, 10.0..=18.0).step_by(0.5_f64).suffix(" pt")).changed() {
-                prefs.appearance.ui_text_size = v; *dirty = true;
-            }
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Appearance").strong().size(18.0).color(Self::NORMAL_TEXT));
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Colors").strong().size(12.0));
-        ui.add_space(4.0);
+        // ── THEME section ──
+        Self::section_header(ui, "THEME");
 
-        // Helper to edit [u8;3] as Color32
-        let color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool| {
-            ui.horizontal(|ui| {
-                let mut c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                ui.label(label);
-                if ui.color_edit_button_srgba(&mut c).changed() {
-                    *rgb = [c.r(), c.g(), c.b()];
+        // UI scale
+        Self::setting_row(ui, "UI scale", |ui| {
+            let scales = [
+                (10.0_f32, "85%"),
+                (11.0, "90%"),
+                (12.0, "95%"),
+                (13.0, "100%"),
+                (14.0, "108%"),
+                (15.0, "115%"),
+                (16.0, "123%"),
+                (18.0, "138%"),
+            ];
+            let current = scales.iter()
+                .find(|(v, _)| (*v - prefs.appearance.ui_text_size).abs() < 0.5)
+                .map(|(_, l)| *l).unwrap_or("100%");
+            egui::ComboBox::from_id_salt("ui_scale")
+                .selected_text(current)
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &scales {
+                        if ui.selectable_value(&mut prefs.appearance.ui_text_size, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        // Accent color — row with subtitle and color preset circles
+        {
+            let row_h = 48.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            // Label + subtitle
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.top() + 14.0),
+                egui::Align2::LEFT_CENTER,
+                "Accent color",
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.top() + 32.0),
+                egui::Align2::LEFT_CENTER,
+                "Used for selections and active state",
+                egui::FontId::proportional(10.0),
+                Self::DIM_TEXT,
+            );
+            // Color preset circles (right-aligned)
+            let presets: &[[u8; 3]] = &[
+                [0xe8, 0xa0, 0x20], // amber (default)
+                [0x40, 0x80, 0xe0], // blue
+                [0x40, 0xb0, 0x60], // green
+                [0xe0, 0x70, 0x70], // red/pink
+                [0xa0, 0x60, 0xc0], // purple
+            ];
+            let circle_r = 14.0;
+            let spacing = 6.0;
+            let total_w = presets.len() as f32 * (circle_r * 2.0 + spacing) - spacing;
+            let start_x = rect.right() - 14.0 - total_w;
+            for (i, color) in presets.iter().enumerate() {
+                let cx = start_x + i as f32 * (circle_r * 2.0 + spacing) + circle_r;
+                let cy = rect.center().y;
+                let c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                let is_selected = prefs.appearance.accent_color == *color;
+                // Clickable area
+                let click_rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(circle_r * 2.0 + 2.0, circle_r * 2.0 + 2.0));
+                let resp = ui.allocate_rect(click_rect, egui::Sense::click());
+                ui.painter().circle_filled(egui::pos2(cx, cy), circle_r, c);
+                if is_selected {
+                    ui.painter().circle_stroke(egui::pos2(cx, cy), circle_r + 2.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+                }
+                if resp.clicked() {
+                    prefs.appearance.accent_color = *color;
+                    prefs.appearance.playhead_color = *color;
                     *dirty = true;
                 }
-            });
+            }
+        }
+
+        // ── ROLE COLORS section ──
+        Self::section_header(ui, "ROLE COLORS");
+
+        // Helper for role color row with swatch + Edit button
+        let role_color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool, _id_salt: &str| {
+            let row_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            // Label
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            // Edit button (right side)
+            let edit_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 70.0, rect.top() + 6.0),
+                egui::vec2(56.0, 24.0),
+            );
+            let edit_resp = ui.allocate_rect(edit_rect, egui::Sense::click());
+            let edit_bg = if edit_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(edit_rect, 4.0, edit_bg);
+            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(edit_rect.center(), egui::Align2::CENTER_CENTER, "Edit...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            // Color swatch (before Edit button)
+            let swatch_center = egui::pos2(edit_rect.left() - 18.0, rect.center().y);
+            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(swatch_center, egui::vec2(22.0, 22.0)),
+                4.0, c,
+            );
+            // On Edit click, open color picker
+            if edit_resp.clicked() {
+                // Use egui's built-in color picker via a small widget area
+                let widget_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.right() - 140.0, rect.top() + 2.0),
+                    egui::vec2(60.0, 28.0),
+                );
+                let mut widget_ui = ui.new_child(egui::UiBuilder::new().max_rect(widget_rect));
+                let mut col = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                if widget_ui.color_edit_button_srgba(&mut col).changed() {
+                    *rgb = [col.r(), col.g(), col.b()];
+                    *dirty = true;
+                }
+            }
         };
 
-        color_row(ui, "Accent color:", &mut prefs.appearance.accent_color, dirty);
-        color_row(ui, "Playhead color:", &mut prefs.appearance.playhead_color, dirty);
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Role Colors").strong().size(12.0));
-        ui.add_space(4.0);
-
-        color_row(ui, "Video:", &mut prefs.appearance.role_video, dirty);
-        color_row(ui, "Dialogue:", &mut prefs.appearance.role_dialogue, dirty);
-        color_row(ui, "Music:", &mut prefs.appearance.role_music, dirty);
-        color_row(ui, "SFX:", &mut prefs.appearance.role_sfx, dirty);
-        color_row(ui, "Title:", &mut prefs.appearance.role_title, dirty);
-        color_row(ui, "B-Roll:", &mut prefs.appearance.role_broll, dirty);
-        color_row(ui, "Ambience:", &mut prefs.appearance.role_ambience, dirty);
-        color_row(ui, "Foley:", &mut prefs.appearance.role_foley, dirty);
-        color_row(ui, "Voiceover:", &mut prefs.appearance.role_voiceover, dirty);
-        color_row(ui, "Graphics:", &mut prefs.appearance.role_graphics, dirty);
+        role_color_row(ui, "Video", &mut prefs.appearance.role_video, dirty, "rv");
+        role_color_row(ui, "Dialogue", &mut prefs.appearance.role_dialogue, dirty, "rd");
+        role_color_row(ui, "Music", &mut prefs.appearance.role_music, dirty, "rm");
+        role_color_row(ui, "SFX", &mut prefs.appearance.role_sfx, dirty, "rs");
+        role_color_row(ui, "Title", &mut prefs.appearance.role_title, dirty, "rt");
+        role_color_row(ui, "B-Roll", &mut prefs.appearance.role_broll, dirty, "rb");
+        role_color_row(ui, "Ambience", &mut prefs.appearance.role_ambience, dirty, "ra");
+        role_color_row(ui, "Foley", &mut prefs.appearance.role_foley, dirty, "rf");
+        role_color_row(ui, "Voiceover", &mut prefs.appearance.role_voiceover, dirty, "ro");
+        role_color_row(ui, "Graphics", &mut prefs.appearance.role_graphics, dirty, "rg");
     }
 
     fn show_audio_hardware(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("Output Device").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Device:");
-            let current = prefs.audio_hardware.output_device.as_deref().unwrap_or("System Default");
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Audio hardware").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── OUTPUT DEVICE section ──
+        Self::section_header(ui, "OUTPUT DEVICE");
+
+        Self::setting_row(ui, "Output device", |ui| {
+            let current = prefs.audio_hardware.output_device.as_deref().unwrap_or("Default (PipeWire)");
             egui::ComboBox::from_id_salt("audio_device")
                 .selected_text(current)
+                .width(160.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(prefs.audio_hardware.output_device.is_none(), "System Default").clicked() {
+                    if ui.selectable_label(prefs.audio_hardware.output_device.is_none(), "Default (PipeWire)").clicked() {
                         prefs.audio_hardware.output_device = None; *dirty = true;
+                    }
+                    // TODO: enumerate actual audio devices from cpal
+                });
+        });
+
+        Self::setting_row(ui, "Sample rate", |ui| {
+            let rates = [(44100_u32, "44.1 kHz"), (48000, "48 kHz"), (96000, "96 kHz"), (192000, "192 kHz")];
+            let current = rates.iter()
+                .find(|(v, _)| *v == prefs.audio_hardware.sample_rate)
+                .map(|(_, l)| *l).unwrap_or("48 kHz");
+            egui::ComboBox::from_id_salt("sample_rate")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &rates {
+                        if ui.selectable_value(&mut prefs.audio_hardware.sample_rate, *val, *label).changed() { *dirty = true; }
                     }
                 });
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Format").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Sample rate:");
-            egui::ComboBox::from_id_salt("sample_rate")
-                .selected_text(format!("{} Hz", prefs.audio_hardware.sample_rate))
+        Self::setting_row_with_subtitle(ui, "Buffer size", "Larger = more stable, higher latency", |ui| {
+            let sizes: &[u32] = &[64, 128, 256, 512, 1024, 2048];
+            let current = format!("{}", prefs.audio_hardware.buffer_size);
+            egui::ComboBox::from_id_salt("buffer_sz")
+                .selected_text(&current)
+                .width(60.0)
                 .show_ui(ui, |ui| {
-                    for sr in [44100, 48000, 96000, 192000] {
-                        if ui.selectable_value(&mut prefs.audio_hardware.sample_rate, sr, format!("{sr} Hz")).changed() { *dirty = true; }
+                    for &s in sizes {
+                        if ui.selectable_value(&mut prefs.audio_hardware.buffer_size, s, format!("{s}")).changed() {
+                            *dirty = true;
+                        }
                     }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label("Buffer size:");
-            egui::ComboBox::from_id_salt("buffer_sz")
-                .selected_text(format!("{} samples", prefs.audio_hardware.buffer_size))
+
+        Self::setting_row(ui, "Monitoring mode", |ui| {
+            use crate::prefs::MonitoringMode;
+            egui::ComboBox::from_id_salt("monitor_mode")
+                .selected_text(match prefs.audio_hardware.monitoring_mode {
+                    MonitoringMode::Software => "Software",
+                    MonitoringMode::Hardware => "Hardware (direct)",
+                })
+                .width(120.0)
                 .show_ui(ui, |ui| {
-                    for bs in [64, 128, 256, 512, 1024, 2048] {
-                        if ui.selectable_value(&mut prefs.audio_hardware.buffer_size, bs, format!("{bs} samples")).changed() { *dirty = true; }
-                    }
+                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Software, "Software").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Hardware, "Hardware (direct)").changed() { *dirty = true; }
                 });
         });
     }
 
     fn show_media_cache(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("Cache Directories").strong().size(12.0));
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Cache").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
         ui.add_space(4.0);
 
-        let dir_picker = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default: &str, dirty: &mut bool| {
-            ui.horizontal(|ui| {
-                ui.label(label);
-                let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| format!("(default: {default})"));
-                ui.label(&display);
-                if ui.button("Browse...").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().set_title(label).pick_folder() {
-                        *path = Some(p); *dirty = true;
-                    }
+        // ── LOCATIONS section ──
+        Self::section_header(ui, "LOCATIONS");
+
+        // Helper: cache directory row with path display + Browse button
+        let cache_dir_row = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default_display: &str, dirty: &mut bool, _id: &str| {
+            let row_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            // Label
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            // Browse button
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
+                egui::vec2(66.0, 24.0),
+            );
+            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            // Path display (dim, before button)
+            let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| default_display.to_string());
+            ui.painter().text(
+                egui::pos2(btn_rect.left() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &display,
+                egui::FontId::proportional(11.0),
+                Self::DIM_TEXT,
+            );
+            if btn_resp.clicked() {
+                if let Some(p) = rfd::FileDialog::new().set_title(label).pick_folder() {
+                    *path = Some(p); *dirty = true;
                 }
-                if path.is_some() && ui.small_button("Reset").clicked() {
-                    *path = None; *dirty = true;
-                }
-            });
+            }
         };
 
-        dir_picker(ui, "Filmstrip cache:", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/filmstrips", dirty);
-        dir_picker(ui, "Audio cache:", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/audio-cache", dirty);
+        cache_dir_row(ui, "Thumbnail cache", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/thumbnails", dirty, "thumb_dir");
+        cache_dir_row(ui, "Waveform cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/waveforms", dirty, "wave_dir");
+        cache_dir_row(ui, "Render cache", &mut prefs.media_cache.render_cache_dir, "~/.cache/klipp/render", dirty, "render_dir");
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Limits").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Max cache size:");
-            let mut v = prefs.media_cache.max_cache_size_mb;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=32768).speed(100.0).suffix(" MB")).changed() {
-                prefs.media_cache.max_cache_size_mb = v; *dirty = true;
+        // ── LIMITS section ──
+        Self::section_header(ui, "LIMITS");
+
+        Self::setting_row(ui, "Max cache size", |ui| {
+            let mut v = prefs.media_cache.max_cache_size_gb;
+            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
+                prefs.media_cache.max_cache_size_gb = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Skim transcode quality:");
-            let mut v = prefs.media_cache.skim_transcode_quality;
-            if ui.add(egui::Slider::new(&mut v, 18..=32).text("CRF")).changed() {
-                prefs.media_cache.skim_transcode_quality = v; *dirty = true;
+
+        Self::setting_row(ui, "Thumbnail resolution", |ui| {
+            let sizes = [(128_u32, "128px"), (192, "192px"), (256, "256px"), (320, "320px")];
+            let current = sizes.iter()
+                .find(|(v, _)| *v == prefs.media_cache.thumbnail_height)
+                .map(|(_, l)| *l).unwrap_or("256px");
+            egui::ComboBox::from_id_salt("thumb_res")
+                .selected_text(current)
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &sizes {
+                        if ui.selectable_value(&mut prefs.media_cache.thumbnail_height, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Skim transcode quality", |ui| {
+            let qualities = [(18_u32, "High"), (23, "Standard"), (28, "Low"), (32, "Draft")];
+            let current = qualities.iter()
+                .find(|(v, _)| *v == prefs.media_cache.skim_transcode_quality)
+                .map(|(_, l)| *l).unwrap_or("Standard");
+            egui::ComboBox::from_id_salt("skim_q")
+                .selected_text(current)
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &qualities {
+                        if ui.selectable_value(&mut prefs.media_cache.skim_transcode_quality, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        // ── MANAGEMENT section ──
+        Self::section_header(ui, "MANAGEMENT");
+
+        // Calculate actual cache sizes
+        let render_dir = prefs.media_cache.render_cache_dir.clone()
+            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/render"));
+        let thumb_dir = prefs.media_cache.filmstrip_cache_dir.clone()
+            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/thumbnails"));
+        let wave_dir = prefs.media_cache.audio_cache_dir.clone()
+            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/waveforms"));
+
+        let dir_size = |path: &std::path::Path| -> u64 {
+            std::fs::read_dir(path).ok().map(|entries| {
+                entries.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()
+            }).unwrap_or(0)
+        };
+        let render_size = dir_size(&render_dir);
+        let total_size = render_size + dir_size(&thumb_dir) + dir_size(&wave_dir);
+
+        let format_size = |bytes: u64| -> String {
+            if bytes >= 1_073_741_824 { format!("{:.1} GB", bytes as f64 / 1_073_741_824.0) }
+            else { format!("{} MB", bytes / 1_048_576) }
+        };
+
+        // Clear render cache
+        Self::setting_row_with_subtitle(ui, "Clear render cache", &format_size(render_size), |ui| {
+            let btn_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(56.0, 24.0),
+            );
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            // CONTRAST RULE: amber-bordered button uses accent text on dark bg (not amber bg)
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() {
+                let _ = std::fs::remove_dir_all(&render_dir);
+                let _ = std::fs::create_dir_all(&render_dir);
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Thumbnail height:");
-            let mut v = prefs.media_cache.thumbnail_height;
-            if ui.add(egui::DragValue::new(&mut v).range(80..=320).speed(1.0).suffix(" px")).changed() {
-                prefs.media_cache.thumbnail_height = v; *dirty = true;
+
+        // Clear all caches
+        Self::setting_row_with_subtitle(ui, "Clear all caches", &format_size(total_size), |ui| {
+            let btn_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(70.0, 24.0),
+            );
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() {
+                for d in [&render_dir, &thumb_dir, &wave_dir] {
+                    let _ = std::fs::remove_dir_all(d);
+                    let _ = std::fs::create_dir_all(d);
+                }
             }
         });
     }
 
     fn show_color(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("Color Management").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Working color space:");
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Color").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── WORKING SPACE section ──
+        Self::section_header(ui, "WORKING SPACE");
+
+        Self::setting_row(ui, "Working color space", |ui| {
+            use klipp_core::ColorSpace;
+            let label = match prefs.color.working_color_space {
+                ColorSpace::Srgb => "sRGB",
+                ColorSpace::Rec709 => "Rec.709",
+                ColorSpace::Rec2020 => "Rec.2020",
+                ColorSpace::P3D65 => "DCI-P3 D65",
+                ColorSpace::AcesCG => "ACEScg",
+                _ => "Other",
+            };
             egui::ComboBox::from_id_salt("working_cs")
-                .selected_text(format!("{:?}", prefs.color.working_color_space))
+                .selected_text(label)
+                .width(90.0)
                 .show_ui(ui, |ui| {
-                    for cs in [klipp_core::ColorSpace::Srgb, klipp_core::ColorSpace::Rec709, klipp_core::ColorSpace::Rec2020, klipp_core::ColorSpace::P3D65, klipp_core::ColorSpace::AcesCG] {
-                        if ui.selectable_value(&mut prefs.color.working_color_space, cs, format!("{cs:?}")).changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Srgb, "sRGB").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Rec709, "Rec.709").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Rec2020, "Rec.2020").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::P3D65, "DCI-P3 D65").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::AcesCG, "ACEScg").changed() { *dirty = true; }
+                });
+        });
+
+        Self::setting_row_with_subtitle(ui, "Viewer LUT", "Applied after color pipeline for display", |ui| {
+            let display = prefs.color.viewer_lut_path.as_ref()
+                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                .unwrap_or_else(|| "None".into());
+            egui::ComboBox::from_id_salt("viewer_lut")
+                .selected_text(&display)
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(prefs.color.viewer_lut_path.is_none(), "None").clicked() {
+                        prefs.color.viewer_lut_path = None; *dirty = true;
+                    }
+                    if ui.selectable_label(false, "Browse...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file() {
+                            prefs.color.viewer_lut_path = Some(p); *dirty = true;
+                        }
                     }
                 });
         });
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Viewer LUT:");
-            let display = prefs.color.viewer_lut_path.as_ref().map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string()).unwrap_or("(none)".into());
-            ui.label(&display);
-            if ui.button("Browse...").clicked() {
-                if let Some(p) = rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file() {
-                    prefs.color.viewer_lut_path = Some(p); *dirty = true;
-                }
-            }
-            if prefs.color.viewer_lut_path.is_some() && ui.small_button("Clear").clicked() {
-                prefs.color.viewer_lut_path = None; *dirty = true;
-            }
-        });
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Scopes").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Quality:");
-            egui::ComboBox::from_id_salt("scope_q")
-                .selected_text(match prefs.color.scope_quality {
-                    klipp_core::ScopeQuality::Low => "Low (fast)",
-                    klipp_core::ScopeQuality::Medium => "Medium",
-                    klipp_core::ScopeQuality::High => "High (detailed)",
+        Self::setting_row(ui, "LUT interpolation", |ui| {
+            use crate::prefs::LutInterpolation;
+            egui::ComboBox::from_id_salt("lut_interp")
+                .selected_text(match prefs.color.lut_interpolation {
+                    LutInterpolation::Trilinear => "Trilinear",
+                    LutInterpolation::Tetrahedral => "Tetrahedral",
                 })
+                .width(100.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::Low, "Low (fast)").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::Medium, "Medium").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.scope_quality, klipp_core::ScopeQuality::High, "High (detailed)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Trilinear, "Trilinear").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Tetrahedral, "Tetrahedral").changed() { *dirty = true; }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label("Update interval:");
-            let mut v = prefs.color.scope_update_interval_ms;
-            if ui.add(egui::DragValue::new(&mut v).range(16..=100).speed(1.0).suffix(" ms")).changed() {
-                prefs.color.scope_update_interval_ms = v; *dirty = true;
+
+        // ── SCOPES section ──
+        Self::section_header(ui, "SCOPES");
+
+        Self::setting_row(ui, "Scope refresh rate", |ui| {
+            let rates = [(16_u32, "60 fps"), (24, "42 fps"), (32, "30 fps"), (42, "24 fps"), (66, "15 fps")];
+            let current = rates.iter()
+                .find(|(v, _)| *v == prefs.color.scope_update_interval_ms)
+                .map(|(_, l)| *l).unwrap_or("24 fps");
+            egui::ComboBox::from_id_salt("scope_fps")
+                .selected_text(current)
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &rates {
+                        if ui.selectable_value(&mut prefs.color.scope_update_interval_ms, *val, *label).changed() { *dirty = true; }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Sampling quality", |ui| {
+            use klipp_core::ScopeQuality;
+            egui::ComboBox::from_id_salt("scope_q")
+                .selected_text(match prefs.color.scope_quality {
+                    ScopeQuality::Low => "Fast (every 4px)",
+                    ScopeQuality::Medium => "Standard (every 2px)",
+                    ScopeQuality::High => "Full (every pixel)",
+                })
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.color.scope_quality, ScopeQuality::Low, "Fast (every 4px)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.scope_quality, ScopeQuality::Medium, "Standard (every 2px)").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.color.scope_quality, ScopeQuality::High, "Full (every pixel)").changed() { *dirty = true; }
+                });
+        });
+
+        Self::setting_row(ui, "Vectorscope skin angle", |ui| {
+            let mut v = prefs.color.vectorscope_skin_angle;
+            if ui.add(egui::DragValue::new(&mut v).range(0.0..=360.0).speed(0.5).suffix("\u{00b0}").fixed_decimals(0)).changed() {
+                prefs.color.vectorscope_skin_angle = v; *dirty = true;
             }
         });
     }
 
     fn show_title(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("Title Defaults").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Default font:");
-            if ui.add(egui::TextEdit::singleline(&mut prefs.title.default_font).desired_width(200.0).hint_text("(system default)")).changed() {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Titles").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── TEXT DEFAULTS section ──
+        Self::section_header(ui, "TEXT DEFAULTS");
+
+        Self::setting_row(ui, "Default font", |ui| {
+            let display = if prefs.title.default_font.is_empty() { "System default" } else { &prefs.title.default_font };
+            egui::ComboBox::from_id_salt("title_font")
+                .selected_text(display)
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(prefs.title.default_font.is_empty(), "System default").clicked() {
+                        prefs.title.default_font.clear(); *dirty = true;
+                    }
+                    for font in ["Arial", "Helvetica", "Inter", "Roboto", "Open Sans", "Montserrat"] {
+                        if ui.selectable_label(prefs.title.default_font == font, font).clicked() {
+                            prefs.title.default_font = font.to_string(); *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Default size", |ui| {
+            let mut v = prefs.title.default_size_pt;
+            if ui.add(egui::DragValue::new(&mut v).range(8.0..=200.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
+                prefs.title.default_size_pt = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default color", |ui| {
+            let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                prefs.title.default_color = [c.r(), c.g(), c.b()];
                 *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Default size:");
-            let mut v = prefs.title.default_size_pt;
-            if ui.add(egui::DragValue::new(&mut v).range(8.0..=120.0).speed(0.5).suffix(" pt")).changed() {
-                prefs.title.default_size_pt = v; *dirty = true;
+
+        Self::setting_row(ui, "Default alignment", |ui| {
+            use crate::prefs::TextAlignment;
+            egui::ComboBox::from_id_salt("title_align")
+                .selected_text(match prefs.title.default_alignment {
+                    TextAlignment::Left => "Left",
+                    TextAlignment::Center => "Center",
+                    TextAlignment::Right => "Right",
+                })
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Left, "Left").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Center, "Center").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Right, "Right").changed() { *dirty = true; }
+                });
+        });
+
+        // ── BEHAVIOR section ──
+        Self::section_header(ui, "BEHAVIOR");
+
+        Self::setting_row(ui, "Default duration", |ui| {
+            let mut v = prefs.title.default_duration_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=30.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.title.default_duration_secs = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Title-safe area overlay", |ui| {
+            let mut val = prefs.title.safe_area_overlay;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.title.safe_area_overlay = val;
+                *dirty = true;
             }
         });
     }
@@ -1617,49 +1816,91 @@ impl PreferencesPanel {
     }
 
     fn show_advanced(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
-        ui.label(egui::RichText::new("Notifications").strong().size(12.0));
-        ui.add_space(4.0);
+        // Page heading
         ui.horizontal(|ui| {
-            ui.label("Toast duration:");
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Advanced").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── UI section ──
+        Self::section_header(ui, "UI");
+
+        Self::setting_row(ui, "Toast notification duration", |ui| {
             let mut v = prefs.advanced.toast_duration_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=5.0).speed(0.1).suffix(" sec")).changed() {
+            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.advanced.toast_duration_secs = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Modal backdrop opacity:");
-            let mut v = prefs.advanced.modal_backdrop_alpha;
-            if ui.add(egui::Slider::new(&mut v, 0..=255)).changed() {
-                prefs.advanced.modal_backdrop_alpha = v; *dirty = true;
+
+        Self::setting_row_with_subtitle(ui, "Performance overlay", "Show FPS and frame timing in viewer", |ui| {
+            // This is a toggle for showing perf overlay by default (controlled by P key at runtime)
+            // Use perf_overlay_interval_ms > 0 as proxy for "enabled"
+            let mut enabled = prefs.advanced.perf_overlay_interval_ms > 0;
+            if ui.add(crate::widgets::toggle::toggle(&mut enabled)).changed() {
+                prefs.advanced.perf_overlay_interval_ms = if enabled { 500 } else { 0 };
+                *dirty = true;
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Performance").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Perf overlay update:");
-            let mut v = prefs.advanced.perf_overlay_interval_ms;
-            if ui.add(egui::DragValue::new(&mut v).range(100..=2000).speed(10.0).suffix(" ms")).changed() {
-                prefs.advanced.perf_overlay_interval_ms = v; *dirty = true;
+        Self::setting_row(ui, "Debug logging", |ui| {
+            let levels = ["Off", "Error", "Warn", "Info", "Debug"];
+            // Map current log level — for now just a preference, not wired to tracing
+            let current_idx = ui.ctx().data(|d| d.get_temp::<usize>(egui::Id::new("debug_log_level"))).unwrap_or(0);
+            let current = levels[current_idx];
+            egui::ComboBox::from_id_salt("debug_log")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in levels.iter().enumerate() {
+                        if ui.selectable_label(current_idx == i, *label).clicked() {
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("debug_log_level"), i));
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
+        // ── RESET section ──
+        Self::section_header(ui, "RESET");
+
+        Self::setting_row(ui, "Reset window layout", |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(90.0, 24.0));
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset layout", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            if resp.clicked() {
+                // Reset egui memory (window positions, sizes)
+                ui.ctx().memory_mut(|mem| *mem = Default::default());
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Audio").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Anti-click fade:");
-            let mut v = prefs.advanced.anti_click_fade_ms;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" ms")).changed() {
-                prefs.advanced.anti_click_fade_ms = v; *dirty = true;
+        Self::setting_row(ui, "Clear recent projects", |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            // CONTRAST RULE: accent-bordered button uses accent text on dark bg
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() {
+                prefs.general.recent_projects.clear();
+                *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Pre-roll lookahead:");
-            let mut v = prefs.advanced.pre_roll_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=5.0).speed(0.1).suffix(" sec")).changed() {
-                prefs.advanced.pre_roll_secs = v; *dirty = true;
+
+        Self::setting_row_with_subtitle(ui, "Reset all preferences", "Restores factory defaults", |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(110.0, 24.0));
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset everything", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() {
+                *prefs = crate::prefs::Preferences::default();
+                *dirty = true;
             }
         });
     }
@@ -1667,41 +1908,75 @@ impl PreferencesPanel {
     fn show_keyboard(&mut self, ui: &mut egui::Ui, key_bindings: &mut crate::keybindings::KeyBindings) {
         use crate::keybindings::{KeyBindings, key_event_to_combo};
 
-        ui.heading("Keyboard Shortcuts");
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Keyboard shortcuts").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
         ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.kb_search).desired_width(200.0));
-            if ui.button("Reset All to Defaults").clicked() {
+        // ── SHORTCUTS section header with Reset all button ──
+        {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, Self::SECTION_BG);
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "SHORTCUTS",
+                egui::FontId::proportional(10.0),
+                Self::CATEGORY_TEXT,
+            );
+            // Reset all to defaults button (right-aligned)
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 130.0, rect.top() + 3.0),
+                egui::vec2(116.0, 22.0),
+            );
+            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to defaults", egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
+            if btn_resp.clicked() {
                 *key_bindings = KeyBindings::defaults();
                 let _ = key_bindings.save();
             }
-        });
-        ui.add_space(6.0);
-
-        // Show conflicts
-        let conflicts = key_bindings.find_conflicts();
-        if !conflicts.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(255, 100, 80), format!(
-                "{} conflict(s) detected", conflicts.len()
-            ));
-            for (a, b, combo) in &conflicts {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 160, 80),
-                    format!("  {} and {} both use {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display()),
-                );
-            }
-            ui.add_space(4.0);
         }
 
-        // If remapping, capture key press
-        if let Some((ref action_name, combo_idx)) = self.remapping.clone() {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 200, 60),
-                format!("Press a key combination for \"{}\" (Escape to cancel)...", KeyBindings::action_label(&action_name)),
+        // Show conflicts as warning rows
+        let conflicts = key_bindings.find_conflicts();
+        if !conflicts.is_empty() {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0 + conflicts.len() as f32 * 18.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(0x3a, 0x20, 0x18));
+            let warn_color = egui::Color32::from_rgb(0xff, 0x80, 0x50);
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.top() + 12.0),
+                egui::Align2::LEFT_CENTER,
+                format!("\u{26a0} {} shortcut conflict(s)", conflicts.len()),
+                egui::FontId::proportional(11.0),
+                warn_color,
             );
-            ui.add_space(4.0);
+            for (i, (a, b, combo)) in conflicts.iter().enumerate() {
+                ui.painter().text(
+                    egui::pos2(rect.left() + 28.0, rect.top() + 28.0 + i as f32 * 18.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{} and {} both use {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display()),
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_rgb(0xff, 0xb0, 0x70),
+                );
+            }
+        }
+
+        // If remapping, show capture banner
+        if let Some((ref action_name, combo_idx)) = self.remapping.clone() {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(0x2a, 0x28, 0x18));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Press a key combination for \"{}\" (Escape to cancel)", KeyBindings::action_label(action_name)),
+                egui::FontId::proportional(11.0),
+                Self::ACCENT,
+            );
 
             let input = ui.input(|i| i.clone());
             if input.key_pressed(egui::Key::Escape) {
@@ -1721,6 +1996,7 @@ impl PreferencesPanel {
 
         let search = self.kb_search.to_lowercase();
 
+        // Draw each category with sub-header + action rows
         for (category, actions) in KeyBindings::categories() {
             let filtered: Vec<_> = actions.iter().filter(|a| {
                 if search.is_empty() { return true; }
@@ -1730,48 +2006,267 @@ impl PreferencesPanel {
             }).collect();
             if filtered.is_empty() { continue; }
 
-            ui.add_space(4.0);
-            ui.strong(*category);
-            ui.add_space(2.0);
+            // Category sub-header (dim, smaller than section header)
+            let (cat_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+            ui.painter().rect_filled(cat_rect, 0.0, Self::ROW_BG);
+            ui.painter().text(
+                egui::pos2(cat_rect.left() + 14.0, cat_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                category.to_uppercase(),
+                egui::FontId::proportional(10.0),
+                Self::DIM_TEXT,
+            );
 
-            egui::Grid::new(format!("kb_grid_{}", category))
-                .num_columns(4)
-                .spacing([8.0, 3.0])
-                .striped(true)
-                .min_col_width(0.0)
-                .show(ui, |ui| {
-                    for action in &filtered {
-                        let label = KeyBindings::action_label(action);
-                        let combos = key_bindings.bindings.get(**action).cloned().unwrap_or_default();
-                        let display = if combos.is_empty() {
-                            "—".to_string()
-                        } else {
-                            combos.iter().map(|c| c.display()).collect::<Vec<_>>().join(" / ")
+            // Action rows
+            for action in &filtered {
+                let label = KeyBindings::action_label(action);
+                let combos = key_bindings.bindings.get(**action).cloned().unwrap_or_default();
+                let is_remapping = self.remapping.as_ref().is_some_and(|(a, _)| a == **action);
+
+                let row_h = 36.0;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+                ui.painter().line_segment(
+                    [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                    egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                );
+
+                // Action label
+                ui.painter().text(
+                    egui::pos2(rect.left() + 14.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    egui::FontId::proportional(12.0),
+                    Self::NORMAL_TEXT,
+                );
+
+                // "Set" button (rightmost)
+                let set_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.right() - 50.0, rect.top() + 6.0),
+                    egui::vec2(36.0, 24.0),
+                );
+                let set_resp = ui.allocate_rect(set_rect, egui::Sense::click());
+                let set_bg = if is_remapping { egui::Color32::from_rgb(0x3a, 0x30, 0x18) }
+                    else if set_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) }
+                    else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+                ui.painter().rect_filled(set_rect, 4.0, set_bg);
+                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+                let set_label = if is_remapping { "..." } else { "Set" };
+                ui.painter().text(set_rect.center(), egui::Align2::CENTER_CENTER, set_label, egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
+                if set_resp.clicked() && !is_remapping {
+                    self.remapping = Some((action.to_string(), 0));
+                }
+
+                // Key badge pills (before Set button)
+                if !combos.is_empty() {
+                    let badge_right = set_rect.left() - 8.0;
+                    let mut x = badge_right;
+                    // Draw combo parts as individual key pills (right-to-left)
+                    for combo in combos.iter().rev() {
+                        let parts: Vec<&str> = {
+                            let mut p = Vec::new();
+                            if combo.ctrl { p.push("Ctrl"); }
+                            if combo.shift { p.push("\u{21e7}"); }
+                            if combo.alt { p.push("Alt"); }
+                            p.push(&combo.key);
+                            p
                         };
-
-                        ui.label(label);
-                        ui.monospace(&display);
-
-                        // Remap button
-                        let is_remapping = self.remapping.as_ref().is_some_and(|(a, _)| a == **action);
-                        let btn_label = if is_remapping { "..." } else { "Set" };
-                        if ui.small_button(btn_label).clicked() && !is_remapping {
-                            self.remapping = Some((action.to_string(), 0));
+                        // Draw each key as a separate pill, right-to-left
+                        for part in parts.iter().rev() {
+                            let font = egui::FontId::proportional(10.0);
+                            let text_galley = ui.painter().layout_no_wrap(part.to_string(), font.clone(), Self::NORMAL_TEXT);
+                            let pill_w = text_galley.size().x + 12.0;
+                            let pill_h = 20.0;
+                            let pill_rect = egui::Rect::from_min_size(
+                                egui::pos2(x - pill_w, rect.center().y - pill_h / 2.0),
+                                egui::vec2(pill_w, pill_h),
+                            );
+                            ui.painter().rect_filled(pill_rect, 4.0, egui::Color32::from_rgb(0x28, 0x28, 0x30));
+                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x3a, 0x44)));
+                            ui.painter().text(pill_rect.center(), egui::Align2::CENTER_CENTER, *part, font, Self::NORMAL_TEXT);
+                            x = pill_rect.left() - 3.0;
                         }
-
-                        // Reset to default
-                        let defaults = KeyBindings::defaults();
-                        let is_default = defaults.bindings.get(**action) == key_bindings.bindings.get(**action);
-                        if ui.add_enabled(!is_default, egui::Button::new("Reset").small()).clicked() {
-                            if let Some(default_combos) = defaults.bindings.get(**action) {
-                                key_bindings.bindings.insert(action.to_string(), default_combos.clone());
-                                let _ = key_bindings.save();
-                            }
-                        }
-
-                        ui.end_row();
+                        x -= 6.0; // gap between multiple combos
                     }
-                });
+                } else {
+                    // No binding — show em dash
+                    ui.painter().text(
+                        egui::pos2(set_rect.left() - 20.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        "\u{2014}",
+                        egui::FontId::proportional(12.0),
+                        Self::DIM_TEXT,
+                    );
+                }
+            }
         }
+    }
+
+    fn show_about(&mut self, ui: &mut egui::Ui) {
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("About Klipp").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── APPLICATION section ──
+        Self::section_header(ui, "APPLICATION");
+
+        Self::setting_row(ui, "Version", |ui| {
+            ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).color(Self::DIM_TEXT));
+        });
+
+        Self::setting_row(ui, "Author", |ui| {
+            ui.label(egui::RichText::new("David Bolin").color(Self::DIM_TEXT));
+        });
+
+        Self::setting_row(ui, "License", |ui| {
+            ui.label(egui::RichText::new("GPL v3.0").color(Self::DIM_TEXT));
+        });
+
+        // ── DETECTED HARDWARE section ──
+        Self::section_header(ui, "DETECTED HARDWARE");
+
+        // CPU
+        Self::setting_row(ui, "CPU", |ui| {
+            let cpu_info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+            let model = cpu_info.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "Unknown".into());
+            let display = if model.len() > 40 { format!("{}...", &model[..37]) } else { model };
+            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT).size(11.0));
+        });
+
+        // GPU — extract just the model name from lspci (e.g. "GeForce RTX 4080")
+        Self::setting_row(ui, "GPU", |ui| {
+            let gpu = std::process::Command::new("sh")
+                .args(["-c", "lspci 2>/dev/null | grep -i 'vga\\|3d' | head -1 | sed 's/.*: //'"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| {
+                    let s = s.trim().to_string();
+                    // Extract the part in brackets if present (e.g. "[GeForce RTX 4080]")
+                    if let Some(start) = s.find('[') {
+                        if let Some(end) = s.find(']') {
+                            return s[start + 1..end].to_string();
+                        }
+                    }
+                    s
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Unknown".into());
+            ui.label(egui::RichText::new(gpu).color(Self::DIM_TEXT).size(11.0));
+        });
+
+        // Memory — show installed (rounded up to nearest power-of-2 stick size) + usable
+        Self::setting_row(ui, "Memory", |ui| {
+            let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+            let total_kb = meminfo.lines()
+                .find(|l| l.starts_with("MemTotal"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let usable_gb = total_kb as f64 / 1_048_576.0;
+            // Round up to nearest common DIMM size (8, 16, 32, 64, 128)
+            let installed_gb = [8u64, 16, 32, 64, 128, 256].iter()
+                .find(|&&s| (s as f64) >= usable_gb)
+                .copied()
+                .unwrap_or((usable_gb.ceil()) as u64);
+            let display = format!("{} GB ({:.1} GB usable)", installed_gb, usable_gb);
+            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT));
+        });
+
+        // Audio — detect real sound cards from /proc/asound/cards
+        Self::setting_row(ui, "Audio", |ui| {
+            let cards = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
+            // Parse card names: lines like " 0 [PCH            ]: HDA-Intel - HDA Intel PCH"
+            let card_names: Vec<String> = cards.lines()
+                .filter(|l| l.contains(" - "))
+                .map(|l| {
+                    // Extract the part after " - "
+                    l.split(" - ").nth(1).unwrap_or("").trim().to_string()
+                })
+                .filter(|s| !s.is_empty())
+                .collect();
+            let display = if card_names.is_empty() {
+                "PipeWire (via cpal)".to_string()
+            } else {
+                card_names.join(", ")
+            };
+            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT).size(11.0));
+        });
+
+        // ── TECHNOLOGY section ──
+        Self::section_header(ui, "TECHNOLOGY");
+
+        let tech_row = |ui: &mut egui::Ui, name: &str, desc: &str| {
+            let row_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                name,
+                egui::FontId::proportional(12.0),
+                Self::NORMAL_TEXT,
+            );
+            ui.painter().text(
+                egui::pos2(rect.right() - 14.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                desc,
+                egui::FontId::proportional(11.0),
+                Self::DIM_TEXT,
+            );
+        };
+
+        tech_row(ui, "Rust", "Systems programming language");
+        tech_row(ui, "egui / eframe", "Immediate-mode GUI framework");
+        tech_row(ui, "ffmpeg-next", "Video/audio decode & encode");
+        tech_row(ui, "wgpu", "GPU compute shaders (Vulkan)");
+        tech_row(ui, "cpal", "Cross-platform audio output");
+        tech_row(ui, "rfd", "Native file dialogs");
+        tech_row(ui, "serde", "Serialization framework");
+        tech_row(ui, "image", "Image loading/saving");
+
+        // ── ACKNOWLEDGMENTS section ──
+        Self::section_header(ui, "ACKNOWLEDGMENTS");
+
+        let ack_row = |ui: &mut egui::Ui, text: &str| {
+            let row_h = 28.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                text,
+                egui::FontId::proportional(11.0),
+                Self::DIM_TEXT,
+            );
+        };
+
+        ack_row(ui, "FFmpeg project \u{2014} multimedia framework (LGPL)");
+        ack_row(ui, "egui by Emil Ernerfeldt \u{2014} MIT License");
+        ack_row(ui, "wgpu contributors \u{2014} Apache 2.0 / MIT");
+        ack_row(ui, "Phosphor Icons \u{2014} MIT License");
+        ack_row(ui, "OpenColorIO / ACES \u{2014} color science references");
+        ack_row(ui, "The Rust community and crate ecosystem");
+
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("\u{00a9} 2025\u{2013}2026 David Bolin. All rights reserved.").size(10.0).color(Self::DIM_TEXT));
+        });
     }
 }

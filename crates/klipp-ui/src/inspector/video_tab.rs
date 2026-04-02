@@ -103,9 +103,7 @@ fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64) -> Ke
     KeyframeState {
         has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !keyframes.is_empty(),
-        prev_keyframe_time: keyframes.iter()
-            .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
-            .last()
+        prev_keyframe_time: keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance)
             .map(|k| k.time_secs),
         next_keyframe_time: keyframes.iter()
             .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
@@ -1437,7 +1435,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let free_path = state.project_path.as_deref()
             .or(home.as_deref());
         let free_bytes: u64 = free_path
-            .and_then(|p| disk_free_bytes(p))
+            .and_then(disk_free_bytes)
             .unwrap_or(0);
 
         info_row(ui, theme, pad, row_h, w, "Project size", |ui, rx, cy| {
@@ -1700,7 +1698,7 @@ fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+            Some(stat.f_bavail * stat.f_frsize)
         } else {
             None
         }

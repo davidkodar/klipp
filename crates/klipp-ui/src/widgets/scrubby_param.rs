@@ -135,7 +135,7 @@ pub fn scrubby_param_row(
         let icon_width = 18.0;
         let nav_arrow_width = 10.0; // per arrow
         let diamond_width = 16.0;
-        let has_nav = keyframe_state.as_ref().map_or(false, |ks| ks.has_any_keyframes);
+        let has_nav = keyframe_state.as_ref().is_some_and(|ks| ks.has_any_keyframes);
         let nav_total = if has_nav { nav_arrow_width * 2.0 } else { 0.0 };
         let label_width = (available - value_width - icon_width - nav_total - diamond_width - 12.0).max(40.0);
 
@@ -205,7 +205,7 @@ pub fn scrubby_param_row(
 
         // Check hover on the entire row including the reset area itself
         let row_is_hovered = label_rect.hovered() || label_rect.dragged()
-            || dv_response.as_ref().map_or(false, |r| r.hovered())
+            || dv_response.as_ref().is_some_and(|r| r.hovered())
             || reset_rect.hovered();
 
         // Show the reset icon if hovered (this frame or last frame, to prevent flicker)

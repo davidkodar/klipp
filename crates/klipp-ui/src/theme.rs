@@ -66,8 +66,11 @@ impl Default for KlippTheme {
 
             accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
             accent_dim: Color32::from_rgb(0xa0, 0x6e, 0x14),
-            accent_glow: Color32::from_rgba_premultiplied(232, 160, 32, 46), // ~18% alpha
-            accent_subtle: Color32::from_rgba_premultiplied(232, 160, 32, 23), // ~9% alpha
+            // CONTRAST RULE: These are used as BACKGROUNDS. With premultiplied alpha,
+            // RGB channels must be <= alpha. Previous values (R=232 > A=46) were invalid
+            // and rendered as near-solid amber, making light text unreadable.
+            accent_glow: Color32::from_rgba_premultiplied(33, 23, 5, 46),   // ~18% alpha amber
+            accent_subtle: Color32::from_rgba_premultiplied(21, 14, 3, 23), // ~9% alpha amber
 
             text_primary: Color32::from_rgb(0xe8, 0xe8, 0xee),
             text_secondary: Color32::from_rgb(0x90, 0x90, 0xa0),
@@ -97,8 +100,13 @@ impl KlippTheme {
         let mut t = Self::default();
         t.accent = accent;
         t.accent_dim = Color32::from_rgb(ar.saturating_sub(0x48), ag.saturating_sub(0x32), ab.saturating_sub(0x0c));
-        t.accent_glow = Color32::from_rgba_premultiplied(ar, ag, ab, 46);
-        t.accent_subtle = Color32::from_rgba_premultiplied(ar, ag, ab, 23);
+        // CONTRAST RULE: premultiplied alpha requires RGB <= alpha.
+        // Scale RGB by (alpha/255) to get correct translucent tint.
+        let glow_a = 46u8;
+        let sub_a = 23u8;
+        let pm = |c: u8, a: u8| (c as u16 * a as u16 / 255) as u8;
+        t.accent_glow = Color32::from_rgba_premultiplied(pm(ar, glow_a), pm(ag, glow_a), pm(ab, glow_a), glow_a);
+        t.accent_subtle = Color32::from_rgba_premultiplied(pm(ar, sub_a), pm(ag, sub_a), pm(ab, sub_a), sub_a);
         t.text_accent = accent;
         // Role colors from prefs
         let c = |rgb: [u8; 3]| Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
@@ -163,7 +171,11 @@ impl KlippTheme {
         visuals.widgets.active.bg_stroke =
             egui::Stroke::new(1.0, self.accent_dim);
 
-        visuals.selection.bg_fill = self.accent_subtle;
+        // CONTRAST RULE: selection.bg_fill is used for selected dropdown items,
+        // text selections, etc. egui renders TEXT on this background using fg_stroke
+        // (light text). Therefore this MUST be a dark color — never solid amber/gold.
+        // Use a dark warm tint so light text stays readable.
+        visuals.selection.bg_fill = Color32::from_rgb(0x38, 0x2c, 0x14);
         visuals.selection.stroke = egui::Stroke::new(1.0, self.accent);
 
         visuals.window_stroke = egui::Stroke::new(1.0, self.border);

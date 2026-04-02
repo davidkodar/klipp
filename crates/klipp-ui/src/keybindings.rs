@@ -258,7 +258,7 @@ impl KeyBindings {
     }
 
     /// Get a human-readable label for an action name.
-    pub fn action_label<'a>(action: &'a str) -> &'a str {
+    pub fn action_label(action: &str) -> &str {
         match action {
             "save_project" => "Save Project",
             "save_project_as" => "Save Project As",

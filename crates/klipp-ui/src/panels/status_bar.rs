@@ -141,7 +141,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             let audio_label = if state.audio_backend_ok {
                 format!("PipeWire \u{00b7} {sr_label}")
             } else {
-                format!("Audio \u{00b7} No Device")
+                "Audio \u{00b7} No Device".to_string()
             };
             status_item(ui, theme, &audio_label);
 

@@ -1705,12 +1705,11 @@ impl TimelinePanel {
         // Global drag cleanup — if mouse released anywhere (not on a valid target), end the drag
         {
             let any_down = ui.input(|i| i.pointer.any_down());
-            if !any_down {
-                if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
+            if !any_down
+                && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
                     | Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
                     state.drag_drop.end();
                 }
-            }
         }
 
         // Range guide lines — 1px amber vertical lines at in/out points through track area
@@ -1929,11 +1928,10 @@ impl TimelinePanel {
                                 let playhead_abs = state.playhead_smooth_secs;
                                 let clip_start_abs = clip.timeline_in.to_secs_f64();
                                 let playhead_rel = playhead_abs - clip_start_abs;
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs {
-                                    if (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
                                         new_time = playhead_rel;
                                     }
-                                }
 
                                 // Snap to clip start boundary
                                 if new_time < snap_thresh_secs {
@@ -2037,11 +2035,10 @@ impl TimelinePanel {
                                 // Snap to notable positions
                                 let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
                                 let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs {
-                                    if (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
                                         new_time = playhead_rel;
                                     }
-                                }
                                 if new_time < snap_thresh_secs { new_time = 0.0; }
                                 if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
 
@@ -2386,8 +2383,8 @@ impl TimelinePanel {
                                     .unwrap_or(false);
 
                                 // Copy Keyframes (only if keyframes exist)
-                                if has_kfs {
-                                    if ui.add(egui::Button::new("  Copy Keyframes").frame(false)).clicked() {
+                                if has_kfs
+                                    && ui.add(egui::Button::new("  Copy Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
                                                 cmds.push(AppCommand::CopyAudioKeyframes {
@@ -2404,11 +2401,10 @@ impl TimelinePanel {
                                         }
                                         close_menu = true;
                                     }
-                                }
 
                                 // Paste Keyframes (only if clipboard has data)
-                                if state.keyframe_clipboard.is_some() {
-                                    if ui.add(egui::Button::new("  Paste Keyframes").frame(false)).clicked() {
+                                if state.keyframe_clipboard.is_some()
+                                    && ui.add(egui::Button::new("  Paste Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
                                                 cmds.push(AppCommand::PasteAudioKeyframes {
@@ -2425,7 +2421,6 @@ impl TimelinePanel {
                                         }
                                         close_menu = true;
                                     }
-                                }
 
                                 // Reverse Keyframes (only if >= 2 keyframes)
                                 let has_enough = state.sequence().tracks.iter()
@@ -2450,8 +2445,8 @@ impl TimelinePanel {
                                     })
                                     .unwrap_or(false);
 
-                                if has_enough {
-                                    if ui.add(egui::Button::new("  Reverse Keyframes").frame(false)).clicked() {
+                                if has_enough
+                                    && ui.add(egui::Button::new("  Reverse Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
                                                 cmds.push(AppCommand::ReverseAudioKeyframes {
@@ -2468,7 +2463,6 @@ impl TimelinePanel {
                                         }
                                         close_menu = true;
                                     }
-                                }
 
                                 if has_kfs || state.keyframe_clipboard.is_some() {
                                     ui.separator();
@@ -2643,7 +2637,7 @@ impl TimelinePanel {
                             let clip_data: Option<(f64, f64)> = state.sequence().tracks.iter()
                                 .flat_map(|t| t.clips.iter())
                                 .find(|c| c.id == ctx_menu.clip_id)
-                                .and_then(|clip| {
+                                .map(|clip| {
                                     let clip_dur = clip.duration().to_secs_f64();
                                     let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                         crate::state::KeyframeParamKind::Audio(p) => match p {
@@ -2660,7 +2654,7 @@ impl TimelinePanel {
                                         },
                                     };
                                     let max_t = kfs.iter().map(|k| k.time_secs).fold(0.0f64, f64::max);
-                                    Some((clip_dur, max_t))
+                                    (clip_dur, max_t)
                                 });
 
                             if ui.add(egui::Button::new("  Half Speed (0.5x)").frame(false)).clicked() {
@@ -3242,9 +3236,9 @@ impl TimelinePanel {
                                 let clip_peaks = &peaks[first_bin..last_bin];
                                 // Bright waveform: lighter than background for clear visibility
                                 let waveform_color = egui::Color32::from_rgba_premultiplied(
-                                    bright_color.r().saturating_add(100).min(255),
-                                    bright_color.g().saturating_add(100).min(255),
-                                    bright_color.b().saturating_add(100).min(255),
+                                    bright_color.r().saturating_add(100),
+                                    bright_color.g().saturating_add(100),
+                                    bright_color.b().saturating_add(100),
                                     220,
                                 );
 
@@ -3527,11 +3521,10 @@ impl TimelinePanel {
                                 let kx = time_to_x(kf.time_secs);
                                 let ky = value_to_y(kf.value);
                                 let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                if dist < 10.0 {
-                                    if best.map_or(true, |(_, bd)| dist < bd) {
+                                if dist < 10.0
+                                    && best.is_none_or(|(_, bd)| dist < bd) {
                                         best = Some((ki, dist));
                                     }
-                                }
                             }
                         }
                         best.map(|(i, _)| i)
@@ -3657,20 +3650,18 @@ impl TimelinePanel {
                                     let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
                                     let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
                                     let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                    if dist_out < 8.0 {
-                                        if nearest_bezier_handle.map_or(true, |(_, _, d)| dist_out < d) {
+                                    if dist_out < 8.0
+                                        && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
                                             nearest_bezier_handle = Some((ki, true, dist_out));
                                         }
-                                    }
                                     // Tangent in handle
                                     let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
                                     let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
                                     let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                    if dist_in < 8.0 {
-                                        if nearest_bezier_handle.map_or(true, |(_, _, d)| dist_in < d) {
+                                    if dist_in < 8.0
+                                        && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
                                             nearest_bezier_handle = Some((ki, false, dist_in));
                                         }
-                                    }
                                 }
                             }
 
@@ -3700,8 +3691,8 @@ impl TimelinePanel {
 
                             // ── Cursor feedback ──
                             let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
-                            let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().map_or(false, |d| d.clip_id == kf_clip_id);
-                            let is_dragging_bezier = state.dragging_bezier_handle.as_ref().map_or(false, |d| d.clip_id == kf_clip_id);
+                            let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
+                            let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
                             if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                             } else if nearest_bezier_handle.is_some() {
@@ -3757,11 +3748,10 @@ impl TimelinePanel {
                             }
 
                             // ── Click empty area to deselect keyframe ──
-                            if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none() {
-                                if state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
+                            if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
+                                && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
                                     state.selected_keyframe = None;
                                 }
-                            }
 
                             // ── Start bezier tangent handle drag ──
                             if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
@@ -3815,8 +3805,8 @@ impl TimelinePanel {
                             }
 
                             // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
-                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active() {
-                                if pointer_down {
+                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
+                                && pointer_down {
                                     let new_val = y_to_value(pos.y);
                                     let (drag_gain, drag_volume, drag_pan) = match rb_param {
                                         klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
@@ -3852,7 +3842,6 @@ impl TimelinePanel {
                                         active_line_color,
                                     );
                                 }
-                            }
 
                             // Alt+click on line to add keyframe (blocked during fade drag)
                             if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
@@ -3899,7 +3888,7 @@ impl TimelinePanel {
                 crate::prefs::FadeOverlayMode::AudioOnly => track_kind == TrackKind::Audio,
                 crate::prefs::FadeOverlayMode::Both => {
                     track_kind == TrackKind::Audio
-                        || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio)
+                        || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio)
                 }
             };
             if show_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
@@ -4081,10 +4070,10 @@ impl TimelinePanel {
             // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
             // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
             let clip_has_audio = track_kind == TrackKind::Audio
-                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
-            let is_pointer_over_clip = pointer_pos.map_or(false, |p| clip_rect.contains(p) && content_rect.contains(p));
+                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+            let is_pointer_over_clip = pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
             let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
-            let is_dragging_this_fade = state.dragging_fade_handle.map_or(false, |(id, _, _)| id == clip.id);
+            let is_dragging_this_fade = state.dragging_fade_handle.is_some_and(|(id, _, _)| id == clip.id);
             if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
                 && (is_hovered_or_selected || is_dragging_this_fade)
             {
@@ -4117,16 +4106,16 @@ impl TimelinePanel {
                 let fo_x = clip_rect.right() - fo_offset_px;
 
                 // Check if pointer is near a handle for hover highlight
-                let near_fi = pointer_pos.map_or(false, |p| {
+                let near_fi = pointer_pos.is_some_and(|p| {
                     (p.x - fi_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
                         && clip_rect.contains(p) && content_rect.contains(p)
                 });
-                let near_fo = pointer_pos.map_or(false, |p| {
+                let near_fo = pointer_pos.is_some_and(|p| {
                     (p.x - fo_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
                         && clip_rect.contains(p) && content_rect.contains(p)
                 });
-                let dragging_fi = state.dragging_fade_handle.map_or(false, |(id, is_in, _)| id == clip.id && is_in);
-                let dragging_fo = state.dragging_fade_handle.map_or(false, |(id, is_in, _)| id == clip.id && !is_in);
+                let dragging_fi = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && is_in);
+                let dragging_fo = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && !is_in);
 
                 // Draw fade-in handle (triangle pointing right at top-left area)
                 let fi_color = if near_fi || dragging_fi { handle_hover_color } else { handle_color };
@@ -4403,11 +4392,10 @@ impl TimelinePanel {
                                     let kx = vrb_time_to_x(kf.time_secs);
                                     let ky = vrb_value_to_y(kf.value);
                                     let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                    if dist < 10.0 {
-                                        if best.map_or(true, |(_, bd)| dist < bd) {
+                                    if dist < 10.0
+                                        && best.is_none_or(|(_, bd)| dist < bd) {
                                             best = Some((ki, dist));
                                         }
-                                    }
                                 }
                             }
                             best.map(|(i, _)| i)
@@ -4530,26 +4518,24 @@ impl TimelinePanel {
                                             let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
                                             let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
                                             let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                            if dist_out < 8.0 {
-                                                if vrb_nearest_bezier_handle.map_or(true, |(_, _, d)| dist_out < d) {
+                                            if dist_out < 8.0
+                                                && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
                                                     vrb_nearest_bezier_handle = Some((ki, true, dist_out));
                                                 }
-                                            }
                                             // Tangent in handle
                                             let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
                                             let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
                                             let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                            if dist_in < 8.0 {
-                                                if vrb_nearest_bezier_handle.map_or(true, |(_, _, d)| dist_in < d) {
+                                            if dist_in < 8.0
+                                                && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
                                                     vrb_nearest_bezier_handle = Some((ki, false, dist_in));
                                                 }
-                                            }
                                         }
                                     }
 
                                     // Cursor feedback
-                                    let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().map_or(false, |d| d.clip_id == vrb_clip_id);
-                                    let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().map_or(false, |d| d.clip_id == vrb_clip_id);
+                                    let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
+                                    let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
                                     if is_dragging_vrb_kf || is_dragging_vrb_bezier {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                     } else if vrb_nearest_bezier_handle.is_some() {
@@ -4602,11 +4588,10 @@ impl TimelinePanel {
                                     }
 
                                     // Click empty area to deselect
-                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none() {
-                                        if state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
+                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
+                                        && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
                                             state.selected_keyframe = None;
                                         }
-                                    }
 
                                     // ── Start video bezier tangent handle drag ──
                                     if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
@@ -4633,8 +4618,7 @@ impl TimelinePanel {
                                         && state.dragging_video_bezier_handle.is_none()
                                         && state.dragging_fade_handle.is_none()
                                         && !vrb_alt_held
-                                    {
-                                        if ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                                        && ui.input(|i| i.pointer.is_decidedly_dragging()) {
                                             if let Some(ki) = vrb_hovered_kf_idx {
                                                 let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
                                                 cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
@@ -4645,7 +4629,6 @@ impl TimelinePanel {
                                                 });
                                             }
                                         }
-                                    }
 
                                     // Alt+click on rubber band line to add video keyframe
                                     if vrb_alt_held && vrb_hovered_kf_idx.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
@@ -4683,7 +4666,7 @@ impl TimelinePanel {
                     let marker_painter = painter.with_clip_rect(clip_rect);
                     for m in &clip.clip_markers {
                         let frac = (m.time_secs / clip_dur) as f32;
-                        if frac >= 0.0 && frac <= 1.0 {
+                        if (0.0..=1.0).contains(&frac) {
                             let x = clip_rect.left() + frac * clip_rect.width();
                             let (r, g, b) = m.color.to_rgb();
                             let color = egui::Color32::from_rgb(r, g, b);
@@ -5418,7 +5401,7 @@ impl TimelinePanel {
                             TrimEdge::Right => cr.right() - pos.x < 10.0,
                         };
                         let clip_has_audio = track_kind == TrackKind::Audio
-                            || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+                            || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
                         let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
 
                         if !in_fade_zone {
@@ -5661,15 +5644,14 @@ impl TimelinePanel {
                             }
                         });
                         // Reset styles (clear all style runs)
-                        if !td.style_runs.is_empty() {
-                            if ui.button("\u{21BA} Reset Text Styles").clicked() {
+                        if !td.style_runs.is_empty()
+                            && ui.button("\u{21BA} Reset Text Styles").clicked() {
                                 cmds.push(AppCommand::ApplyTitleStyle {
                                     clip_id, range_start: 0, range_end: td.text.len(),
                                     property: "clear_all".into(), value: String::new(),
                                 });
                                 ui.close_menu();
                             }
-                        }
                     } // end alignment/style block
                     ui.separator();
                 } // end title_data_cloned
@@ -5696,12 +5678,11 @@ impl TimelinePanel {
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .is_some_and(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { .. }));
-                if is_compound {
-                    if ui.button("Open Compound Clip").clicked() {
+                if is_compound
+                    && ui.button("Open Compound Clip").clicked() {
                         cmds.push(AppCommand::OpenCompoundClip { clip_id });
                         ui.close_menu();
                     }
-                }
                 let has_multi_for_compound = state.selected_clips.len() >= 2
                     || (state.selected_clip.is_some() && !state.selected_clips.is_empty());
                 if ui.add_enabled(has_multi_for_compound, egui::Button::new("Create Compound Clip...")).clicked() {
@@ -5732,7 +5713,7 @@ impl TimelinePanel {
                 let clip_enabled = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
-                    .map_or(true, |c| c.enabled);
+                    .is_none_or(|c| c.enabled);
                 let enable_label = if clip_enabled { "Disable Clip" } else { "Enable Clip" };
                 if ui.button(enable_label).clicked() {
                     cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip_enabled });
@@ -6000,13 +5981,12 @@ impl TimelinePanel {
                 // Track height
                 let has_custom_h = state.sequence().tracks.get(track_idx)
                     .is_some_and(|t| t.custom_height.is_some());
-                if has_custom_h {
-                    if ui.button("Reset Track Height").clicked() {
+                if has_custom_h
+                    && ui.button("Reset Track Height").clicked() {
                         state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = None;
                         state.dirty = true;
                         ui.close_menu();
                     }
-                }
 
                 ui.separator();
                 let r = ui.add_enabled(false, egui::Button::new("Properties..."));
@@ -6184,7 +6164,7 @@ impl TimelinePanel {
                     for clip in &clips {
                         if clip.kind.is_gap() { continue; }
                         let clip_has_audio = track_kind == TrackKind::Audio
-                            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map_or(false, |m| m.has_audio);
+                            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
                         if !clip_has_audio { continue; }
                         let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
                         if cr.width() < 20.0 { continue; }
@@ -6932,7 +6912,7 @@ impl TimelinePanel {
                         if new_src_in.value < 0 {
                             let shift = RationalTime { value: -new_src_in.value, rate: new_src_in.rate };
                             new_src_in.value = 0;
-                            new_src_out = new_src_out + shift;
+                            new_src_out += shift;
                         }
                         // Clamp: source_out <= media duration
                         if let Some(media_dur) = slip.media_duration {
@@ -6940,7 +6920,7 @@ impl TimelinePanel {
                             if new_src_out.value > media_dur_rt.value {
                                 let overshoot = RationalTime { value: new_src_out.value - media_dur_rt.value, rate: new_src_out.rate };
                                 new_src_out = media_dur_rt;
-                                new_src_in = new_src_in - overshoot;
+                                new_src_in -= overshoot;
                                 if new_src_in.value < 0 { new_src_in.value = 0; }
                             }
                         }
@@ -7045,8 +7025,8 @@ impl TimelinePanel {
                                 let new_left_out = orig_left_out + dt;
                                 if new_left_out.value < min_left_out.value {
                                     let correction = min_left_out - new_left_out;
-                                    new_tl_in = new_tl_in + correction;
-                                    new_tl_out = new_tl_out + correction;
+                                    new_tl_in += correction;
+                                    new_tl_out += correction;
                                 }
                             }
                         }
@@ -7063,8 +7043,8 @@ impl TimelinePanel {
                                 if (right_out - new_right_in).value < min_dur.value {
                                     let max_right_in = right_out - min_dur;
                                     let correction = new_right_in - max_right_in;
-                                    new_tl_in = new_tl_in - correction;
-                                    new_tl_out = new_tl_out - correction;
+                                    new_tl_in -= correction;
+                                    new_tl_out -= correction;
                                 }
                             }
                         }

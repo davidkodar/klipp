@@ -335,12 +335,11 @@ pub fn show(
                 cmds.push(AppCommand::RemoveTrack { track_id });
                 ui.close_menu();
             }
-            if has_clips {
-                if ui.button("Remove Track (with clips)").clicked() {
+            if has_clips
+                && ui.button("Remove Track (with clips)").clicked() {
                     cmds.push(AppCommand::RemoveTrack { track_id });
                     ui.close_menu();
                 }
-            }
         });
 
         y += track_h;

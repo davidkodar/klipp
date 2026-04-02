@@ -31,15 +31,11 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
 // NodeGraphPanel — compact DaVinci-style horizontal node strip
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[derive(Default)]
 pub struct NodeGraphPanel {
     add_menu_open: bool,
 }
 
-impl Default for NodeGraphPanel {
-    fn default() -> Self {
-        Self { add_menu_open: false }
-    }
-}
 
 impl NodeGraphPanel {
     /// Render the compact node strip. Returns commands.
@@ -191,11 +187,10 @@ impl NodeGraphPanel {
                 }
 
                 // Right-click on empty area → add node
-                if content_rect.contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default())) {
-                    if ui.input(|i| i.pointer.secondary_clicked()) {
+                if content_rect.contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default()))
+                    && ui.input(|i| i.pointer.secondary_clicked()) {
                         self.add_menu_open = true;
                     }
-                }
             });
 
         // Add node menu

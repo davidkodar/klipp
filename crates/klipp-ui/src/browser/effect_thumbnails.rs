@@ -585,7 +585,7 @@ fn apply_ofx_visual_proxy(frame: &ReferenceFrame, plugin_name: &str) -> Vec<u8> 
         for px in out.chunks_exact_mut(4) {
             for c in &mut px[..3] {
                 let v = *c as f32 / 255.0;
-                let lin = ((v * 14.0 - 7.0) as f32).exp2() * 0.18;
+                let lin = (v * 14.0 - 7.0).exp2() * 0.18;
                 *c = (lin.min(1.0) * 255.0) as u8;
             }
         }
@@ -781,9 +781,9 @@ fn apply_ofx_visual_proxy(frame: &ReferenceFrame, plugin_name: &str) -> Vec<u8> 
         for y in (1..h).step_by(2) {
             for x in 0..w {
                 let i = (y * w + x) * 4;
-                out[i] = out[i] / 2;
-                out[i + 1] = out[i + 1] / 2;
-                out[i + 2] = out[i + 2] / 2;
+                out[i] /= 2;
+                out[i + 1] /= 2;
+                out[i + 2] /= 2;
             }
         }
         return out;

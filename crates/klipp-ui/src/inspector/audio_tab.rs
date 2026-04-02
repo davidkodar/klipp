@@ -750,11 +750,11 @@ fn show_clip_audio(
         let vol_ks = build_kf_state(&clip.volume_keyframes, clip_time_secs, kf_tolerance);
         let pan_ks = build_kf_state(&clip.pan_keyframes, clip_time_secs, kf_tolerance);
 
-        let gain_prev_kf = clip.gain_keyframes.iter().filter(|k| k.time_secs < clip_time_secs - kf_tolerance).last().map(|k| k.time_secs);
+        let gain_prev_kf = clip.gain_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
         let gain_next_kf = clip.gain_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
-        let vol_prev_kf = clip.volume_keyframes.iter().filter(|k| k.time_secs < clip_time_secs - kf_tolerance).last().map(|k| k.time_secs);
+        let vol_prev_kf = clip.volume_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
         let vol_next_kf = clip.volume_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
-        let pan_prev_kf = clip.pan_keyframes.iter().filter(|k| k.time_secs < clip_time_secs - kf_tolerance).last().map(|k| k.time_secs);
+        let pan_prev_kf = clip.pan_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
         let pan_next_kf = clip.pan_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
 
         let drag_key = format!("{:?}:audio", clip_id);
@@ -920,13 +920,13 @@ fn show_clip_audio(
             .show(ui, |ui| {
                 let (rect, _) = ui.allocate_exact_size(wf_rect_size, egui::Sense::hover());
                 let clip_peaks = waveform_peaks.map(|peaks| {
-                    if peaks.is_empty() { return &peaks[..]; }
+                    if peaks.is_empty() { return peaks; }
                     let total_dur = peaks.len() as f64;
                     let src_in = clip.source_in.to_secs_f64();
                     let src_out = clip.source_out.to_secs_f64();
                     let clip_dur = (src_out - src_in).max(0.0);
                     let media_dur = src_out.max(clip_dur + src_in);
-                    if media_dur <= 0.0 { return &peaks[..]; }
+                    if media_dur <= 0.0 { return peaks; }
                     let start = ((src_in / media_dur) * total_dur) as usize;
                     let end = (((src_in + clip_dur) / media_dur) * total_dur) as usize;
                     &peaks[start.min(peaks.len())..end.min(peaks.len())]
@@ -999,11 +999,11 @@ fn show_clip_audio(
                 next_keyframe_time: None,
                 current_interpolation: None,
             });
-            slider_row(ui, theme, "duck_level", "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", empty_ks.clone(), false);
+            slider_row(ui, theme, "duck_level", "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", empty_ks, false);
             padded_separator(ui, w, pad, theme);
-            slider_row(ui, theme, "duck_attack", "Attack", &mut duck.attack, 0.01..=2.0, 0.1, 0.01, 2, " s", empty_ks.clone(), false);
+            slider_row(ui, theme, "duck_attack", "Attack", &mut duck.attack, 0.01..=2.0, 0.1, 0.01, 2, " s", empty_ks, false);
             padded_separator(ui, w, pad, theme);
-            slider_row(ui, theme, "duck_release", "Release", &mut duck.release, 0.01..=2.0, 0.3, 0.01, 2, " s", empty_ks.clone(), false);
+            slider_row(ui, theme, "duck_release", "Release", &mut duck.release, 0.01..=2.0, 0.3, 0.01, 2, " s", empty_ks, false);
             padded_separator(ui, w, pad, theme);
             slider_row(ui, theme, "duck_threshold", "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", empty_ks, false);
 
@@ -1044,7 +1044,7 @@ fn build_kf_state(keyframes: &[klipp_core::Keyframe], time: f64, tol: f64) -> Ke
     KeyframeState {
         has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - time).abs() < tol),
         has_any_keyframes: !keyframes.is_empty(),
-        prev_keyframe_time: keyframes.iter().filter(|k| k.time_secs < time - tol).last().map(|k| k.time_secs),
+        prev_keyframe_time: keyframes.iter().rfind(|k| k.time_secs < time - tol).map(|k| k.time_secs),
         next_keyframe_time: keyframes.iter().find(|k| k.time_secs > time + tol).map(|k| k.time_secs),
         current_interpolation: keyframes.iter().find(|k| (k.time_secs - time).abs() < tol).map(|k| k.interpolation),
     }

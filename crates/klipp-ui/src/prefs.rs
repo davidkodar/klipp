@@ -124,7 +124,21 @@ pub struct PlaybackPrefs {
     /// Resolution (max height in pixels) for skim frame decodes. Higher = sharper but slower.
     #[serde(default = "default_skim_resolution")]
     pub skim_resolution: u32,
+    /// Playback quality preset.
+    #[serde(default)]
+    pub playback_quality: klipp_core::PlaybackQuality,
+    /// Pre-render complex sections in background.
+    #[serde(default = "default_true")]
+    pub background_render: bool,
+    /// Pre-roll duration in seconds before playback starts.
+    #[serde(default = "default_pre_roll")]
+    pub pre_roll_duration: f32,
+    /// JKL speed step multiplier per press (e.g. 2.0 = 2x, 4x, 8x...).
+    #[serde(default = "default_jkl_step")]
+    pub jkl_speed_step: f32,
 }
+fn default_pre_roll() -> f32 { 2.0 }
+fn default_jkl_step() -> f32 { 2.0 }
 
 fn default_skim_resolution() -> u32 {
     480
@@ -178,9 +192,13 @@ pub struct AudioPrefs {
     /// Normalize target in LUFS.
     #[serde(default = "default_normalize_lufs")]
     pub normalize_target_lufs: f32,
+    /// Peak hold time in seconds for audio meters.
+    #[serde(default = "default_peak_hold")]
+    pub peak_hold_time_secs: f32,
 }
 
-fn default_normalize_lufs() -> f32 { -14.0 }
+fn default_normalize_lufs() -> f32 { -23.0 }
+fn default_peak_hold() -> f32 { 3.0 }
 
 impl Default for AudioPrefs {
     fn default() -> Self {
@@ -196,6 +214,7 @@ impl Default for AudioPrefs {
             default_fade_duration_ms: 0,
             loudness_standard: Default::default(),
             normalize_target_lufs: default_normalize_lufs(),
+            peak_hold_time_secs: default_peak_hold(),
         }
     }
 }
@@ -240,6 +259,12 @@ pub struct EditingPrefs {
     /// Backup version count (project.json.bak.1 through .bak.N).
     #[serde(default = "default_backup_count")]
     pub backup_count: u32,
+    /// Whether playhead scrolls to follow playback position.
+    #[serde(default = "default_true")]
+    pub playhead_follows_playback: bool,
+    /// Enable magnetic timeline (FCP-style collision-based editing).
+    #[serde(default = "default_true")]
+    pub magnetic_timeline: bool,
 }
 
 fn default_undo_limit() -> usize {
@@ -272,15 +297,61 @@ impl Default for EditingPrefs {
             snap_threshold_px: default_snap_px(),
             zoom_step: default_zoom_step(),
             backup_count: default_backup_count(),
+            playhead_follows_playback: true,
+            magnetic_timeline: true,
         }
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportPrefs {
     pub default_output_dir: Option<PathBuf>,
     pub last_preset_id: Option<String>,
     pub custom_presets: Vec<ExportPreset>,
+    /// Default encoder preset label (e.g. "H.264 High Quality").
+    #[serde(default = "default_encoder_preset")]
+    pub default_encoder_preset: String,
+    /// Color space tag written to exported file metadata.
+    #[serde(default)]
+    pub color_space_tag: klipp_core::ColorSpace,
+    /// Audio sample rate for export.
+    #[serde(default = "default_export_sr")]
+    pub audio_sample_rate: u32,
+    /// What to do when the output file already exists.
+    #[serde(default)]
+    pub overwrite_mode: OverwriteMode,
+    /// Run render jobs in parallel when possible.
+    #[serde(default = "default_true")]
+    pub parallel_render: bool,
+    /// Open the output folder in file manager after export finishes.
+    #[serde(default)]
+    pub open_folder_after_export: bool,
+}
+fn default_encoder_preset() -> String { "H.264 High Quality".into() }
+fn default_export_sr() -> u32 { 48000 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OverwriteMode {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
+impl Default for ExportPrefs {
+    fn default() -> Self {
+        Self {
+            default_output_dir: None,
+            last_preset_id: None,
+            custom_presets: Vec::new(),
+            default_encoder_preset: default_encoder_preset(),
+            color_space_tag: klipp_core::ColorSpace::Rec709,
+            audio_sample_rate: default_export_sr(),
+            overwrite_mode: Default::default(),
+            parallel_render: true,
+            open_folder_after_export: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +382,10 @@ impl Default for PlaybackPrefs {
             jkl_audio_mute_threshold: 4.0,
             loop_playback: false,
             skim_resolution: default_skim_resolution(),
+            playback_quality: Default::default(),
+            background_render: true,
+            pre_roll_duration: default_pre_roll(),
+            jkl_speed_step: default_jkl_step(),
         }
     }
 }
@@ -451,6 +526,9 @@ pub struct SystemPrefs {
     /// GPU device preference.
     #[serde(default)]
     pub gpu_preference: klipp_core::GpuPreference,
+    /// Enable hardware video decode (NVDEC / VAAPI).
+    #[serde(default = "default_true")]
+    pub hardware_decode: bool,
     /// Decode thread count (0 = auto/all cores).
     #[serde(default)]
     pub decode_threads: u32,
@@ -465,7 +543,7 @@ fn default_max_playback_h() -> u32 { 1080 }
 fn default_frame_queue() -> u32 { 16 }
 impl Default for SystemPrefs {
     fn default() -> Self {
-        Self { gpu_preference: Default::default(), decode_threads: 0, max_playback_height: default_max_playback_h(), frame_queue_size: default_frame_queue() }
+        Self { gpu_preference: Default::default(), hardware_decode: true, decode_threads: 0, max_playback_height: default_max_playback_h(), frame_queue_size: default_frame_queue() }
     }
 }
 
@@ -481,12 +559,23 @@ pub struct AudioHardwarePrefs {
     /// Audio buffer size in samples.
     #[serde(default = "default_buffer_size")]
     pub buffer_size: u32,
+    /// Audio monitoring mode (Software vs Hardware direct).
+    #[serde(default)]
+    pub monitoring_mode: MonitoringMode,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MonitoringMode {
+    #[default]
+    Software,
+    Hardware,
+}
+
 fn default_sample_rate() -> u32 { 48000 }
-fn default_buffer_size() -> u32 { 512 }
+fn default_buffer_size() -> u32 { 256 }
 impl Default for AudioHardwarePrefs {
     fn default() -> Self {
-        Self { output_device: None, sample_rate: default_sample_rate(), buffer_size: default_buffer_size() }
+        Self { output_device: None, sample_rate: default_sample_rate(), buffer_size: default_buffer_size(), monitoring_mode: Default::default() }
     }
 }
 
@@ -545,28 +634,40 @@ impl Default for AppearancePrefs {
 /// Media cache preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaCachePrefs {
-    /// Filmstrip cache directory override (None = ~/.cache/klipp/filmstrips).
+    /// Filmstrip/thumbnail cache directory override (None = ~/.cache/klipp/thumbnails).
     #[serde(default)]
     pub filmstrip_cache_dir: Option<PathBuf>,
-    /// Audio conform cache directory override (None = ~/.cache/klipp/audio-cache).
+    /// Audio/waveform cache directory override (None = ~/.cache/klipp/waveforms).
     #[serde(default)]
     pub audio_cache_dir: Option<PathBuf>,
-    /// Maximum total cache size in MB (0 = unlimited).
-    #[serde(default = "default_cache_size")]
-    pub max_cache_size_mb: u32,
+    /// Render cache directory override (None = ~/.cache/klipp/render).
+    #[serde(default)]
+    pub render_cache_dir: Option<PathBuf>,
+    /// Maximum total cache size in GB.
+    #[serde(default = "default_cache_size_gb")]
+    pub max_cache_size_gb: u32,
     /// Skim transcode quality (CRF value, lower = better quality, larger files).
     #[serde(default = "default_skim_quality")]
     pub skim_transcode_quality: u32,
     /// Poster thumbnail height in pixels.
     #[serde(default = "default_thumb_h")]
     pub thumbnail_height: u32,
+    /// Legacy field — replaced by max_cache_size_gb.
+    #[serde(default)]
+    pub max_cache_size_mb: u32,
 }
-fn default_cache_size() -> u32 { 4096 }
+fn default_cache_size_gb() -> u32 { 20 }
 fn default_skim_quality() -> u32 { 23 }
-fn default_thumb_h() -> u32 { 120 }
+fn default_thumb_h() -> u32 { 256 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
-        Self { filmstrip_cache_dir: None, audio_cache_dir: None, max_cache_size_mb: default_cache_size(), skim_transcode_quality: default_skim_quality(), thumbnail_height: default_thumb_h() }
+        Self {
+            filmstrip_cache_dir: None, audio_cache_dir: None, render_cache_dir: None,
+            max_cache_size_gb: default_cache_size_gb(),
+            skim_transcode_quality: default_skim_quality(),
+            thumbnail_height: default_thumb_h(),
+            max_cache_size_mb: 0,
+        }
     }
 }
 
@@ -579,17 +680,39 @@ pub struct ColorPrefs {
     /// Viewer LUT file path (applied for display only).
     #[serde(default)]
     pub viewer_lut_path: Option<PathBuf>,
+    /// LUT interpolation method.
+    #[serde(default)]
+    pub lut_interpolation: LutInterpolation,
     /// Scope rendering quality.
     #[serde(default)]
     pub scope_quality: klipp_core::ScopeQuality,
     /// Scope refresh interval in milliseconds.
     #[serde(default = "default_scope_ms")]
     pub scope_update_interval_ms: u32,
+    /// Vectorscope skin-tone line angle in degrees.
+    #[serde(default = "default_skin_angle")]
+    pub vectorscope_skin_angle: f32,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LutInterpolation {
+    Trilinear,
+    #[default]
+    Tetrahedral,
+}
+
 fn default_scope_ms() -> u32 { 32 }
+fn default_skin_angle() -> f32 { 123.0 }
 impl Default for ColorPrefs {
     fn default() -> Self {
-        Self { working_color_space: klipp_core::ColorSpace::Rec709, viewer_lut_path: None, scope_quality: Default::default(), scope_update_interval_ms: default_scope_ms() }
+        Self {
+            working_color_space: klipp_core::ColorSpace::Rec709,
+            viewer_lut_path: None,
+            lut_interpolation: Default::default(),
+            scope_quality: Default::default(),
+            scope_update_interval_ms: default_scope_ms(),
+            vectorscope_skin_angle: default_skin_angle(),
+        }
     }
 }
 
@@ -605,12 +728,43 @@ pub struct TitlePrefs {
     /// Additional font search directories.
     #[serde(default)]
     pub font_search_paths: Vec<PathBuf>,
+    /// Default title color as RGB.
+    #[serde(default = "default_title_color")]
+    pub default_color: [u8; 3],
+    /// Default text alignment.
+    #[serde(default)]
+    pub default_alignment: TextAlignment,
+    /// Default title clip duration in seconds.
+    #[serde(default = "default_title_duration")]
+    pub default_duration_secs: f32,
+    /// Show title-safe area overlay in viewer.
+    #[serde(default = "default_true")]
+    pub safe_area_overlay: bool,
 }
-fn default_title_font() -> String { String::new() } // empty = system default
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextAlignment {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+fn default_title_font() -> String { String::new() }
 fn default_title_size() -> f32 { 48.0 }
+fn default_title_color() -> [u8; 3] { [255, 255, 255] }
+fn default_title_duration() -> f32 { 5.0 }
 impl Default for TitlePrefs {
     fn default() -> Self {
-        Self { default_font: default_title_font(), default_size_pt: default_title_size(), font_search_paths: Vec::new() }
+        Self {
+            default_font: default_title_font(),
+            default_size_pt: default_title_size(),
+            font_search_paths: Vec::new(),
+            default_color: default_title_color(),
+            default_alignment: Default::default(),
+            default_duration_secs: default_title_duration(),
+            safe_area_overlay: true,
+        }
     }
 }
 
@@ -824,9 +978,9 @@ mod tests {
         // MediaCachePrefs
         assert!(rt.media_cache.filmstrip_cache_dir.is_none());
         assert!(rt.media_cache.audio_cache_dir.is_none());
-        assert_eq!(rt.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(rt.media_cache.max_cache_size_gb, 20);
         assert_eq!(rt.media_cache.skim_transcode_quality, 23);
-        assert_eq!(rt.media_cache.thumbnail_height, 120);
+        assert_eq!(rt.media_cache.thumbnail_height, 256);
 
         // ColorPrefs
         assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec709);
@@ -906,7 +1060,7 @@ mod tests {
         assert_eq!(prefs.system.max_playback_height, 1080);
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
-        assert_eq!(prefs.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
         assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);
@@ -1059,7 +1213,7 @@ mod tests {
         // MediaCachePrefs
         prefs.media_cache.filmstrip_cache_dir = Some(PathBuf::from("/data/filmstrips"));
         prefs.media_cache.audio_cache_dir = Some(PathBuf::from("/data/audio-cache"));
-        prefs.media_cache.max_cache_size_mb = 8192;
+        prefs.media_cache.max_cache_size_gb = 40;
         prefs.media_cache.skim_transcode_quality = 28;
         prefs.media_cache.thumbnail_height = 200;
 
@@ -1172,7 +1326,7 @@ mod tests {
 
         assert_eq!(rt.media_cache.filmstrip_cache_dir.as_ref().unwrap().to_str().unwrap(), "/data/filmstrips");
         assert_eq!(rt.media_cache.audio_cache_dir.as_ref().unwrap().to_str().unwrap(), "/data/audio-cache");
-        assert_eq!(rt.media_cache.max_cache_size_mb, 8192);
+        assert_eq!(rt.media_cache.max_cache_size_gb, 40);
         assert_eq!(rt.media_cache.skim_transcode_quality, 28);
         assert_eq!(rt.media_cache.thumbnail_height, 200);
 
@@ -1251,7 +1405,7 @@ mod tests {
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
-        assert_eq!(prefs.media_cache.max_cache_size_mb, 4096);
+        assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
         assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);

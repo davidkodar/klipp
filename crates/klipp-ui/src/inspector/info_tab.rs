@@ -283,7 +283,7 @@ pub fn show_no_selection(
         let home = dirs::home_dir();
         let free_bytes: u64 = state.project_path.as_deref()
             .or(home.as_deref())
-            .and_then(|p| disk_free_bytes(p))
+            .and_then(disk_free_bytes)
             .unwrap_or(0);
 
         info_row_custom(ui, theme, pad, row_h, w, "Project file", |ui, rx, cy| {
@@ -1217,12 +1217,12 @@ fn format_epoch_date(epoch_secs: u64) -> String {
     let mut y = 1970u64;
     let mut d = days;
     loop {
-        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        let dy = if y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400)) { 366 } else { 365 };
         if d < dy { break; }
         d -= dy;
         y += 1;
     }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
     let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     let mut mo = 0usize;
@@ -1266,7 +1266,7 @@ fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+            Some(stat.f_bavail * stat.f_frsize)
         } else {
             None
         }

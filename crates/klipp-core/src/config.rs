@@ -74,8 +74,10 @@ impl ScopeQuality {
 /// GPU device preference for wgpu adapter selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum GpuPreference {
-    /// Prefer discrete GPU (NVIDIA/AMD).
+    /// Automatic GPU selection (recommended).
     #[default]
+    Auto,
+    /// Prefer discrete GPU (NVIDIA/AMD).
     HighPerformance,
     /// Prefer integrated GPU (lower power).
     LowPower,

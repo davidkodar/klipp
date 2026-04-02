@@ -1173,9 +1173,7 @@ fn effect_keyframe_state(clip: &Clip, effect_index: usize, param_name: &str, cli
     KeyframeState {
         has_keyframe_at_playhead: kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !kfs.is_empty(),
-        prev_keyframe_time: kfs.iter()
-            .filter(|k| k.time_secs < clip_time_secs - kf_tolerance)
-            .last()
+        prev_keyframe_time: kfs.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance)
             .map(|k| k.time_secs),
         next_keyframe_time: kfs.iter()
             .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
@@ -1200,7 +1198,7 @@ fn eval_effect_kf(clip: &Clip, effect_index: usize, param_name: &str, clip_time_
 /// Check if any keyframes exist for a given effect param.
 fn has_effect_kfs(clip: &Clip, effect_index: usize, param_name: &str) -> bool {
     let key = format!("{}:{}", effect_index, param_name);
-    clip.effect_keyframes.get(&key).map_or(false, |kfs| !kfs.is_empty())
+    clip.effect_keyframes.get(&key).is_some_and(|kfs| !kfs.is_empty())
 }
 
 fn show_builtin_effect_params(
@@ -2112,7 +2110,7 @@ fn show_builtin_effect_params(
         if resp.keyframe_toggled {
             let key = format!("{}:{}", effect_index, param_name);
             let has_at_playhead = clip.effect_keyframes.get(&key)
-                .map_or(false, |kfs| kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance));
+                .is_some_and(|kfs| kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance));
             if has_at_playhead {
                 cmds.push(AppCommand::RemoveEffectKeyframe {
                     clip_id,

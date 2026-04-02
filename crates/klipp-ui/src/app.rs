@@ -280,6 +280,7 @@ impl KlippApp {
         klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
         // Map GpuPreference to wgpu PowerPreference (klipp-effects can't depend on klipp-core)
         let gpu_pref = match app.prefs.system.gpu_preference {
+            klipp_core::GpuPreference::Auto => Some(wgpu::PowerPreference::default()),
             klipp_core::GpuPreference::HighPerformance => Some(wgpu::PowerPreference::HighPerformance),
             klipp_core::GpuPreference::LowPower => Some(wgpu::PowerPreference::LowPower),
             klipp_core::GpuPreference::CpuOnly => None, // don't init GPU at all
@@ -1571,15 +1572,12 @@ impl KlippApp {
                 let graph = &clip.node_graph;
                 if !graph.is_identity() {
                     let clip_time = 0.0; // Approximate — exact time not critical for preview
-                    match self.ui_executor.execute(
+                    if let Ok((graded, _)) = self.ui_executor.execute(
                         &pregrade.0, graph, pregrade.1, pregrade.2,
                         clip_time, 0, None, None,
                     ) {
-                        Ok((graded, _)) => {
-                            let mut fb = self.frame_buffer.lock().unwrap();
-                            fb.write_frame(graded, pregrade.1, pregrade.2);
-                        }
-                        Err(_) => {}
+                        let mut fb = self.frame_buffer.lock().unwrap();
+                        fb.write_frame(graded, pregrade.1, pregrade.2);
                     }
                 } else {
                     let mut fb = self.frame_buffer.lock().unwrap();
@@ -2231,7 +2229,7 @@ impl KlippApp {
                     let snapshot = klipp_export::RenderSnapshot::from_sequence(
                         &self.state.sequences[self.state.active_sequence_idx],
                         &self.state.media_pool,
-                        &settings,
+                        settings,
                         self.state.global_lut_path.clone(),
                         self.export_dialog.marked_range,
                     );
@@ -2255,7 +2253,7 @@ impl KlippApp {
                     let snapshot = klipp_export::RenderSnapshot::from_sequence(
                         &self.state.sequences[self.state.active_sequence_idx],
                         &self.state.media_pool,
-                        &settings,
+                        settings,
                         None,
                         self.export_dialog.marked_range,
                     );
@@ -2294,7 +2292,7 @@ impl KlippApp {
                         let is_title = self.state.sequences[self.state.active_sequence_idx]
                             .tracks.iter()
                             .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
-                            .map_or(false, |c| c.title_data().is_some());
+                            .is_some_and(|c| c.title_data().is_some());
                         if is_title {
                             self.render_title_to_viewer(clip_id);
                         }
@@ -5017,7 +5015,7 @@ impl KlippApp {
                     // Check if this track was just created (it's a fresh text track with no clips)
                     let created_track = self.state.sequences[self.state.active_sequence_idx].tracks
                         .get(ti)
-                        .map_or(false, |t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
+                        .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
                     let timeline_out = *timeline_in + duration;
@@ -5850,7 +5848,7 @@ impl KlippApp {
                             speed: clip.speed,
                             speed_keyframes: clip.speed_keyframes.clone(),
                         });
-                        self.state.toast.show(format!("Attributes copied"));
+                        self.state.toast.show("Attributes copied".to_string());
                     }
                     continue;
                 }
@@ -6039,8 +6037,8 @@ impl KlippApp {
                 AppCommand::FrameGrab => {
                     let fb = self.frame_buffer.lock().unwrap();
                     if !fb.data.is_empty() && fb.width > 0 && fb.height > 0 {
-                        let w = fb.width as u32;
-                        let h = fb.height as u32;
+                        let w = fb.width;
+                        let h = fb.height;
                         // Convert RGBA to RGB
                         let rgb: Vec<u8> = fb.data.chunks_exact(4)
                             .flat_map(|px| [px[0], px[1], px[2]])
@@ -6055,11 +6053,11 @@ impl KlippApp {
                             if save_rgb_as_png(&rgb, w, h, &path) {
                                 self.state.toast.show(format!("Frame saved to {}", path.display()));
                             } else {
-                                self.state.toast.show(format!("Failed to save frame"));
+                                self.state.toast.show("Failed to save frame".to_string());
                             }
                         }
                     } else {
-                        self.state.toast.show(format!("No frame available"));
+                        self.state.toast.show("No frame available".to_string());
                     }
                     continue;
                 }
@@ -6070,7 +6068,7 @@ impl KlippApp {
                         Ok(content) => {
                             let subs = parse_srt_vtt(&content);
                             if subs.is_empty() {
-                                self.state.toast.show(format!("No subtitles found in file"));
+                                self.state.toast.show("No subtitles found in file".to_string());
                             } else {
                                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                                 let fps_rate = seq.fps.rate();
@@ -6148,7 +6146,7 @@ impl KlippApp {
                 // Export FCPXML
                 AppCommand::ExportFcpxml { path } => {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, &path) {
+                    match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, path) {
                         Ok(_) => self.state.toast.show(format!("FCPXML exported to {}", path.display())),
                         Err(e) => self.state.toast.show(format!("FCPXML export failed: {e}")),
                     }
@@ -6157,7 +6155,7 @@ impl KlippApp {
                 // Export EDL
                 AppCommand::ExportEdl { path } => {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, &path) {
+                    match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, path) {
                         Ok(_) => self.state.toast.show(format!("EDL exported to {}", path.display())),
                         Err(e) => self.state.toast.show(format!("EDL export failed: {e}")),
                     }
@@ -6189,7 +6187,7 @@ impl KlippApp {
                     seq.tracks[track_idx].clips.push(clip);
                     seq.tracks[track_idx].sort_clips();
                     self.state.selected_clip = Some(clip_id);
-                    self.state.toast.show(format!("Adjustment layer created"));
+                    self.state.toast.show("Adjustment layer created".to_string());
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
                     continue;
@@ -6204,7 +6202,7 @@ impl KlippApp {
                         }
                     }
                     if target_clips.is_empty() {
-                        self.state.toast.show(format!("Select clips first"));
+                        self.state.toast.show("Select clips first".to_string());
                         continue;
                     }
 
@@ -6246,8 +6244,8 @@ impl KlippApp {
                         let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
                         for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
                             let mut c = clip.clone();
-                            c.timeline_in = c.timeline_in - range_start;
-                            c.timeline_out = c.timeline_out - range_start;
+                            c.timeline_in -= range_start;
+                            c.timeline_out -= range_start;
                             new_track.clips.push(c);
                         }
                         if !new_track.clips.is_empty() {
@@ -6339,7 +6337,7 @@ impl KlippApp {
                         }
                     }
                     if angle_clips.len() < 2 {
-                        self.state.toast.show(format!("Need 2+ video clips at playhead for multicam"));
+                        self.state.toast.show("Need 2+ video clips at playhead for multicam".to_string());
                         continue;
                     }
                     let group_id = klipp_core::GroupId::new();
@@ -6794,7 +6792,7 @@ impl KlippApp {
                                 // Non-magnetic: adjust clip in-place
                                 let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
                                 let delta = new_timeline_in - clip.timeline_in;
-                                clip.source_in = clip.source_in + delta;
+                                clip.source_in += delta;
                                 clip.timeline_in = new_timeline_in;
                             }
                             self.state.dirty = true;
@@ -6821,7 +6819,7 @@ impl KlippApp {
                                 // Non-magnetic: adjust clip in-place
                                 let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
                                 let delta = new_timeline_out - clip.timeline_out;
-                                clip.source_out = clip.source_out + delta;
+                                clip.source_out += delta;
                                 clip.timeline_out = new_timeline_out;
                             }
                             self.state.dirty = true;
@@ -7141,7 +7139,7 @@ impl KlippApp {
                 }
                 AppCommand::CreateBin { name } => {
                     // Create a root-level bin in the bins collection
-                    let _bin_id = self.state.media_pool.find_or_create_bin(&name);
+                    let _bin_id = self.state.media_pool.find_or_create_bin(name);
                     tracing::info!("Bin created: {}", name);
                     self.state.dirty = true;
                     continue;
@@ -8249,7 +8247,7 @@ impl KlippApp {
                             let current_out = c.timeline_out;
                             let dt = *old_out - current_out;
                             c.timeline_out = *old_out;
-                            c.source_out = c.source_out + dt;
+                            c.source_out += dt;
                         }
                     }
                     if let Some(rid) = right_clip_id {
@@ -8257,7 +8255,7 @@ impl KlippApp {
                             let current_in = c.timeline_in;
                             let dt = *old_in - current_in;
                             c.timeline_in = *old_in;
-                            c.source_in = c.source_in + dt;
+                            c.source_in += dt;
                         }
                     }
                     track.sort_clips();
@@ -8267,7 +8265,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(c) = track.find_clip_mut(lid) {
                             let dur = c.duration();
-                            c.timeline_in = c.timeline_in + delta;
+                            c.timeline_in += delta;
                             c.timeline_out = c.timeline_in + dur;
                         }
                     }
@@ -8561,7 +8559,7 @@ impl KlippApp {
                             let current_out = c.timeline_out;
                             let dt = *new_out - current_out;
                             c.timeline_out = *new_out;
-                            c.source_out = c.source_out + dt;
+                            c.source_out += dt;
                         }
                     }
                     if let Some(rid) = right_clip_id {
@@ -8569,7 +8567,7 @@ impl KlippApp {
                             let current_in = c.timeline_in;
                             let dt = *new_in - current_in;
                             c.timeline_in = *new_in;
-                            c.source_in = c.source_in + dt;
+                            c.source_in += dt;
                         }
                     }
                     track.sort_clips();
@@ -8578,7 +8576,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(c) = track.find_clip_mut(lid) {
                             let dur = c.duration();
-                            c.timeline_in = c.timeline_in + delta;
+                            c.timeline_in += delta;
                             c.timeline_out = c.timeline_in + dur;
                         }
                     }
@@ -9715,11 +9713,10 @@ impl KlippApp {
             if kb.is_action_pressed("paste_clip", i) {
                 cmds.push(AppCommand::PasteClip);
             }
-            if kb.is_action_pressed("paste_attributes", i) {
-                if self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
+            if kb.is_action_pressed("paste_attributes", i)
+                && self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
                     self.state.show_paste_attributes_dialog = true;
                 }
-            }
             // Duplicate clip
             if kb.is_action_pressed("duplicate_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -10283,6 +10280,13 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // CONTRAST RULE: Ensure selection bg stays dark each frame.
+        // egui popup windows can reset visuals; re-apply selection colors to be safe.
+        ctx.style_mut(|style| {
+            // Dark warm tint — light text is readable on this background.
+            style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x38, 0x2c, 0x14);
+        });
+
         // ── Handle OS-level file drag-and-drop ──
         let dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw.dropped_files.iter()
@@ -13136,7 +13140,7 @@ fn capture_viewer_frame_as_thumbnail(
     let out_path = cache_dir.join(format!("{stem}.png"));
 
     let rgb = downsample_rgba_to_rgb(&fb.data, fb.width, fb.height, 320);
-    save_rgb_as_png(&rgb.0, rgb.1, rgb.2, &out_path).then(|| out_path)
+    save_rgb_as_png(&rgb.0, rgb.1, rgb.2, &out_path).then_some(out_path)
 }
 
 /// Set project thumbnail from an external image file (PNG, JPEG, etc.).
@@ -13158,13 +13162,13 @@ fn set_thumbnail_from_image_file(
     if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "webp" || ext == "tiff" || ext == "tif" {
         // For images, use ffmpeg to decode and resize
         if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(image_path, 0.0, 320) {
-            return save_rgba_as_png(&rgba, w, h, &out_path).then(|| out_path);
+            return save_rgba_as_png(&rgba, w, h, &out_path).then_some(out_path);
         }
     }
 
     // For video files, extract a non-black frame
     if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(image_path, 1.0, 60.0, 320) {
-        return save_rgba_as_png(&rgba, w, h, &out_path).then(|| out_path);
+        return save_rgba_as_png(&rgba, w, h, &out_path).then_some(out_path);
     }
 
     None

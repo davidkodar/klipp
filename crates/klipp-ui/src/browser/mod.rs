@@ -174,7 +174,7 @@ impl BrowserPanel {
                         let pin_color = theme.accent;
                         let pin_icon = Icon::PushPin.image(10.0).tint(pin_color);
                         ui.add_space(2.0);
-                        ui.add(egui::Image::from(pin_icon).max_size(egui::vec2(10.0, 10.0)));
+                        ui.add(pin_icon.max_size(egui::vec2(10.0, 10.0)));
                     }
                 });
             },

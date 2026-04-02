@@ -986,7 +986,7 @@ fn inspector_row(
         painter.text(
             egui::pos2(value_x, cy),
             egui::Align2::LEFT_CENTER,
-            &format!("{:.2}", *value),
+            format!("{:.2}", *value),
             egui::FontId::proportional(11.0),
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 166),
         );
@@ -1094,7 +1094,7 @@ fn gradient_slider_row(
 
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-            &format!("{:.2}", *value), egui::FontId::proportional(11.0),
+            format!("{:.2}", *value), egui::FontId::proportional(11.0),
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
     }
 
@@ -1159,7 +1159,7 @@ fn hue_slider_row(
 
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-            &format!("{:.2}", *value), egui::FontId::proportional(11.0),
+            format!("{:.2}", *value), egui::FontId::proportional(11.0),
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
     }
 

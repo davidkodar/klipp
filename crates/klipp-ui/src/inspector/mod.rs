@@ -97,7 +97,7 @@ impl NewInspectorPanel {
         ui.advance_cursor_after_rect(header_rect);
 
         // ── Amber context banner (timeline clip only) ──
-        if let Some((track_idx, ref clip)) = clip_info {
+        if let Some((track_idx, clip)) = clip_info {
             let track_name = state.sequence().tracks.get(track_idx)
                 .map(|t| if t.name.is_empty() { format!("Track {}", track_idx + 1) } else { t.name.clone() })
                 .unwrap_or_default();
@@ -157,7 +157,7 @@ impl NewInspectorPanel {
             );
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                let is_title_clip = clip_info.as_ref().map_or(false, |(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
+                let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
                 let tabs: Vec<(InspectorTab, &str)> = if is_title_clip {
                     vec![
                         (InspectorTab::Title, "TITLE"),
@@ -215,7 +215,7 @@ impl NewInspectorPanel {
         ui.advance_cursor_after_rect(tab_rect);
 
         // Auto-switch to Title tab when a title clip is selected (and away when not)
-        let is_title_clip = clip_info.as_ref().map_or(false, |(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
+        let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
         if is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
         } else if !is_title_clip && *active_tab == InspectorTab::Title {
@@ -227,7 +227,7 @@ impl NewInspectorPanel {
             ui.add_space(10.0);
             match active_tab {
                 InspectorTab::Video => {
-                    if let Some((_, ref clip)) = clip_info {
+                    if let Some((_, clip)) = clip_info {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
@@ -235,7 +235,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Audio => {
-                    if let Some((track_idx, ref clip)) = clip_info {
+                    if let Some((track_idx, clip)) = clip_info {
                         let peak = audio_tab::find_clip_peak_levels(clip, track_idx, state);
                         let media_peaks: Option<Vec<f32>> = clip.media_id()
                             .and_then(|mid| state.media_pool.get(&mid))
@@ -308,7 +308,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Effects => {
-                    if let Some((_, ref clip)) = clip_info {
+                    if let Some((_, clip)) = clip_info {
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
                     } else {
@@ -319,7 +319,7 @@ impl NewInspectorPanel {
                     crate::panels::inspector::InspectorPanel::show_color_and_luts(ui, state, &mut cmds);
                 }
                 InspectorTab::Title => {
-                    if let Some((_, ref clip)) = clip_info {
+                    if let Some((_, clip)) = clip_info {
                         if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
                             show_title_editor(ui, theme, clip, state, &mut cmds);
                         } else {
@@ -959,11 +959,10 @@ fn show_title_editor(
     {
         let has_texture = td.texture_fill_path.is_some();
         let mut tex_enabled = has_texture;
-        if ui.checkbox(&mut tex_enabled, "Enable").changed() {
-            if !tex_enabled {
+        if ui.checkbox(&mut tex_enabled, "Enable").changed()
+            && !tex_enabled {
                 cmds.push(AppCommand::SetTitleTextureFill { clip_id, path: None });
             }
-        }
         if has_texture {
             if let Some(ref tex_path) = td.texture_fill_path {
                 let display_name = std::path::Path::new(tex_path)

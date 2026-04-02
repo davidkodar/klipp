@@ -363,7 +363,7 @@ fn render_list_view(
                 handle_media_click(
                     item.id,
                     &modifiers,
-                    &all_ordered_ids,
+                    all_ordered_ids,
                     &mut state.selected_media_ids,
                     &mut state.last_clicked_media_id,
                 );
@@ -573,7 +573,7 @@ fn render_grid_view(
                 handle_media_click(
                     item.id,
                     &modifiers,
-                    &all_ordered_ids,
+                    all_ordered_ids,
                     &mut state.selected_media_ids,
                     &mut state.last_clicked_media_id,
                 );

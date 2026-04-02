@@ -319,9 +319,8 @@ impl ToolbarPanel {
         ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
             if ui.button("New Project").clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.button("Open Project...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
-            if state.project_path.is_some() {
-                if ui.button("Project Manager").clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
-            }
+            if state.project_path.is_some()
+                && ui.button("Project Manager").clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
             if !recent.is_empty() {
                 ui.menu_button("Recent Projects", |ui| {
                     for rp in recent {
@@ -678,7 +677,7 @@ impl ToolbarPanel {
             let has_clip = state.selected_clip.is_some();
             if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable")).clicked() {
                 if let Some(cid) = state.selected_clip {
-                    let enabled = state.sequence().all_clips().find(|c| c.id == cid).map_or(true, |c| c.enabled);
+                    let enabled = state.sequence().all_clips().find(|c| c.id == cid).is_none_or(|c| c.enabled);
                     cmds.push(AppCommand::SetClipEnabled { clip_id: cid, enabled: !enabled });
                 }
                 ui.close_menu();

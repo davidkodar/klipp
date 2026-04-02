@@ -988,7 +988,7 @@ impl ViewerPanel {
         ui.painter().text(
             egui::pos2(vol_text_x, cy),
             egui::Align2::RIGHT_CENTER,
-            &format!("{}%", vol_pct),
+            format!("{}%", vol_pct),
             egui::FontId::monospace(10.0),
             egui::Color32::from_rgb(140, 140, 150),
         );
@@ -2321,11 +2321,10 @@ fn move_cursor_vertical(
     // Build a sorted list of unique line y-values
     let mut line_ys: Vec<f32> = Vec::new();
     for cp in positions {
-        if line_ys.is_empty() || (cp.y - line_ys.last().unwrap()).abs() > 1.0 {
-            if !line_ys.contains(&cp.y) {
+        if (line_ys.is_empty() || (cp.y - line_ys.last().unwrap()).abs() > 1.0)
+            && !line_ys.contains(&cp.y) {
                 line_ys.push(cp.y);
             }
-        }
     }
     line_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     line_ys.dedup_by(|a, b| (*a - *b).abs() < 1.0);
