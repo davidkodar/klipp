@@ -8021,7 +8021,7 @@ impl TimelinePanel {
     /// Edge-first hit-test: find the closest clip edge within TRIM_HANDLE_WIDTH.
     /// Returns (clip_rect, clip, TrimEdge) if an edge is close enough.
     /// This ensures that at shared borders between adjacent clips, each clip's
-    /// edge is independently grabbable — like professional NLEs.
+    /// edge is independently grabbable — standard NLE behavior.
     #[allow(clippy::too_many_arguments)]
     fn hit_test_edge<'a>(
         &self,

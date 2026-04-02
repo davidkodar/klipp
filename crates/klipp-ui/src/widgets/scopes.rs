@@ -225,7 +225,7 @@ pub fn show_scopes(
     }
 }
 
-// ── Professional scope rendering pipeline ──────────────────────────────────
+// ── Scope rendering pipeline ──────────────────────────────────────────────
 //
 // Technique (matching FCP/DaVinci quality):
 // 1. Accumulate into f32 RGB buffer (no clamping — allows values > 1.0)

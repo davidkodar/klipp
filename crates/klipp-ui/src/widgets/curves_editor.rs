@@ -110,7 +110,7 @@ pub fn curves_editor_sized(
 
     // Draw filled areas on BOTH sides of the curve vs the identity diagonal.
     // Above identity = brighter fill, Below identity = darker fill.
-    // This shows the deviation from neutral — like in professional curve editors.
+    // This shows the deviation from neutral — standard curve editor behavior.
     let mut curve_points = Vec::with_capacity(256);
     let px_step = (rect.width() / 256.0).max(1.0);
     let fill_above = egui::Color32::from_rgba_premultiplied(
