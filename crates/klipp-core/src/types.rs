@@ -68,8 +68,20 @@ pub enum LogFormat {
     FLog,
     /// DJI D-Log
     DJIDLog,
+    /// GoPro ProTune Flat
+    GoProFlat,
     /// Apple Log (iPhone 15 Pro and later)
     AppleLog,
+    /// Leica L-Log
+    LeicaLLog,
+    /// RED Log3G10
+    RedLog3G10,
+    /// Blackmagic Design Film Generation 5
+    BmdFilmGen5,
+    /// Hybrid Log-Gamma (BBC/NHK, ITU-R BT.2100)
+    HLG,
+    /// Perceptual Quantizer (SMPTE ST 2084)
+    PQ,
     /// ACES — ACEScc (logarithmic, for color grading)
     AcesCC,
     /// ACES — ACEScg (linear, AP1 primaries, common working space)

@@ -831,7 +831,13 @@ impl InspectorPanel {
                     (LF::NLog, "Nikon N-Log"),
                     (LF::FLog, "Fuji F-Log"),
                     (LF::DJIDLog, "DJI D-Log"),
+                    (LF::GoProFlat, "GoPro ProTune Flat"),
                     (LF::AppleLog, "Apple Log"),
+                    (LF::LeicaLLog, "Leica L-Log"),
+                    (LF::RedLog3G10, "RED Log3G10"),
+                    (LF::BmdFilmGen5, "BMD Film Gen 5"),
+                    (LF::HLG, "HLG (BT.2100)"),
+                    (LF::PQ, "PQ (ST 2084)"),
                 ];
                 let current_label = formats.iter()
                     .find(|(f, _)| *f == current_log)
@@ -1248,7 +1254,10 @@ impl InspectorPanel {
                         (LF::CanonLog, "Canon Log"), (LF::CanonLog3, "Canon Log 3"),
                         (LF::VLog, "Panasonic V-Log"), (LF::NLog, "Nikon N-Log"),
                         (LF::FLog, "Fuji F-Log"), (LF::DJIDLog, "DJI D-Log"),
-                        (LF::AppleLog, "Apple Log"),
+                        (LF::GoProFlat, "GoPro ProTune Flat"),
+                        (LF::AppleLog, "Apple Log"), (LF::LeicaLLog, "Leica L-Log"),
+                        (LF::RedLog3G10, "RED Log3G10"), (LF::BmdFilmGen5, "BMD Film Gen 5"),
+                        (LF::HLG, "HLG (BT.2100)"), (LF::PQ, "PQ (ST 2084)"),
                     ];
                     let current_label = formats.iter()
                         .find(|(f, _)| *f == current_log)

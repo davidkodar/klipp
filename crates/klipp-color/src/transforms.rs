@@ -441,6 +441,51 @@ fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
             // Similar to ACEScg — per-channel passthrough for linear data
             v
         }
+        LogFormat::RedLog3G10 => {
+            // RED Log3G10 → linear
+            if v <= 0.0 {
+                (v - 0.091) / 8.283
+            } else {
+                (10.0f32.powf((v - 0.091) / 0.256598) - 1.0) / 155.975327
+            }
+        }
+        LogFormat::BmdFilmGen5 => {
+            // Blackmagic Design Film Generation 5 → linear
+            (10.0f32.powf((v - 0.09286412) / 0.2471896) - 0.005494072) / 8.283064
+        }
+        LogFormat::GoProFlat => {
+            // GoPro ProTune Flat → linear
+            (10.0f32.powf(v) - 1.0) / 112.0
+        }
+        LogFormat::HLG => {
+            // Hybrid Log-Gamma (ITU-R BT.2100) OETF inverse → linear
+            let a: f32 = 0.17883277;
+            let b: f32 = 0.28466892;
+            let c: f32 = 0.55991073;
+            if v <= 0.5 {
+                (v * v) / 3.0
+            } else {
+                (((v - c) / a).exp() + b) / 12.0
+            }
+        }
+        LogFormat::PQ => {
+            // PQ (SMPTE ST 2084) EOTF → linear
+            let m1: f32 = 0.1593017578125;
+            let m2: f32 = 78.84375;
+            let c1: f32 = 0.8359375;
+            let c2: f32 = 18.8515625;
+            let c3: f32 = 18.6875;
+            let vp = v.powf(1.0 / m2);
+            ((vp - c1).max(0.0) / (c2 - c3 * vp)).powf(1.0 / m1)
+        }
+        LogFormat::LeicaLLog => {
+            // Leica L-Log → linear (similar to V-Log)
+            if v < 0.131 {
+                (v - 0.092) / 5.6
+            } else {
+                10.0f32.powf((v - 0.386) / 0.266) - 0.0105
+            }
+        }
         LogFormat::Srgb | LogFormat::Linear => v, // handled above
     }
 }

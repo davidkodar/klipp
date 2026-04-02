@@ -247,6 +247,88 @@ impl ColorPipeline {
     }
 }
 
+/// Built-in creative color grade presets.
+/// Each preset is a descriptive name paired with `ColorGradeParams` that can be
+/// applied directly to a clip. Only lift/gamma/gain offsets, saturation, contrast,
+/// and exposure are used — all other fields are left at identity.
+pub fn builtin_creative_presets() -> Vec<(&'static str, ColorGradeParams)> {
+    /// Helper — returns identity params as a baseline.
+    fn base() -> ColorGradeParams {
+        ColorGradeParams {
+            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            temperature: 0.0, tint: 0.0,
+            highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
+            lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
+            gain: (0.0, 0.0, 0.0), offset: (0.0, 0.0, 0.0),
+            lift_sat: 0.0, lift_bri: 0.0,
+            gamma_sat: 0.0, gamma_bri: 0.0,
+            gain_sat: 0.0, gain_bri: 0.0,
+            offset_sat: 0.0, offset_bri: 0.0,
+            hue: 0.0, global_mix: 1.0,
+            curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
+            huesat: Default::default(), huesat_mix: 1.0,
+            qualifier: Default::default(), masks: Default::default(),
+            input_log_format: Default::default(),
+        }
+    }
+    vec![
+        ("Teal & Orange", {
+            let mut p = base();
+            p.lift = (0.0, 0.05, 0.1);    // teal shadow lift
+            p.gain = (0.05, 0.02, -0.03);  // warm highlights
+            p.saturation = 1.15;
+            p
+        }),
+        ("Bleach Bypass", {
+            let mut p = base();
+            p.saturation = 0.5;
+            p.contrast = 0.3;
+            p
+        }),
+        ("Day for Night", {
+            let mut p = base();
+            p.exposure = -1.5;
+            p.lift = (0.0, 0.0, 0.15);    // blue shadow lift
+            p.saturation = 0.6;
+            p
+        }),
+        ("Vintage Warm", {
+            let mut p = base();
+            p.lift = (0.05, 0.02, -0.02);
+            p.gain = (0.05, 0.03, -0.02);
+            p.saturation = 0.85;
+            p.contrast = -0.1;
+            p
+        }),
+        ("Cool Desaturated", {
+            let mut p = base();
+            p.lift = (-0.02, 0.0, 0.05);
+            p.saturation = 0.7;
+            p
+        }),
+        ("High Contrast B&W", {
+            let mut p = base();
+            p.saturation = 0.0;
+            p.contrast = 0.4;
+            p
+        }),
+        ("Cross Process", {
+            let mut p = base();
+            p.lift = (0.0, 0.08, -0.05);
+            p.gain = (0.06, -0.02, 0.0);
+            p.saturation = 1.2;
+            p
+        }),
+        ("Muted Pastel", {
+            let mut p = base();
+            p.saturation = 0.6;
+            p.lift = (0.03, 0.02, 0.04);
+            p.contrast = -0.15;
+            p
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
