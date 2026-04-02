@@ -240,6 +240,35 @@ impl AccumBuffer {
         }
     }
 
+    /// Add with glow: spreads energy to 3×3 neighborhood for bloom-like effect.
+    /// Core pixel gets full intensity, neighbors get `spread` fraction.
+    #[inline]
+    fn add_glow(&mut self, x: usize, y: usize, r: f32, g: f32, b: f32, spread: f32) {
+        if x < self.w && y < self.h {
+            let idx = y * self.w + x;
+            self.data[idx][0] += r;
+            self.data[idx][1] += g;
+            self.data[idx][2] += b;
+            // Spread to neighbors
+            let sr = r * spread;
+            let sg = g * spread;
+            let sb = b * spread;
+            for &dy in &[-1i32, 0, 1] {
+                for &dx in &[-1i32, 0, 1] {
+                    if dx == 0 && dy == 0 { continue; }
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < self.w as i32 && ny >= 0 && ny < self.h as i32 {
+                        let ni = ny as usize * self.w + nx as usize;
+                        self.data[ni][0] += sr;
+                        self.data[ni][1] += sg;
+                        self.data[ni][2] += sb;
+                    }
+                }
+            }
+        }
+    }
+
     /// Apply bloom: extract bright pixels, blur, blend back
     #[inline(never)]
     fn apply_bloom(&mut self, radius: usize, threshold: f32, strength: f32) {
@@ -361,19 +390,22 @@ fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui:
             let y = rh - 1 - (bin_idx * rh / 256);
             if y >= rh { continue; }
             let raw = count as f32 / p95;
-            let intensity = raw.min(4.0);
+            let intensity = raw.min(5.0);
 
+            // Green base with white-hot core on dense areas
             let is_safe = (16..=235).contains(&bin_idx);
-            let (cr, cg, cb) = if is_safe { (0.3, 1.6, 0.3) } else { (1.6, 0.3, 0.15) };
-            let white_shift = (raw * 0.8 - 0.2).clamp(0.0, 1.0);
-            let r = cr * intensity + 0.5 * white_shift * intensity;
-            let g = cg * intensity + 0.3 * white_shift * intensity;
-            let b = cb * intensity + 0.5 * white_shift * intensity;
-            buf.add(col_idx, y, r, g, b);
+            let (cr, cg, cb) = if is_safe { (0.25, 1.8, 0.25) } else { (1.8, 0.25, 0.12) };
+            let white = (raw * 0.6 - 0.15).clamp(0.0, 1.0);
+            let r = cr * intensity + 0.7 * white * intensity;
+            let g = cg * intensity + 0.5 * white * intensity;
+            let b = cb * intensity + 0.7 * white * intensity;
+
+            let glow = (raw * 0.3).clamp(0.0, 0.4);
+            buf.add_glow(col_idx, y, r, g, b, glow);
         }
     }
 
-    let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
+    let mut img = buf.to_image([3.0, 3.0, 5.0], 2.0);
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
 }
@@ -384,27 +416,20 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
     let section_w = (rw - gap * 2) / 3;
     let mut buf = AccumBuffer::new(rw, rh);
 
-    // Percentile normalization for each channel independently for best contrast
-    let all_data: [&[[u32; 256]]; 3] = [parade_red, parade_green, parade_blue];
-    let mut all_counts: Vec<u32> = all_data.iter()
+    // Fast max-based normalization
+    let max_count = [parade_red, parade_green, parade_blue].iter()
         .flat_map(|d| d.iter().flat_map(|c| c.iter()))
-        .copied().filter(|&c| c > 0).collect();
-    all_counts.sort_unstable();
-    let p95 = if all_counts.len() > 20 {
-        all_counts[all_counts.len() * 95 / 100] as f32
-    } else {
-        all_counts.last().copied().unwrap_or(1) as f32
-    }.max(1.0);
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+    let norm = max_count * 0.6;
 
-    // FCP aurora/norrsken look:
-    // - Sparse traces: pure vivid saturated color
-    // - Dense traces: color shifts toward bright white (white-hot core)
-    // - Very high primary color values (1.6+) with secondary bleed for shimmering
+    // DaVinci-style parade: vivid saturated base → white-hot core on dense traces
     let channels: [(&[[u32; 256]], usize, (f32, f32, f32), (f32, f32, f32)); 3] = [
-        //                                      base color          white-hot secondary bleed
-        (parade_red,   0,                    (1.6, 0.08, 0.05),  (0.3, 0.5, 0.6)),
-        (parade_green, section_w + gap,       (0.05, 1.6, 0.08),  (0.5, 0.3, 0.6)),
-        (parade_blue,  (section_w + gap) * 2, (0.08, 0.15, 1.6),  (0.6, 0.5, 0.3)),
+        (parade_red,   0,                    (2.0, 0.06, 0.04),  (0.8, 0.6, 0.5)),
+        (parade_green, section_w + gap,       (0.04, 2.0, 0.06),  (0.5, 0.8, 0.5)),
+        (parade_blue,  (section_w + gap) * 2, (0.06, 0.10, 2.0),  (0.5, 0.6, 0.8)),
     ];
 
     for (data, x_off, (cr, cg, cb), (wr, wg, wb)) in &channels {
@@ -415,21 +440,23 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
                 if count == 0 { continue; }
                 let y = rh - 1 - (bi * rh / 256);
                 if y >= rh { continue; }
-                let raw = count as f32 / p95;
-                let intensity = raw.min(4.0);
+                let raw = count as f32 / norm;
+                let intensity = raw.min(5.0);
 
-                // Aurora effect: at high intensity, bleed secondary colors for shimmer
-                let white_shift = (raw * 0.8 - 0.2).clamp(0.0, 1.0);
-                let r = cr * intensity + wr * white_shift * intensity;
-                let g = cg * intensity + wg * white_shift * intensity;
-                let b = cb * intensity + wb * white_shift * intensity;
+                // White-hot core: dense areas shift toward white
+                let white = (raw * 0.6 - 0.15).clamp(0.0, 1.0);
+                let r = cr * intensity + wr * white * intensity;
+                let g = cg * intensity + wg * white * intensity;
+                let b = cb * intensity + wb * white * intensity;
 
-                buf.add(px_x, y, r, g, b);
+                // Glow spread for intense traces (DaVinci bloom look)
+                let glow = (raw * 0.3).clamp(0.0, 0.4);
+                buf.add_glow(px_x, y, r, g, b, glow);
             }
         }
     }
 
-    let mut img = buf.to_image([4.0, 4.0, 7.0], 2.2);
+    let mut img = buf.to_image([3.0, 3.0, 5.0], 2.0);
 
     // Channel separator lines — subtle
     for &gap_x in &[section_w, (section_w + gap) * 2 - gap] {
