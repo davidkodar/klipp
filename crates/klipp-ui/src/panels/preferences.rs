@@ -75,6 +75,8 @@ impl PreferencesPanel {
     const CATEGORY_TEXT: egui::Color32 = egui::Color32::from_rgb(0x80, 0x70, 0x50);
     const DIM_TEXT: egui::Color32 = egui::Color32::from_rgb(0x70, 0x70, 0x80);
     const NORMAL_TEXT: egui::Color32 = egui::Color32::from_rgb(0xd0, 0xd0, 0xd8);
+    /// Text color for use ON amber/gold backgrounds — must be dark for readability.
+    const TEXT_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1a, 0x1e);
 
     /// Show the preferences window. Returns (still_open, commands).
     pub fn show(

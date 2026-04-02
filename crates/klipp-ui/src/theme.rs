@@ -26,6 +26,9 @@ pub struct KlippTheme {
     pub text_secondary: Color32,
     pub text_dim: Color32,
     pub text_accent: Color32,
+    /// Dark text for use ON accent-colored backgrounds (amber buttons, badges).
+    /// RULE: Any amber/gold background MUST use this color for text, never light text.
+    pub text_on_accent: Color32,
 
     // Role colours — one per clip/track role
     pub role_video: Color32,
@@ -62,6 +65,7 @@ impl Default for KlippTheme {
             text_secondary: Color32::from_rgb(0x90, 0x90, 0xa0),
             text_dim: Color32::from_rgb(0x50, 0x50, 0x60),
             text_accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
+            text_on_accent: Color32::from_rgb(0x1a, 0x1a, 0x1e),
 
             role_video: Color32::from_rgb(0x2d, 0x6f, 0xa8),
             role_dialogue: Color32::from_rgb(0x3a, 0x8c, 0x6e),
