@@ -303,12 +303,13 @@ impl PreferencesPanel {
         let rect = rect.translate(egui::vec2(8.0, 0.0));
 
         if is_active {
-            ui.painter().rect_filled(rect, 5.0, egui::Color32::from_rgba_premultiplied(0xe8, 0xa0, 0x20, 50));
+            // Solid amber background — use dark text for readability
+            ui.painter().rect_filled(rect, 5.0, Self::ACCENT);
         } else if resp.hovered() {
             ui.painter().rect_filled(rect, 5.0, egui::Color32::from_rgb(0x22, 0x22, 0x28));
         }
 
-        let text_color = if is_active { Self::ACCENT } else { Self::NORMAL_TEXT };
+        let text_color = if is_active { Self::TEXT_ON_ACCENT } else { Self::NORMAL_TEXT };
         ui.painter().text(
             egui::pos2(rect.left() + 10.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
