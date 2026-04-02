@@ -28,6 +28,8 @@ pub struct PreferencesPanel {
     remapping: Option<(String, usize)>,
     /// Search filter for keyboard shortcuts
     kb_search: String,
+    /// Global preferences search query
+    search_query: String,
 }
 
 impl Default for PreferencesPanel {
@@ -36,6 +38,7 @@ impl Default for PreferencesPanel {
             active_tab: PrefsTab::General,
             remapping: None,
             kb_search: String::new(),
+            search_query: String::new(),
         }
     }
 }
@@ -100,7 +103,11 @@ impl PreferencesPanel {
                 let close_resp = ui.allocate_rect(egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0)), egui::Sense::click());
                 ui.painter().circle_filled(close_center, 7.0, egui::Color32::from_rgb(0xf0, 0x40, 0x40));
                 if close_resp.hovered() {
-                    ui.painter().text(close_center, egui::Align2::CENTER_CENTER, "\u{2715}", egui::FontId::proportional(8.0), egui::Color32::BLACK);
+                    // Draw X with two crossing lines instead of a font glyph
+                    let s = 3.0; // half-size of the X
+                    let stroke = egui::Stroke::new(1.5, egui::Color32::BLACK);
+                    ui.painter().line_segment([egui::pos2(close_center.x - s, close_center.y - s), egui::pos2(close_center.x + s, close_center.y + s)], stroke);
+                    ui.painter().line_segment([egui::pos2(close_center.x + s, close_center.y - s), egui::pos2(close_center.x - s, close_center.y + s)], stroke);
                 }
                 if close_resp.clicked() { open = false; }
                 // Title text
@@ -114,18 +121,31 @@ impl PreferencesPanel {
                 );
                 ui.painter().rect_filled(search_rect, 6.0, egui::Color32::from_rgb(0x20, 0x20, 0x26));
                 ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
-                // Search icon + text
+                // Interactive search input
+                let text_rect = egui::Rect::from_min_max(
+                    egui::pos2(search_rect.left() + 30.0, search_rect.top() + 2.0),
+                    egui::pos2(search_rect.right() - 8.0, search_rect.bottom() - 2.0),
+                );
+                let mut search_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+                search_ui.add(
+                    egui::TextEdit::singleline(&mut self.search_query)
+                        .frame(false)
+                        .hint_text("Search preferences...")
+                        .desired_width(text_rect.width())
+                        .text_color(Self::NORMAL_TEXT)
+                );
+                // Search icon
                 ui.painter().text(
                     egui::pos2(search_rect.left() + 14.0, search_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    "\u{1F50D}  Search preferences...",
+                    "\u{1F50D}",
                     egui::FontId::proportional(12.0),
                     Self::DIM_TEXT,
                 );
 
                 // ── Main content area ──
                 let content_top = search_rect.bottom() + 8.0;
-                let bottom_bar_h = 44.0;
+                let bottom_bar_h = 48.0;
                 let content_bottom = win_rect.bottom() - bottom_bar_h;
 
                 // Left sidebar
@@ -147,9 +167,13 @@ impl PreferencesPanel {
                 );
 
                 // ── Sidebar navigation ──
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                    ui.set_clip_rect(sidebar_rect);
-                    egui::ScrollArea::vertical().id_salt("prefs_sidebar").max_height(sidebar_rect.height()).show(ui, |ui| {
+                // Use a child UI whose max_rect is exactly the sidebar area.
+                // This constrains the scroll area AND its scrollbar to this region.
+                let sidebar_child_rect = sidebar_rect.shrink2(egui::vec2(0.0, 0.0));
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_child_rect), |ui| {
+                    ui.set_clip_rect(sidebar_child_rect);
+                    ui.set_min_height(sidebar_child_rect.height());
+                    egui::ScrollArea::vertical().id_salt("prefs_sidebar").auto_shrink(false).show(ui, |ui| {
                         ui.add_space(4.0);
                         self.sidebar_category(ui, "PROJECT");
                         self.sidebar_item(ui, PrefsTab::General, "\u{1F4C4}", "General");
@@ -193,9 +217,10 @@ impl PreferencesPanel {
                 // ── Right content panel ──
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                     ui.set_clip_rect(content_rect);
+                    ui.set_min_height(content_rect.height());
                     egui::ScrollArea::vertical()
                         .id_salt("prefs_content")
-                        .max_height(content_rect.height())
+                        .auto_shrink(false)
                         .show(ui, |ui| {
                         ui.add_space(8.0);
                         match self.active_tab {
@@ -220,19 +245,22 @@ impl PreferencesPanel {
                     });
                 });
 
-                // ── Bottom bar ──
+                // ── Bottom bar (painted on top layer to cover scrollbar bleed) ──
                 let bottom_rect = egui::Rect::from_min_max(
                     egui::pos2(win_rect.left(), content_bottom),
                     win_rect.max,
                 );
-                ui.painter().rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
+                let bottom_painter = ui.painter().clone().with_layer_id(
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("prefs_bottom_bar")),
+                );
+                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
                 // Separator line
-                ui.painter().line_segment(
+                bottom_painter.line_segment(
                     [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
                     egui::Stroke::new(1.0, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
                 );
                 // "Changes saved automatically" text
-                ui.painter().text(
+                bottom_painter.text(
                     egui::pos2(bottom_rect.left() + 16.0, bottom_rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     "Changes saved automatically",
@@ -246,8 +274,8 @@ impl PreferencesPanel {
                 );
                 let done_resp = ui.allocate_rect(done_rect, egui::Sense::click());
                 let done_bg = if done_resp.hovered() { egui::Color32::from_rgb(0xf0, 0xb0, 0x30) } else { Self::ACCENT };
-                ui.painter().rect_filled(done_rect, 6.0, done_bg);
-                ui.painter().text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), egui::Color32::BLACK);
+                bottom_painter.rect_filled(done_rect, 6.0, done_bg);
+                bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), egui::Color32::BLACK);
                 if done_resp.clicked() { open = false; }
                 // Reset defaults button
                 let reset_rect = egui::Rect::from_min_size(
@@ -256,9 +284,9 @@ impl PreferencesPanel {
                 );
                 let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
                 let reset_bg = if reset_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
-                ui.painter().rect_filled(reset_rect, 6.0, reset_bg);
-                ui.painter().rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
-                ui.painter().text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+                bottom_painter.rect_filled(reset_rect, 6.0, reset_bg);
+                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
+                bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
                 if reset_resp.clicked() {
                     *prefs = Preferences::default();
                     *prefs_dirty = true;
@@ -2153,24 +2181,20 @@ impl PreferencesPanel {
             ui.label(egui::RichText::new(display).color(Self::DIM_TEXT));
         });
 
-        // Audio — detect real sound cards from /proc/asound/cards
-        Self::setting_row(ui, "Audio", |ui| {
+        // Audio — show primary sound card (skip GPU HDMI audio) + backend
+        Self::setting_row_with_subtitle(ui, "Audio", "Output via PipeWire (cpal)", |ui| {
             let cards = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
-            // Parse card names: lines like " 0 [PCH            ]: HDA-Intel - HDA Intel PCH"
-            let card_names: Vec<String> = cards.lines()
+            // Parse card names, skip GPU HDMI/DP audio entries (NVidia, AMD HDMI, etc.)
+            let gpu_keywords = ["nvidia", "hdmi", "displayport", "radeon"];
+            let primary = cards.lines()
                 .filter(|l| l.contains(" - "))
-                .map(|l| {
-                    // Extract the part after " - "
-                    l.split(" - ").nth(1).unwrap_or("").trim().to_string()
+                .filter_map(|l| l.split(" - ").nth(1).map(|s| s.trim().to_string()))
+                .find(|name| {
+                    let lower = name.to_lowercase();
+                    !gpu_keywords.iter().any(|kw| lower.contains(kw))
                 })
-                .filter(|s| !s.is_empty())
-                .collect();
-            let display = if card_names.is_empty() {
-                "PipeWire (via cpal)".to_string()
-            } else {
-                card_names.join(", ")
-            };
-            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT).size(11.0));
+                .unwrap_or_else(|| "Default device".into());
+            ui.label(egui::RichText::new(primary).color(Self::DIM_TEXT).size(11.0));
         });
 
         // ── TECHNOLOGY section ──
