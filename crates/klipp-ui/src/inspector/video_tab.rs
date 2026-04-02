@@ -881,6 +881,340 @@ fn show_clip_video(
 
     ui.add_space(8.0);
 
+    // ── SPEED RAMP ──
+    section_card(ui, "SPEED RAMP", theme, |ui| {
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .show(ui, |ui| {
+                let has_ramp = !clip.speed_keyframes.is_empty();
+
+                // Enable/disable toggle
+                let mut ramp_enabled = has_ramp;
+                if ui.checkbox(&mut ramp_enabled, egui::RichText::new("Enable Speed Ramp").size(11.0).color(theme.text_primary)).changed() {
+                    if ramp_enabled && !has_ramp {
+                        // Initialize with a basic two-keyframe ramp
+                        let clip_dur = clip.duration().to_secs_f64();
+                        cmds.push(AppCommand::SetSpeedKeyframes {
+                            clip_id,
+                            keyframes: vec![
+                                klipp_core::Keyframe {
+                                    time_secs: 0.0,
+                                    value: 1.0,
+                                    interpolation: klipp_core::keyframe::Interpolation::Linear,
+                                    tangent_out: (0.0, 0.0),
+                                    tangent_in: (0.0, 0.0),
+                                },
+                                klipp_core::Keyframe {
+                                    time_secs: clip_dur,
+                                    value: 1.0,
+                                    interpolation: klipp_core::keyframe::Interpolation::Linear,
+                                    tangent_out: (0.0, 0.0),
+                                    tangent_in: (0.0, 0.0),
+                                },
+                            ],
+                        });
+                    } else if !ramp_enabled && has_ramp {
+                        cmds.push(AppCommand::SetSpeedKeyframes {
+                            clip_id,
+                            keyframes: Vec::new(),
+                        });
+                    }
+                }
+
+                if has_ramp {
+                    ui.add_space(4.0);
+
+                    // Speed ramp curve editor graph
+                    let avail_w = ui.available_width();
+                    let graph_h = 100.0;
+                    let (graph_rect, graph_resp) = ui.allocate_exact_size(
+                        egui::vec2(avail_w, graph_h),
+                        egui::Sense::click_and_drag(),
+                    );
+
+                    let gp = ui.painter_at(graph_rect);
+
+                    // Background
+                    gp.rect_filled(graph_rect, 4.0, egui::Color32::from_rgb(0x12, 0x12, 0x16));
+                    gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0, theme.border));
+
+                    let clip_dur = clip.duration().to_secs_f64();
+                    if clip_dur > 0.0 {
+                        let spd_max = 4.0_f32; // Y axis: 0..4x
+                        let margin_x = 2.0_f32;
+                        let margin_y = 4.0_f32;
+                        let inner = egui::Rect::from_min_max(
+                            egui::pos2(graph_rect.left() + margin_x, graph_rect.top() + margin_y),
+                            egui::pos2(graph_rect.right() - margin_x, graph_rect.bottom() - margin_y),
+                        );
+
+                        let map_x = |t: f64| -> f32 {
+                            inner.left() + (t / clip_dur) as f32 * inner.width()
+                        };
+                        let map_y = |v: f32| -> f32 {
+                            inner.bottom() - (v / spd_max).clamp(0.0, 1.0) * inner.height()
+                        };
+                        let unmap_x = |px: f32| -> f64 {
+                            ((px - inner.left()) / inner.width()).clamp(0.0, 1.0) as f64 * clip_dur
+                        };
+                        let unmap_y = |py: f32| -> f32 {
+                            ((inner.bottom() - py) / inner.height()).clamp(0.0, 1.0) * spd_max
+                        };
+
+                        // Grid lines at 1x, 2x, 3x
+                        for speed_line in [1.0_f32, 2.0, 3.0] {
+                            let y = map_y(speed_line);
+                            let alpha = if (speed_line - 1.0).abs() < 0.01 { 50 } else { 20 };
+                            gp.line_segment(
+                                [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
+                                egui::Stroke::new(0.5, egui::Color32::from_white_alpha(alpha)),
+                            );
+                            gp.text(
+                                egui::pos2(inner.left() + 2.0, y - 9.0),
+                                egui::Align2::LEFT_BOTTOM,
+                                format!("{}x", speed_line as i32),
+                                egui::FontId::proportional(8.0),
+                                egui::Color32::from_white_alpha(60),
+                            );
+                        }
+
+                        // Draw evaluated speed curve (smooth)
+                        let spd_color = egui::Color32::from_rgb(100, 200, 255);
+                        let num_pts = (inner.width() as usize / 2).max(2).min(200);
+                        let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_pts);
+                        for i in 0..num_pts {
+                            let t = (i as f64 / (num_pts - 1) as f64) * clip_dur;
+                            let v = klipp_core::keyframe::evaluate(&clip.speed_keyframes, t, clip.speed as f32);
+                            curve_pts.push(egui::pos2(map_x(t), map_y(v)));
+                        }
+
+                        // Filled area under curve
+                        if curve_pts.len() >= 2 {
+                            let mut fill_pts = curve_pts.clone();
+                            fill_pts.push(egui::pos2(inner.right(), inner.bottom()));
+                            fill_pts.push(egui::pos2(inner.left(), inner.bottom()));
+                            gp.add(egui::Shape::convex_polygon(
+                                fill_pts,
+                                egui::Color32::from_rgba_unmultiplied(100, 200, 255, 15),
+                                egui::Stroke::NONE,
+                            ));
+                        }
+
+                        // Curve line
+                        for pair in curve_pts.windows(2) {
+                            gp.line_segment(
+                                [pair[0], pair[1]],
+                                egui::Stroke::new(1.5, spd_color),
+                            );
+                        }
+
+                        // Keyframe dots (interactive)
+                        let kfs = &clip.speed_keyframes;
+                        let mut hovered_kf: Option<usize> = None;
+                        let pointer = graph_resp.hover_pos();
+
+                        for (i, kf) in kfs.iter().enumerate() {
+                            let px = map_x(kf.time_secs);
+                            let py = map_y(kf.value);
+                            let kf_pos = egui::pos2(px, py);
+
+                            // Check hover
+                            let is_hovered = pointer.is_some_and(|p| (p - kf_pos).length() < 8.0);
+                            if is_hovered && hovered_kf.is_none() {
+                                hovered_kf = Some(i);
+                            }
+
+                            let dot_r = if is_hovered { 5.0 } else { 4.0 };
+                            gp.circle_filled(kf_pos, dot_r, spd_color);
+                            gp.circle_stroke(kf_pos, dot_r, egui::Stroke::new(1.0, egui::Color32::WHITE));
+
+                            // Tooltip on hover
+                            if is_hovered {
+                                let tip = format!("{:.2}s / {:.2}x", kf.time_secs, kf.value);
+                                gp.text(
+                                    egui::pos2(px, py - 12.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    tip,
+                                    egui::FontId::proportional(9.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                        }
+
+                        // Drag keyframe
+                        if graph_resp.dragged() {
+                            if let Some(pos) = graph_resp.interact_pointer_pos() {
+                                // Use persisted drag index
+                                let drag_id = ui.id().with("spd_ramp_drag_idx");
+                                let drag_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
+                                let idx = drag_idx.or(hovered_kf);
+                                if let Some(i) = idx {
+                                    if i < kfs.len() {
+                                        if drag_idx.is_none() {
+                                            // Starting drag
+                                            ui.ctx().data_mut(|d| d.insert_temp(drag_id, i));
+                                            cmds.push(AppCommand::BeginSpeedKeyframeDrag {
+                                                key: format!("spd_kf:{}:{}", clip_id.0, i),
+                                                clip_id,
+                                            });
+                                        }
+                                        let new_t = unmap_x(pos.x).clamp(0.0, clip_dur);
+                                        let new_v = unmap_y(pos.y).clamp(0.1, spd_max) as f64;
+                                        cmds.push(AppCommand::UpdateSpeedKeyframe {
+                                            clip_id,
+                                            index: i,
+                                            time_secs: new_t,
+                                            speed: new_v,
+                                        });
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    }
+                                }
+                            }
+                        }
+
+                        // End drag
+                        if graph_resp.drag_stopped() {
+                            let drag_id = ui.id().with("spd_ramp_drag_idx");
+                            let drag_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
+                            if drag_idx.is_some() {
+                                cmds.push(AppCommand::EndSpeedKeyframeDrag {
+                                    key: format!("spd_kf:{}:{}", clip_id.0, drag_idx.unwrap()),
+                                    clip_id,
+                                });
+                                ui.ctx().data_mut(|d| d.remove_by_type::<usize>());
+                            }
+                        }
+
+                        // Double-click to add keyframe
+                        if graph_resp.double_clicked() && hovered_kf.is_none() {
+                            if let Some(pos) = graph_resp.interact_pointer_pos() {
+                                let t = unmap_x(pos.x).clamp(0.0, clip_dur);
+                                let v = (unmap_y(pos.y).clamp(0.1, spd_max)) as f64;
+                                cmds.push(AppCommand::AddSpeedKeyframe {
+                                    clip_id,
+                                    time_secs: t,
+                                    speed: v,
+                                });
+                            }
+                        }
+
+                        // Right-click on keyframe to delete
+                        if graph_resp.secondary_clicked() {
+                            if let Some(i) = hovered_kf {
+                                cmds.push(AppCommand::RemoveSpeedKeyframe { clip_id, index: i });
+                            }
+                        }
+
+                        // Hover cursor
+                        if hovered_kf.is_some() && !graph_resp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                    }
+
+                    ui.add_space(6.0);
+
+                    // Keyframe count info
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{} keyframes", clip.speed_keyframes.len()))
+                                .size(10.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new("Dbl-click: add  |  Right-click: delete")
+                                    .size(9.0)
+                                    .color(theme.text_dim),
+                            );
+                        });
+                    });
+
+                    ui.add_space(4.0);
+
+                    // Separator
+                    let sep_w = ui.available_width();
+                    let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
+                    ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
+                    ui.add_space(4.0);
+
+                    // Preset ramp buttons
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+                        let clip_dur = clip.duration().to_secs_f64();
+                        let btn = |label: &str| egui::RichText::new(label).size(10.0);
+
+                        if ui.add(egui::Button::new(btn("Ramp Up"))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).on_hover_text("0.5x to 2x over clip duration").clicked() {
+                            cmds.push(AppCommand::SetSpeedKeyframes {
+                                clip_id,
+                                keyframes: vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ],
+                            });
+                        }
+
+                        if ui.add(egui::Button::new(btn("Ramp Down"))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).on_hover_text("2x to 0.5x over clip duration").clicked() {
+                            cmds.push(AppCommand::SetSpeedKeyframes {
+                                clip_id,
+                                keyframes: vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ],
+                            });
+                        }
+
+                        if ui.add(egui::Button::new(btn("Slow-Mo"))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).on_hover_text("1x -> 0.25x -> 1x (center slow-mo)").clicked() {
+                            cmds.push(AppCommand::SetSpeedKeyframes {
+                                clip_id,
+                                keyframes: vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ],
+                            });
+                        }
+
+                        if ui.add(egui::Button::new(btn("Speed Burst"))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).on_hover_text("1x -> 3x -> 1x (center speed burst)").clicked() {
+                            cmds.push(AppCommand::SetSpeedKeyframes {
+                                clip_id,
+                                keyframes: vec![
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                ],
+                            });
+                        }
+
+                        if ui.add(egui::Button::new(btn("Reset"))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, egui::Color32::from_rgb(180, 80, 80)))
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).on_hover_text("Clear all speed keyframes").clicked() {
+                            cmds.push(AppCommand::SetSpeedKeyframes {
+                                clip_id,
+                                keyframes: Vec::new(),
+                            });
+                        }
+                    });
+                }
+            });
+    });
+
+    ui.add_space(8.0);
+
     // ── COLOR ──
     section_card(ui, "COLOR", theme, |ui| {
         ui.add_space(6.0);
