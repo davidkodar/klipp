@@ -1,18 +1,9 @@
 use crate::state::ScopeMode;
 use klipp_engine::SharedFrameBuffer;
 
-/// Either a ready GPU-rendered image or pre-computed bins for CPU rendering.
+/// Scope render result — either from GPU engine or CPU direct rendering.
 enum ScopeImage {
     Ready(egui::ColorImage),
-    Bins(ScopeBins, usize, usize), // bins + cpu render width/height
-}
-
-/// Pre-computed scope data — avoids cloning the entire 8MB frame.
-enum ScopeBins {
-    Waveform(klipp_color::scopes::WaveformData),
-    Parade(klipp_color::scopes::ParadeData),
-    Histogram(klipp_color::scopes::HistogramData),
-    Raw(Vec<u8>, u32, u32, u32), // vectorscope needs raw RGBA
 }
 
 /// Persistent state for scope rendering (texture cache + throttling).
@@ -85,9 +76,6 @@ pub fn show_scopes(
                     };
                     Some((ScopeImage::Ready(image), gen))
                 } else {
-                    // CPU fallback at fixed resolution (matches render target)
-                    let cpu_w = render_w;
-                    let cpu_h = render_h;
                     let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
                         (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
                     } else {
@@ -95,16 +83,17 @@ pub fn show_scopes(
                     };
                     let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
 
-                    let bins = match mode {
-                        // Use source width for display_columns — keeps traces thin (1 col per source col)
-                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, w, step)),
-                        ScopeMode::Parade => {
-                            ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, w, step))
+                    // Direct accumulation rendering (DaVinci technique)
+                    let image = match mode {
+                        ScopeMode::Waveform => render_waveform_direct(src, w, h, render_w, render_h),
+                        ScopeMode::Parade => render_parade_direct(src, w, h, render_w, render_h),
+                        ScopeMode::Histogram => {
+                            let hist = klipp_color::scopes::compute_histogram_sampled(src, w, h, step);
+                            render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
                         }
-                        ScopeMode::Histogram => ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step)),
-                        ScopeMode::Vectorscope => ScopeBins::Raw(src.to_vec(), w, h, step),
+                        ScopeMode::Vectorscope => render_vectorscope(src, w, h, step, render_w, render_h, skin_tone_angle),
                     };
-                    Some((ScopeImage::Bins(bins, cpu_w, cpu_h), gen))
+                    Some((ScopeImage::Ready(image), gen))
                 }
             } else {
                 None
@@ -121,12 +110,6 @@ pub fn show_scopes(
 
         let image = match scope_img {
             ScopeImage::Ready(img) => img,
-            ScopeImage::Bins(bins, cw, ch) => match bins {
-                ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, cw, ch),
-                ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, cw, ch),
-                ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, cw, ch),
-                ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, cw, ch, skin_tone_angle),
-            },
         };
 
         if let Some(ref mut tex) = state.textures[mi] {
@@ -356,160 +339,128 @@ impl AccumBuffer {
     }
 }
 
-#[inline(never)]
-fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
-    let num_cols = bins.len();
-    let max_count = bins.iter().flat_map(|c| c.iter()).copied().max().unwrap_or(1).max(1) as f32;
-    let log_max = (max_count * 0.7 + 1.0).ln();
+/// Render waveform using DaVinci's additive accumulation technique.
+/// Each video pixel maps to a point in scope space. Additive blending + log tone mapping = natural glow.
+fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
+    // 1. Accumulate: each video pixel adds 1 at (scope_x, luma * scope_h)
+    let mut accum = vec![0u32; scope_w * scope_h];
 
-    let mut pixels = vec![egui::Color32::from_rgb(0x04, 0x04, 0x07); rw * rh];
+    for y in 0..video_h {
+        for x in 0..video_w {
+            let idx = ((y * video_w + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { break; }
+            let r = rgba[idx] as f32 / 255.0;
+            let g = rgba[idx + 1] as f32 / 255.0;
+            let b = rgba[idx + 2] as f32 / 255.0;
+            let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999);
 
-    for py in 0..rh {
-        let bin = 255 - (py * 255 / rh.max(1));
-        for px in 0..rw {
-            let col = (px * num_cols) / rw.max(1);
-            if col >= num_cols { continue; }
-
-            let count = bins[col][bin];
-            let count_above = if bin < 255 { bins[col][bin + 1] } else { 0 };
-            let count_below = if bin > 0 { bins[col][bin - 1] } else { 0 };
-            let count_left = if col > 0 { bins[col - 1][bin] } else { 0 };
-            let count_right = if col + 1 < num_cols { bins[col + 1][bin] } else { 0 };
-
-            let effective = count as f32
-                + count_above as f32 * 0.25
-                + count_below as f32 * 0.25
-                + count_left as f32 * 0.12
-                + count_right as f32 * 0.12;
-
-            if effective < 0.5 {
-                // Grid lines
-                if bin % 64 == 0 {
-                    pixels[py * rw + px] = egui::Color32::from_rgb(0x12, 0x12, 0x18);
-                }
-                continue;
+            let sx = (x as usize * scope_w) / video_w as usize;
+            let sy = scope_h - 1 - (luma * scope_h as f32) as usize;
+            if sx < scope_w && sy < scope_h {
+                accum[sy * scope_w + sx] += 1;
             }
-
-            let log_i = (effective + 1.0).ln() / log_max;
-            let intensity = log_i.clamp(0.0, 1.0);
-            let is_safe = (16..=235).contains(&bin);
-            let white = (intensity - 0.75).max(0.0) * 4.0;
-
-            let (r, g, b) = if is_safe {
-                (0.08 * intensity + white * 0.5,
-                 1.0 * intensity + white * 0.0,
-                 0.08 * intensity + white * 0.5)
-            } else {
-                (1.0 * intensity + white * 0.0,
-                 0.06 * intensity + white * 0.5,
-                 0.03 * intensity + white * 0.3)
-            };
-
-            let tone = |x: f32| (x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15)).min(1.0);
-            let ro = (tone(r).sqrt() * 255.0).min(255.0) as u8;
-            let go = (tone(g).sqrt() * 255.0).min(255.0) as u8;
-            let bo = (tone(b).sqrt() * 255.0).min(255.0) as u8;
-            pixels[py * rw + px] = egui::Color32::from_rgb(ro, go, bo);
         }
     }
 
-    egui::ColorImage { size: [rw, rh], pixels }
+    // 2. Tone map + colorize
+    let gain: f32 = 300.0;
+    let log_gain = (1.0 + gain).ln();
+    let inv_gamma = 1.0 / 2.2;
+
+    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
+        if count == 0 {
+            return egui::Color32::from_rgb(0x04, 0x04, 0x07);
+        }
+        let brightness = (1.0 + count as f32 * gain).ln() / log_gain;
+        let out = brightness.powf(inv_gamma).clamp(0.0, 1.0);
+
+        // Green trace with white-hot at high density
+        let r = (out * 0.15 * 255.0) as u8;
+        let g = (out * 255.0) as u8;
+        let b = (out * 0.15 * 255.0) as u8;
+        egui::Color32::from_rgb(r, g, b)
+    }).collect();
+
+    egui::ColorImage { size: [scope_w, scope_h], pixels }
 }
 
-#[inline(never)]
-fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]], parade_blue: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
+/// Render parade using DaVinci's additive accumulation technique.
+/// Three separate accumulation buffers for R, G, B displayed side by side.
+fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
     let gap = 2usize;
-    let section_w = (rw - gap * 2) / 3;
-    let num_cols = parade_red.len();
+    let section_w = (scope_w - gap * 2) / 3;
 
-    // Find max for log normalization
-    let max_count = [parade_red, parade_green, parade_blue].iter()
-        .flat_map(|d| d.iter().flat_map(|c| c.iter()))
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1) as f32;
-    let log_max = (max_count + 1.0).ln();
+    // 1. Accumulate into three separate buffers
+    let mut accum_r = vec![0u32; section_w * scope_h];
+    let mut accum_g = vec![0u32; section_w * scope_h];
+    let mut accum_b = vec![0u32; section_w * scope_h];
 
-    let colors: [[f32; 3]; 3] = [
-        [1.0, 0.08, 0.04],   // red
-        [0.04, 1.0, 0.08],   // green
-        [0.08, 0.12, 1.0],   // blue
-    ];
-    let all_data: [&[[u32; 256]]; 3] = [parade_red, parade_green, parade_blue];
+    for y in 0..video_h {
+        for x in 0..video_w {
+            let idx = ((y * video_w + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { break; }
+            let rv = rgba[idx] as f32 / 255.0;
+            let gv = rgba[idx + 1] as f32 / 255.0;
+            let bv = rgba[idx + 2] as f32 / 255.0;
 
-    // Output-pixel-centric: iterate every output pixel, look up corresponding bin
-    let mut pixels = vec![egui::Color32::from_rgb(0x04, 0x04, 0x07); rw * rh];
+            let sx = (x as usize * section_w) / video_w as usize;
+            if sx >= section_w { continue; }
 
-    for py in 0..rh {
-        let bin = 255 - (py * 255 / rh.max(1));
-        for px in 0..rw {
-            // Which channel section?
-            let (ch, local_x) = if px < section_w {
-                (0, px)
+            let ry = scope_h - 1 - (rv.clamp(0.0, 0.999) * scope_h as f32) as usize;
+            let gy = scope_h - 1 - (gv.clamp(0.0, 0.999) * scope_h as f32) as usize;
+            let by = scope_h - 1 - (bv.clamp(0.0, 0.999) * scope_h as f32) as usize;
+
+            if ry < scope_h { accum_r[ry * section_w + sx] += 1; }
+            if gy < scope_h { accum_g[gy * section_w + sx] += 1; }
+            if by < scope_h { accum_b[by * section_w + sx] += 1; }
+        }
+    }
+
+    // 2. Tone map + colorize into output
+    let gain: f32 = 300.0;
+    let log_gain = (1.0 + gain).ln();
+    let inv_gamma = 1.0 / 2.2;
+    let bg = egui::Color32::from_rgb(0x04, 0x04, 0x07);
+    let gap_color = egui::Color32::from_rgb(0x0a, 0x0a, 0x0e);
+
+    let mut pixels = vec![bg; scope_w * scope_h];
+
+    for py in 0..scope_h {
+        for px in 0..scope_w {
+            // Which section?
+            let (accum, color_r, color_g, color_b) = if px < section_w {
+                (&accum_r, 1.0_f32, 0.06_f32, 0.03_f32)
             } else if px < section_w + gap {
-                continue; // gap
+                pixels[py * scope_w + px] = gap_color;
+                continue;
             } else if px < section_w * 2 + gap {
-                (1, px - section_w - gap)
+                (&accum_g, 0.03, 1.0, 0.06)
             } else if px < section_w * 2 + gap * 2 {
-                continue; // gap
+                pixels[py * scope_w + px] = gap_color;
+                continue;
             } else {
-                (2, px - section_w * 2 - gap * 2)
+                (&accum_b, 0.06, 0.08, 1.0)
             };
 
-            let col = (local_x * num_cols) / section_w.max(1);
-            if col >= num_cols { continue; }
+            let local_x = if px < section_w { px }
+                else if px < section_w * 2 + gap { px - section_w - gap }
+                else { px - section_w * 2 - gap * 2 };
+            if local_x >= section_w { continue; }
 
-            let count = all_data[ch][col][bin];
-            // Also sample vertical neighbors for glow
-            let count_above = if bin < 255 { all_data[ch][col][bin + 1] } else { 0 };
-            let count_below = if bin > 0 { all_data[ch][col][bin - 1] } else { 0 };
-            let count_left = if col > 0 { all_data[ch][col - 1][bin] } else { 0 };
-            let count_right = if col + 1 < num_cols { all_data[ch][col + 1][bin] } else { 0 };
+            let count = accum[py * section_w + local_x];
+            if count == 0 { continue; }
 
-            // Effective count with neighbor contribution (glow)
-            let effective = count as f32
-                + count_above as f32 * 0.25
-                + count_below as f32 * 0.25
-                + count_left as f32 * 0.12
-                + count_right as f32 * 0.12;
+            let brightness = (1.0 + count as f32 * gain).ln() / log_gain;
+            let out = brightness.powf(inv_gamma).clamp(0.0, 1.0);
 
-            if effective < 0.5 { continue; }
-
-            let log_i = (effective + 1.0).ln() / log_max;
-            let intensity = log_i.clamp(0.0, 1.0);
-
-            let color = &colors[ch];
-            let white = (intensity - 0.75).max(0.0) * 4.0;
-            let r = color[0] * intensity + white * (1.0 - color[0]) * 0.6;
-            let g = color[1] * intensity + white * (1.0 - color[1]) * 0.6;
-            let b = color[2] * intensity + white * (1.0 - color[2]) * 0.6;
-
-            // Filmic tone map + sqrt gamma
-            let tone = |x: f32| (x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15)).min(1.0);
-            let ro = (tone(r).sqrt() * 255.0).min(255.0) as u8;
-            let go = (tone(g).sqrt() * 255.0).min(255.0) as u8;
-            let bo = (tone(b).sqrt() * 255.0).min(255.0) as u8;
-            pixels[py * rw + px] = egui::Color32::from_rgb(ro, go, bo);
+            let r = (out * color_r * 255.0).min(255.0) as u8;
+            let g = (out * color_g * 255.0).min(255.0) as u8;
+            let b = (out * color_b * 255.0).min(255.0) as u8;
+            pixels[py * scope_w + px] = egui::Color32::from_rgb(r, g, b);
         }
     }
 
-    // Grid lines
-    for py in 0..rh {
-        let bin = 255 - (py * 255 / rh.max(1));
-        if bin % 64 == 0 {
-            for px in 0..rw {
-                let p = &mut pixels[py * rw + px];
-                if *p == egui::Color32::from_rgb(0x04, 0x04, 0x07) {
-                    *p = egui::Color32::from_rgb(0x12, 0x12, 0x18);
-                }
-            }
-        }
-    }
-
-    let mut img = egui::ColorImage { size: [rw, rh], pixels };
-    draw_ire_lines(&mut img.pixels, rw, rh);
-    img
+    egui::ColorImage { size: [scope_w, scope_h], pixels }
 }
 
 #[inline(never)]
@@ -698,6 +649,7 @@ pub fn hue_to_rgb(h: f32) -> (f32, f32, f32) {
     }
 }
 
+#[allow(dead_code)]
 fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
     // Very subtle dashed lines — should not compete with the trace data
     let line_color = egui::Color32::from_rgb(0x24, 0x22, 0x14);
