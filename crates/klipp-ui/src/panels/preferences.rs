@@ -121,25 +121,28 @@ impl PreferencesPanel {
                 );
                 ui.painter().rect_filled(search_rect, 6.0, egui::Color32::from_rgb(0x20, 0x20, 0x26));
                 ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
-                // Interactive search input
+                // Interactive search input — vertically centered in the bar
+                let text_h = 18.0;
                 let text_rect = egui::Rect::from_min_max(
-                    egui::pos2(search_rect.left() + 30.0, search_rect.top() + 2.0),
-                    egui::pos2(search_rect.right() - 8.0, search_rect.bottom() - 2.0),
+                    egui::pos2(search_rect.left() + 32.0, search_rect.center().y - text_h / 2.0),
+                    egui::pos2(search_rect.right() - 8.0, search_rect.center().y + text_h / 2.0),
                 );
                 let mut search_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
-                search_ui.add(
-                    egui::TextEdit::singleline(&mut self.search_query)
-                        .frame(false)
-                        .hint_text("Search preferences...")
-                        .desired_width(text_rect.width())
-                        .text_color(Self::NORMAL_TEXT)
-                );
+                search_ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .frame(false)
+                            .hint_text("Search preferences...")
+                            .desired_width(text_rect.width())
+                            .text_color(Self::NORMAL_TEXT)
+                    );
+                });
                 // Search icon
                 ui.painter().text(
-                    egui::pos2(search_rect.left() + 14.0, search_rect.center().y),
+                    egui::pos2(search_rect.left() + 16.0, search_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    "\u{1F50D}",
-                    egui::FontId::proportional(12.0),
+                    "Q",
+                    egui::FontId::proportional(11.0),
                     Self::DIM_TEXT,
                 );
 
@@ -174,43 +177,47 @@ impl PreferencesPanel {
                     ui.set_clip_rect(sidebar_child_rect);
                     ui.set_min_height(sidebar_child_rect.height());
                     egui::ScrollArea::vertical().id_salt("prefs_sidebar").auto_shrink(false).show(ui, |ui| {
+                        let searching = !self.search_query.is_empty();
+
+                        // Define sidebar structure: (category, [(tab, icon, label)])
+                        let categories: &[(&str, &[(PrefsTab, &str, &str)])] = &[
+                            ("PROJECT", &[(PrefsTab::General, "\u{1F4C4}", "General"), (PrefsTab::Appearance, "\u{2699}", "Appearance")]),
+                            ("PERFORMANCE", &[(PrefsTab::System, "\u{1F5A5}", "System"), (PrefsTab::Playback, "\u{25B6}", "Playback"), (PrefsTab::MediaCache, "\u{1F4BE}", "Cache")]),
+                            ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
+                            ("MEDIA & AUDIO", &[(PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy")]),
+                            ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
+                            ("INTERFACE", &[(PrefsTab::Title, "\u{1D413}", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
+                            ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
+                        ];
+
+                        // Auto-switch to first matching tab when search changes
+                        if searching {
+                            let current_matches = self.tab_matches_search(self.active_tab);
+                            if !current_matches {
+                                for (_, items) in categories {
+                                    for (tab, _, _) in *items {
+                                        if self.tab_matches_search(*tab) {
+                                            self.active_tab = *tab;
+                                            break;
+                                        }
+                                    }
+                                    if self.tab_matches_search(self.active_tab) { break; }
+                                }
+                            }
+                        }
+
                         ui.add_space(4.0);
-                        self.sidebar_category(ui, "PROJECT");
-                        self.sidebar_item(ui, PrefsTab::General, "\u{1F4C4}", "General");
-                        self.sidebar_item(ui, PrefsTab::Appearance, "\u{2699}", "Appearance");
+                        for (cat_name, items) in categories {
+                            // Filter items for this category
+                            let visible: Vec<_> = items.iter().filter(|(tab, _, _)| self.tab_matches_search(*tab)).collect();
+                            if visible.is_empty() { continue; }
 
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "PERFORMANCE");
-                        self.sidebar_item(ui, PrefsTab::System, "\u{1F5A5}", "System");
-                        self.sidebar_item(ui, PrefsTab::Playback, "\u{25B6}", "Playback");
-                        self.sidebar_item(ui, PrefsTab::MediaCache, "\u{1F4BE}", "Cache");
-
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "EDITING");
-                        self.sidebar_item(ui, PrefsTab::Editing, "\u{2702}", "Editing");
-                        self.sidebar_item(ui, PrefsTab::Timeline, "\u{1F39E}", "Timeline");
-                        self.sidebar_item(ui, PrefsTab::Viewer, "\u{1F5B5}", "Viewer");
-
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "MEDIA & AUDIO");
-                        self.sidebar_item(ui, PrefsTab::Audio, "\u{1F3B5}", "Audio");
-                        self.sidebar_item(ui, PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW");
-                        self.sidebar_item(ui, PrefsTab::Proxy, "\u{1F4F9}", "Proxy");
-
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "COLOR & EXPORT");
-                        self.sidebar_item(ui, PrefsTab::Color, "\u{1F3A8}", "Color");
-                        self.sidebar_item(ui, PrefsTab::Export, "\u{2B07}", "Export");
-
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "INTERFACE");
-                        self.sidebar_item(ui, PrefsTab::Title, "\u{1D413}", "Titles");
-                        self.sidebar_item(ui, PrefsTab::Keyboard, "\u{2328}", "Keyboard");
-                        self.sidebar_item(ui, PrefsTab::Advanced, "\u{2699}", "Advanced");
-
-                        ui.add_space(8.0);
-                        self.sidebar_category(ui, "ABOUT");
-                        self.sidebar_item(ui, PrefsTab::About, "\u{2139}", "About Klipp");
+                            if !searching { ui.add_space(8.0); }
+                            self.sidebar_category(ui, cat_name);
+                            for (tab, icon, label) in visible {
+                                self.sidebar_item(ui, *tab, icon, label);
+                            }
+                        }
                     });
                 });
 
@@ -294,6 +301,36 @@ impl PreferencesPanel {
             });
 
         (open, cmds)
+    }
+
+    /// Searchable keywords for each preferences tab.
+    fn tab_search_keywords(tab: PrefsTab) -> &'static [&'static str] {
+        match tab {
+            PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector"],
+            PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent color", "role colors", "video", "dialogue", "music", "sfx"],
+            PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
+            PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
+            PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
+            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration"],
+            PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
+            PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
+            PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
+            PrefsTab::Color => &["color", "working space", "rec.709", "lut", "interpolation", "scopes", "vectorscope", "skin angle"],
+            PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "color space", "audio sample rate", "overwrite", "parallel render"],
+            PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
+            PrefsTab::Timeline => &["timeline", "clip colors", "clip gap", "trim handle", "track height", "waveform"],
+            PrefsTab::Viewer => &["viewer", "overlay", "scope quality", "false color", "zebra"],
+            PrefsTab::Keyboard => &["keyboard", "shortcuts", "keybindings", "hotkeys", "remap"],
+            PrefsTab::Advanced => &["advanced", "toast", "notification", "performance", "debug", "logging", "reset", "clear"],
+            PrefsTab::About => &["about", "version", "license", "gpu", "cpu", "memory", "hardware", "technology"],
+        }
+    }
+
+    /// Check if a tab matches the current search query.
+    fn tab_matches_search(&self, tab: PrefsTab) -> bool {
+        if self.search_query.is_empty() { return true; }
+        let q = self.search_query.to_lowercase();
+        Self::tab_search_keywords(tab).iter().any(|kw| kw.contains(&q))
     }
 
     /// Draw a category header in the sidebar (e.g., "PROJECT", "PERFORMANCE").

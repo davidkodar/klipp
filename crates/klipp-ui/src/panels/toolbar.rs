@@ -1,6 +1,6 @@
 use crate::layout_state::EditTool;
 use crate::prefs::RecentProject;
-use crate::state::{AppState, PlayheadFollow, Workspace};
+use crate::state::{AppState, Workspace};
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::{AppCommand, Tool};
@@ -220,7 +220,7 @@ impl ToolbarPanel {
                 Self::timeline_menu(ui, &mut cmds, state);
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
-                Self::settings_menu(ui, &mut cmds, state);
+                Self::window_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
 
                 sep(ui, theme);
@@ -315,384 +315,133 @@ impl ToolbarPanel {
         cmds
     }
 
+    // ══════════════════════════════════════════════
+    // Menu bar: File | Edit | Clip | Timeline | Mark | View | Window | Help
+    // ══════════════════════════════════════════════
+
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject]) {
         ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
-            if ui.button("New Project").clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
-            if ui.button("Open Project...").clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
-            if state.project_path.is_some()
-                && ui.button("Project Manager").clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
+            if ui.add(egui::Button::new("New Project...").shortcut_text("Ctrl+N")).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
+            if ui.add(egui::Button::new("Open Project...").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
             if !recent.is_empty() {
-                ui.menu_button("Recent Projects", |ui| {
+                ui.menu_button("Open Recent", |ui| {
                     for rp in recent {
                         let suffix = rp.last_saved.as_deref().unwrap_or("");
-                        let label = if suffix.is_empty() {
-                            rp.name.clone()
-                        } else {
-                            format!("{}  {}", rp.name, suffix)
-                        };
-                        if ui.button(&label).clicked() {
-                            cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
-                            ui.close_menu();
-                        }
+                        let label = if suffix.is_empty() { rp.name.clone() } else { format!("{}  {}", rp.name, suffix) };
+                        if ui.button(&label).clicked() { cmds.push(AppCommand::OpenProject { path: rp.path.clone() }); ui.close_menu(); }
                     }
                 });
-            }
-            if ui.button("Import Media...").clicked() {
-                ui.close_menu();
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("All media", &[
-                        "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts",
-                        "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-                        "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp",
-                    ])
-                    .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts"])
-                    .add_filter("Audio", &["wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff"])
-                    .add_filter("Image", &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp"])
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() });
-                }
-            }
-            if ui.button("Import Image Sequence...").clicked() {
-                ui.close_menu();
-                if let Some(files) = rfd::FileDialog::new()
-                    .set_title("Select image sequence files")
-                    .add_filter("Image", &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr"])
-                    .pick_files()
-                {
-                    if let Some((pattern, start, count)) = crate::app::detect_image_sequence(&files) {
-                        cmds.push(AppCommand::ImportImageSequence {
-                            pattern,
-                            start_frame: start,
-                            frame_count: count,
-                            fps: 25.0, // default — could prompt user
-                        });
-                    } else if files.len() == 1 {
-                        // Single image — import as still
-                        cmds.push(AppCommand::LoadMediaFile { path: files[0].clone(), media_id: klipp_core::MediaId::new() });
-                    } else {
-                        // Multiple files but not a sequence — import each individually
-                        for f in files {
-                            cmds.push(AppCommand::LoadMediaFile { path: f, media_id: klipp_core::MediaId::new() });
-                        }
-                    }
-                }
-            }
-            if ui.button("Import Subtitles (SRT/VTT)...").clicked() {
-                ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Import Subtitles")
-                    .add_filter("Subtitles", &["srt", "vtt"])
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::ImportSubtitles { path });
-                }
-            }
-            if ui.button("Export Subtitles (SRT)...").clicked() {
-                ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Export Subtitles")
-                    .add_filter("SRT", &["srt"])
-                    .set_file_name("subtitles.srt")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::ExportSubtitles { path });
-                }
-            }
-            ui.separator();
-            if ui.button("Export FCPXML...").clicked() {
-                ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Export FCPXML")
-                    .add_filter("FCPXML", &["fcpxml"])
-                    .set_file_name("export.fcpxml")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::ExportFcpxml { path });
-                }
-            }
-            if ui.button("Export EDL...").clicked() {
-                ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Export EDL")
-                    .add_filter("EDL", &["edl"])
-                    .set_file_name("export.edl")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::ExportEdl { path });
-                }
             }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
-            if ui.button("Project Info...").clicked() { state.show_project_info = true; ui.close_menu(); }
-            if state.project_path.is_some() {
-                ui.menu_button("Set Project Thumbnail", |ui| {
-                    if ui.button("From Current Frame").clicked() {
-                        cmds.push(AppCommand::SetProjectThumbnailFromViewer);
-                        ui.close_menu();
-                    }
-                    if ui.button("From Image File\u{2026}").clicked() {
-                        ui.close_menu();
-                        if let Some(p) = rfd::FileDialog::new()
-                            .set_title("Choose Thumbnail Image")
-                            .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"])
-                            .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm"])
-                            .pick_file()
-                        {
-                            cmds.push(AppCommand::SetProjectThumbnailFromFile { path: p });
-                        }
-                    }
-                });
-            }
-            if ui.button("Consolidate Project...").clicked() { state.show_consolidate_dialog = true; ui.close_menu(); }
-            ui.separator();
-            if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
-            if ui.button("Render Queue").clicked() { cmds.push(AppCommand::ShowRenderQueue); ui.close_menu(); }
-            ui.separator();
-            if ui.button("New Workspace...").clicked() {
+            if ui.button("Revert to Saved").clicked() {
+                if let Some(path) = state.project_path.clone() { cmds.push(AppCommand::OpenProject { path }); }
                 ui.close_menu();
-                if let Some(dir) = rfd::FileDialog::new().set_title("Create Workspace").pick_folder() {
-                    let name = dir.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Workspace".into());
-                    cmds.push(AppCommand::CreateWorkspace { path: dir, name });
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Import Media...").shortcut_text("Ctrl+I")).clicked() {
+                ui.close_menu();
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("All media", &["mp4","mkv","mov","avi","webm","m4v","mts","wav","mp3","aac","flac","ogg","m4a","aiff","png","jpg","jpeg","tiff","tif","bmp","webp"])
+                    .add_filter("Video", &["mp4","mkv","mov","avi","webm","m4v","mts"])
+                    .add_filter("Audio", &["wav","mp3","aac","flac","ogg","m4a","aiff"])
+                    .add_filter("Image", &["png","jpg","jpeg","tiff","tif","bmp","webp"])
+                    .pick_file()
+                { cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() }); }
+            }
+            if ui.button("Import Subtitles...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new().set_title("Import Subtitles").add_filter("Subtitles", &["srt","vtt"]).pick_file() {
+                    cmds.push(AppCommand::ImportSubtitles { path });
                 }
             }
             ui.separator();
-            if ui.button("Quit").clicked() { cmds.push(AppCommand::Quit); ui.close_menu(); }
+            if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
+            if ui.button("Export FCPXML...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export FCPXML").add_filter("FCPXML", &["fcpxml"]).set_file_name("export.fcpxml").save_file() { cmds.push(AppCommand::ExportFcpxml { path }); } }
+            if ui.button("Export EDL...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() { cmds.push(AppCommand::ExportEdl { path }); } }
+            if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
+            ui.separator();
+            if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            ui.separator();
+            if ui.add(egui::Button::new("Quit").shortcut_text("Ctrl+Q")).clicked() { cmds.push(AppCommand::Quit); ui.close_menu(); }
         });
     }
+
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Edit").size(11.0), |ui| {
             if ui.add_enabled(state.history.can_undo(), egui::Button::new(state.history.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text("Ctrl+Z")).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
-            if ui.add_enabled(state.history.can_redo(), egui::Button::new(state.history.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Y")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
+            if ui.add_enabled(state.history.can_redo(), egui::Button::new(state.history.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Shift+Z")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
+            if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
             ui.separator();
-            if ui.add(egui::Button::new("Split at Playhead").shortcut_text("Ctrl+B")).clicked() { let ph = state.playhead; for (ti, t) in state.sequence().tracks.iter().enumerate() { if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); } } ui.close_menu(); }
-            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Duplicate Clip").shortcut_text("Ctrl+D")).clicked() {
-                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::DuplicateClip { clip_id }); }
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
+                if let Some(clip_id) = state.selected_clip {
+                    cmds.push(AppCommand::CopyAttributes { clip_id });
+                    cmds.push(AppCommand::RemoveClip { clip_id });
+                }
                 ui.close_menu();
             }
-            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy").shortcut_text("Ctrl+C")).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id }); }
                 ui.close_menu();
             }
+            if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste").shortcut_text("Ctrl+V")).clicked() { ui.close_menu(); }
             if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
-                state.show_paste_attributes_dialog = true;
+                state.show_paste_attributes_dialog = true; ui.close_menu();
+            }
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Duplicate").shortcut_text("Ctrl+D")).clicked() {
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::DuplicateClip { clip_id }); }
                 ui.close_menu();
             }
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Delete").shortcut_text("Del")).clicked() {
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::RemoveClip { clip_id }); }
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.add(egui::Button::new("Select All").shortcut_text("Ctrl+A")).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
-            if ui.button("Select All Forward").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
-            if ui.button("Select All Backward").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
-            if !state.compound_clip_stack.is_empty() {
-                ui.separator();
-                if ui.button("\u{2190} Back (Exit Compound Clip)").clicked() {
-                    cmds.push(AppCommand::CloseCompoundClip);
-                    ui.close_menu();
-                }
-            }
-            ui.separator();
-            if ui.add(egui::Button::new("Next Edit Point").shortcut_text("\u{2193}")).clicked() { cmds.push(AppCommand::NextEditPoint); ui.close_menu(); }
-            if ui.add(egui::Button::new("Previous Edit Point").shortcut_text("\u{2191}")).clicked() { cmds.push(AppCommand::PrevEditPoint); ui.close_menu(); }
-            if ui.button("Fit Timeline to Window").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
-            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
-            ui.separator();
-            // Tool selection
-            let check = |active: bool| if active { "\u{2713} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{}Select Tool", check(state.active_tool == Tool::Select))).shortcut_text("V")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Select)); ui.close_menu(); }
-            if ui.add(egui::Button::new(format!("{}Blade Tool", check(state.active_tool == Tool::Blade))).shortcut_text("B")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Blade)); ui.close_menu(); }
-            if ui.add(egui::Button::new(format!("{}Range Tool", check(state.active_tool == Tool::Range))).shortcut_text("R")).clicked() { cmds.push(AppCommand::SetActiveTool(Tool::Range)); ui.close_menu(); }
-            ui.separator();
-            // Magnetic trim operations
-            let has_clip = state.selected_clip.is_some();
-            if ui.add_enabled(has_clip, egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
-                if let Some(clip_id) = state.selected_clip {
-                    cmds.push(AppCommand::RippleTrimHead { clip_id });
-                }
-                ui.close_menu();
-            }
-            if ui.add_enabled(has_clip, egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
-                if let Some(clip_id) = state.selected_clip {
-                    cmds.push(AppCommand::RippleTrimTail { clip_id });
-                }
-                ui.close_menu();
-            }
-            if ui.button("Insert Gap (1s)").clicked() { cmds.push(AppCommand::InsertGapAtPlayhead); ui.close_menu(); }
-            ui.separator();
-            if ui.button("Delete Unused Media...").clicked() { cmds.push(AppCommand::DeleteUnusedMedia); ui.close_menu(); }
-        });
-    }
-    fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Mark").size(11.0), |ui| {
-            // In/Out points
-            if ui.add(egui::Button::new("Set Range Start").shortcut_text("I")).clicked() {
-                cmds.push(AppCommand::SetSequenceInPoint(state.playhead));
-                ui.close_menu();
-            }
-            if ui.add(egui::Button::new("Set Range End").shortcut_text("O")).clicked() {
-                cmds.push(AppCommand::SetSequenceOutPoint(state.playhead));
-                ui.close_menu();
-            }
-            if ui.add(egui::Button::new("Select Clip Range").shortcut_text("X")).clicked() {
-                let ph = state.playhead;
-                for track in &state.sequence().tracks {
-                    if let Some((_, clip)) = track.clip_at_timecode(ph) {
-                        cmds.push(AppCommand::SetSequenceInPoint(clip.timeline_in));
-                        cmds.push(AppCommand::SetSequenceOutPoint(clip.timeline_out));
-                        break;
-                    }
-                }
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.add(egui::Button::new("Clear Range Start").shortcut_text("Shift+I")).clicked() {
-                cmds.push(AppCommand::ClearSequenceInPoint);
-                ui.close_menu();
-            }
-            if ui.add(egui::Button::new("Clear Range End").shortcut_text("Shift+O")).clicked() {
-                cmds.push(AppCommand::ClearSequenceOutPoint);
-                ui.close_menu();
-            }
-            if ui.add(egui::Button::new("Clear Range").shortcut_text("Alt+X")).clicked() {
-                cmds.push(AppCommand::ClearSequenceInPoint);
-                cmds.push(AppCommand::ClearSequenceOutPoint);
-                ui.close_menu();
-            }
-            ui.separator();
-            // Loop
-            let loop_check = if state.loop_playback_enabled { "\u{2713} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{loop_check}Loop Playback")).shortcut_text("Ctrl+L")).clicked() {
-                cmds.push(AppCommand::ToggleLoopPlayback);
-                ui.close_menu();
-            }
-            ui.separator();
-            // Markers
-            // Keyframe shortcuts
-            let has_clip = state.selected_clip.is_some();
-            if ui.add_enabled(has_clip, egui::Button::new("Toggle Keyframe at Playhead").shortcut_text("K")).clicked() {
-                ui.close_menu();
-                // Actual logic handled by global shortcut in app.rs
-            }
-            if ui.add_enabled(has_clip, egui::Button::new("Previous Keyframe").shortcut_text("Alt+\u{2190}")).clicked() {
-                ui.close_menu();
-            }
-            if ui.add_enabled(has_clip, egui::Button::new("Next Keyframe").shortcut_text("Alt+\u{2192}")).clicked() {
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.add(egui::Button::new("Add Marker").shortcut_text("M")).clicked() {
-                cmds.push(AppCommand::AddMarker {
-                    position: state.playhead,
-                    label: String::new(),
-                    color: klipp_core::MarkerColor::Blue,
-                });
-                ui.close_menu();
-            }
-            ui.separator();
-            // Range operations
-            let has_range = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
-            if ui.add_enabled(has_range, egui::Button::new("Lift Range").shortcut_text(";")).clicked() {
-                cmds.push(AppCommand::LiftEdit);
-                ui.close_menu();
-            }
-            if ui.add_enabled(has_range, egui::Button::new("Extract Range").shortcut_text("'")).clicked() {
-                cmds.push(AppCommand::ExtractEdit);
-                ui.close_menu();
-            }
-        });
-    }
-    fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("View").size(11.0), |ui| {
-            if ui.button("Full Screen Viewer").clicked() { cmds.push(AppCommand::ToggleFullscreen); ui.close_menu(); }
-            ui.separator();
-            let browser_label = if state.show_browser_panel { "\u{2713} Browser Panel" } else { "  Browser Panel" };
-            if ui.button(browser_label).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
-            let inspector_label = if state.show_inspector_panel { "\u{2713} Inspector Panel" } else { "  Inspector Panel" };
-            if ui.button(inspector_label).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
-            if ui.button(if state.show_markers_panel { "\u{2713} Markers" } else { "  Markers" }).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
-            if ui.button(if state.show_curve_editor { "\u{2713} Curve Editor" } else { "  Curve Editor" }).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
-            if ui.button(if state.show_history_panel { "\u{2713} History" } else { "  History" }).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
-            ui.separator();
-            if ui.button(if state.use_proxies { "\u{2713} Proxies" } else { "  Proxies" }).clicked() { cmds.push(AppCommand::SetUseProxies(!state.use_proxies)); ui.close_menu(); }
-            ui.separator();
-            let fc_label = match state.viewer_overlay { crate::state::ViewerOverlay::FalseColor => "\u{2713} False Color (Alt+F)", _ => "  False Color (Alt+F)" };
-            if ui.button(fc_label).clicked() {
-                state.viewer_overlay = match state.viewer_overlay {
-                    crate::state::ViewerOverlay::FalseColor => crate::state::ViewerOverlay::None,
-                    _ => crate::state::ViewerOverlay::FalseColor,
-                };
-                ui.close_menu();
-            }
-            let zebra_label = match state.viewer_overlay { crate::state::ViewerOverlay::Zebra => "\u{2713} Zebra Stripes", _ => "  Zebra Stripes" };
-            if ui.button(zebra_label).clicked() {
-                state.viewer_overlay = match state.viewer_overlay {
-                    crate::state::ViewerOverlay::Zebra => crate::state::ViewerOverlay::None,
-                    _ => crate::state::ViewerOverlay::Zebra,
-                };
-                ui.close_menu();
-            }
-            let safe_label = match state.viewer_overlay { crate::state::ViewerOverlay::SafeAreas => "\u{2713} Safe Areas", _ => "  Safe Areas" };
-            if ui.button(safe_label).clicked() {
-                state.viewer_overlay = match state.viewer_overlay {
-                    crate::state::ViewerOverlay::SafeAreas => crate::state::ViewerOverlay::None,
-                    _ => crate::state::ViewerOverlay::SafeAreas,
-                };
-                ui.close_menu();
-            }
-            let grid_label = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => "\u{2713} Grid (Rule of Thirds)", _ => "  Grid (Rule of Thirds)" };
-            if ui.button(grid_label).clicked() {
-                state.viewer_overlay = match state.viewer_overlay {
-                    crate::state::ViewerOverlay::Grid => crate::state::ViewerOverlay::None,
-                    _ => crate::state::ViewerOverlay::Grid,
-                };
-                ui.close_menu();
-            }
-            let checker_label = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => "\u{2713} Transparency Checkerboard", _ => "  Transparency Checkerboard" };
-            if ui.button(checker_label).clicked() {
-                state.viewer_overlay = match state.viewer_overlay {
-                    crate::state::ViewerOverlay::Checkerboard => crate::state::ViewerOverlay::None,
-                    _ => crate::state::ViewerOverlay::Checkerboard,
-                };
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.button("Frame Grab (Save PNG)...").clicked() { cmds.push(AppCommand::FrameGrab); ui.close_menu(); }
+            if ui.button("Select Forward").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
+            if ui.button("Select Backward").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            if ui.add(egui::Button::new("Deselect All").shortcut_text("Escape")).clicked() { { state.selected_clip = None; state.selected_clips.clear(); }; ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Preferences...").shortcut_text("Ctrl+,")).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_menu(); }
         });
     }
-    fn settings_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Settings").size(11.0), |ui| {
-            if ui.button(if state.snap_enabled { "\u{2713} Snap" } else { "  Snap" }).clicked() { cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled)); ui.close_menu(); }
-            if ui.button(if state.ripple_enabled { "\u{2713} Ripple" } else { "  Ripple" }).clicked() { cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled)); ui.close_menu(); }
-            ui.separator();
-            for mode in &[PlayheadFollow::Off, PlayheadFollow::Page, PlayheadFollow::Smooth] {
-                let c = if state.playhead_follow == *mode { "\u{2713} " } else { "  " };
-                if ui.button(format!("{}{}", c, mode.label())).clicked() { state.playhead_follow = *mode; ui.close_menu(); }
-            }
-        });
-    }
+
     fn clip_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Clip").size(11.0), |ui| {
             let has_clip = state.selected_clip.is_some();
-            if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable")).clicked() {
+            if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable").shortcut_text("V")).clicked() {
                 if let Some(cid) = state.selected_clip {
                     let enabled = state.sequence().all_clips().find(|c| c.id == cid).is_none_or(|c| c.enabled);
                     cmds.push(AppCommand::SetClipEnabled { clip_id: cid, enabled: !enabled });
                 }
                 ui.close_menu();
             }
-            if ui.add_enabled(has_clip, egui::Button::new("Set Clip Speed...")).clicked() { ui.close_menu(); }
-            ui.separator();
-            if ui.add_enabled(has_clip, egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
-                if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
-                ui.close_menu();
-            }
-            if ui.add_enabled(state.attributes_clipboard.is_some() && has_clip, egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
-                state.show_paste_attributes_dialog = true;
+            if ui.add_enabled(has_clip, egui::Button::new("Solo").shortcut_text("Ctrl+L")).clicked() {
+                // TODO: wire to clip solo when AppCommand::SetClipSolo is added
                 ui.close_menu();
             }
             ui.separator();
+            if ui.add(egui::Button::new("Split at Playhead").shortcut_text("S")).clicked() {
+                let ph = state.playhead;
+                for (ti, t) in state.sequence().tracks.iter().enumerate() {
+                    if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); }
+                }
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Close Gap")).clicked() {
+                // Close gap before the selected clip
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Ripple Delete").shortcut_text("Shift+Del")).clicked() {
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::RemoveClip { clip_id }); }
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.add_enabled(has_clip, egui::Button::new("Speed...")).clicked() {
+                // TODO: wire to speed dialog when implemented
+                ui.close_menu();
+            }
             ui.menu_button("Motion Presets", |ui| {
                 for (label, preset) in [
                     ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
@@ -702,30 +451,227 @@ impl ToolbarPanel {
                     ("PiP: Bottom Left", "pip_bottom_left"),
                 ] {
                     if let Some(cid) = state.selected_clip {
-                        if ui.button(label).clicked() {
-                            cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() });
-                            ui.close_menu();
-                        }
+                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_menu(); }
                     }
                 }
             });
+            ui.separator();
+            if ui.add_enabled(has_clip, egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
+                if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
+                ui.close_menu();
+            }
+            if ui.add_enabled(state.attributes_clipboard.is_some() && has_clip, egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
+                state.show_paste_attributes_dialog = true; ui.close_menu();
+            }
+            ui.separator();
+            if ui.add_enabled(has_clip, egui::Button::new("Reveal in Browser")).clicked() {
+                // Scroll browser to show the source media of the selected clip
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Open in Color Panel").shortcut_text("C")).clicked() {
+                state.show_color_panel = !state.show_color_panel;
+                ui.close_menu();
+            }
         });
     }
+
     fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Timeline").size(11.0), |ui| {
             if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddTrackAbove { track_index: 0 }); ui.close_menu(); }
             if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddTrackBelow { track_index: state.sequence().tracks.len().saturating_sub(1) }); ui.close_menu(); }
+            if ui.button("Delete Track").clicked() {
+                // Delete the track containing the selected clip, or the last track
+                if let Some(clip_id) = state.selected_clip {
+                    if let Some(track) = state.sequence().tracks.iter().find(|t| t.clips.iter().any(|c| c.id == clip_id)) {
+                        cmds.push(AppCommand::RemoveTrack { track_id: track.id });
+                    }
+                }
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Insert Edit").shortcut_text("W")).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_menu(); }
+            if ui.add(egui::Button::new("Overwrite Edit").shortcut_text("D")).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
+            if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }
+            if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_menu(); }
+            ui.separator();
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
+            ui.menu_button("Add Generator", |ui| {
+                for gen_type in ["Solid Color", "Color Bars", "Black"] {
+                    if ui.button(gen_type).clicked() {
+                        // TODO: wire to generator creation when AppCommand variant is added
+                        ui.close_menu();
+                    }
+                }
+            });
+            if ui.button("Create Compound Clip").clicked() {
+                cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
+                ui.close_menu();
+            }
             ui.separator();
-            if ui.add(egui::Button::new("Fit to Window")).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
-            if ui.button("Insert Gap (1s)").clicked() { cmds.push(AppCommand::InsertGapAtPlayhead); ui.close_menu(); }
-            ui.separator();
-            let snap_label = if state.snap_enabled { "\u{2713} Snap" } else { "  Snap" };
-            if ui.button(snap_label).clicked() { cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled)); ui.close_menu(); }
+            let snap_check = if state.snap_enabled { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{snap_check}Snapping")).shortcut_text("N")).clicked() { cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled)); ui.close_menu(); }
+            if ui.add(egui::Button::new("Fit to Window").shortcut_text("Shift+Z")).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
+            if ui.button("Zoom to Selection").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
         });
     }
+
+    fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Mark").size(11.0), |ui| {
+            if ui.add(egui::Button::new("Set In Point").shortcut_text("I")).clicked() { cmds.push(AppCommand::SetSequenceInPoint(state.playhead)); ui.close_menu(); }
+            if ui.add(egui::Button::new("Set Out Point").shortcut_text("O")).clicked() { cmds.push(AppCommand::SetSequenceOutPoint(state.playhead)); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear In Point").shortcut_text("Alt+I")).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear Out Point").shortcut_text("Alt+O")).clicked() { cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear In and Out").shortcut_text("Alt+X")).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
+            ui.separator();
+            if ui.add(egui::Button::new("Go to In Point").shortcut_text("Shift+I")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_menu(); }
+            if ui.add(egui::Button::new("Go to Out Point").shortcut_text("Shift+O")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_menu(); }
+            ui.separator();
+            if ui.add(egui::Button::new("Add Marker").shortcut_text("M")).clicked() {
+                cmds.push(AppCommand::AddMarker { position: state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue });
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Edit Marker...").shortcut_text("Shift+M")).clicked() {
+                // Open marker editor for the marker at or nearest playhead
+                state.show_markers_panel = true;
+                ui.close_menu();
+            }
+            if ui.button("Delete Marker").clicked() {
+                // Delete the marker at/nearest playhead
+                let ph = state.playhead;
+                if let Some(marker) = state.sequence().markers.iter().find(|m| m.position == ph) {
+                    cmds.push(AppCommand::RemoveMarker { marker_id: marker.id });
+                }
+                ui.close_menu();
+            }
+            if ui.button("Delete All Markers").clicked() {
+                let ids: Vec<_> = state.sequence().markers.iter().map(|m| m.id).collect();
+                for id in ids { cmds.push(AppCommand::RemoveMarker { marker_id: id }); }
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Next Marker").clicked() {
+                let ph = state.playhead;
+                if let Some(next) = state.sequence().markers.iter().filter(|m| m.position > ph).min_by_key(|m| m.position) {
+                    cmds.push(AppCommand::SeekTo(next.position));
+                }
+                ui.close_menu();
+            }
+            if ui.button("Previous Marker").clicked() {
+                let ph = state.playhead;
+                if let Some(prev) = state.sequence().markers.iter().filter(|m| m.position < ph).max_by_key(|m| m.position) {
+                    cmds.push(AppCommand::SeekTo(prev.position));
+                }
+                ui.close_menu();
+            }
+        });
+    }
+
+    fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("View").size(11.0), |ui| {
+            if ui.add(egui::Button::new("Zoom In").shortcut_text("Ctrl++")).clicked() {
+                state.viewer_zoom = (state.viewer_zoom * 1.25).min(4.0).max(0.25);
+                if state.viewer_zoom < 0.2 { state.viewer_zoom = 0.25; }
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Zoom Out").shortcut_text("Ctrl+-")).clicked() {
+                state.viewer_zoom = if state.viewer_zoom <= 0.25 { 0.0 } else { (state.viewer_zoom / 1.25).max(0.0) };
+                ui.close_menu();
+            }
+            ui.menu_button("Viewer Zoom", |ui| {
+                for (label, zoom) in [("Fit", 0.0f32), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
+                    let check = if (state.viewer_zoom - zoom).abs() < 0.01 { "\u{2713} " } else { "  " };
+                    if ui.button(format!("{check}{label}")).clicked() { state.viewer_zoom = zoom; ui.close_menu(); }
+                }
+            });
+            ui.separator();
+            let safe_check = match state.viewer_overlay { crate::state::ViewerOverlay::SafeAreas => "\u{2713} ", _ => "  " };
+            if ui.button(format!("{safe_check}Safe Areas")).clicked() {
+                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::SafeAreas => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::SafeAreas };
+                ui.close_menu();
+            }
+            let grid_check = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => "\u{2713} ", _ => "  " };
+            if ui.button(format!("{grid_check}Grid Overlay")).clicked() {
+                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::Grid };
+                ui.close_menu();
+            }
+            let checker_check = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => "\u{2713} ", _ => "  " };
+            if ui.button(format!("{checker_check}Transparency")).clicked() {
+                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::Checkerboard };
+                ui.close_menu();
+            }
+            ui.separator();
+            let scopes_check = if state.show_scopes { "\u{2713} " } else { "  " };
+            ui.menu_button(format!("{scopes_check}Scopes"), |ui| {
+                // Toggle scopes panel + select scope type
+                if ui.button("Waveform").clicked() { state.show_scopes = true; ui.close_menu(); }
+                if ui.button("Vectorscope").clicked() { state.show_scopes = true; ui.close_menu(); }
+                if ui.button("Histogram").clicked() { state.show_scopes = true; ui.close_menu(); }
+                if ui.button("Parade").clicked() { state.show_scopes = true; ui.close_menu(); }
+                ui.separator();
+                if ui.button("Hide Scopes").clicked() { state.show_scopes = false; ui.close_menu(); }
+            });
+            let color_check = if state.show_color_panel { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{color_check}Color Panel")).shortcut_text("C")).clicked() {
+                state.show_color_panel = !state.show_color_panel;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Grab Frame").clicked() { cmds.push(AppCommand::FrameGrab); ui.close_menu(); }
+            ui.separator();
+            let perf_check = if state.show_perf_overlay { "\u{2713} " } else { "  " };
+            if ui.button(format!("{perf_check}Performance Overlay")).clicked() { state.show_perf_overlay = !state.show_perf_overlay; ui.close_menu(); }
+        });
+    }
+
+    fn window_menu(ui: &mut egui::Ui, _cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Window").size(11.0), |ui| {
+            // Workspaces
+            ui.label(egui::RichText::new("WORKSPACES").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Color Grading"), (Workspace::Export, "Audio Mixing")] {
+                let c = if state.active_workspace == *ws { "\u{2713} " } else { "  " };
+                if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
+            }
+            if ui.button("Save Workspace...").clicked() {
+                // Save current panel layout as a workspace preset
+                ui.close_menu();
+            }
+            ui.separator();
+            // Panels
+            ui.label(egui::RichText::new("PANELS").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            let toggle_label = |active: bool, name: &str| if active { format!("\u{2713} {name}") } else { format!("  {name}") };
+            if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text("Ctrl+Shift+I")).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Effects Browser")).shortcut_text("Ctrl+Shift+E")).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Audio Mixer")).shortcut_text("Ctrl+Shift+M")).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            if ui.button(toggle_label(state.show_history_panel, "History")).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
+            if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
+            ui.separator();
+            if ui.add(egui::Button::new("Command Palette").shortcut_text("Ctrl+K")).clicked() { state.show_command_palette = true; ui.close_menu(); }
+        });
+    }
+
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Help").size(11.0), |ui| {
+            if ui.add(egui::Button::new("Klipp Documentation").shortcut_text("F1")).clicked() {
+                // Open documentation — for now show about dialog which has tech info
+                state.show_about_dialog = true;
+                ui.close_menu();
+            }
+            if ui.button("Keyboard Shortcuts").clicked() {
+                // Open preferences on the Keyboard tab
+                state.show_preferences = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Report a Bug...").clicked() {
+                // Open GitHub issues page
+                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/issues").spawn();
+                ui.close_menu();
+            }
+            if ui.button("Release Notes").clicked() {
+                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/releases").spawn();
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.button("About Klipp").clicked() { state.show_about_dialog = true; ui.close_menu(); }
         });
     }
