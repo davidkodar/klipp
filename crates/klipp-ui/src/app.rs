@@ -162,7 +162,8 @@ pub struct KlippApp {
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
-    // UI executor removed — engine handles re-grading on its own thread
+    /// CPU-only executor for fast reduced-resolution scope previews.
+    scope_executor: klipp_nodes::GraphExecutor,
     /// File watcher for external media modification detection.
     /// Must be kept alive — dropping stops watching.
     #[allow(dead_code)]
@@ -254,7 +255,7 @@ impl KlippApp {
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
-            // ui_executor removed — engine re-grades on its own thread
+            scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
         };
@@ -1656,10 +1657,59 @@ impl KlippApp {
     /// Zero latency — scopes see the result on the same frame as the slider change.
     fn sync_and_refresh_frame(&mut self) {
         self.sync_sequence_to_engine();
-        // Tell the engine to re-grade the cached frame. The engine does this on
-        // its own thread with its own GPU pipeline — no UI-thread blocking.
-        // The engine calls write_frame() which bumps generation, and scopes
-        // detect the change on the next UI frame.
+
+        // Fast UI-thread re-grade at reduced resolution for instant scope feedback.
+        // Uses CPU-only executor (no GPU contention) on a downscaled frame (~480x270).
+        // The engine also re-grades at full resolution asynchronously for the viewer.
+        let pregrade = {
+            let fb = self.frame_buffer.lock().unwrap();
+            if fb.pregrade_data.is_empty() || fb.width == 0 {
+                None
+            } else {
+                Some((fb.pregrade_data.clone(), fb.width, fb.height))
+            }
+        };
+
+        if let Some((pregrade_data, full_w, full_h)) = pregrade {
+            if let Some(cid) = self.state.selected_clip {
+                let seq_idx = self.state.active_sequence_idx;
+                if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
+                    .find_map(|t| t.clips.iter().find(|c| c.id == cid))
+                {
+                    let graph = &clip.node_graph;
+                    if !graph.is_identity() {
+                        // Downscale for fast CPU grade (~1/4 resolution each axis = 1/16 pixels)
+                        let scale = if full_w > 960 { 4u32 } else if full_w > 480 { 2 } else { 1 };
+                        let small_w = full_w / scale;
+                        let small_h = full_h / scale;
+                        let mut small = vec![0u8; (small_w * small_h * 4) as usize];
+                        for y in 0..small_h {
+                            for x in 0..small_w {
+                                let src = ((y * scale * full_w + x * scale) * 4) as usize;
+                                let dst = ((y * small_w + x) * 4) as usize;
+                                if src + 3 < pregrade_data.len() && dst + 3 < small.len() {
+                                    small[dst..dst + 4].copy_from_slice(&pregrade_data[src..src + 4]);
+                                }
+                            }
+                        }
+
+                        let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                        if let Ok((graded, _)) = self.scope_executor.execute(
+                            &small, graph, small_w, small_h,
+                            clip_time, 0, None, None,
+                        ) {
+                            let mut fb = self.frame_buffer.lock().unwrap();
+                            fb.scope_preview = graded;
+                            fb.scope_preview_w = small_w;
+                            fb.scope_preview_h = small_h;
+                            fb.generation = fb.generation.wrapping_add(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also tell the engine to re-grade at full resolution for the viewer
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 

@@ -55,8 +55,9 @@ pub fn show_scopes(
 
     let mi = mode_index(mode);
 
-    // ── Compute scope bins directly from locked frame buffer (no 8MB clone) ──
-    // Hold the lock only during bin computation (fast integer ops), then release.
+    // ── Compute scope bins from frame buffer ────────────────────────────────
+    // Use scope_preview (fast reduced-resolution grade from UI thread) if available,
+    // otherwise fall back to full-resolution fb.data (from engine).
     let scope_result = {
         let fb = frame_buffer.lock().unwrap();
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
@@ -67,27 +68,29 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
-                let w = fb.width;
-                let h = fb.height;
-                let base_step: u32 = if w > 1280 { 3 } else if w > 640 { 2 } else { 1 };
+                // Prefer scope_preview (instant, reduced-res) over full fb.data
+                let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
+                    (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
+                } else {
+                    (&fb.data[..], fb.width, fb.height)
+                };
+                let base_step: u32 = if w > 960 { 3 } else if w > 480 { 2 } else { 1 };
                 let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
-                // Compute bins while holding lock — integer ops only, no allocation
                 let bins = match mode {
                     ScopeMode::Waveform => {
-                        ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(&fb.data, w, h, render_w as u32, step))
+                        ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, render_w as u32, step))
                     }
                     ScopeMode::Parade => {
                         let gap = 4;
                         let section_w = (render_w - gap * 2) / 3;
-                        ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(&fb.data, w, h, section_w as u32, step))
+                        ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, section_w as u32, step))
                     }
                     ScopeMode::Histogram => {
-                        ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(&fb.data, w, h, step))
+                        ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step))
                     }
                     ScopeMode::Vectorscope => {
-                        // Vectorscope needs the raw data — clone only for this mode
-                        ScopeBins::Raw(fb.data.clone(), w, h, step)
+                        ScopeBins::Raw(src.to_vec(), w, h, step)
                     }
                 };
                 Some((bins, gen))
@@ -95,7 +98,6 @@ pub fn show_scopes(
                 None
             }
         }
-        // Lock dropped here
     };
 
     if let Some((bins, gen)) = scope_result {

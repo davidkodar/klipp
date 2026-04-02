@@ -8,6 +8,10 @@ pub struct FrameBuffer {
     pub pregrade_data: Vec<u8>,
     /// Tapped node output for scope display (empty = use main data).
     pub scope_data: Vec<u8>,
+    /// Fast reduced-resolution graded preview for instant scope feedback.
+    pub scope_preview: Vec<u8>,
+    pub scope_preview_w: u32,
+    pub scope_preview_h: u32,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -23,6 +27,9 @@ impl FrameBuffer {
             original_data: Vec::new(),
             pregrade_data: Vec::new(),
             scope_data: Vec::new(),
+            scope_preview: Vec::new(),
+            scope_preview_w: 0,
+            scope_preview_h: 0,
             width,
             height,
             dirty: false,
