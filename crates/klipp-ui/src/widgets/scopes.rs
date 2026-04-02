@@ -55,9 +55,10 @@ pub fn show_scopes(
     skin_tone_angle: f32,
 ) {
     let available = ui.available_size();
-    let ppp = ui.ctx().pixels_per_point();
-    let render_w = ((available.x * ppp) as usize).clamp(100, 1920);
-    let render_h = ((available.y * ppp) as usize).clamp(60, 1080);
+    let _ppp = ui.ctx().pixels_per_point();
+    // Fixed render size like DaVinci (720×256). Displayed with bilinear upscale.
+    let render_w: usize = 720;
+    let render_h: usize = 256;
 
     let mi = mode_index(mode);
 
@@ -84,9 +85,9 @@ pub fn show_scopes(
                     };
                     Some((ScopeImage::Ready(image), gen))
                 } else {
-                    // CPU fallback at CAPPED resolution (keep UI responsive)
-                    let cpu_w = render_w.min(320);
-                    let cpu_h = render_h.min(200);
+                    // CPU fallback at fixed resolution (matches render target)
+                    let cpu_w = render_w;
+                    let cpu_h = render_h;
                     let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
                         (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
                     } else {
@@ -358,125 +359,156 @@ impl AccumBuffer {
 
 #[inline(never)]
 fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
-    let mut buf = AccumBuffer::new(rw, rh);
+    let num_cols = bins.len();
+    let max_count = bins.iter().flat_map(|c| c.iter()).copied().max().unwrap_or(1).max(1) as f32;
+    let log_max = (max_count * 0.7 + 1.0).ln();
 
-    // Fast max-based normalization (avoids expensive sort for p95)
-    let max_count = bins.iter()
-        .flat_map(|c| c.iter())
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1) as f32;
-    let p95 = max_count * 0.7; // approximate p95 as 70% of max
+    let mut pixels = vec![egui::Color32::from_rgb(0x04, 0x04, 0x07); rw * rh];
 
-    let log_max = (p95 + 1.0).ln();
+    for py in 0..rh {
+        let bin = 255 - (py * 255 / rh.max(1));
+        for px in 0..rw {
+            let col = (px * num_cols) / rw.max(1);
+            if col >= num_cols { continue; }
 
-    for (col_idx, col) in bins.iter().enumerate() {
-        if col_idx >= rw { continue; }
-        for (bin_idx, &count) in col.iter().enumerate() {
-            if count == 0 { continue; }
-            let y = rh - 1 - (bin_idx * rh / 256);
-            if y >= rh { continue; }
+            let count = bins[col][bin];
+            let count_above = if bin < 255 { bins[col][bin + 1] } else { 0 };
+            let count_below = if bin > 0 { bins[col][bin - 1] } else { 0 };
+            let count_left = if col > 0 { bins[col - 1][bin] } else { 0 };
+            let count_right = if col + 1 < num_cols { bins[col + 1][bin] } else { 0 };
 
-            let log_i = (count as f32 + 1.0).ln() / log_max;
+            let effective = count as f32
+                + count_above as f32 * 0.25
+                + count_below as f32 * 0.25
+                + count_left as f32 * 0.12
+                + count_right as f32 * 0.12;
+
+            if effective < 0.5 {
+                // Grid lines
+                if bin % 64 == 0 {
+                    pixels[py * rw + px] = egui::Color32::from_rgb(0x12, 0x12, 0x18);
+                }
+                continue;
+            }
+
+            let log_i = (effective + 1.0).ln() / log_max;
             let intensity = log_i.clamp(0.0, 1.0);
-
-            let is_safe = (16..=235).contains(&bin_idx);
-            let white = (intensity - 0.8).max(0.0) * 5.0;
+            let is_safe = (16..=235).contains(&bin);
+            let white = (intensity - 0.75).max(0.0) * 4.0;
 
             let (r, g, b) = if is_safe {
-                (0.08 * intensity + white * 0.4,
+                (0.08 * intensity + white * 0.5,
                  1.0 * intensity + white * 0.0,
-                 0.08 * intensity + white * 0.4)
+                 0.08 * intensity + white * 0.5)
             } else {
                 (1.0 * intensity + white * 0.0,
-                 0.06 * intensity + white * 0.4,
+                 0.06 * intensity + white * 0.5,
                  0.03 * intensity + white * 0.3)
             };
 
-            buf.add(col_idx, y, r, g, b);
-
-            if intensity > 0.7 {
-                let gs = (intensity - 0.7) * 0.2;
-                let (cr, cg, cb) = if is_safe { (0.06, 0.8, 0.06) } else { (0.8, 0.04, 0.02) };
-                if y > 0 { buf.add(col_idx, y - 1, cr * gs, cg * gs, cb * gs); }
-                if y + 1 < rh { buf.add(col_idx, y + 1, cr * gs, cg * gs, cb * gs); }
-            }
+            let tone = |x: f32| (x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15)).min(1.0);
+            let ro = (tone(r).sqrt() * 255.0).min(255.0) as u8;
+            let go = (tone(g).sqrt() * 255.0).min(255.0) as u8;
+            let bo = (tone(b).sqrt() * 255.0).min(255.0) as u8;
+            pixels[py * rw + px] = egui::Color32::from_rgb(ro, go, bo);
         }
     }
 
-    let mut img = buf.to_image([1.0, 1.0, 2.0], 1.6);
-    draw_ire_lines(&mut img.pixels, rw, rh);
-    img
+    egui::ColorImage { size: [rw, rh], pixels }
 }
 
 #[inline(never)]
 fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]], parade_blue: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
-    let gap = 3;
+    let gap = 2usize;
     let section_w = (rw - gap * 2) / 3;
-    let mut buf = AccumBuffer::new(rw, rh);
+    let num_cols = parade_red.len();
 
-    // Use logarithmic normalization for DaVinci-style thin traces
+    // Find max for log normalization
     let max_count = [parade_red, parade_green, parade_blue].iter()
         .flat_map(|d| d.iter().flat_map(|c| c.iter()))
         .copied()
         .max()
         .unwrap_or(1)
         .max(1) as f32;
-
-    // DaVinci-style parade: deep saturated colors, only hottest spots go white.
-    // Key: keep the primary channel dominant, secondary channels very low.
-    let channels: [(&[[u32; 256]], usize, [f32; 3]); 3] = [
-        //                               x_offset     color (R, G, B)
-        (parade_red,   0,                    [1.0, 0.08, 0.04]),
-        (parade_green, section_w + gap,       [0.04, 1.0, 0.08]),
-        (parade_blue,  (section_w + gap) * 2, [0.08, 0.12, 1.0]),
-    ];
-
     let log_max = (max_count + 1.0).ln();
 
-    for (data, x_off, color) in &channels {
-        for (ci, col) in data.iter().enumerate() {
-            let px_x = x_off + ci;
-            if px_x >= rw { continue; }
-            for (bi, &count) in col.iter().enumerate() {
-                if count == 0 { continue; }
-                let y = rh - 1 - (bi * rh / 256);
-                if y >= rh { continue; }
+    let colors: [[f32; 3]; 3] = [
+        [1.0, 0.08, 0.04],   // red
+        [0.04, 1.0, 0.08],   // green
+        [0.08, 0.12, 1.0],   // blue
+    ];
+    let all_data: [&[[u32; 256]]; 3] = [parade_red, parade_green, parade_blue];
 
-                // Log intensity with gentler curve — keeps traces thin
-                let log_i = (count as f32 + 1.0).ln() / log_max;
-                let intensity = log_i.clamp(0.0, 1.0);
+    // Output-pixel-centric: iterate every output pixel, look up corresponding bin
+    let mut pixels = vec![egui::Color32::from_rgb(0x04, 0x04, 0x07); rw * rh];
 
-                // Only the very densest areas shift toward white (>80% log intensity)
-                let white = (intensity - 0.8).max(0.0) * 5.0; // 0.0 at 80%, 1.0 at 100%
-                let r = color[0] * intensity + white * (1.0 - color[0]) * 0.5;
-                let g = color[1] * intensity + white * (1.0 - color[1]) * 0.5;
-                let b = color[2] * intensity + white * (1.0 - color[2]) * 0.5;
+    for py in 0..rh {
+        let bin = 255 - (py * 255 / rh.max(1));
+        for px in 0..rw {
+            // Which channel section?
+            let (ch, local_x) = if px < section_w {
+                (0, px)
+            } else if px < section_w + gap {
+                continue; // gap
+            } else if px < section_w * 2 + gap {
+                (1, px - section_w - gap)
+            } else if px < section_w * 2 + gap * 2 {
+                continue; // gap
+            } else {
+                (2, px - section_w * 2 - gap * 2)
+            };
 
-                buf.add(px_x, y, r, g, b);
+            let col = (local_x * num_cols) / section_w.max(1);
+            if col >= num_cols { continue; }
 
-                // Subtle vertical glow only at very high density
-                if intensity > 0.7 {
-                    let gs = (intensity - 0.7) * 0.2;
-                    if y > 0 { buf.add(px_x, y - 1, color[0] * gs, color[1] * gs, color[2] * gs); }
-                    if y + 1 < rh { buf.add(px_x, y + 1, color[0] * gs, color[1] * gs, color[2] * gs); }
+            let count = all_data[ch][col][bin];
+            // Also sample vertical neighbors for glow
+            let count_above = if bin < 255 { all_data[ch][col][bin + 1] } else { 0 };
+            let count_below = if bin > 0 { all_data[ch][col][bin - 1] } else { 0 };
+            let count_left = if col > 0 { all_data[ch][col - 1][bin] } else { 0 };
+            let count_right = if col + 1 < num_cols { all_data[ch][col + 1][bin] } else { 0 };
+
+            // Effective count with neighbor contribution (glow)
+            let effective = count as f32
+                + count_above as f32 * 0.25
+                + count_below as f32 * 0.25
+                + count_left as f32 * 0.12
+                + count_right as f32 * 0.12;
+
+            if effective < 0.5 { continue; }
+
+            let log_i = (effective + 1.0).ln() / log_max;
+            let intensity = log_i.clamp(0.0, 1.0);
+
+            let color = &colors[ch];
+            let white = (intensity - 0.75).max(0.0) * 4.0;
+            let r = color[0] * intensity + white * (1.0 - color[0]) * 0.6;
+            let g = color[1] * intensity + white * (1.0 - color[1]) * 0.6;
+            let b = color[2] * intensity + white * (1.0 - color[2]) * 0.6;
+
+            // Filmic tone map + sqrt gamma
+            let tone = |x: f32| (x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15)).min(1.0);
+            let ro = (tone(r).sqrt() * 255.0).min(255.0) as u8;
+            let go = (tone(g).sqrt() * 255.0).min(255.0) as u8;
+            let bo = (tone(b).sqrt() * 255.0).min(255.0) as u8;
+            pixels[py * rw + px] = egui::Color32::from_rgb(ro, go, bo);
+        }
+    }
+
+    // Grid lines
+    for py in 0..rh {
+        let bin = 255 - (py * 255 / rh.max(1));
+        if bin % 64 == 0 {
+            for px in 0..rw {
+                let p = &mut pixels[py * rw + px];
+                if *p == egui::Color32::from_rgb(0x04, 0x04, 0x07) {
+                    *p = egui::Color32::from_rgb(0x12, 0x12, 0x18);
                 }
             }
         }
     }
 
-    let mut img = buf.to_image([1.0, 1.0, 2.0], 1.6);
-
-    // Channel separator lines
-    for &gap_x in &[section_w, (section_w + gap) * 2 - gap] {
-        if gap_x < rw {
-            for y in 0..rh {
-                img.pixels[y * rw + gap_x] = egui::Color32::from_rgb(0x10, 0x10, 0x14);
-            }
-        }
-    }
-
+    let mut img = egui::ColorImage { size: [rw, rh], pixels };
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
 }
