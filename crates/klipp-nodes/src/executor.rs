@@ -207,50 +207,114 @@ impl GraphExecutor {
             }
 
             NodeKind::Exposure => {
-                let mut frame = primary_input.to_vec();
                 let exp = params.exposure.unwrap_or(0.0);
                 if exp != 0.0 {
-                    klipp_color::apply_exposure(&mut frame, exp);
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_color_grade(
+                            primary_input.to_vec(), width, height,
+                            exp, 0.0, 1.0, 0.0, 0.0,
+                            0.0, 0.0, 0.0, 0.0,
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                            0.0, 1.0,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_exposure(&mut frame, exp);
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::Contrast => {
-                let mut frame = primary_input.to_vec();
                 let con = params.contrast.unwrap_or(0.0);
-                if con != 0.0 {
-                    klipp_color::apply_contrast(&mut frame, con);
-                }
                 let clarity = params.clarity.unwrap_or(0.0);
-                if clarity != 0.0 {
-                    klipp_color::apply_clarity_inplace(&mut frame, width, height, clarity);
+                if con != 0.0 || clarity != 0.0 {
+                    let frame = if con != 0.0 {
+                        if let Some(gpu) = &mut self.gpu {
+                            gpu.apply_color_grade(
+                                primary_input.to_vec(), width, height,
+                                0.0, con, 1.0, 0.0, 0.0,
+                                0.0, 0.0, 0.0, 0.0,
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                0.0, 1.0,
+                            )
+                        } else {
+                            let mut f = primary_input.to_vec();
+                            klipp_color::apply_contrast(&mut f, con);
+                            f
+                        }
+                    } else {
+                        primary_input.to_vec()
+                    };
+                    if clarity != 0.0 {
+                        let mut f = frame;
+                        klipp_color::apply_clarity_inplace(&mut f, width, height, clarity);
+                        f
+                    } else {
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::Saturation => {
-                let mut frame = primary_input.to_vec();
                 let sat = params.saturation.unwrap_or(1.0);
-                if sat != 1.0 {
-                    klipp_color::apply_saturation(&mut frame, sat);
-                }
                 let vib = params.vibrance.unwrap_or(0.0);
-                if vib != 0.0 {
-                    klipp_color::apply_vibrance_buffer(&mut frame, vib);
+                if sat != 1.0 || vib != 0.0 {
+                    let frame = if sat != 1.0 {
+                        if let Some(gpu) = &mut self.gpu {
+                            gpu.apply_color_grade(
+                                primary_input.to_vec(), width, height,
+                                0.0, 0.0, sat, 0.0, 0.0,
+                                0.0, 0.0, 0.0, 0.0,
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                0.0, 1.0,
+                            )
+                        } else {
+                            let mut f = primary_input.to_vec();
+                            klipp_color::apply_saturation(&mut f, sat);
+                            f
+                        }
+                    } else {
+                        primary_input.to_vec()
+                    };
+                    if vib != 0.0 {
+                        let mut f = frame;
+                        klipp_color::apply_vibrance_buffer(&mut f, vib);
+                        f
+                    } else {
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::ToneControls => {
-                let mut frame = primary_input.to_vec();
-                klipp_color::apply_tone_controls(
-                    &mut frame,
-                    params.highlights.unwrap_or(0.0),
-                    params.shadows.unwrap_or(0.0),
-                    params.whites.unwrap_or(0.0),
-                    params.blacks.unwrap_or(0.0),
-                );
-                frame
+                let hi = params.highlights.unwrap_or(0.0);
+                let sh = params.shadows.unwrap_or(0.0);
+                let wh = params.whites.unwrap_or(0.0);
+                let bl = params.blacks.unwrap_or(0.0);
+                if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_color_grade(
+                            primary_input.to_vec(), width, height,
+                            0.0, 0.0, 1.0, 0.0, 0.0,
+                            hi, sh, wh, bl,
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                            0.0, 1.0,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_tone_controls(&mut frame, hi, sh, wh, bl);
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
+                }
             }
 
             NodeKind::ColorWheels => {
@@ -571,7 +635,6 @@ impl GraphExecutor {
             }
 
             NodeKind::Lut3D => {
-                let mut frame = primary_input.to_vec();
                 if let Some(path) = &params.lut_path {
                     let lut = self
                         .lut_cache
@@ -586,13 +649,20 @@ impl GraphExecutor {
                             )
                         })
                         .clone();
-                    klipp_color::apply_3d_lut(
-                        &mut frame,
-                        &lut,
-                        params.lut_opacity.unwrap_or(1.0),
-                    );
+                    let opacity = params.lut_opacity.unwrap_or(1.0);
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_3d_lut_gpu(
+                            primary_input.to_vec(), width, height,
+                            &lut.data, lut.size as u32, opacity,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_3d_lut(&mut frame, &lut, opacity);
+                        frame
+                    }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::FilmGrain => {
