@@ -6349,7 +6349,8 @@ impl KlippApp {
                         }
                     }
                     self.state.dirty = true;
-                    self.sync_sequence_to_engine();
+                    // Use sync_and_refresh_frame for immediate visual update (even when paused)
+                    self.sync_and_refresh_frame();
                     continue;
                 }
                 AppCommand::DeleteGradeVersion { clip_id, version_index } => {

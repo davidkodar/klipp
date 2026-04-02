@@ -19,6 +19,7 @@ pub fn default_graph() -> NodeGraph {
     let saturation_id = NodeId::new_v4();
     let curves_id = NodeId::new_v4();
     let huesat_id = NodeId::new_v4();
+    let warper_id = NodeId::new_v4();
     let colorbal_id = NodeId::new_v4();
     let output_id = NodeId::new_v4();
 
@@ -33,6 +34,7 @@ pub fn default_graph() -> NodeGraph {
         make_node(saturation_id, NodeKind::Saturation, "Saturation"),
         make_node(curves_id, NodeKind::RGBCurves, "Curves"),
         make_node(huesat_id, NodeKind::HueSatCurves, "Hue/Sat"),
+        make_node(warper_id, NodeKind::ColorWarper, "Color Warper"),
         make_node(colorbal_id, NodeKind::ColorBalance, "Color Balance"),
         make_node(output_id, NodeKind::Output, "Output"),
     ];
@@ -47,7 +49,8 @@ pub fn default_graph() -> NodeGraph {
         make_edge(contrast_id, 0, saturation_id, 0),
         make_edge(saturation_id, 0, curves_id, 0),
         make_edge(curves_id, 0, huesat_id, 0),
-        make_edge(huesat_id, 0, colorbal_id, 0),
+        make_edge(huesat_id, 0, warper_id, 0),
+        make_edge(warper_id, 0, colorbal_id, 0),
         make_edge(colorbal_id, 0, output_id, 0),
     ];
 
@@ -63,6 +66,7 @@ pub fn default_graph() -> NodeGraph {
         saturation_id,
         curves_id,
         huesat_id,
+        warper_id,
         colorbal_id,
         output_id,
     ];
