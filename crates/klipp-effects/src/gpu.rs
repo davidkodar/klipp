@@ -792,6 +792,34 @@ impl GpuEffectsPipeline {
         self.download(buf_b, byte_size)
     }
 
+    /// Apply bilateral denoise on GPU. Used by the color grading Denoise node.
+    pub fn apply_denoise_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        spatial_sigma: f32,
+        color_sigma: f32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.write_params(&DenoiseParams {
+            width, height, spatial_sigma, color_sigma,
+        });
+        self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
+    }
+
     /// Generate a mask matte on GPU. Supports up to 4 masks (circle, rect, linear gradient).
     /// Returns greyscale RGBA (R=G=B=matte, A=255).
     pub fn generate_mask_gpu(

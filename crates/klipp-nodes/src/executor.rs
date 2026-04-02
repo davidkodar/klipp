@@ -641,11 +641,21 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma > 0.0 || chroma > 0.0 {
-                    let mut frame = primary_input.to_vec();
-                    klipp_color::denoise::bilateral_denoise(
-                        &mut frame, width, height, luma, chroma, radius,
-                    );
-                    frame
+                    if let Some(gpu) = &mut self.gpu {
+                        // Map luma/chroma strength to bilateral sigma values
+                        let spatial_sigma = radius as f32;
+                        let color_sigma = (luma + chroma) * 0.5;
+                        gpu.apply_denoise_gpu(
+                            primary_input.to_vec(), width, height,
+                            spatial_sigma, color_sigma,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::denoise::bilateral_denoise(
+                            &mut frame, width, height, luma, chroma, radius,
+                        );
+                        frame
+                    }
                 } else {
                     primary_input.to_vec()
                 }
