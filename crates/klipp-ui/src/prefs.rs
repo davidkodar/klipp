@@ -582,9 +582,12 @@ impl Default for AudioHardwarePrefs {
 /// Appearance / theme preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearancePrefs {
-    /// Base UI text size in points.
+    /// Base UI text size in points (legacy, used as fallback).
     #[serde(default = "default_ui_text_size")]
     pub ui_text_size: f32,
+    /// UI scale percentage. 0 = Auto (match system DPI).
+    #[serde(default)]
+    pub ui_scale_percent: u32,
     /// Accent color [R, G, B].
     #[serde(default = "default_accent_color")]
     pub accent_color: [u8; 3],
@@ -620,6 +623,7 @@ impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
             ui_text_size: default_ui_text_size(),
+            ui_scale_percent: 0, // Auto
             accent_color: default_accent_color(),
             playhead_color: default_accent_color(),
             role_video: default_role_video(), role_dialogue: default_role_dialogue(),

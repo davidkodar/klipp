@@ -1194,26 +1194,27 @@ impl PreferencesPanel {
         Self::section_header(ui, "THEME");
 
         // UI scale
-        Self::setting_row(ui, "UI scale", |ui| {
-            let scales = [
-                (10.0_f32, "85%"),
-                (11.0, "90%"),
-                (12.0, "95%"),
-                (13.0, "100%"),
-                (14.0, "108%"),
-                (15.0, "115%"),
-                (16.0, "123%"),
-                (18.0, "138%"),
+        Self::setting_row_with_subtitle(ui, "UI scale", "Auto matches your system DPI settings", |ui| {
+            let scales: &[(u32, &str)] = &[
+                (0, "Auto"),
+                (100, "100%"),
+                (125, "125%"),
+                (150, "150%"),
+                (175, "175%"),
+                (200, "200%"),
             ];
             let current = scales.iter()
-                .find(|(v, _)| (*v - prefs.appearance.ui_text_size).abs() < 0.5)
-                .map(|(_, l)| *l).unwrap_or("100%");
+                .find(|(v, _)| *v == prefs.appearance.ui_scale_percent)
+                .map(|(_, l)| *l).unwrap_or("Auto");
             egui::ComboBox::from_id_salt("ui_scale")
                 .selected_text(current)
                 .width(70.0)
                 .show_ui(ui, |ui| {
-                    for (val, label) in &scales {
-                        if ui.selectable_value(&mut prefs.appearance.ui_text_size, *val, *label).changed() {
+                    for (val, label) in scales {
+                        if ui.selectable_value(&mut prefs.appearance.ui_scale_percent, *val, *label).changed() {
+                            // Apply zoom factor immediately
+                            let zoom = if *val == 0 { 1.0 } else { *val as f32 / 100.0 };
+                            ui.ctx().set_zoom_factor(zoom);
                             *dirty = true;
                         }
                     }

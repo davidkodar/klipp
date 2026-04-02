@@ -191,6 +191,19 @@ impl KlippApp {
         theme.apply_to_egui(&cc.egui_ctx);
         theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
         crate::icons::install(&cc.egui_ctx);
+
+        // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
+        let scale_pct = prefs.appearance.ui_scale_percent;
+        if scale_pct == 0 {
+            // Auto: let egui use the system's native scale (zoom_factor = 1.0)
+            // egui already reads the system DPI from Wayland/X11
+            cc.egui_ctx.set_zoom_factor(1.0);
+        } else {
+            // Manual: override with user's chosen percentage
+            // System already provides native_pixels_per_point, so zoom_factor
+            // should be relative: e.g. 100% = 1.0, 125% = 1.25
+            cc.egui_ctx.set_zoom_factor(scale_pct as f32 / 100.0);
+        }
         let layout = LayoutState::load();
 
         let mut app = Self {
