@@ -5,7 +5,6 @@ use klipp_engine::SharedFrameBuffer;
 pub struct ScopeState {
     /// One cached texture per scope mode — switching is instant.
     textures: [Option<egui::TextureHandle>; 4], // Waveform, Parade, Vectorscope, Histogram
-    last_update: std::time::Instant,
     /// Frame generation counter used for each cached texture (from FrameBuffer.generation).
     frame_generations: [u64; 4],
     /// Render sizes used for each cached texture.
@@ -13,6 +12,8 @@ pub struct ScopeState {
     /// GPU scopes pipeline (lazy-initialized on first use).
     gpu_scopes: Option<klipp_effects::gpu_scopes::GpuScopesPipeline>,
     gpu_scopes_init_attempted: bool,
+    /// Receiver for background scope renders (mode_index, image).
+    bg_receiver: Option<std::sync::mpsc::Receiver<(usize, egui::ColorImage)>>,
 }
 
 fn mode_index(mode: ScopeMode) -> usize {
@@ -28,15 +29,14 @@ impl Default for ScopeState {
     fn default() -> Self {
         Self {
             textures: [None, None, None, None],
-            last_update: std::time::Instant::now(),
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             render_sizes: [(0, 0); 4],
             gpu_scopes: None,
             gpu_scopes_init_attempted: false,
+            bg_receiver: None,
         }
     }
 }
-const UPDATE_INTERVAL_MS: u128 = 32; // ~30fps for background pre-render of other modes
 
 /// Render scopes into the given UI area.
 /// Each scope mode has its own cached texture — switching modes is instant.
@@ -54,133 +54,99 @@ pub fn show_scopes(
     let render_h = ((available.y * ppp) as usize).clamp(60, 400);
 
     let mi = mode_index(mode);
-    let now = std::time::Instant::now();
-    let elapsed = now.duration_since(state.last_update).as_millis();
 
-    // Lock frame buffer
-    let fb = frame_buffer.lock().unwrap();
-    let has_data = fb.width > 0 && fb.height > 0 && !fb.data.is_empty();
+    // ── Brief lock: snapshot frame data only if generation changed ─────────
+    // Release the lock BEFORE computing — never hold it during scope work.
+    let snapshot = {
+        let fb = frame_buffer.lock().unwrap();
+        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+            None
+        } else {
+            let gen = fb.generation;
+            let stale = state.textures[mi].is_none()
+                || state.frame_generations[mi] != gen
+                || state.render_sizes[mi] != (render_w, render_h);
+            if stale {
+                Some((fb.data.clone(), fb.width, fb.height, gen))
+            } else {
+                None
+            }
+        }
+        // Lock dropped here — engine is free to write new frames
+    };
 
-    if has_data {
-        let frame_gen = fb.generation;
-        let base_step: u32 = if fb.width > 1280 { 3 } else if fb.width > 640 { 2 } else { 1 };
+    if let Some((rgba, width, height, gen)) = snapshot {
+        state.frame_generations[mi] = gen;
+        state.render_sizes[mi] = (render_w, render_h);
+        // Invalidate other modes so they re-render when switched to
+        for idx in 0..4 {
+            if idx != mi { state.frame_generations[idx] = u64::MAX; }
+        }
+
+        let base_step: u32 = if width > 1280 { 3 } else if width > 640 { 2 } else { 1 };
         let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
-        // ALWAYS ensure the current mode's texture exists — instant display on tab switch
-        let current_stale = state.textures[mi].is_none()
-            || state.frame_generations[mi] != frame_gen
-            || state.render_sizes[mi] != (render_w, render_h);
+        // Lazy-init GPU scopes pipeline
+        if !state.gpu_scopes_init_attempted {
+            state.gpu_scopes_init_attempted = true;
+            state.gpu_scopes = klipp_effects::gpu_scopes::GpuScopesPipeline::new();
+            if state.gpu_scopes.is_some() {
+                tracing::info!("GPU scopes pipeline initialized");
+            }
+        }
 
-        if current_stale {
-            // Render the CURRENT mode immediately — no throttle
-            state.frame_generations[mi] = frame_gen;
-            state.render_sizes[mi] = (render_w, render_h);
-
-            // Lazy-init GPU scopes pipeline
-            if !state.gpu_scopes_init_attempted {
-                state.gpu_scopes_init_attempted = true;
-                state.gpu_scopes = klipp_effects::gpu_scopes::GpuScopesPipeline::new();
-                if state.gpu_scopes.is_some() {
-                    tracing::info!("GPU scopes pipeline initialized");
+        // Only compute the ACTIVE scope mode — don't waste time on inactive ones
+        let image = match mode {
+            ScopeMode::Waveform => {
+                if let Some(gpu) = &mut state.gpu_scopes {
+                    let wf = gpu.compute_waveform(&rgba, width, height, render_w as u32, step);
+                    render_waveform_from_bins(&wf.bins, render_w, render_h)
+                } else {
+                    render_waveform(&rgba, width, height, step, render_w, render_h)
                 }
             }
+            ScopeMode::Parade => {
+                if let Some(gpu) = &mut state.gpu_scopes {
+                    let gap = 4;
+                    let section_w = (render_w - gap * 2) / 3;
+                    let p = gpu.compute_parade(&rgba, width, height, section_w as u32, step);
+                    render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
+                } else {
+                    render_parade(&rgba, width, height, step, render_w, render_h)
+                }
+            }
+            ScopeMode::Histogram => {
+                if let Some(gpu) = &mut state.gpu_scopes {
+                    let h = gpu.compute_histogram(&rgba, width, height, step);
+                    render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
+                } else {
+                    render_histogram(&rgba, width, height, step, render_w, render_h)
+                }
+            }
+            ScopeMode::Vectorscope => render_vectorscope(&rgba, width, height, step, render_w, render_h, skin_tone_angle),
+        };
 
-            let image = match mode {
-                ScopeMode::Waveform => {
-                    if let Some(gpu) = &mut state.gpu_scopes {
-                        let wf = gpu.compute_waveform(&fb.data, fb.width, fb.height, render_w as u32, step);
-                        render_waveform_from_bins(&wf.bins, render_w, render_h)
-                    } else {
-                        render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                    }
-                }
-                ScopeMode::Parade => {
-                    if let Some(gpu) = &mut state.gpu_scopes {
-                        let gap = 4;
-                        let section_w = (render_w - gap * 2) / 3;
-                        let p = gpu.compute_parade(&fb.data, fb.width, fb.height, section_w as u32, step);
-                        render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
-                    } else {
-                        render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                    }
-                }
-                ScopeMode::Histogram => {
-                    if let Some(gpu) = &mut state.gpu_scopes {
-                        let h = gpu.compute_histogram(&fb.data, fb.width, fb.height, step);
-                        render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
-                    } else {
-                        render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                    }
-                }
-                ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
-            };
+        if let Some(ref mut tex) = state.textures[mi] {
+            tex.set(image, egui::TextureOptions::LINEAR);
+        } else {
+            state.textures[mi] = Some(ui.ctx().load_texture(
+                format!("scope_{mi}"), image, egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
 
-            if let Some(ref mut tex) = state.textures[mi] {
+    // Check for pending background results (async scope renders)
+    if let Some(rx) = &state.bg_receiver {
+        if let Ok((idx, image)) = rx.try_recv() {
+            if let Some(ref mut tex) = state.textures[idx] {
                 tex.set(image, egui::TextureOptions::LINEAR);
             } else {
-                state.textures[mi] = Some(ui.ctx().load_texture(
-                    format!("scope_{mi}"), image, egui::TextureOptions::LINEAR,
+                state.textures[idx] = Some(ui.ctx().load_texture(
+                    format!("scope_{idx}"), image, egui::TextureOptions::LINEAR,
                 ));
             }
         }
-
-        // Pre-render OTHER modes in the background (throttled — don't block the UI)
-        if elapsed >= UPDATE_INTERVAL_MS {
-            let all_modes = [ScopeMode::Waveform, ScopeMode::Parade, ScopeMode::Vectorscope, ScopeMode::Histogram];
-            for m in all_modes {
-                let idx = mode_index(m);
-                if idx == mi { continue; } // Already rendered above
-                let stale = state.textures[idx].is_none()
-                    || state.frame_generations[idx] != frame_gen
-                    || state.render_sizes[idx] != (render_w, render_h);
-                if stale {
-                    state.frame_generations[idx] = frame_gen;
-                    state.render_sizes[idx] = (render_w, render_h);
-                    let image = match m {
-                        ScopeMode::Waveform => {
-                            if let Some(gpu) = &mut state.gpu_scopes {
-                                let wf = gpu.compute_waveform(&fb.data, fb.width, fb.height, render_w as u32, step);
-                                render_waveform_from_bins(&wf.bins, render_w, render_h)
-                            } else {
-                                render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                            }
-                        }
-                        ScopeMode::Parade => {
-                            if let Some(gpu) = &mut state.gpu_scopes {
-                                let gap = 4;
-                                let section_w = (render_w - gap * 2) / 3;
-                                let p = gpu.compute_parade(&fb.data, fb.width, fb.height, section_w as u32, step);
-                                render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h)
-                            } else {
-                                render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                            }
-                        }
-                        ScopeMode::Histogram => {
-                            if let Some(gpu) = &mut state.gpu_scopes {
-                                let h = gpu.compute_histogram(&fb.data, fb.width, fb.height, step);
-                                render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h)
-                            } else {
-                                render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h)
-                            }
-                        }
-                        ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
-                    };
-                    if let Some(ref mut tex) = state.textures[idx] {
-                        tex.set(image, egui::TextureOptions::LINEAR);
-                    } else {
-                        state.textures[idx] = Some(ui.ctx().load_texture(
-                            format!("scope_{idx}"), image, egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                }
-            }
-            state.last_update = now;
-        }
-
-        // Request repaint to keep scopes tracking slider changes
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
-    drop(fb);
 
     // Display the cached texture for this mode
     if let Some(tex) = &state.textures[mi] {
