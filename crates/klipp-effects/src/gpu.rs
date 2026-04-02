@@ -6712,67 +6712,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.out_w * params.out_h { return; }
     let px = idx % params.out_w;
     let py = idx / params.out_w;
-    let norm = f32(params.max_count) * 0.5;
 
-    // Map pixel to bin column
     let col = px * params.num_cols / params.out_w;
-    // Map pixel Y to bin index (0=top=255, bottom=0)
     let bin = 255u - (py * 256u / params.out_h);
 
     let count = f32(bins[col * 256u + bin]);
     if count < 0.5 {
-        // Check neighbors for glow (sample adjacent bins)
-        var glow = 0.0;
-        if bin > 0u { glow += f32(bins[col * 256u + bin - 1u]) * 0.3; }
-        if bin < 255u { glow += f32(bins[col * 256u + bin + 1u]) * 0.3; }
-        if col > 0u { glow += f32(bins[(col - 1u) * 256u + bin]) * 0.15; }
-        if col + 1u < params.num_cols { glow += f32(bins[(col + 1u) * 256u + bin]) * 0.15; }
-        if glow < 0.5 {
-            // Background: very dark with subtle grid
-            let is_grid = (bin % 64u == 0u) || (px % (params.out_w / 4u) == 0u);
-            if is_grid {
-                output[idx] = 0x10u | (0x10u << 8u) | (0x14u << 16u) | (0xFFu << 24u);
-            } else {
-                output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
-            }
-            return;
-        }
-        let raw = glow / norm;
-        let i = min(raw, 3.0) * 0.4;
-        let ro = u32(clamp(0.15 * i * 255.0, 0.0, 255.0));
-        let go = u32(clamp(0.8 * i * 255.0, 0.0, 255.0));
-        let bo = u32(clamp(0.15 * i * 255.0, 0.0, 255.0));
-        output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+        output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
         return;
     }
 
-    let raw = count / norm;
-    let intensity = min(raw, 5.0);
+    // DaVinci log tone mapping
+    let gain = 300.0;
+    let brightness = log(1.0 + count * gain) / log(1.0 + gain);
+    let out = pow(clamp(brightness, 0.0, 1.0), 1.0 / 2.2);
 
-    // IRE range coloring: 16-235 = green, outside = red warning
-    let is_safe = (bin >= 16u) && (bin <= 235u);
-    var cr: f32; var cg: f32; var cb: f32;
-    if is_safe {
-        cr = 0.2; cg = 1.8; cb = 0.2;
-    } else {
-        cr = 1.8; cg = 0.2; cb = 0.1;
-    }
-
-    // White-hot core: dense areas shift toward white (DaVinci look)
-    let white = clamp(raw * 0.5 - 0.1, 0.0, 1.0);
-    let r = cr * intensity + 0.8 * white * intensity;
-    let g = cg * intensity + 0.6 * white * intensity;
-    let b = cb * intensity + 0.8 * white * intensity;
-
-    // Filmic tone mapping
-    let tone_r = min(r * (r * 0.6 + 0.4) / (r * (r * 0.6 + 0.85) + 0.15), 1.0);
-    let tone_g = min(g * (g * 0.6 + 0.4) / (g * (g * 0.6 + 0.85) + 0.15), 1.0);
-    let tone_b = min(b * (b * 0.6 + 0.4) / (b * (b * 0.6 + 0.85) + 0.15), 1.0);
-
-    // Gamma 2.0
-    let ro = u32(clamp(sqrt(tone_r) * 255.0, 0.0, 255.0));
-    let go = u32(clamp(sqrt(tone_g) * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(sqrt(tone_b) * 255.0, 0.0, 255.0));
+    // Green trace with subtle secondaries
+    let ro = u32(clamp(out * 0.15 * 255.0, 0.0, 255.0));
+    let go = u32(clamp(out * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(out * 0.15 * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";
@@ -6792,13 +6750,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.out_w * params.out_h { return; }
     let px = idx % params.out_w;
     let py = idx / params.out_w;
-    let norm = f32(params.max_count) * 0.5;
     let bin = 255u - (py * 256u / params.out_h);
 
-    // Which channel section? (0=R, 1=G, 2=B)
-    let gap = 3u;
+    let gap = 2u;
     let section_w = (params.out_w - gap * 2u) / 3u;
-    var channel = 3u; // 3 = gap area
+    var channel = 3u;
     var local_x = 0u;
     if px < section_w {
         channel = 0u; local_x = px;
@@ -6809,7 +6765,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     if channel >= 3u {
-        output[idx] = 0x08u | (0x08u << 8u) | (0x0Cu << 16u) | (0xFFu << 24u);
+        output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
         return;
     }
 
@@ -6818,62 +6774,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let count = f32(bins[channel * dc256 + col * 256u + bin]);
 
     if count < 0.5 {
-        // Glow from neighbors
-        var glow = 0.0;
-        let base = channel * dc256 + col * 256u;
-        if bin > 0u { glow += f32(bins[base + bin - 1u]) * 0.3; }
-        if bin < 255u { glow += f32(bins[base + bin + 1u]) * 0.3; }
-        if col > 0u { glow += f32(bins[channel * dc256 + (col - 1u) * 256u + bin]) * 0.15; }
-        if col + 1u < params.num_cols { glow += f32(bins[channel * dc256 + (col + 1u) * 256u + bin]) * 0.15; }
-        if glow < 0.5 {
-            let is_grid = (bin % 64u == 0u);
-            if is_grid {
-                output[idx] = 0x10u | (0x10u << 8u) | (0x14u << 16u) | (0xFFu << 24u);
-            } else {
-                output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
-            }
-            return;
-        }
-        let raw = glow / norm;
-        let i = min(raw, 3.0) * 0.3;
-        var rr = 0.0; var gg = 0.0; var bb = 0.0;
-        if channel == 0u { rr = i; gg = i * 0.03; bb = i * 0.02; }
-        else if channel == 1u { rr = i * 0.02; gg = i; bb = i * 0.03; }
-        else { rr = i * 0.03; gg = i * 0.05; bb = i; }
-        let ro = u32(clamp(rr * 255.0, 0.0, 255.0));
-        let go = u32(clamp(gg * 255.0, 0.0, 255.0));
-        let bo = u32(clamp(bb * 255.0, 0.0, 255.0));
-        output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
+        output[idx] = 0x04u | (0x04u << 8u) | (0x07u << 16u) | (0xFFu << 24u);
         return;
     }
 
-    let raw = count / norm;
-    let intensity = min(raw, 5.0);
-    let white = clamp(raw * 0.5 - 0.1, 0.0, 1.0);
+    // DaVinci log tone mapping: log(1 + count * gain) / log(1 + gain)
+    let gain = 300.0;
+    let brightness = log(1.0 + count * gain) / log(1.0 + gain);
+    let out = pow(clamp(brightness, 0.0, 1.0), 1.0 / 2.2);
 
-    // Channel colors with white-hot core
+    // Pure channel color
     var r = 0.0; var g = 0.0; var b = 0.0;
-    if channel == 0u {
-        r = 2.0 * intensity + 0.8 * white * intensity;
-        g = 0.05 * intensity + 0.6 * white * intensity;
-        b = 0.03 * intensity + 0.5 * white * intensity;
-    } else if channel == 1u {
-        r = 0.03 * intensity + 0.5 * white * intensity;
-        g = 2.0 * intensity + 0.8 * white * intensity;
-        b = 0.05 * intensity + 0.5 * white * intensity;
-    } else {
-        r = 0.05 * intensity + 0.5 * white * intensity;
-        g = 0.08 * intensity + 0.6 * white * intensity;
-        b = 2.0 * intensity + 0.8 * white * intensity;
-    }
+    if channel == 0u { r = out; g = out * 0.06; b = out * 0.03; }
+    else if channel == 1u { r = out * 0.03; g = out; b = out * 0.06; }
+    else { r = out * 0.06; g = out * 0.08; b = out; }
 
-    let tone_r = min(r * (r * 0.6 + 0.4) / (r * (r * 0.6 + 0.85) + 0.15), 1.0);
-    let tone_g = min(g * (g * 0.6 + 0.4) / (g * (g * 0.6 + 0.85) + 0.15), 1.0);
-    let tone_b = min(b * (b * 0.6 + 0.4) / (b * (b * 0.6 + 0.85) + 0.15), 1.0);
-
-    let ro = u32(clamp(sqrt(tone_r) * 255.0, 0.0, 255.0));
-    let go = u32(clamp(sqrt(tone_g) * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(sqrt(tone_b) * 255.0, 0.0, 255.0));
+    let ro = u32(clamp(r * 255.0, 0.0, 255.0));
+    let go = u32(clamp(g * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(b * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";

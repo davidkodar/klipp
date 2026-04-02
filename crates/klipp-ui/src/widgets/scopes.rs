@@ -76,11 +76,9 @@ pub fn show_scopes(
                     };
                     Some((ScopeImage::Ready(image), gen))
                 } else {
-                    let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
-                        (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
-                    } else {
-                        (&fb.data[..], fb.width, fb.height)
-                    };
+                    // Always use full resolution frame for scope rendering
+                    // (scope_preview is too low-res for quality traces)
+                    let (src, w, h) = (&fb.data[..], fb.width, fb.height);
                     let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
 
                     // Direct accumulation rendering (DaVinci technique)
