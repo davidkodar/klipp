@@ -254,7 +254,7 @@ impl KlippApp {
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
-            ui_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
+            ui_executor: klipp_nodes::GraphExecutor::new(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
         };
