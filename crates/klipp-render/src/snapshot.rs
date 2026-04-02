@@ -836,6 +836,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -915,6 +916,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -978,6 +980,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1034,6 +1037,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1093,6 +1097,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1153,6 +1158,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1194,6 +1200,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1259,6 +1266,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1299,6 +1307,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };
@@ -1370,6 +1379,7 @@ mod tests {
             speed_keyframes: Vec::new(), source_rotation: 0,
             enabled: true, multicam_group: None, multicam_angle: 0, multicam_cuts: Vec::new(), stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
             audio_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
         };

@@ -706,7 +706,10 @@ impl KlippApp {
                 | AppEvent::MediaFileChanged { .. }
                 | AppEvent::StabilizationProgress { .. }
                 | AppEvent::StabilizationComplete { .. }
-                | AppEvent::StabilizationFailed { .. } => {}
+                | AppEvent::StabilizationFailed { .. }
+                | AppEvent::TrackingProgress { .. }
+                | AppEvent::TrackingComplete { .. }
+                | AppEvent::TrackingFailed { .. } => {}
             }
         }
     }
@@ -5374,6 +5377,7 @@ impl KlippApp {
                         audio_effects: Vec::new(),
                         stabilization_data: None,
                         smoothed_trajectory: None,
+                        track_points: Vec::new(),
                     };
                     // Apply baked-in title animation keyframes
                     if let Some(anim_str) = self.state.pending_title_animation.take() {
@@ -6114,6 +6118,7 @@ impl KlippApp {
                                     audio_effects: clip.audio_effects.clone(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
+                                    track_points: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyPasteClip {
@@ -6275,6 +6280,7 @@ impl KlippApp {
                             audio_effects: clip.audio_effects.clone(),
                             stabilization_data: None,
                             smoothed_trajectory: None,
+                            track_points: Vec::new(),
                         };
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
                         Self::overwrite_insert_clip_on_track(track, new_clip.clone());
@@ -7060,6 +7066,7 @@ impl KlippApp {
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
+                                    track_points: Vec::new(),
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
                                 self.state.selected_clip = Some(new_id);
@@ -7152,6 +7159,7 @@ impl KlippApp {
                                     audio_effects: Vec::new(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
+                                    track_points: Vec::new(),
                                 };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
@@ -8524,6 +8532,232 @@ impl KlippApp {
                     self.state.stabilization_progress.remove(clip_id);
                     continue;
                 }
+                AppCommand::ToggleTrackingMode => {
+                    self.state.tracking_mode = !self.state.tracking_mode;
+                    continue;
+                }
+                AppCommand::AddTrackPoint { clip_id, x, y } => {
+                    // Create a new track point at the given normalized position
+                    let fps = self.state.fps.as_f64();
+                    let playhead_secs = self.state.playhead_smooth_secs;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        let clip_in_secs = clip.timeline_in.to_secs_f64();
+                        let source_in_secs = clip.source_in.to_secs_f64();
+                        let clip_time = playhead_secs - clip_in_secs + source_in_secs;
+                        let frame_idx = (clip_time * fps).round() as usize;
+                        let count = clip.track_points.len();
+                        let mut tp = klipp_core::TrackPoint::default();
+                        tp.name = format!("Tracker {}", count + 1);
+                        tp.start_frame = frame_idx;
+                        tp.positions = vec![(*x, *y)];
+                        clip.track_points.push(tp);
+                        self.state.active_track_point = Some(count);
+                    }
+                    self.state.tracking_mode = false;
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveTrackPoint { clip_id, index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        if *index < clip.track_points.len() {
+                            clip.track_points.remove(*index);
+                        }
+                    }
+                    if self.state.active_track_point == Some(*index) {
+                        self.state.active_track_point = None;
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::CancelTrackAnalysis { clip_id } => {
+                    self.state.tracking_in_progress.remove(clip_id);
+                    self.state.tracking_progress.remove(clip_id);
+                    continue;
+                }
+                AppCommand::AnalyzeTrackPoint { clip_id, point_index } => {
+                    let clip_id = *clip_id;
+                    let point_index = *point_index;
+                    // Get clip info for tracking
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id)
+                        .and_then(|c| {
+                            let mid = c.media_id()?;
+                            let item = self.state.media_pool.get(&mid)?;
+                            let fps = item.fps.as_f64();
+                            let dur_secs = item.duration.to_secs_f64();
+                            let frame_count = (dur_secs * fps).round() as usize;
+                            let tp = c.track_points.get(point_index)?;
+                            let start_frame = tp.start_frame;
+                            let initial_pos = tp.positions.first().copied()?;
+                            let search_radius = tp.search_radius;
+                            Some((item.path.clone(), fps, frame_count, start_frame, initial_pos, search_radius))
+                        });
+
+                    if let Some((path, fps, frame_count, ref_frame, initial_pos_norm, search_radius)) = clip_info {
+                        self.state.tracking_in_progress.insert(clip_id);
+                        self.state.tracking_progress.insert(clip_id, 0.0);
+                        let event_tx = self.proxy_event_tx.clone();
+
+                        std::thread::spawn(move || {
+                            // Decode a frame to get dimensions for coordinate conversion
+                            let first_frame = klipp_engine::generate_thumbnail_at_size(&path, 0.0, 480);
+                            let (sample_w, sample_h) = match &first_frame {
+                                Ok((_, w, h)) => (*w, *h),
+                                Err(_) => (960, 540),
+                            };
+                            // Convert normalized pos to half-res pixel coordinates
+                            let half_w = sample_w / 2;
+                            let half_h = sample_h / 2;
+                            let px = initial_pos_norm.0 * half_w as f64;
+                            let py = initial_pos_norm.1 * half_h as f64;
+
+                            // Track forward from reference frame
+                            let forward_result = klipp_effects::stabilization::track_point(
+                                (px, py),
+                                ref_frame,
+                                fps,
+                                frame_count,
+                                &mut |time_secs| {
+                                    klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
+                                },
+                                search_radius / 2, // half-res
+                                6, // patch_half
+                                25, // loss threshold
+                                true,
+                                &|p| {
+                                    let _ = event_tx.send(AppEvent::TrackingProgress { clip_id, progress: p * 0.5 });
+                                    true
+                                },
+                            );
+
+                            // Track backward from reference frame
+                            let backward_result = klipp_effects::stabilization::track_point(
+                                (px, py),
+                                ref_frame,
+                                fps,
+                                frame_count,
+                                &mut |time_secs| {
+                                    klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
+                                },
+                                search_radius / 2,
+                                6,
+                                25,
+                                false,
+                                &|p| {
+                                    let _ = event_tx.send(AppEvent::TrackingProgress { clip_id, progress: 0.5 + p * 0.5 });
+                                    true
+                                },
+                            );
+
+                            // Merge results: backward (reversed) + forward
+                            let mut all_positions: Vec<(usize, f64, f64)> = Vec::new();
+                            if let Ok(mut bwd) = backward_result {
+                                bwd.reverse();
+                                all_positions.extend(bwd);
+                            }
+                            if let Ok(fwd) = forward_result {
+                                // Skip the reference frame (already in backward results)
+                                for entry in fwd.into_iter().skip(1) {
+                                    all_positions.push(entry);
+                                }
+                            }
+
+                            // Sort by frame index
+                            all_positions.sort_by_key(|&(idx, _, _)| idx);
+
+                            // Convert back to normalized coordinates
+                            let normalized: Vec<(f64, f64)> = all_positions.iter()
+                                .map(|&(_, x, y)| (x / half_w as f64, y / half_h as f64))
+                                .collect();
+
+                            let start_frame = all_positions.first().map(|&(idx, _, _)| idx).unwrap_or(ref_frame);
+
+                            let _ = event_tx.send(AppEvent::TrackingComplete {
+                                clip_id,
+                                point_index,
+                                positions: normalized,
+                                start_frame,
+                            });
+                        });
+                    }
+                    continue;
+                }
+                AppCommand::GenerateKeyframesFromTrack { clip_id, point_index, target } => {
+                    let clip_id = *clip_id;
+                    let point_index = *point_index;
+                    let target = target.clone();
+                    let fps = self.state.fps.as_f64();
+
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                        if let Some(tp) = clip.track_points.get(point_index) {
+                            let positions = tp.positions.clone();
+                            let start_frame = tp.start_frame;
+
+                            match target {
+                                klipp_core::TrackTarget::TransformPosition => {
+                                    clip.transform_pos_x_keyframes.clear();
+                                    clip.transform_pos_y_keyframes.clear();
+                                    for (i, &(nx, ny)) in positions.iter().enumerate() {
+                                        let frame_idx = start_frame + i;
+                                        let t = frame_idx as f64 / fps;
+                                        let pos_x = (nx - 0.5) as f32;
+                                        let pos_y = (ny - 0.5) as f32;
+                                        clip.transform_pos_x_keyframes.push(klipp_core::Keyframe {
+                                            time_secs: t,
+                                            value: pos_x,
+                                            interpolation: klipp_core::Interpolation::Linear,
+                                            tangent_in: (0.0, 0.0),
+                                            tangent_out: (0.0, 0.0),
+                                        });
+                                        clip.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+                                            time_secs: t,
+                                            value: pos_y,
+                                            interpolation: klipp_core::Interpolation::Linear,
+                                            tangent_in: (0.0, 0.0),
+                                            tangent_out: (0.0, 0.0),
+                                        });
+                                    }
+                                    self.state.toast.show("Generated transform keyframes from tracker");
+                                }
+                                klipp_core::TrackTarget::MaskCenter { node_id, mask_index } => {
+                                    if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                        if let Some(mask_stack) = &mut node.params.masks {
+                                            if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
+                                                mask.keyframes.center_x.clear();
+                                                mask.keyframes.center_y.clear();
+                                                for (i, &(nx, ny)) in positions.iter().enumerate() {
+                                                    let frame_idx = start_frame + i;
+                                                    let t = frame_idx as f64 / fps;
+                                                    mask.keyframes.center_x.push(klipp_core::Keyframe {
+                                                        time_secs: t,
+                                                        value: nx as f32,
+                                                        interpolation: klipp_core::Interpolation::Linear,
+                                                        tangent_in: (0.0, 0.0),
+                                                        tangent_out: (0.0, 0.0),
+                                                    });
+                                                    mask.keyframes.center_y.push(klipp_core::Keyframe {
+                                                        time_secs: t,
+                                                        value: ny as f32,
+                                                        interpolation: klipp_core::Interpolation::Linear,
+                                                        tangent_in: (0.0, 0.0),
+                                                        tangent_out: (0.0, 0.0),
+                                                    });
+                                                }
+                                                self.state.toast.show("Generated mask center keyframes from tracker");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
                 _ => {}
             }
             let _ = self.cmd_tx.send(cmd);
@@ -9325,6 +9559,7 @@ impl KlippApp {
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
+                track_points: Vec::new(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -9442,6 +9677,7 @@ impl KlippApp {
                 audio_effects: clip.audio_effects.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
+                track_points: Vec::new(),
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -12974,6 +13210,28 @@ impl KlippApp {
                     self.state.stabilization_progress.remove(&clip_id);
                     tracing::warn!("Stabilization failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Stabilization failed: {error}"));
+                }
+                AppEvent::TrackingProgress { clip_id, progress } => {
+                    self.state.tracking_progress.insert(clip_id, progress);
+                }
+                AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame } => {
+                    self.state.tracking_in_progress.remove(&clip_id);
+                    self.state.tracking_progress.remove(&clip_id);
+                    // Update the track point with results
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                        if let Some(tp) = clip.track_points.get_mut(point_index) {
+                            tp.positions = positions;
+                            tp.start_frame = start_frame;
+                        }
+                    }
+                    self.state.toast.show("Point tracking complete");
+                }
+                AppEvent::TrackingFailed { clip_id, error } => {
+                    self.state.tracking_in_progress.remove(&clip_id);
+                    self.state.tracking_progress.remove(&clip_id);
+                    tracing::warn!("Point tracking failed for {:?}: {}", clip_id, error);
+                    self.state.toast.show(format!("Point tracking failed: {error}"));
                 }
                 _ => {}
             }

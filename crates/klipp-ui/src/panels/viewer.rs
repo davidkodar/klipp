@@ -716,6 +716,9 @@ impl ViewerPanel {
         // Draw and interact with masks from the selected node in the clip's node graph.
         self.draw_mask_handles(ui, state, image_rect, cmds);
 
+        // ── Point tracking overlay ──
+        self.draw_track_points(ui, state, image_rect, cmds);
+
         // ── Overlay mode badge (top-right of video) ──
         {
             use crate::state::ViewerOverlay;
@@ -1262,6 +1265,143 @@ impl ViewerPanel {
                 font.clone(),
                 color,
             );
+        }
+    }
+
+    /// Draw track point crosshairs and handle tracking placement mode.
+    fn draw_track_points(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        // Tracking placement mode: amber border + click to place
+        if state.tracking_mode {
+            // Amber border
+            let border_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+            ui.painter().rect_stroke(image_rect.shrink(1.0), 0.0, border_stroke);
+
+            // "TRACKING" label top-left
+            let label_pos = egui::pos2(image_rect.left() + 8.0, image_rect.top() + 8.0);
+            let label_bg = egui::Rect::from_min_size(label_pos, egui::vec2(80.0, 18.0));
+            ui.painter().rect_filled(label_bg, 3.0, egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 200));
+            ui.painter().text(
+                egui::pos2(label_bg.center().x, label_bg.center().y),
+                egui::Align2::CENTER_CENTER,
+                "TRACKING",
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgb(0x1a, 0x1a, 0x1a),
+            );
+
+            // Click to place tracker
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            let place_resp = ui.allocate_rect(image_rect, egui::Sense::click());
+            if place_resp.clicked() {
+                if let Some(pos) = place_resp.interact_pointer_pos() {
+                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                    if let Some(clip_id) = state.selected_clip {
+                        cmds.push(AppCommand::AddTrackPoint { clip_id, x: nx as f64, y: ny as f64 });
+                        state.tracking_mode = false;
+                    }
+                }
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                state.tracking_mode = false;
+            }
+        }
+
+        // Draw existing track points
+        if let Some(clip_id) = state.selected_clip {
+            let clip_opt = state.sequence().tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|t| t.find_clip(clip_id));
+            if let Some(clip) = clip_opt {
+                if clip.track_points.is_empty() {
+                    return;
+                }
+
+                // Compute current frame index relative to clip source_in
+                let playhead_secs = state.playhead_smooth_secs;
+                let clip_in_secs = clip.timeline_in.to_secs_f64();
+                let source_in_secs = clip.source_in.to_secs_f64();
+                let clip_time = playhead_secs - clip_in_secs + source_in_secs;
+                let fps = state.fps.as_f64();
+                let current_frame = (clip_time * fps).round() as usize;
+
+                for (idx, tp) in clip.track_points.iter().enumerate() {
+                    if !tp.enabled {
+                        continue;
+                    }
+
+                    // Find position for current frame
+                    let frame_offset = current_frame.saturating_sub(tp.start_frame);
+                    let pos = if frame_offset < tp.positions.len() {
+                        Some(tp.positions[frame_offset])
+                    } else {
+                        None
+                    };
+
+                    if let Some((nx, ny)) = pos {
+                        let color = egui::Color32::from_rgba_unmultiplied(
+                            tp.color[0], tp.color[1], tp.color[2], tp.color[3],
+                        );
+                        let dim_color = egui::Color32::from_rgba_unmultiplied(
+                            tp.color[0], tp.color[1], tp.color[2], 50,
+                        );
+
+                        // Convert normalized to screen coordinates
+                        let sx = nx as f32 * image_rect.width() + image_rect.left();
+                        let sy = ny as f32 * image_rect.height() + image_rect.top();
+                        let center = egui::pos2(sx, sy);
+                        let arm = 8.0;
+
+                        // Crosshair lines
+                        ui.painter().line_segment(
+                            [egui::pos2(sx - arm, sy), egui::pos2(sx + arm, sy)],
+                            egui::Stroke::new(1.5, color),
+                        );
+                        ui.painter().line_segment(
+                            [egui::pos2(sx, sy - arm), egui::pos2(sx, sy + arm)],
+                            egui::Stroke::new(1.5, color),
+                        );
+
+                        // Center circle
+                        ui.painter().circle_stroke(center, 3.0, egui::Stroke::new(1.5, color));
+
+                        // Search region rectangle (dim)
+                        let sr_px = tp.search_radius as f32 * 2.0;
+                        // Scale search region relative to image size (approximate)
+                        let sr_screen_w = sr_px / 960.0 * image_rect.width(); // assume half-res ~960
+                        let sr_screen_h = sr_px / 540.0 * image_rect.height();
+                        let sr_rect = egui::Rect::from_center_size(
+                            center,
+                            egui::vec2(sr_screen_w, sr_screen_h),
+                        );
+                        ui.painter().rect_stroke(sr_rect, 0.0, egui::Stroke::new(0.5, dim_color));
+
+                        // Name label
+                        let label = if tp.name.is_empty() {
+                            format!("Track {}", idx + 1)
+                        } else {
+                            tp.name.clone()
+                        };
+                        ui.painter().text(
+                            egui::pos2(sx + arm + 4.0, sy - arm),
+                            egui::Align2::LEFT_CENTER,
+                            &label,
+                            egui::FontId::proportional(9.0),
+                            color,
+                        );
+
+                        // Highlight active track point
+                        if state.active_track_point == Some(idx) {
+                            ui.painter().circle_stroke(center, 6.0, egui::Stroke::new(1.0, color));
+                        }
+                    }
+                }
+            }
         }
     }
 

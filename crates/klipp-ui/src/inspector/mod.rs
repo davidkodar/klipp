@@ -304,6 +304,7 @@ impl NewInspectorPanel {
                             audio_effects: Vec::new(),
                             stabilization_data: None,
                             smoothed_trajectory: None,
+                            track_points: Vec::new(),
                         };
                         audio_tab::show(ui, theme, state, Some((&temp_clip, 0, false)), &mut cmds, (0.0, 0.0), None, source_channels, 0.0, &mut self.duck, &track_infos);
                     } else {

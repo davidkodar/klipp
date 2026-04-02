@@ -860,6 +860,20 @@ pub enum AppCommand {
     AnalyzeStabilization { clip_id: ClipId },
     CancelStabilization { clip_id: ClipId },
 
+    // Point tracking
+    /// Add a new track point to a clip at the given normalized position.
+    AddTrackPoint { clip_id: ClipId, x: f64, y: f64 },
+    /// Remove a track point by index.
+    RemoveTrackPoint { clip_id: ClipId, index: usize },
+    /// Analyze a track point (forward and backward from current frame).
+    AnalyzeTrackPoint { clip_id: ClipId, point_index: usize },
+    /// Cancel track analysis.
+    CancelTrackAnalysis { clip_id: ClipId },
+    /// Toggle tracking placement mode.
+    ToggleTrackingMode,
+    /// Generate keyframes from track point data to a target parameter.
+    GenerateKeyframesFromTrack { clip_id: ClipId, point_index: usize, target: TrackTarget },
+
     // Grade versioning
     /// Save the current node_graph as a new named grade version.
     SaveGradeVersion { clip_id: ClipId, name: String },
@@ -1043,4 +1057,18 @@ pub enum AppEvent {
     StabilizationProgress { clip_id: ClipId, progress: f32 },
     StabilizationComplete { clip_id: ClipId },
     StabilizationFailed { clip_id: ClipId, error: String },
+
+    // Point tracking
+    TrackingProgress { clip_id: ClipId, progress: f32 },
+    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize },
+    TrackingFailed { clip_id: ClipId, error: String },
+}
+
+/// Target for generating keyframes from tracked point data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TrackTarget {
+    /// Generate position keyframes for a mask's center.
+    MaskCenter { node_id: uuid::Uuid, mask_index: usize },
+    /// Generate transform position keyframes.
+    TransformPosition,
 }

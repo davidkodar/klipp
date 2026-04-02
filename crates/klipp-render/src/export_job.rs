@@ -388,7 +388,7 @@ mod tests {
                         builtin_effects: vec![],
                         source_rotation: 0,
                         stabilization_data: None,
-                        smoothed_trajectory: None, }],
+                        smoothed_trajectory: None, track_points: Vec::new(), }],
                     transitions: vec![],
                 },
                 VideoTrackSnapshot {
@@ -407,7 +407,7 @@ mod tests {
                         builtin_effects: vec![],
                         source_rotation: 0,
                         stabilization_data: None,
-                        smoothed_trajectory: None, }],
+                        smoothed_trajectory: None, track_points: Vec::new(), }],
                     transitions: vec![],
                 },
             ],

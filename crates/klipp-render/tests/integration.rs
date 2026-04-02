@@ -343,7 +343,7 @@ fn export_real_media_h264() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None, }],
+                smoothed_trajectory: None, track_points: Vec::new(), }],
             transitions: vec![],
         }],
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
@@ -450,7 +450,7 @@ fn export_real_media_with_color_grade() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None, }],
+                smoothed_trajectory: None, track_points: Vec::new(), }],
             transitions: vec![],
         }],
         audio_tracks: vec![],
@@ -518,7 +518,7 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None, },
+                    smoothed_trajectory: None, track_points: Vec::new(), },
                 // Title for second second
                 snapshot::ClipSnapshot {
                     id: ClipId::new(),
@@ -533,7 +533,7 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None, },
+                    smoothed_trajectory: None, track_points: Vec::new(), },
             ],
             transitions: vec![],
         }],

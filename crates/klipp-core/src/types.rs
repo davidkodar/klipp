@@ -172,6 +172,35 @@ impl ClipRole {
     }
 }
 
+/// A tracked point with per-frame position data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackPoint {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub color: [u8; 4],
+    /// Per-frame positions (frame_index -> (x, y) in normalized 0.0-1.0 coordinates).
+    pub positions: Vec<(f64, f64)>,
+    /// Frame index where tracking starts (relative to clip source_in).
+    pub start_frame: usize,
+    pub enabled: bool,
+    /// Search region half-size in pixels for tracking analysis.
+    pub search_radius: u32,
+}
+
+impl Default for TrackPoint {
+    fn default() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            name: String::new(),
+            color: [0xe8, 0xa0, 0x20, 0xff], // amber
+            positions: Vec::new(),
+            start_frame: 0,
+            enabled: true,
+            search_radius: 32,
+        }
+    }
+}
+
 /// Serializable audio effect instance (stored on Clip).
 /// Each instance records the effect type, enabled state, wet/dry mix, and param values.
 #[derive(Debug, Clone, Serialize, Deserialize)]

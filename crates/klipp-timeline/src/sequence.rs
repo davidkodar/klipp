@@ -393,6 +393,7 @@ impl Track {
             multicam_cuts: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         });
         clip_id
     }
@@ -585,6 +586,7 @@ impl Track {
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -633,6 +635,7 @@ impl Track {
             audio_effects: clip.audio_effects.clone(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         };
 
         self.clips.remove(pos);
@@ -807,6 +810,9 @@ pub struct Clip {
     /// Current smoothed trajectory. Recomputed when smoothing parameter changes.
     #[serde(skip)]
     pub smoothed_trajectory: Option<klipp_effects::stabilization::SmoothedTrajectory>,
+    /// Tracked points for motion tracking.
+    #[serde(default)]
+    pub track_points: Vec<klipp_core::TrackPoint>,
 }
 
 impl Clip {
@@ -897,6 +903,7 @@ impl Clip {
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         }
     }
 
@@ -955,6 +962,7 @@ impl Clip {
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         }
     }
 
@@ -1012,6 +1020,7 @@ impl Clip {
             audio_effects: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         }
     }
 }

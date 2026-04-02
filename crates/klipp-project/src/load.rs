@@ -301,6 +301,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     multicam_cuts: c.multicam_cuts.clone(),
                     stabilization_data: None,
                     smoothed_trajectory: None,
+                    track_points: Vec::new(),
                 }
             }).collect();
             track

@@ -844,3 +844,169 @@ mod tests {
         assert!(approx_eq(h.h[1][2], -3.0, 1e-8));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Point tracking — track a single point through sequential frames
+// ---------------------------------------------------------------------------
+
+/// Match a single patch between two grayscale frames using SAD.
+/// Returns the best match position in the current frame, or None if the match
+/// quality is too poor (tracking lost).
+fn track_point_between_frames(
+    prev_gray: &[u8], prev_w: usize, prev_h: usize,
+    curr_gray: &[u8], curr_w: usize, curr_h: usize,
+    prev_pos: (f64, f64),
+    search_radius: u32,
+    patch_half: u32,
+    loss_threshold: u32,
+) -> Option<(f64, f64)> {
+    let px = prev_pos.0 as i32;
+    let py = prev_pos.1 as i32;
+    let ph = patch_half as i32;
+    let sr = search_radius as i32;
+
+    let mut best_score = u64::MAX;
+    let mut best_x = px;
+    let mut best_y = py;
+
+    for dy in -sr..=sr {
+        for dx in -sr..=sr {
+            let cx = px + dx;
+            let cy = py + dy;
+
+            let mut sad = 0u64;
+            let mut count = 0u32;
+            for ky in -ph..=ph {
+                for kx in -ph..=ph {
+                    let sx = (px + kx) as usize;
+                    let sy = (py + ky) as usize;
+                    let dx2 = (cx + kx) as usize;
+                    let dy2 = (cy + ky) as usize;
+                    if sx < prev_w && sy < prev_h && dx2 < curr_w && dy2 < curr_h {
+                        let a = prev_gray[sy * prev_w + sx] as i64;
+                        let b = curr_gray[dy2 * curr_w + dx2] as i64;
+                        sad += (a - b).unsigned_abs();
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                let norm_sad = sad / count as u64;
+                if norm_sad < best_score {
+                    best_score = norm_sad;
+                    best_x = cx;
+                    best_y = cy;
+                }
+            }
+        }
+    }
+
+    if best_score > loss_threshold as u64 {
+        return None;
+    }
+
+    Some((best_x as f64, best_y as f64))
+}
+
+/// Track a single point through frames.
+///
+/// - `initial_pos`: (x, y) in pixels at the reference frame (half-res coordinates)
+/// - `reference_frame_idx`: frame index where the point was placed
+/// - `fps`, `frame_count`: clip properties
+/// - `decode_frame`: callback to get frame RGBA at a given time in seconds
+/// - `search_radius`: pixel radius for matching search (half-res)
+/// - `patch_half`: patch half-size for SAD matching
+/// - `loss_threshold`: SAD threshold above which tracking is considered lost
+/// - `forward`: true = track forward from reference, false = track backward
+/// - `progress`: callback for progress (0.0-1.0), return false to cancel
+///
+/// Returns Vec of (frame_index, x, y) positions in half-res pixel coordinates.
+pub fn track_point(
+    initial_pos: (f64, f64),
+    reference_frame_idx: usize,
+    fps: f64,
+    frame_count: usize,
+    decode_frame: &mut dyn FnMut(f64) -> Option<(Vec<u8>, u32, u32)>,
+    search_radius: u32,
+    patch_half: u32,
+    loss_threshold: u32,
+    forward: bool,
+    progress: &dyn Fn(f32) -> bool,
+) -> Result<Vec<(usize, f64, f64)>, String> {
+    if frame_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+
+    // Decode reference frame
+    let ref_time = reference_frame_idx as f64 / fps;
+    let (ref_rgba, ref_w, ref_h) = decode_frame(ref_time)
+        .ok_or_else(|| format!("failed to decode reference frame {reference_frame_idx}"))?;
+    let (ref_gray, gw, gh) = rolling_shutter::to_gray_half(&ref_rgba, ref_w, ref_h);
+
+    results.push((reference_frame_idx, initial_pos.0, initial_pos.1));
+
+    let mut prev_gray = ref_gray;
+    let mut prev_pos = initial_pos;
+    let prev_gw = gw as usize;
+    let prev_gh = gh as usize;
+
+    let range: Box<dyn Iterator<Item = usize>> = if forward {
+        let start = reference_frame_idx + 1;
+        if start >= frame_count {
+            return Ok(results);
+        }
+        Box::new(start..frame_count)
+    } else {
+        if reference_frame_idx == 0 {
+            return Ok(results);
+        }
+        Box::new((0..reference_frame_idx).rev())
+    };
+
+    let total = if forward {
+        frame_count.saturating_sub(reference_frame_idx + 1)
+    } else {
+        reference_frame_idx
+    };
+    if total == 0 {
+        return Ok(results);
+    }
+
+    for (step, frame_idx) in range.enumerate() {
+        let time = frame_idx as f64 / fps;
+        let (rgba, w, h) = decode_frame(time)
+            .ok_or_else(|| format!("failed to decode frame {frame_idx}"))?;
+        let (gray, cur_gw, cur_gh) = rolling_shutter::to_gray_half(&rgba, w, h);
+        let cur_gw = cur_gw as usize;
+        let cur_gh = cur_gh as usize;
+
+        match track_point_between_frames(
+            &prev_gray, prev_gw, prev_gh,
+            &gray, cur_gw, cur_gh,
+            prev_pos,
+            search_radius,
+            patch_half,
+            loss_threshold,
+        ) {
+            Some(new_pos) => {
+                results.push((frame_idx, new_pos.0, new_pos.1));
+                prev_pos = new_pos;
+            }
+            None => {
+                // Tracking lost — stop
+                break;
+            }
+        }
+
+        prev_gray = gray;
+
+        let p = (step + 1) as f32 / total as f32;
+        if !progress(p) {
+            return Err("cancelled".to_string());
+        }
+    }
+
+    Ok(results)
+}

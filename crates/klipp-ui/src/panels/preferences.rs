@@ -311,7 +311,7 @@ impl PreferencesPanel {
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
-            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync"],
+            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync", "tracking", "tracker", "search radius"],
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
@@ -741,6 +741,30 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Timecode, "Timecode").changed() { *dirty = true; }
                     if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::AudioWaveform, "Audio Waveform").changed() { *dirty = true; }
                 });
+        });
+
+        // ── TRACKING section ──
+        Self::section_header(ui, "TRACKING");
+
+        Self::setting_row_with_subtitle(ui, "Search radius", "Pixel radius for tracker matching", |ui| {
+            let mut v = prefs.editing.track_search_radius;
+            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
+                prefs.editing.track_search_radius = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", |ui| {
+            let mut v = prefs.editing.track_patch_size;
+            if ui.add(egui::DragValue::new(&mut v).range(2..=16).speed(1.0).suffix(" px")).changed() {
+                prefs.editing.track_patch_size = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Loss threshold", "SAD threshold for tracking loss", |ui| {
+            let mut v = prefs.editing.track_loss_threshold;
+            if ui.add(egui::DragValue::new(&mut v).range(5..=100).speed(1.0)).changed() {
+                prefs.editing.track_loss_threshold = v; *dirty = true;
+            }
         });
 
         let _ = cmds; // suppress unused warning

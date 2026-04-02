@@ -192,6 +192,7 @@ fn show_bin_media_video(
         audio_effects: Vec::new(),
         stabilization_data: None,
         smoothed_trajectory: None,
+        track_points: Vec::new(),
     };
     // is_timeline = false → no Speed Ramp, no amber banner
     show_clip_video(ui, theme, state, &temp_clip, cmds, 0.0, false);
@@ -1209,6 +1210,167 @@ fn show_clip_video(
                             });
                         }
                     });
+                }
+            });
+    });
+
+    ui.add_space(8.0);
+
+    // ── TRACKING ──
+    section_card(ui, "TRACKING", theme, |ui| {
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .show(ui, |ui| {
+                // "Place Tracker" button
+                let btn_color = if state.tracking_mode {
+                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber when active
+                } else {
+                    theme.bg_deep
+                };
+                let btn_text_color = if state.tracking_mode {
+                    egui::Color32::from_rgb(0x1a, 0x1a, 0x1a) // dark on amber
+                } else {
+                    theme.text_primary
+                };
+                let btn = egui::Button::new(
+                    egui::RichText::new("Place Tracker").color(btn_text_color)
+                ).fill(btn_color);
+                if ui.add(btn).clicked() {
+                    cmds.push(AppCommand::ToggleTrackingMode);
+                }
+
+                ui.add_space(4.0);
+
+                // Track active_track_point via egui temp data (inspector state is immutable)
+                let tp_sel_id = egui::Id::new("track_point_selected");
+                let selected_tp: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(tp_sel_id).unwrap_or(state.active_track_point));
+
+                // List of track points
+                let track_points_snapshot: Vec<(usize, String, [u8; 4], usize, usize, bool)> =
+                    clip.track_points.iter().enumerate().map(|(i, tp)| {
+                        (i, tp.name.clone(), tp.color, tp.positions.len(), tp.start_frame, tp.enabled)
+                    }).collect();
+
+                let tracking_active = state.tracking_in_progress.contains(&clip_id);
+                let progress = state.tracking_progress.get(&clip_id).copied().unwrap_or(0.0);
+
+                if track_points_snapshot.is_empty() {
+                    ui.label(egui::RichText::new("No track points").size(10.0).color(theme.text_dim));
+                }
+
+                let mut remove_idx: Option<usize> = None;
+                let mut analyze_idx: Option<usize> = None;
+                let mut new_selection = selected_tp;
+
+                for (idx, name, color, frame_count, _start_frame, enabled) in &track_points_snapshot {
+                    let is_selected = selected_tp == Some(*idx);
+                    let _row_resp = ui.horizontal(|ui| {
+                        // Colored dot
+                        let dot_color = egui::Color32::from_rgba_unmultiplied(
+                            color[0], color[1], color[2], color[3],
+                        );
+                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
+
+                        // Name + info
+                        let display_name = if name.is_empty() {
+                            format!("Track {}", idx + 1)
+                        } else {
+                            name.clone()
+                        };
+                        let label_color = if *enabled { theme.text_primary } else { theme.text_dim };
+                        let label_text = if is_selected {
+                            egui::RichText::new(&display_name).size(11.0).color(label_color).strong()
+                        } else {
+                            egui::RichText::new(&display_name).size(11.0).color(label_color)
+                        };
+                        if ui.add(egui::Label::new(label_text).sense(egui::Sense::click())).clicked() {
+                            new_selection = if is_selected { None } else { Some(*idx) };
+                        }
+
+                        ui.label(egui::RichText::new(format!("{} fr", frame_count)).size(9.0).color(theme.text_dim));
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Delete button
+                            if ui.add(egui::Button::new(egui::RichText::new("X").size(9.0).color(theme.text_dim)).frame(false)).clicked() {
+                                remove_idx = Some(*idx);
+                            }
+                            // Analyze button
+                            if !tracking_active {
+                                if ui.add(egui::Button::new(egui::RichText::new("Analyze").size(9.0)).frame(true)).clicked() {
+                                    analyze_idx = Some(*idx);
+                                }
+                            }
+                        });
+                    });
+
+                    // Show selected track point's link options
+                    if is_selected {
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+
+                            ui.label(egui::RichText::new("Link to:").size(10.0).color(theme.text_dim));
+
+                            if ui.add(egui::Button::new(egui::RichText::new("Transform Pos").size(9.0)).frame(true)).clicked() {
+                                cmds.push(AppCommand::GenerateKeyframesFromTrack {
+                                    clip_id,
+                                    point_index: *idx,
+                                    target: klipp_core::TrackTarget::TransformPosition,
+                                });
+                            }
+
+                            // Mask center targets
+                            let mask_targets: Vec<(uuid::Uuid, usize, String)> = clip.node_graph.nodes.iter()
+                                .flat_map(|n| {
+                                    let masks = n.params.masks.as_ref()
+                                        .map(|ms| ms.masks.as_slice())
+                                        .unwrap_or(&[]);
+                                    let node_id = n.id;
+                                    let label = n.label.clone();
+                                    masks.iter().enumerate().map(move |(mi, _m)| {
+                                        (node_id, mi, format!("{} Mask {}", label, mi + 1))
+                                    })
+                                })
+                                .collect();
+                            for (node_uuid, mask_idx, label) in &mask_targets {
+                                if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0)).frame(true)).clicked() {
+                                    cmds.push(AppCommand::GenerateKeyframesFromTrack {
+                                        clip_id,
+                                        point_index: *idx,
+                                        target: klipp_core::TrackTarget::MaskCenter { node_id: *node_uuid, mask_index: *mask_idx },
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // Store updated selection
+                ui.ctx().data_mut(|d| d.insert_temp(tp_sel_id, new_selection));
+
+                // Progress bar during analysis
+                if tracking_active {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Analyzing...").size(10.0).color(theme.text_accent));
+                        let bar_w = ui.available_width() - 4.0;
+                        let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 4.0), egui::Sense::hover());
+                        ui.painter().rect_filled(bar_rect, 2.0, theme.bg_deep);
+                        let fill_rect = egui::Rect::from_min_size(
+                            bar_rect.min,
+                            egui::vec2(bar_w * progress, 4.0),
+                        );
+                        ui.painter().rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+                    });
+                }
+
+                // Process deferred commands
+                if let Some(idx) = remove_idx {
+                    cmds.push(AppCommand::RemoveTrackPoint { clip_id, index: idx });
+                }
+                if let Some(idx) = analyze_idx {
+                    cmds.push(AppCommand::AnalyzeTrackPoint { clip_id, point_index: idx });
                 }
             });
     });

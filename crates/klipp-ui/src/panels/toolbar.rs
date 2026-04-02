@@ -516,6 +516,30 @@ impl ToolbarPanel {
                 }
             }
             ui.separator();
+            if ui.button("Add Track Point").clicked() {
+                state.tracking_mode = !state.tracking_mode;
+                ui.close_menu();
+            }
+            if has_clip {
+                let has_tracks = state.sequence().all_clips()
+                    .find(|c| c.id == state.selected_clip.unwrap())
+                    .map(|c| !c.track_points.is_empty())
+                    .unwrap_or(false);
+                if has_tracks {
+                    if ui.button("Analyze Track Points").clicked() {
+                        let cid = state.selected_clip.unwrap();
+                        let count = state.sequence().all_clips()
+                            .find(|c| c.id == cid)
+                            .map(|c| c.track_points.len())
+                            .unwrap_or(0);
+                        for i in 0..count {
+                            cmds.push(AppCommand::AnalyzeTrackPoint { clip_id: cid, point_index: i });
+                        }
+                        ui.close_menu();
+                    }
+                }
+            }
+            ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Reveal in Browser")).clicked() {
                 if let Some(cid) = state.selected_clip {
                     let mid = state.sequence().all_clips().find(|c| c.id == cid).and_then(|c| c.media_id());

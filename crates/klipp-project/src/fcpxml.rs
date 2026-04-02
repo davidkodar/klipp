@@ -450,6 +450,7 @@ mod tests {
             multicam_cuts: Vec::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
+            track_points: Vec::new(),
         }
     }
 

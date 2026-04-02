@@ -297,6 +297,15 @@ pub struct EditingPrefs {
     /// Show angle numbers overlay on multicam clips in timeline.
     #[serde(default = "default_true")]
     pub multicam_show_angles: bool,
+    /// Default tracker search region radius in pixels.
+    #[serde(default = "default_track_search_radius")]
+    pub track_search_radius: u32,
+    /// Track point patch size (half-width) for matching.
+    #[serde(default = "default_track_patch_size")]
+    pub track_patch_size: u32,
+    /// SAD threshold for tracking loss detection.
+    #[serde(default = "default_track_threshold")]
+    pub track_loss_threshold: u32,
 }
 
 fn default_undo_limit() -> usize {
@@ -313,6 +322,9 @@ fn default_audio_track_h() -> f32 { 48.0 }
 fn default_snap_px() -> f32 { 10.0 }
 fn default_zoom_step() -> f32 { 1.5 }
 fn default_backup_count() -> u32 { 5 }
+fn default_track_search_radius() -> u32 { 32 }
+fn default_track_patch_size() -> u32 { 6 }
+fn default_track_threshold() -> u32 { 25 }
 
 impl Default for EditingPrefs {
     fn default() -> Self {
@@ -334,6 +346,9 @@ impl Default for EditingPrefs {
             multicam_sync_method: MulticamSyncMethod::default(),
             multicam_auto_viewer: true,
             multicam_show_angles: true,
+            track_search_radius: default_track_search_radius(),
+            track_patch_size: default_track_patch_size(),
+            track_loss_threshold: default_track_threshold(),
         }
     }
 }

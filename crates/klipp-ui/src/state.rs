@@ -348,6 +348,16 @@ pub struct AppState {
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
 
+    // Point tracking state
+    /// Whether the viewer is in tracking placement mode (click to place tracker).
+    pub tracking_mode: bool,
+    /// Index of the track point currently being edited/dragged in the viewer.
+    pub active_track_point: Option<usize>,
+    /// Track analysis in progress for these clip IDs.
+    pub tracking_in_progress: std::collections::HashSet<klipp_core::ClipId>,
+    /// Track analysis progress (0.0-1.0) per clip.
+    pub tracking_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
     pub browser_drag_start: Option<(egui::Pos2, std::time::Instant)>,
@@ -906,6 +916,10 @@ impl Default for AppState {
             skim_last_audio_dispatch: std::time::Instant::now(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
+            tracking_mode: false,
+            active_track_point: None,
+            tracking_in_progress: std::collections::HashSet::new(),
+            tracking_progress: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,
             range_drag: None,
