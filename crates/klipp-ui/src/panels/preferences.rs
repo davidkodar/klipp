@@ -2142,15 +2142,15 @@ impl PreferencesPanel {
         });
 
         // GPU — extract just the model name from lspci (e.g. "GeForce RTX 4080")
-        Self::setting_row(ui, "GPU", |ui| {
-            let gpu = std::process::Command::new("sh")
+        // GPU — model name + driver/CUDA info
+        {
+            let gpu_name = std::process::Command::new("sh")
                 .args(["-c", "lspci 2>/dev/null | grep -i 'vga\\|3d' | head -1 | sed 's/.*: //'"])
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
                 .map(|s| {
                     let s = s.trim().to_string();
-                    // Extract the part in brackets if present (e.g. "[GeForce RTX 4080]")
                     if let Some(start) = s.find('[') {
                         if let Some(end) = s.find(']') {
                             return s[start + 1..end].to_string();
@@ -2160,8 +2160,59 @@ impl PreferencesPanel {
                 })
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "Unknown".into());
-            ui.label(egui::RichText::new(gpu).color(Self::DIM_TEXT).size(11.0));
-        });
+
+            // Detect driver + API info based on vendor
+            let driver_info = if gpu_name.to_lowercase().contains("nvidia") || gpu_name.to_lowercase().contains("geforce") || gpu_name.to_lowercase().contains("rtx") || gpu_name.to_lowercase().contains("gtx") {
+                // NVIDIA: get driver version + CUDA version
+                let driver = std::process::Command::new("sh")
+                    .args(["-c", "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1"])
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let cuda = std::process::Command::new("sh")
+                    .args(["-c", "nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \\K[0-9.]+'"])
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                match (driver, cuda) {
+                    (Some(d), Some(c)) => format!("Driver {d}, CUDA {c}"),
+                    (Some(d), None) => format!("Driver {d}"),
+                    _ => String::new(),
+                }
+            } else if gpu_name.to_lowercase().contains("amd") || gpu_name.to_lowercase().contains("radeon") {
+                // AMD: check mesa/amdgpu driver
+                std::process::Command::new("sh")
+                    .args(["-c", "glxinfo 2>/dev/null | grep 'OpenGL version' | sed 's/.*: //' | head -1"])
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| format!("Mesa {}", s.trim()))
+                    .filter(|s| s.len() > 5)
+                    .unwrap_or_default()
+            } else if gpu_name.to_lowercase().contains("intel") {
+                // Intel: check mesa/i915 driver
+                std::process::Command::new("sh")
+                    .args(["-c", "glxinfo 2>/dev/null | grep 'OpenGL version' | sed 's/.*: //' | head -1"])
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| format!("Mesa {}", s.trim()))
+                    .filter(|s| s.len() > 5)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            if driver_info.is_empty() {
+                Self::setting_row(ui, "GPU", |ui| {
+                    ui.label(egui::RichText::new(&gpu_name).color(Self::DIM_TEXT).size(11.0));
+                });
+            } else {
+                Self::setting_row_with_subtitle(ui, "GPU", &driver_info, |ui| {
+                    ui.label(egui::RichText::new(&gpu_name).color(Self::DIM_TEXT).size(11.0));
+                });
+            }
+        }
 
         // Memory — show installed (rounded up to nearest power-of-2 stick size) + usable
         Self::setting_row(ui, "Memory", |ui| {
