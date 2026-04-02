@@ -108,6 +108,20 @@ pub struct GeneralPrefs {
     /// Names of inspector sections that are collapsed (persisted when remember_inspector_layout is true).
     #[serde(default)]
     pub collapsed_sections: Vec<String>,
+    /// What to show when Klipp starts.
+    #[serde(default)]
+    pub startup_behavior: StartupBehavior,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StartupBehavior {
+    /// Show the project manager / welcome screen.
+    #[default]
+    ProjectManager,
+    /// Open a blank empty project immediately.
+    EmptyProject,
+    /// Reopen the most recently saved project.
+    LastProject,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +384,7 @@ impl Default for GeneralPrefs {
             recent_projects: Vec::new(),
             remember_inspector_layout: true,
             collapsed_sections: Vec::new(),
+            startup_behavior: StartupBehavior::default(),
         }
     }
 }

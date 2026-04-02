@@ -270,6 +270,26 @@ impl KlippApp {
             }
         }
 
+        // Apply startup behavior
+        match app.prefs.general.startup_behavior {
+            crate::prefs::StartupBehavior::ProjectManager => {
+                // Default: project_path is None, launch screen will show
+            }
+            crate::prefs::StartupBehavior::EmptyProject => {
+                // Skip launch screen, go straight to empty project
+                app.state.project_path = Some(std::path::PathBuf::from("Untitled"));
+            }
+            crate::prefs::StartupBehavior::LastProject => {
+                // Reopen the most recent project if available
+                if let Some(recent) = app.prefs.general.recent_projects.first() {
+                    let path = recent.path.clone();
+                    if path.exists() {
+                        let _ = app.cmd_tx.send(AppCommand::OpenProject { path });
+                    }
+                }
+            }
+        }
+
         // Sync preferences to state
         app.state.remember_inspector_layout = app.prefs.general.remember_inspector_layout;
         if app.state.remember_inspector_layout {

@@ -306,7 +306,7 @@ impl PreferencesPanel {
     /// Searchable keywords for each preferences tab.
     fn tab_search_keywords(tab: PrefsTab) -> &'static [&'static str] {
         match tab {
-            PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector"],
+            PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
             PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent color", "role colors", "video", "dialogue", "music", "sfx"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
@@ -453,6 +453,25 @@ impl PreferencesPanel {
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("General").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+
+        // ── STARTUP section ──
+        Self::section_header(ui, "STARTUP");
+
+        Self::setting_row_with_subtitle(ui, "On launch", "What to show when Klipp starts", |ui| {
+            use crate::prefs::StartupBehavior;
+            egui::ComboBox::from_id_salt("startup_behavior")
+                .selected_text(match prefs.general.startup_behavior {
+                    StartupBehavior::ProjectManager => "Project Manager",
+                    StartupBehavior::EmptyProject => "Empty project",
+                    StartupBehavior::LastProject => "Reopen last project",
+                })
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.general.startup_behavior, StartupBehavior::ProjectManager, "Project Manager").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.general.startup_behavior, StartupBehavior::EmptyProject, "Empty project").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.general.startup_behavior, StartupBehavior::LastProject, "Reopen last project").changed() { *dirty = true; }
+                });
         });
 
         // ── PROJECT section ──
@@ -1197,7 +1216,12 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "UI scale", "Auto matches your system DPI settings", |ui| {
             let scales: &[(u32, &str)] = &[
                 (0, "Auto"),
+                (75, "75%"),
+                (80, "80%"),
+                (85, "85%"),
+                (90, "90%"),
                 (100, "100%"),
+                (110, "110%"),
                 (125, "125%"),
                 (150, "150%"),
                 (175, "175%"),
