@@ -367,6 +367,8 @@ fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui:
         .max(1) as f32;
     let p95 = max_count * 0.7; // approximate p95 as 70% of max
 
+    let log_max = (p95 + 1.0).ln();
+
     for (col_idx, col) in bins.iter().enumerate() {
         if col_idx >= rw { continue; }
         for (bin_idx, &count) in col.iter().enumerate() {
@@ -374,39 +376,34 @@ fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui:
             let y = rh - 1 - (bin_idx * rh / 256);
             if y >= rh { continue; }
 
-            // Log intensity for thin trace visibility
-            let log_raw = (count as f32 + 1.0).ln() / (p95 + 1.0).ln();
-            let intensity = log_raw.clamp(0.0, 1.0);
+            let log_i = (count as f32 + 1.0).ln() / log_max;
+            let intensity = log_i.clamp(0.0, 1.0);
 
             let is_safe = (16..=235).contains(&bin_idx);
-            let t = (intensity * 2.5).clamp(0.0, 1.0);
+            let white = (intensity - 0.8).max(0.0) * 5.0;
 
             let (r, g, b) = if is_safe {
-                // Green: dim → bright green → white-hot
-                let r = 0.04 * (1.0 - t) + 0.6 * t;
-                let g = 0.3 * (1.0 - t) + 1.0 * t;
-                let b = 0.04 * (1.0 - t) + 0.6 * t;
-                (r, g, b)
+                (0.08 * intensity + white * 0.4,
+                 1.0 * intensity + white * 0.0,
+                 0.08 * intensity + white * 0.4)
             } else {
-                // Red warning for out-of-range
-                let r = 0.5 * (1.0 - t) + 1.0 * t;
-                let g = 0.02 * (1.0 - t) + 0.3 * t;
-                let b = 0.01 * (1.0 - t) + 0.15 * t;
-                (r, g, b)
+                (1.0 * intensity + white * 0.0,
+                 0.06 * intensity + white * 0.4,
+                 0.03 * intensity + white * 0.3)
             };
 
-            let bright = 0.15 + intensity * 0.85;
-            buf.add(col_idx, y, r * bright, g * bright, b * bright);
+            buf.add(col_idx, y, r, g, b);
 
-            if intensity > 0.5 {
-                let gs = (intensity - 0.5) * 0.25;
-                if y > 0 { buf.add(col_idx, y - 1, r * gs, g * gs, b * gs); }
-                if y + 1 < rh { buf.add(col_idx, y + 1, r * gs, g * gs, b * gs); }
+            if intensity > 0.7 {
+                let gs = (intensity - 0.7) * 0.2;
+                let (cr, cg, cb) = if is_safe { (0.06, 0.8, 0.06) } else { (0.8, 0.04, 0.02) };
+                if y > 0 { buf.add(col_idx, y - 1, cr * gs, cg * gs, cb * gs); }
+                if y + 1 < rh { buf.add(col_idx, y + 1, cr * gs, cg * gs, cb * gs); }
             }
         }
     }
 
-    let mut img = buf.to_image([2.0, 2.0, 3.0], 1.8);
+    let mut img = buf.to_image([1.0, 1.0, 2.0], 1.6);
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
 }
@@ -425,16 +422,18 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
         .unwrap_or(1)
         .max(1) as f32;
 
-    // DaVinci-style: logarithmic intensity reveals thin trace structure
-    // instead of flooding with linear counts
-    let channels: [(&[[u32; 256]], usize, [f32; 3], [f32; 3]); 3] = [
-        //                               x_offset         base color (dim)         bright color (hot)
-        (parade_red,   0,                    [0.65, 0.03, 0.02], [1.0, 0.55, 0.45]),
-        (parade_green, section_w + gap,       [0.02, 0.65, 0.03], [0.45, 1.0, 0.45]),
-        (parade_blue,  (section_w + gap) * 2, [0.03, 0.05, 0.65], [0.45, 0.55, 1.0]),
+    // DaVinci-style parade: deep saturated colors, only hottest spots go white.
+    // Key: keep the primary channel dominant, secondary channels very low.
+    let channels: [(&[[u32; 256]], usize, [f32; 3]); 3] = [
+        //                               x_offset     color (R, G, B)
+        (parade_red,   0,                    [1.0, 0.08, 0.04]),
+        (parade_green, section_w + gap,       [0.04, 1.0, 0.08]),
+        (parade_blue,  (section_w + gap) * 2, [0.08, 0.12, 1.0]),
     ];
 
-    for (data, x_off, base, hot) in &channels {
+    let log_max = (max_count + 1.0).ln();
+
+    for (data, x_off, color) in &channels {
         for (ci, col) in data.iter().enumerate() {
             let px_x = x_off + ci;
             if px_x >= rw { continue; }
@@ -443,31 +442,29 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
                 let y = rh - 1 - (bi * rh / 256);
                 if y >= rh { continue; }
 
-                // Log intensity: log2(count+1) / log2(max+1) — reveals thin traces
-                let log_raw = (count as f32 + 1.0).ln() / (max_count + 1.0).ln();
-                let intensity = log_raw.clamp(0.0, 1.0);
+                // Log intensity with gentler curve — keeps traces thin
+                let log_i = (count as f32 + 1.0).ln() / log_max;
+                let intensity = log_i.clamp(0.0, 1.0);
 
-                // Blend from dim base color → bright hot color based on intensity
-                let t = (intensity * 2.5).clamp(0.0, 1.0); // saturate quickly
-                let r = base[0] * (1.0 - t) + hot[0] * t;
-                let g = base[1] * (1.0 - t) + hot[1] * t;
-                let b = base[2] * (1.0 - t) + hot[2] * t;
+                // Only the very densest areas shift toward white (>80% log intensity)
+                let white = (intensity - 0.8).max(0.0) * 5.0; // 0.0 at 80%, 1.0 at 100%
+                let r = color[0] * intensity + white * (1.0 - color[0]) * 0.5;
+                let g = color[1] * intensity + white * (1.0 - color[1]) * 0.5;
+                let b = color[2] * intensity + white * (1.0 - color[2]) * 0.5;
 
-                // Scale by intensity for brightness variation
-                let bright = 0.15 + intensity * 0.85;
-                buf.add(px_x, y, r * bright, g * bright, b * bright);
+                buf.add(px_x, y, r, g, b);
 
-                // Subtle vertical glow for hot areas only
-                if intensity > 0.5 {
-                    let glow_strength = (intensity - 0.5) * 0.3;
-                    if y > 0 { buf.add(px_x, y - 1, r * glow_strength, g * glow_strength, b * glow_strength); }
-                    if y + 1 < rh { buf.add(px_x, y + 1, r * glow_strength, g * glow_strength, b * glow_strength); }
+                // Subtle vertical glow only at very high density
+                if intensity > 0.7 {
+                    let gs = (intensity - 0.7) * 0.2;
+                    if y > 0 { buf.add(px_x, y - 1, color[0] * gs, color[1] * gs, color[2] * gs); }
+                    if y + 1 < rh { buf.add(px_x, y + 1, color[0] * gs, color[1] * gs, color[2] * gs); }
                 }
             }
         }
     }
 
-    let mut img = buf.to_image([2.0, 2.0, 3.0], 1.8);
+    let mut img = buf.to_image([1.0, 1.0, 2.0], 1.6);
 
     // Channel separator lines
     for &gap_x in &[section_w, (section_w + gap) * 2 - gap] {
