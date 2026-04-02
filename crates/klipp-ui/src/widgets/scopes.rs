@@ -4,7 +4,7 @@ use klipp_engine::SharedFrameBuffer;
 /// Either a ready GPU-rendered image or pre-computed bins for CPU rendering.
 enum ScopeImage {
     Ready(egui::ColorImage),
-    Bins(ScopeBins),
+    Bins(ScopeBins, usize, usize), // bins + cpu render width/height
 }
 
 /// Pre-computed scope data — avoids cloning the entire 8MB frame.
@@ -72,7 +72,7 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
-                // Use GPU-rendered scope texture from engine if mode matches
+                // Use GPU-rendered scope texture from engine if available
                 if !fb.scope_texture.is_empty() && fb.scope_texture_w > 0 && fb.scope_texture_mode == mi as u8 {
                     let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
@@ -83,26 +83,27 @@ pub fn show_scopes(
                     };
                     Some((ScopeImage::Ready(image), gen))
                 } else {
-                    // CPU fallback: compute from frame data
+                    // CPU fallback at CAPPED resolution (keep UI responsive)
+                    let cpu_w = render_w.min(320);
+                    let cpu_h = render_h.min(200);
                     let (src, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
                         (&fb.scope_preview[..], fb.scope_preview_w, fb.scope_preview_h)
                     } else {
                         (&fb.data[..], fb.width, fb.height)
                     };
-                    let base_step: u32 = if w > 960 { 3 } else if w > 480 { 2 } else { 1 };
-                    let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
+                    let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
 
                     let bins = match mode {
-                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, render_w as u32, step)),
+                        ScopeMode::Waveform => ScopeBins::Waveform(klipp_color::scopes::compute_waveform_sampled(src, w, h, cpu_w as u32, step)),
                         ScopeMode::Parade => {
-                            let gap = 4;
-                            let section_w = (render_w - gap * 2) / 3;
+                            let gap = 3;
+                            let section_w = (cpu_w - gap * 2) / 3;
                             ScopeBins::Parade(klipp_color::scopes::compute_parade_sampled(src, w, h, section_w as u32, step))
                         }
                         ScopeMode::Histogram => ScopeBins::Histogram(klipp_color::scopes::compute_histogram_sampled(src, w, h, step)),
                         ScopeMode::Vectorscope => ScopeBins::Raw(src.to_vec(), w, h, step),
                     };
-                    Some((ScopeImage::Bins(bins), gen))
+                    Some((ScopeImage::Bins(bins, cpu_w, cpu_h), gen))
                 }
             } else {
                 None
@@ -119,11 +120,11 @@ pub fn show_scopes(
 
         let image = match scope_img {
             ScopeImage::Ready(img) => img,
-            ScopeImage::Bins(bins) => match bins {
-                ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, render_w, render_h),
-                ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, render_w, render_h),
-                ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, render_w, render_h),
-                ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, render_w, render_h, skin_tone_angle),
+            ScopeImage::Bins(bins, cw, ch) => match bins {
+                ScopeBins::Waveform(wf) => render_waveform_from_bins(&wf.bins, cw, ch),
+                ScopeBins::Parade(p) => render_parade_from_bins(&p.red, &p.green, &p.blue, cw, ch),
+                ScopeBins::Histogram(h) => render_histogram_from_bins(&h.r, &h.g, &h.b, &h.luma, cw, ch),
+                ScopeBins::Raw(rgba, w, h, step) => render_vectorscope(&rgba, w, h, step, cw, ch, skin_tone_angle),
             },
         };
 

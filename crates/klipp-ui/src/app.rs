@@ -10539,6 +10539,14 @@ impl KlippApp {
                 if !self.state.show_scopes {
                     self.state.show_scopes = true;
                 }
+                let mode_byte = match self.state.scope_mode {
+                    crate::state::ScopeMode::Waveform => 0u8,
+                    crate::state::ScopeMode::Parade => 1,
+                    crate::state::ScopeMode::Vectorscope => 2,
+                    crate::state::ScopeMode::Histogram => 3,
+                };
+                cmds.push(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                cmds.push(AppCommand::SequenceUpdated);
             }
             // [ / ] — navigate color nodes
             if kb.is_action_pressed("prev_color_node", i) || kb.is_action_pressed("next_color_node", i) {
@@ -12500,7 +12508,14 @@ impl eframe::App for KlippApp {
                                             let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
                                             if ui.selectable_label(active, text).clicked() {
                                                 self.state.scope_mode = mode;
-                                                // Force immediate repaint so scopes update instantly
+                                                let mode_byte = match mode {
+                                                    crate::state::ScopeMode::Waveform => 0u8,
+                                                    crate::state::ScopeMode::Parade => 1,
+                                                    crate::state::ScopeMode::Vectorscope => 2,
+                                                    crate::state::ScopeMode::Histogram => 3,
+                                                };
+                                                let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                                                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                                                 ui.ctx().request_repaint();
                                             }
                                         }
