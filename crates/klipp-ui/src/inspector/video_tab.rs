@@ -980,7 +980,7 @@ fn show_clip_video(
 
                         // Draw evaluated speed curve (smooth)
                         let spd_color = egui::Color32::from_rgb(100, 200, 255);
-                        let num_pts = (inner.width() as usize / 2).max(2).min(200);
+                        let num_pts = (inner.width() as usize / 2).clamp(2, 200);
                         let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_pts);
                         for i in 0..num_pts {
                             let t = (i as f64 / (num_pts - 1) as f64) * clip_dur;
@@ -1076,9 +1076,9 @@ fn show_clip_video(
                         if graph_resp.drag_stopped() {
                             let drag_id = ui.id().with("spd_ramp_drag_idx");
                             let drag_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
-                            if drag_idx.is_some() {
+                            if let Some(idx) = drag_idx {
                                 cmds.push(AppCommand::EndSpeedKeyframeDrag {
-                                    key: format!("spd_kf:{}:{}", clip_id.0, drag_idx.unwrap()),
+                                    key: format!("spd_kf:{}:{}", clip_id.0, idx),
                                     clip_id,
                                 });
                                 ui.ctx().data_mut(|d| d.remove_by_type::<usize>());
