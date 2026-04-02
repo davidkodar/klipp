@@ -401,50 +401,68 @@ fn render_waveform_from_bins(bins: &[[u32; 256]], rw: usize, rh: usize) -> egui:
             if count == 0 { continue; }
             let y = rh - 1 - (bin_idx * rh / 256);
             if y >= rh { continue; }
-            let raw = count as f32 / p95;
-            let intensity = raw.min(5.0);
 
-            // Green base with white-hot core on dense areas
+            // Log intensity for thin trace visibility
+            let log_raw = (count as f32 + 1.0).ln() / (p95 + 1.0).ln();
+            let intensity = log_raw.clamp(0.0, 1.0);
+
             let is_safe = (16..=235).contains(&bin_idx);
-            let (cr, cg, cb) = if is_safe { (0.25, 1.8, 0.25) } else { (1.8, 0.25, 0.12) };
-            let white = (raw * 0.6 - 0.15).clamp(0.0, 1.0);
-            let r = cr * intensity + 0.7 * white * intensity;
-            let g = cg * intensity + 0.5 * white * intensity;
-            let b = cb * intensity + 0.7 * white * intensity;
+            let t = (intensity * 2.5).clamp(0.0, 1.0);
 
-            let glow = (raw * 0.3).clamp(0.0, 0.4);
-            buf.add_glow(col_idx, y, r, g, b, glow);
+            let (r, g, b) = if is_safe {
+                // Green: dim → bright green → white-hot
+                let r = 0.04 * (1.0 - t) + 0.6 * t;
+                let g = 0.3 * (1.0 - t) + 1.0 * t;
+                let b = 0.04 * (1.0 - t) + 0.6 * t;
+                (r, g, b)
+            } else {
+                // Red warning for out-of-range
+                let r = 0.5 * (1.0 - t) + 1.0 * t;
+                let g = 0.02 * (1.0 - t) + 0.3 * t;
+                let b = 0.01 * (1.0 - t) + 0.15 * t;
+                (r, g, b)
+            };
+
+            let bright = 0.15 + intensity * 0.85;
+            buf.add(col_idx, y, r * bright, g * bright, b * bright);
+
+            if intensity > 0.5 {
+                let gs = (intensity - 0.5) * 0.25;
+                if y > 0 { buf.add(col_idx, y - 1, r * gs, g * gs, b * gs); }
+                if y + 1 < rh { buf.add(col_idx, y + 1, r * gs, g * gs, b * gs); }
+            }
         }
     }
 
-    let mut img = buf.to_image([3.0, 3.0, 5.0], 2.0);
+    let mut img = buf.to_image([2.0, 2.0, 3.0], 1.8);
     draw_ire_lines(&mut img.pixels, rw, rh);
     img
 }
 
 #[inline(never)]
 fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]], parade_blue: &[[u32; 256]], rw: usize, rh: usize) -> egui::ColorImage {
-    let gap = 4;
+    let gap = 3;
     let section_w = (rw - gap * 2) / 3;
     let mut buf = AccumBuffer::new(rw, rh);
 
-    // Fast max-based normalization
+    // Use logarithmic normalization for DaVinci-style thin traces
     let max_count = [parade_red, parade_green, parade_blue].iter()
         .flat_map(|d| d.iter().flat_map(|c| c.iter()))
         .copied()
         .max()
         .unwrap_or(1)
         .max(1) as f32;
-    let norm = max_count * 0.6;
 
-    // DaVinci-style parade: vivid saturated base → white-hot core on dense traces
-    let channels: [(&[[u32; 256]], usize, (f32, f32, f32), (f32, f32, f32)); 3] = [
-        (parade_red,   0,                    (2.0, 0.06, 0.04),  (0.8, 0.6, 0.5)),
-        (parade_green, section_w + gap,       (0.04, 2.0, 0.06),  (0.5, 0.8, 0.5)),
-        (parade_blue,  (section_w + gap) * 2, (0.06, 0.10, 2.0),  (0.5, 0.6, 0.8)),
+    // DaVinci-style: logarithmic intensity reveals thin trace structure
+    // instead of flooding with linear counts
+    let channels: [(&[[u32; 256]], usize, [f32; 3], [f32; 3]); 3] = [
+        //                               x_offset         base color (dim)         bright color (hot)
+        (parade_red,   0,                    [0.65, 0.03, 0.02], [1.0, 0.55, 0.45]),
+        (parade_green, section_w + gap,       [0.02, 0.65, 0.03], [0.45, 1.0, 0.45]),
+        (parade_blue,  (section_w + gap) * 2, [0.03, 0.05, 0.65], [0.45, 0.55, 1.0]),
     ];
 
-    for (data, x_off, (cr, cg, cb), (wr, wg, wb)) in &channels {
+    for (data, x_off, base, hot) in &channels {
         for (ci, col) in data.iter().enumerate() {
             let px_x = x_off + ci;
             if px_x >= rw { continue; }
@@ -452,29 +470,38 @@ fn render_parade_from_bins(parade_red: &[[u32; 256]], parade_green: &[[u32; 256]
                 if count == 0 { continue; }
                 let y = rh - 1 - (bi * rh / 256);
                 if y >= rh { continue; }
-                let raw = count as f32 / norm;
-                let intensity = raw.min(5.0);
 
-                // White-hot core: dense areas shift toward white
-                let white = (raw * 0.6 - 0.15).clamp(0.0, 1.0);
-                let r = cr * intensity + wr * white * intensity;
-                let g = cg * intensity + wg * white * intensity;
-                let b = cb * intensity + wb * white * intensity;
+                // Log intensity: log2(count+1) / log2(max+1) — reveals thin traces
+                let log_raw = (count as f32 + 1.0).ln() / (max_count + 1.0).ln();
+                let intensity = log_raw.clamp(0.0, 1.0);
 
-                // Glow spread for intense traces (DaVinci bloom look)
-                let glow = (raw * 0.3).clamp(0.0, 0.4);
-                buf.add_glow(px_x, y, r, g, b, glow);
+                // Blend from dim base color → bright hot color based on intensity
+                let t = (intensity * 2.5).clamp(0.0, 1.0); // saturate quickly
+                let r = base[0] * (1.0 - t) + hot[0] * t;
+                let g = base[1] * (1.0 - t) + hot[1] * t;
+                let b = base[2] * (1.0 - t) + hot[2] * t;
+
+                // Scale by intensity for brightness variation
+                let bright = 0.15 + intensity * 0.85;
+                buf.add(px_x, y, r * bright, g * bright, b * bright);
+
+                // Subtle vertical glow for hot areas only
+                if intensity > 0.5 {
+                    let glow_strength = (intensity - 0.5) * 0.3;
+                    if y > 0 { buf.add(px_x, y - 1, r * glow_strength, g * glow_strength, b * glow_strength); }
+                    if y + 1 < rh { buf.add(px_x, y + 1, r * glow_strength, g * glow_strength, b * glow_strength); }
+                }
             }
         }
     }
 
-    let mut img = buf.to_image([3.0, 3.0, 5.0], 2.0);
+    let mut img = buf.to_image([2.0, 2.0, 3.0], 1.8);
 
-    // Channel separator lines — subtle
+    // Channel separator lines
     for &gap_x in &[section_w, (section_w + gap) * 2 - gap] {
         if gap_x < rw {
             for y in 0..rh {
-                img.pixels[y * rw + gap_x] = egui::Color32::from_rgb(0x14, 0x14, 0x1c);
+                img.pixels[y * rw + gap_x] = egui::Color32::from_rgb(0x10, 0x10, 0x14);
             }
         }
     }
