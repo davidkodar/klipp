@@ -700,7 +700,14 @@ impl ToolbarPanel {
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Help").size(11.0), |ui| {
             if ui.add(egui::Button::new("Klipp Documentation").shortcut_text("F1")).clicked() {
-                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/wiki").spawn();
+                // Open local mdbook docs if available, fall back to GitHub
+                let local_docs = std::path::Path::new("docs/book/index.html");
+                if local_docs.exists() {
+                    let abs = std::fs::canonicalize(local_docs).unwrap_or_default();
+                    let _ = std::process::Command::new("xdg-open").arg(format!("file://{}", abs.display())).spawn();
+                } else {
+                    let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp").spawn();
+                }
                 ui.close_menu();
             }
             if ui.button("Keyboard Shortcuts").clicked() {
