@@ -11276,6 +11276,18 @@ impl eframe::App for KlippApp {
 
         // 1. Drain events from engine
         self.drain_events(ctx);
+
+        // Sync scope mode to engine (cheap — just a u8 over channel)
+        {
+            let mode_byte = match self.state.scope_mode {
+                crate::state::ScopeMode::Waveform => 0u8,
+                crate::state::ScopeMode::Parade => 1,
+                crate::state::ScopeMode::Vectorscope => 2,
+                crate::state::ScopeMode::Histogram => 3,
+            };
+            let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+        }
+
         // If a skim decode just finished and there's a queued request, dispatch it immediately
         if !self.state.skim_decode_in_flight {
             if let Some((mid, time)) = self.state.skim_queued_request.take() {

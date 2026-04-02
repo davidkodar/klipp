@@ -72,8 +72,9 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (render_w, render_h);
             if stale {
-                // Use GPU-rendered scope texture from engine if available
-                if !fb.scope_texture.is_empty() && fb.scope_texture_w > 0 && fb.scope_texture_mode == mi as u8 {
+                // Use GPU-rendered scope texture from engine if available and mode matches
+                if !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
+                    && fb.scope_texture_mode == mi as u8 {
                     let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                         .collect();
