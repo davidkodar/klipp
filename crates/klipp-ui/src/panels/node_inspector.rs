@@ -903,7 +903,6 @@ impl NodeInspectorPanel {
                     // Pre-compute per-param display info to avoid holding borrows across UI calls
                     struct ParamInfo {
                         name: &'static str,
-                        static_val: f32,
                         display_val: f32,
                         has_keyframes: bool,
                         has_kf_at_playhead: bool,
@@ -928,7 +927,7 @@ impl NodeInspectorPanel {
                             "rotation" => -180.0..=180.0,
                             _ => 0.0..=1.0,
                         };
-                        ParamInfo { name: param_name, static_val, display_val, has_keyframes, has_kf_at_playhead, range }
+                        ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
                     }).collect();
 
                     ui.add_space(4.0);

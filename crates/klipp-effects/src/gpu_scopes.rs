@@ -352,8 +352,8 @@ impl GpuScopesPipeline {
 
     /// Compute histogram on GPU. Returns the same HistogramData as CPU version.
     pub fn compute_histogram(&mut self, rgba: &[u8], width: u32, height: u32, step: u32) -> GpuHistogramData {
-        let pixel_count = (width * height) as u64;
-        let frame_bytes = pixel_count * 4;
+        let frame_bytes = rgba.len() as u64;
+        let pixel_count = width * height;
         let num_bins: u64 = 4 * 256; // R + G + B + Luma
 
         self.ensure_input_buf(frame_bytes);
@@ -407,8 +407,8 @@ impl GpuScopesPipeline {
     /// Compute waveform on GPU. Returns the same WaveformData as CPU version.
     pub fn compute_waveform(&mut self, rgba: &[u8], width: u32, height: u32, display_columns: u32, step: u32) -> GpuWaveformData {
         let display_columns = display_columns.max(1).min(width);
-        let pixel_count = (width * height) as u64;
-        let frame_bytes = pixel_count * 4;
+        let frame_bytes = rgba.len() as u64;
+        let pixel_count = width * height;
         let num_bins = (display_columns as u64) * 256;
 
         self.ensure_input_buf(frame_bytes);
@@ -459,8 +459,8 @@ impl GpuScopesPipeline {
     /// Compute RGB parade on GPU. Returns the same ParadeData as CPU version.
     pub fn compute_parade(&mut self, rgba: &[u8], width: u32, height: u32, display_columns: u32, step: u32) -> GpuParadeData {
         let display_columns = display_columns.max(1).min(width);
-        let pixel_count = (width * height) as u64;
-        let frame_bytes = pixel_count * 4;
+        let frame_bytes = rgba.len() as u64;
+        let pixel_count = width * height;
         let num_bins = (display_columns as u64) * 256 * 3; // R + G + B
 
         self.ensure_input_buf(frame_bytes);

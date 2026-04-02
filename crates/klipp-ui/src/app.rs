@@ -13944,15 +13944,6 @@ impl KlippApp {
     }
 }
 
-fn find_file_recursive(dir: &std::path::Path, filename: &str) -> Option<PathBuf> {
-    for entry in walkdir::WalkDir::new(dir).max_depth(5).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_name().to_string_lossy() == filename {
-            return Some(entry.path().to_path_buf());
-        }
-    }
-    None
-}
-
 /// Count how many clips across all sequences reference this media_id.
 fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
     sequences.iter()
