@@ -11844,7 +11844,7 @@ impl eframe::App for KlippApp {
             // Modal backdrop
             egui::Area::new(egui::Id::new("project_info_backdrop"))
                 .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::PanelResizeLine)
+                .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let screen = ctx.screen_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());

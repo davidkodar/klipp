@@ -13,7 +13,8 @@ pub fn show_project_info(
         .collapsible(false)
         .resizable(false)
         .default_width(340.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_pos(ctx.screen_rect().center() - egui::vec2(170.0, 200.0))
+        .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
 
