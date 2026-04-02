@@ -124,6 +124,21 @@ impl SequenceSnapshot {
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
     ) -> Result<Self, RenderError> {
+        Self::from_sequence_with_all(seq, &[], media_pool, _settings, global_lut_path, use_marked_range)
+    }
+
+    /// Freeze the sequence, resolving compound clips (nested sequences) by
+    /// flattening their inner clips into the parent timeline. `all_sequences`
+    /// must contain every sequence in the project so that
+    /// `ClipKind::Sequence { sequence_id }` can be resolved.
+    pub fn from_sequence_with_all(
+        seq: &Sequence,
+        all_sequences: &[Sequence],
+        media_pool: &MediaPool,
+        _settings: &ExportSettings,
+        global_lut_path: Option<PathBuf>,
+        use_marked_range: bool,
+    ) -> Result<Self, RenderError> {
         let fps = seq.fps.as_f64();
 
         let export_range = if use_marked_range {
@@ -150,10 +165,10 @@ impl SequenceSnapshot {
         for track in seq.tracks.iter().rev() {
             match track.kind {
                 TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {
-                    video_tracks.push(snapshot_video_track(track, media_pool, fps)?);
+                    video_tracks.push(snapshot_video_track(track, all_sequences, media_pool, fps, 0)?);
                 }
                 TrackKind::Audio => {
-                    audio_tracks.push(snapshot_audio_track(track, media_pool, fps)?);
+                    audio_tracks.push(snapshot_audio_track(track, all_sequences, media_pool, fps, 0)?);
                 }
             }
         }
@@ -192,14 +207,26 @@ impl SequenceSnapshot {
     }
 }
 
+/// Maximum nesting depth for compound clips to prevent infinite recursion.
+const MAX_COMPOUND_DEPTH: u8 = 8;
+
 fn snapshot_video_track(
     track: &Track,
+    all_sequences: &[Sequence],
     media_pool: &MediaPool,
     fps: f64,
+    depth: u8,
 ) -> Result<VideoTrackSnapshot, RenderError> {
     let mut clips = Vec::with_capacity(track.clips.len());
     for clip in &track.clips {
         if !clip.enabled { continue; }
+        if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if depth < MAX_COMPOUND_DEPTH {
+                flatten_compound_video_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
+                continue;
+            }
+            // Exceeded depth limit — skip as gap
+        }
         clips.push(snapshot_clip(clip, media_pool, fps)?);
     }
 
@@ -217,14 +244,125 @@ fn snapshot_video_track(
     })
 }
 
-fn snapshot_audio_track(
-    track: &Track,
+/// Flatten a compound clip's inner sequence video tracks into the parent clip list.
+/// The inner clips are time-shifted so they appear at the compound clip's position
+/// on the parent timeline, and clipped to the compound clip's visible range.
+fn flatten_compound_video_clips(
+    compound: &klipp_timeline::Clip,
+    sequence_id: klipp_core::SequenceId,
+    all_sequences: &[Sequence],
     media_pool: &MediaPool,
     fps: f64,
+    depth: u8,
+    out: &mut Vec<ClipSnapshot>,
+) -> Result<(), RenderError> {
+    let inner_seq = all_sequences
+        .iter()
+        .find(|s| s.id == sequence_id)
+        .ok_or_else(|| RenderError::Snapshot(format!("compound clip references unknown sequence {sequence_id:?}")))?;
+
+    // Compound clip's window into the inner sequence (in seconds)
+    let compound_timeline_in_secs = compound.timeline_in.to_secs_f64();
+    let compound_source_in_secs = compound.source_in.to_secs_f64();
+    let compound_source_out_secs = compound.source_out.to_secs_f64();
+
+    for inner_track in &inner_seq.tracks {
+        match inner_track.kind {
+            TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {}
+            _ => continue,
+        }
+        for inner_clip in &inner_track.clips {
+            if !inner_clip.enabled { continue; }
+
+            let ic_in_secs = inner_clip.timeline_in.to_secs_f64();
+            let ic_out_secs = inner_clip.timeline_out.to_secs_f64();
+
+            // Inner clip must overlap the compound clip's source window
+            if ic_out_secs <= compound_source_in_secs || ic_in_secs >= compound_source_out_secs {
+                continue;
+            }
+
+            // Clamp the inner clip to the compound's source window
+            let visible_in = ic_in_secs.max(compound_source_in_secs);
+            let visible_out = ic_out_secs.min(compound_source_out_secs);
+
+            // Map to the parent timeline
+            let parent_in_secs = compound_timeline_in_secs + (visible_in - compound_source_in_secs);
+            let parent_out_secs = compound_timeline_in_secs + (visible_out - compound_source_in_secs);
+
+            // Adjust source_in if the inner clip was clipped at the start
+            let source_in_offset = visible_in - ic_in_secs;
+            let inner_source_in_secs = inner_clip.source_in.to_secs_f64() + source_in_offset;
+            let inner_source_out_secs = inner_clip.source_out.to_secs_f64() - (ic_out_secs - visible_out);
+
+            // Recursively handle nested compound clips
+            if let ClipKind::Sequence { sequence_id: nested_id } = &inner_clip.kind {
+                if depth + 1 < MAX_COMPOUND_DEPTH {
+                    // Build a synthetic clip that represents the visible portion
+                    let rate = (fps.ceil() as u32).max(1);
+                    let mut synthetic = inner_clip.clone();
+                    synthetic.timeline_in = RationalTime::from_secs_f64(parent_in_secs, rate);
+                    synthetic.timeline_out = RationalTime::from_secs_f64(parent_out_secs, rate);
+                    synthetic.source_in = RationalTime::from_secs_f64(inner_source_in_secs, rate);
+                    synthetic.source_out = RationalTime::from_secs_f64(inner_source_out_secs, rate);
+                    flatten_compound_video_clips(&synthetic, *nested_id, all_sequences, media_pool, fps, depth + 1, out)?;
+                    continue;
+                }
+                // Depth exceeded — skip
+                continue;
+            }
+
+            let kind = match &inner_clip.kind {
+                ClipKind::Media { media_id } => {
+                    let media = media_pool
+                        .get(media_id)
+                        .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
+                    ClipKindSnapshot::Media {
+                        path: media.path.clone(),
+                        has_audio: media.has_audio,
+                    }
+                }
+                ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
+                ClipKind::Gap | ClipKind::Generator(_) | ClipKind::AdjustmentLayer => continue,
+                ClipKind::Sequence { .. } => unreachable!(), // handled above
+            };
+
+            out.push(ClipSnapshot {
+                id: inner_clip.id,
+                kind,
+                timeline_start_frame: (parent_in_secs * fps).round() as u64,
+                timeline_end_frame: (parent_out_secs * fps).round() as u64,
+                source_start_secs: inner_source_in_secs,
+                source_end_secs: inner_source_out_secs,
+                speed: inner_clip.speed * compound.speed,
+                node_graph: inner_clip.node_graph.clone(),
+                effects: inner_clip.effects.clone(),
+                builtin_effects: inner_clip.builtin_effects.clone(),
+                source_rotation: inner_clip.source_rotation,
+                stabilization_data: inner_clip.stabilization_data.clone(),
+                smoothed_trajectory: inner_clip.smoothed_trajectory.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_audio_track(
+    track: &Track,
+    all_sequences: &[Sequence],
+    media_pool: &MediaPool,
+    fps: f64,
+    depth: u8,
 ) -> Result<AudioTrackSnapshot, RenderError> {
     let mut clips = Vec::new();
     for clip in &track.clips {
         if !clip.enabled { continue; }
+        if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if depth < MAX_COMPOUND_DEPTH {
+                flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
+                continue;
+            }
+        }
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
@@ -248,6 +386,76 @@ fn snapshot_audio_track(
     })
 }
 
+/// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.
+fn flatten_compound_audio_clips(
+    compound: &klipp_timeline::Clip,
+    sequence_id: klipp_core::SequenceId,
+    all_sequences: &[Sequence],
+    media_pool: &MediaPool,
+    fps: f64,
+    depth: u8,
+    out: &mut Vec<AudioClipSnapshot>,
+) -> Result<(), RenderError> {
+    let inner_seq = all_sequences
+        .iter()
+        .find(|s| s.id == sequence_id)
+        .ok_or_else(|| RenderError::Snapshot(format!("compound clip references unknown sequence {sequence_id:?}")))?;
+
+    let compound_timeline_in_secs = compound.timeline_in.to_secs_f64();
+    let compound_source_in_secs = compound.source_in.to_secs_f64();
+    let compound_source_out_secs = compound.source_out.to_secs_f64();
+
+    for inner_track in &inner_seq.tracks {
+        if inner_track.kind != TrackKind::Audio { continue; }
+        for inner_clip in &inner_track.clips {
+            if !inner_clip.enabled { continue; }
+
+            let ic_in_secs = inner_clip.timeline_in.to_secs_f64();
+            let ic_out_secs = inner_clip.timeline_out.to_secs_f64();
+
+            if ic_out_secs <= compound_source_in_secs || ic_in_secs >= compound_source_out_secs {
+                continue;
+            }
+
+            let visible_in = ic_in_secs.max(compound_source_in_secs);
+            let visible_out = ic_out_secs.min(compound_source_out_secs);
+            let parent_in_secs = compound_timeline_in_secs + (visible_in - compound_source_in_secs);
+            let parent_out_secs = compound_timeline_in_secs + (visible_out - compound_source_in_secs);
+            let source_in_offset = visible_in - ic_in_secs;
+
+            // Recursively flatten nested compound clips
+            if let ClipKind::Sequence { sequence_id: nested_id } = &inner_clip.kind {
+                if depth + 1 < MAX_COMPOUND_DEPTH {
+                    let rate = (fps.ceil() as u32).max(1);
+                    let mut synthetic = inner_clip.clone();
+                    synthetic.timeline_in = RationalTime::from_secs_f64(parent_in_secs, rate);
+                    synthetic.timeline_out = RationalTime::from_secs_f64(parent_out_secs, rate);
+                    let inner_source_in_secs = inner_clip.source_in.to_secs_f64() + source_in_offset;
+                    let inner_source_out_secs = inner_clip.source_out.to_secs_f64() - (ic_out_secs - visible_out);
+                    synthetic.source_in = RationalTime::from_secs_f64(inner_source_in_secs, rate);
+                    synthetic.source_out = RationalTime::from_secs_f64(inner_source_out_secs, rate);
+                    flatten_compound_audio_clips(&synthetic, *nested_id, all_sequences, media_pool, fps, depth + 1, out)?;
+                }
+                continue;
+            }
+
+            if let Some(media_id) = inner_clip.media_id() {
+                if let Some(media) = media_pool.get(&media_id) {
+                    if media.has_audio {
+                        out.push(AudioClipSnapshot {
+                            timeline_start_frame: (parent_in_secs * fps).round() as u64,
+                            timeline_end_frame: (parent_out_secs * fps).round() as u64,
+                            source_start_secs: inner_clip.source_in.to_secs_f64() + source_in_offset,
+                            path: media.path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn snapshot_clip(
     clip: &klipp_timeline::Clip,
     media_pool: &MediaPool,
@@ -265,8 +473,8 @@ fn snapshot_clip(
         }
         ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
         ClipKind::Gap => ClipKindSnapshot::Gap,
-        // Compound clips are treated as gaps during export for now —
-        // full recursive render requires the sequence to be flattened first.
+        // Compound clips are flattened at the track level. This fallback
+        // is only reached if nesting depth exceeds MAX_COMPOUND_DEPTH.
         ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
         ClipKind::Generator(_) => ClipKindSnapshot::Gap,
         ClipKind::AdjustmentLayer => ClipKindSnapshot::Gap,

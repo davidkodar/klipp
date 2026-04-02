@@ -2285,8 +2285,9 @@ impl KlippApp {
                         continue;
                     }
                     // Route through RenderQueue — snapshot reads in/out from sequence directly
-                    let snapshot = klipp_export::RenderSnapshot::from_sequence(
+                    let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                         &self.state.sequences[self.state.active_sequence_idx],
+                        &self.state.sequences,
                         &self.state.media_pool,
                         settings,
                         self.state.global_lut_path.clone(),
@@ -2309,8 +2310,9 @@ impl KlippApp {
                 AppCommand::ForceExportSequence { settings } => {
                     // Same as ExportSequence but skips offline check (user confirmed)
                     self.state.export_offline_warning = None;
-                    let snapshot = klipp_export::RenderSnapshot::from_sequence(
+                    let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                         &self.state.sequences[self.state.active_sequence_idx],
+                        &self.state.sequences,
                         &self.state.media_pool,
                         settings,
                         None,
@@ -2379,7 +2381,7 @@ impl KlippApp {
                 }
                 AppCommand::SetTrackVolume { track_index, volume } => {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                        track.volume = volume.clamp(0.0, 1.3);
+                        track.volume = volume.clamp(0.0, 2.0);
                     }
                     // Fall through to forward to engine (updates AudioMixer)
                 }
@@ -2760,6 +2762,97 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::AddSpeedKeyframe { clip_id, time_secs, speed } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        clip.speed_keyframes.push(klipp_core::Keyframe {
+                            time_secs: *time_secs,
+                            value: *speed as f32,
+                            interpolation: klipp_core::keyframe::Interpolation::Linear,
+                            tangent_out: (0.0, 0.0),
+                            tangent_in: (0.0, 0.0),
+                        });
+                        clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RemoveSpeedKeyframe { clip_id, index } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        if *index < clip.speed_keyframes.len() {
+                            clip.speed_keyframes.remove(*index);
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::UpdateSpeedKeyframe { clip_id, index, time_secs, speed } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        if *index < clip.speed_keyframes.len() {
+                            clip.speed_keyframes[*index].time_secs = *time_secs;
+                            clip.speed_keyframes[*index].value = *speed as f32;
+                            clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                        }
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::SetSpeedKeyframes { clip_id, keyframes } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        clip.speed_keyframes = keyframes.clone();
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::BeginSpeedKeyframeDrag { ref key, clip_id } => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
+                        let old_state = KeyframeSnapshot::from_clip(c);
+                        self.state.history.begin_drag(
+                            key.clone(),
+                            HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Move Speed Keyframe",
+                                    old_state: old_state.clone(),
+                                    new_state: old_state,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            },
+                        );
+                    }
+                    continue;
+                }
+                AppCommand::EndSpeedKeyframeDrag { ref key, clip_id } => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
+                        let new_state = KeyframeSnapshot::from_clip(c);
+                        self.state.history.end_drag(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditKeyframes {
+                                clip_id: *clip_id,
+                                linked_clip_id: None,
+                                description: "Move Speed Keyframe",
+                                old_state: new_state.clone(), // placeholder, combine_old_new merges
+                                new_state,
+                                old_linked_state: None,
+                                new_linked_state: None,
+                            },
+                        });
+                    }
+                    let _ = key;
                     continue;
                 }
                 AppCommand::SetSourceRotation { clip_id, degrees } => {
@@ -10342,6 +10435,10 @@ impl KlippApp {
                 self.state.show_curve_editor = !self.state.show_curve_editor;
                 self.state.show_keyframe_editor = self.state.show_curve_editor;
             }
+            // Ctrl+Shift+M — Toggle audio mixer panel
+            if i.key_pressed(egui::Key::M) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
+                self.state.show_audio_mixer = !self.state.show_audio_mixer;
+            }
             // Alt+Left — Navigate to previous keyframe
             if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -11407,14 +11504,21 @@ impl eframe::App for KlippApp {
                         egui::vec2(center_w, timeline_h),
                     );
 
-                    // Curve editor (between viewer and timeline when visible)
+                    // Audio mixer (between viewer and timeline when visible)
+                    let audio_mixer_h: f32 = if self.state.show_audio_mixer { 220.0 } else { 0.0 };
+                    let audio_mixer_rect = egui::Rect::from_min_size(
+                        egui::pos2(center_left, timeline_rect.min.y - audio_mixer_h - if audio_mixer_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
+                        egui::vec2(center_w, audio_mixer_h),
+                    );
+
+                    // Curve editor (between viewer and audio mixer / timeline when visible)
                     let curve_editor_h: f32 = if self.state.show_curve_editor { 180.0 } else { 0.0 };
                     let curve_editor_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, timeline_rect.min.y - curve_editor_h - if curve_editor_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
+                        egui::pos2(center_left, audio_mixer_rect.min.y - curve_editor_h - if curve_editor_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
                         egui::vec2(center_w, curve_editor_h),
                     );
 
-                    // Horizontal resizer (between viewer and curve editor / timeline)
+                    // Horizontal resizer (between viewer and curve editor / audio mixer / timeline)
                     let h_resizer_rect = egui::Rect::from_min_size(
                         egui::pos2(
                             center_left,
@@ -11720,6 +11824,15 @@ impl eframe::App for KlippApp {
                         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(curve_editor_rect), |ui| {
                             ui.set_min_size(curve_editor_rect.size());
                             let cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
+                            all_cmds.extend(cmds);
+                        });
+                    }
+
+                    // Audio mixer (between curve editor and timeline)
+                    if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(audio_mixer_rect), |ui| {
+                            ui.set_min_size(audio_mixer_rect.size());
+                            let cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
                             all_cmds.extend(cmds);
                         });
                     }
@@ -13224,8 +13337,9 @@ impl KlippApp {
                             video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                             rate_control: self.export_dialog.rate_control,
                         };
-                        let snapshot = klipp_export::RenderSnapshot::from_sequence(
+                        let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                             &self.state.sequences[self.state.active_sequence_idx],
+                            &self.state.sequences,
                             &self.state.media_pool,
                             &settings,
                             self.state.global_lut_path.clone(),

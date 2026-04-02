@@ -4694,6 +4694,73 @@ impl TimelinePanel {
                 }
             }
 
+            // ── Speed ramp overlay ──
+            // Draw a speed curve on video clips that have speed keyframes
+            if !clip.speed_keyframes.is_empty() && clip_rect.width() > 12.0 && !clip.kind.is_gap() {
+                let spd_clip_dur = clip.duration().to_secs_f64();
+                if spd_clip_dur > 0.0 {
+                    let spd_painter = painter.with_clip_rect(clip_rect);
+
+                    // Map time/speed to pixel coordinates
+                    // Y axis: 0x at bottom, 2x at top (unity 1x at center)
+                    let spd_max = 2.0_f32; // speed values above 2x are clamped visually
+                    let map_spd_x = |t: f64| -> f32 {
+                        clip_rect.left() + (t / spd_clip_dur) as f32 * clip_rect.width()
+                    };
+                    let map_spd_y = |v: f32| -> f32 {
+                        let frac = (v / spd_max).clamp(0.0, 1.0);
+                        clip_rect.bottom() - frac * clip_rect.height()
+                    };
+
+                    // Unity line (speed = 1.0) as a dim reference
+                    let unity_y = map_spd_y(1.0);
+                    spd_painter.line_segment(
+                        [egui::pos2(clip_rect.left(), unity_y), egui::pos2(clip_rect.right(), unity_y)],
+                        egui::Stroke::new(0.5, egui::Color32::from_white_alpha(30)),
+                    );
+
+                    // Build polyline from evaluated speed curve (smooth, not just keyframe positions)
+                    let spd_color = egui::Color32::from_rgb(100, 200, 255);
+                    let spd_fill_color = egui::Color32::from_rgba_unmultiplied(100, 200, 255, 25);
+                    let num_spd_pts = (clip_rect.width() as usize / 3).max(2).min(120);
+                    let mut spd_points: Vec<egui::Pos2> = Vec::with_capacity(num_spd_pts);
+                    for i in 0..num_spd_pts {
+                        let t = (i as f64 / (num_spd_pts - 1) as f64) * spd_clip_dur;
+                        let v = klipp_core::keyframe::evaluate(&clip.speed_keyframes, t, clip.speed as f32);
+                        spd_points.push(egui::pos2(map_spd_x(t), map_spd_y(v)));
+                    }
+
+                    // Filled area under the curve (subtle tint)
+                    if spd_points.len() >= 2 {
+                        let mut fill_poly: Vec<egui::Pos2> = spd_points.clone();
+                        fill_poly.push(egui::pos2(clip_rect.right(), clip_rect.bottom()));
+                        fill_poly.push(egui::pos2(clip_rect.left(), clip_rect.bottom()));
+                        spd_painter.add(egui::Shape::convex_polygon(fill_poly, spd_fill_color, egui::Stroke::NONE));
+                    }
+
+                    // Draw the speed curve line
+                    if spd_points.len() >= 2 {
+                        for pair in spd_points.windows(2) {
+                            spd_painter.line_segment(
+                                [pair[0], pair[1]],
+                                egui::Stroke::new(1.5, spd_color),
+                            );
+                        }
+                    }
+
+                    // Draw keyframe dots
+                    for kf in &clip.speed_keyframes {
+                        let px = map_spd_x(kf.time_secs);
+                        let py = map_spd_y(kf.value);
+                        spd_painter.circle_filled(egui::pos2(px, py), 3.0, spd_color);
+                        spd_painter.circle_stroke(
+                            egui::pos2(px, py), 3.0,
+                            egui::Stroke::new(0.5, egui::Color32::WHITE),
+                        );
+                    }
+                }
+            }
+
             // Border
             painter.rect_stroke(
                 clip_rect,

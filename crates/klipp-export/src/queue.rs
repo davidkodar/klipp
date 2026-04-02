@@ -63,8 +63,20 @@ impl RenderSnapshot {
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
     ) -> Result<Self, klipp_render::RenderError> {
+        Self::from_sequence_with_all(sequence, &[], media_pool, settings, global_lut_path, use_marked_range)
+    }
+
+    /// Create a render snapshot, resolving compound clips via `all_sequences`.
+    pub fn from_sequence_with_all(
+        sequence: &Sequence,
+        all_sequences: &[Sequence],
+        media_pool: &MediaPool,
+        settings: &ExportSettings,
+        global_lut_path: Option<PathBuf>,
+        use_marked_range: bool,
+    ) -> Result<Self, klipp_render::RenderError> {
         let snapshot =
-            SequenceSnapshot::from_sequence(sequence, media_pool, settings, global_lut_path, use_marked_range)?;
+            SequenceSnapshot::from_sequence_with_all(sequence, all_sequences, media_pool, settings, global_lut_path, use_marked_range)?;
         let total_frames = snapshot.frames_to_export();
         Ok(Self {
             sequence_snapshot: snapshot,

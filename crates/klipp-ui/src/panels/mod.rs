@@ -1,3 +1,4 @@
+pub mod audio_mixer;
 pub mod curve_editor;
 pub mod inspector;
 pub mod node_graph;

@@ -692,7 +692,8 @@ impl ToolbarPanel {
             let toggle_label = |active: bool, name: &str| if active { format!("\u{2713} {name}") } else { format!("  {name}") };
             if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text("Ctrl+Shift+I")).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Effects Browser")).shortcut_text("Ctrl+Shift+E")).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Audio Mixer")).shortcut_text("Ctrl+Shift+M")).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Curve Editor")).shortcut_text("Shift+K")).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.show_audio_mixer, "Audio Mixer")).shortcut_text("Ctrl+Shift+M")).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
             if ui.button(toggle_label(state.show_history_panel, "History")).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
             if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
             ui.separator();

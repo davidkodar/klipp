@@ -595,6 +595,8 @@ pub struct AppState {
 
     /// Whether the curve editor panel is visible
     pub show_curve_editor: bool,
+    /// Whether the audio mixer panel is visible
+    pub show_audio_mixer: bool,
     /// Whether the history panel is visible
     pub show_history_panel: bool,
     /// Command palette state
@@ -1026,6 +1028,7 @@ impl Default for AppState {
             show_transform_controls: true,
             viewer_mask_drag: None,
             show_curve_editor: false,
+            show_audio_mixer: false,
             show_history_panel: false,
             show_command_palette: false,
             command_palette_query: String::new(),

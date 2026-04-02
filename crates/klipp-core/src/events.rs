@@ -752,6 +752,20 @@ pub enum AppCommand {
     // Clip speed
     SetClipSpeed { clip_id: ClipId, speed: f64 },
 
+    // Speed keyframes (variable speed ramp)
+    /// Add a speed keyframe to a clip at the given time.
+    AddSpeedKeyframe { clip_id: ClipId, time_secs: f64, speed: f64 },
+    /// Remove a speed keyframe by index.
+    RemoveSpeedKeyframe { clip_id: ClipId, index: usize },
+    /// Update an existing speed keyframe's time and value.
+    UpdateSpeedKeyframe { clip_id: ClipId, index: usize, time_secs: f64, speed: f64 },
+    /// Replace all speed keyframes (used by presets).
+    SetSpeedKeyframes { clip_id: ClipId, keyframes: Vec<crate::Keyframe> },
+    /// Begin drag for speed keyframe undo coalescing.
+    BeginSpeedKeyframeDrag { key: String, clip_id: ClipId },
+    /// End drag for speed keyframe undo coalescing.
+    EndSpeedKeyframeDrag { key: String, clip_id: ClipId },
+
     // Source rotation override (0, 90, 180, 270 degrees)
     SetSourceRotation { clip_id: ClipId, degrees: i32 },
 
