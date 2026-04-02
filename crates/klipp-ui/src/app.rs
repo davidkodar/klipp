@@ -1701,6 +1701,7 @@ impl KlippApp {
         if !cmds.is_empty() {
             self.state.media_usage_cache_dirty = true;
         }
+        let mut needs_refresh = false;
         for cmd in cmds {
             match &cmd {
                 AppCommand::LoadMediaFile { ref path, .. } => {
@@ -2518,7 +2519,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::RemoveNode { clip_id, node_id } => {
@@ -2539,7 +2540,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
@@ -2570,7 +2571,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::DisconnectEdge { clip_id, to, to_port } => {
@@ -2589,7 +2590,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } => {
@@ -2602,7 +2603,7 @@ impl KlippApp {
                         }
                     }
                     // No undo for continuous drag — undo pushed on drag_stopped via SetNodeGraph
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
@@ -2623,7 +2624,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::RenameNode { clip_id, node_id, ref label } => {
@@ -2635,7 +2636,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetScopeTapNode { .. } => {
@@ -2651,7 +2652,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
@@ -2664,7 +2665,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
@@ -2677,7 +2678,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetNodeQualifier { clip_id, node_id, qualifier } => {
@@ -2690,7 +2691,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
@@ -2703,7 +2704,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::AddMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs, value } => {
@@ -2734,7 +2735,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::RemoveMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs } => {
@@ -2753,7 +2754,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::ClearMaskKeyframes { clip_id, node_id, mask_index, ref param } => {
@@ -2771,7 +2772,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
@@ -2783,7 +2784,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::RemoveKeyframe { clip_id, node_id, ref param, time_secs } => {
@@ -2795,7 +2796,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::ClearKeyframes { clip_id, node_id, ref param } => {
@@ -2807,7 +2808,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetKeyframeInterpolation { clip_id, node_id, ref param, time_secs, interpolation } => {
@@ -2823,7 +2824,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetKeyframeTangents { clip_id, node_id, ref param, time_secs, tangent_in, tangent_out } => {
@@ -2840,7 +2841,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::SetClipRole { clip_id, role } => {
@@ -2999,7 +3000,7 @@ impl KlippApp {
                             break;
                         }
                     }
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::AutoWhiteBalance { clip_id } => {
@@ -3023,7 +3024,7 @@ impl KlippApp {
                                 break;
                             }
                         }
-                        self.sync_and_refresh_frame();
+                        needs_refresh = true;
                     }
                     continue;
                 }
@@ -6400,7 +6401,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     // Use sync_and_refresh_frame for immediate visual update (even when paused)
-                    self.sync_and_refresh_frame();
+                    needs_refresh = true;
                     continue;
                 }
                 AppCommand::DeleteGradeVersion { clip_id, version_index } => {
@@ -8814,6 +8815,10 @@ impl KlippApp {
                 _ => {}
             }
             let _ = self.cmd_tx.send(cmd);
+        }
+        // Batch: re-grade once for all node param changes in this frame
+        if needs_refresh {
+            self.sync_and_refresh_frame();
         }
     }
 
