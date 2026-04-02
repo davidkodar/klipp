@@ -261,6 +261,10 @@ pub struct AppState {
     pub scope_update_interval_ms: u32,
     /// Magnetic timeline edit mode: Insert (ripple) or Overwrite (replace)
     pub edit_mode: klipp_timeline::magnetic::EditMode,
+    /// Whether magnetic timeline is enabled (synced from prefs).
+    pub magnetic_timeline_enabled: bool,
+    /// Whether multicam angle badges/cut list are drawn on timeline clips (synced from prefs).
+    pub multicam_show_angles: bool,
     pub fullscreen_viewer: bool,
     pub fullscreen_changed: bool,
 
@@ -874,6 +878,8 @@ impl Default for AppState {
             scope_quality: Default::default(),
             scope_update_interval_ms: 32,
             edit_mode: klipp_timeline::magnetic::EditMode::default(),
+            magnetic_timeline_enabled: true,
+            multicam_show_angles: true,
             fullscreen_viewer: false,
             fullscreen_changed: false,
             clipboard: None,

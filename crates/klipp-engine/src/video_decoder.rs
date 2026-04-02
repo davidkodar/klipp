@@ -264,9 +264,15 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
 /// format conversion. This is the single biggest performance win: swscale does
 /// both NV12/P010→RGBA conversion AND resize in one pass, and the resulting
 /// RGBA buffer is 4× smaller (1920×1080 = 8MB vs 3840×2160 = 33MB).
+static HARDWARE_DECODE_PREF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static MAX_PB_HEIGHT_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
 static FRAME_QUEUE_SIZE_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
 static DECODE_THREADS_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Set whether hardware decode (NVDEC / VAAPI) is enabled from preferences.
+pub fn set_hardware_decode(enabled: bool) {
+    HARDWARE_DECODE_PREF.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Set decode thread count from preferences (0 = auto/all cores).
 pub fn set_decode_threads(count: u32) {
@@ -505,11 +511,12 @@ fn decode_thread_main(
         }
     };
 
-    // Try hardware acceleration: CUDA first, then VAAPI
+    // Try hardware acceleration: CUDA first, then VAAPI (skipped when pref disabled)
+    let hw_enabled = HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
     let hw_accel = unsafe {
-        if try_init_cuda(codec_ctx.as_mut_ptr()) {
+        if hw_enabled && try_init_cuda(codec_ctx.as_mut_ptr()) {
             HwAccel::Cuda
-        } else if try_init_vaapi(codec_ctx.as_mut_ptr()) {
+        } else if hw_enabled && try_init_vaapi(codec_ctx.as_mut_ptr()) {
             HwAccel::Vaapi
         } else {
             HwAccel::Software

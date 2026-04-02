@@ -4972,8 +4972,8 @@ impl TimelinePanel {
                     egui::FontId::proportional(8.0), egui::Color32::WHITE);
             }
 
-            // Multicam indicators
-            if clip.multicam_group.is_some() && clip_rect.width() > 20.0 {
+            // Multicam indicators (gated by multicam_show_angles pref synced to state)
+            if state.multicam_show_angles && clip.multicam_group.is_some() && clip_rect.width() > 20.0 {
                 // Angle badge (top-right corner) — positioned left of FX/lock badges
                 let angle_text = format!("{}", clip.multicam_angle + 1);
                 let badge_rect = egui::Rect::from_min_size(

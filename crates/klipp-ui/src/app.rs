@@ -305,6 +305,12 @@ impl KlippApp {
         }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
+        // Playhead follow: if pref is off, start with follow disabled
+        if !app.prefs.editing.playhead_follows_playback {
+            app.state.playhead_follow = crate::state::PlayheadFollow::Off;
+        }
+        app.state.magnetic_timeline_enabled = app.prefs.editing.magnetic_timeline;
+        app.state.multicam_show_angles = app.prefs.editing.multicam_show_angles;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.snap_threshold_px = app.prefs.editing.snap_threshold_px;
@@ -315,10 +321,21 @@ impl KlippApp {
         app.state.toast.visible_duration = app.prefs.advanced.toast_duration_secs;
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
+        klipp_engine::video_decoder::set_hardware_decode(app.prefs.system.hardware_decode);
         klipp_engine::video_decoder::set_max_playback_height(app.prefs.system.max_playback_height);
         klipp_engine::video_decoder::set_frame_queue_size(app.prefs.system.frame_queue_size);
         klipp_engine::video_decoder::set_decode_threads(app.prefs.system.decode_threads);
         klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
+        // TODO: background_render pref — when true, pre-render complex timeline
+        // sections in a background thread. No background render system exists yet;
+        // logging the pref value here so it's exercised at startup.
+        if app.prefs.playback.background_render {
+            tracing::debug!("Background render enabled (not yet implemented)");
+        }
+        // Sync LUT interpolation mode to engine
+        let _ = app.cmd_tx.send(AppCommand::SetLutTetrahedral(
+            app.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
+        ));
         // Map GpuPreference to wgpu PowerPreference (klipp-effects can't depend on klipp-core)
         let gpu_pref = match app.prefs.system.gpu_preference {
             klipp_core::GpuPreference::Auto => Some(wgpu::PowerPreference::default()),
@@ -478,7 +495,9 @@ impl KlippApp {
                     self.state.playhead_anchor = self.state.playhead;
                     self.state.playhead_anchor_wall = std::time::Instant::now();
                     // Re-engage playhead follow on play (user scroll disables it)
-                    if self.state.playhead_follow == crate::state::PlayheadFollow::Off {
+                    if self.prefs.editing.playhead_follows_playback
+                        && self.state.playhead_follow == crate::state::PlayheadFollow::Off
+                    {
                         self.state.playhead_follow = crate::state::PlayheadFollow::Page;
                     }
                 }
@@ -8600,6 +8619,8 @@ impl KlippApp {
                         self.state.tracking_in_progress.insert(clip_id);
                         self.state.tracking_progress.insert(clip_id, 0.0);
                         let event_tx = self.proxy_event_tx.clone();
+                        let pref_patch_size = self.prefs.editing.track_patch_size;
+                        let pref_loss_threshold = self.prefs.editing.track_loss_threshold;
 
                         std::thread::spawn(move || {
                             // Decode a frame to get dimensions for coordinate conversion
@@ -8624,8 +8645,8 @@ impl KlippApp {
                                     klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
                                 },
                                 search_radius / 2, // half-res
-                                6, // patch_half
-                                25, // loss threshold
+                                pref_patch_size, // patch_half (from prefs)
+                                pref_loss_threshold, // loss threshold (from prefs)
                                 true,
                                 &|p| {
                                     let _ = event_tx.send(AppEvent::TrackingProgress { clip_id, progress: p * 0.5 });
@@ -8643,8 +8664,8 @@ impl KlippApp {
                                     klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
                                 },
                                 search_radius / 2,
-                                6,
-                                25,
+                                pref_patch_size,
+                                pref_loss_threshold,
                                 false,
                                 &|p| {
                                     let _ = event_tx.send(AppEvent::TrackingProgress { clip_id, progress: 0.5 + p * 0.5 });
@@ -11159,6 +11180,7 @@ impl eframe::App for KlippApp {
         }
 
         // Update multicam viewer state based on selected clip
+        if self.prefs.editing.multicam_auto_viewer {
         if let Some(clip_id) = self.state.selected_clip {
             let seq = &self.state.sequences[self.state.active_sequence_idx];
             let found_clip = seq.all_clips().find(|c| c.id == clip_id);
@@ -11184,6 +11206,10 @@ impl eframe::App for KlippApp {
                 self.state.multicam_viewer_active = false;
             }
         } else {
+            self.state.multicam_viewer_active = false;
+        }
+        } else {
+            // multicam_auto_viewer pref disabled — never activate multicam viewer
             self.state.multicam_viewer_active = false;
         }
 
@@ -11215,6 +11241,17 @@ impl eframe::App for KlippApp {
             self.state.audio_anti_click_fade = self.prefs.audio.anti_click_fade;
             self.state.audio_show_crossfade_indicators = self.prefs.audio.show_crossfade_indicators;
             let _ = self.cmd_tx.send(AppCommand::SetAntiClickFade(self.state.audio_anti_click_fade));
+            // Sync editing prefs
+            if !self.prefs.editing.playhead_follows_playback {
+                self.state.playhead_follow = crate::state::PlayheadFollow::Off;
+            }
+            self.state.magnetic_timeline_enabled = self.prefs.editing.magnetic_timeline;
+            self.state.multicam_show_angles = self.prefs.editing.multicam_show_angles;
+            // Sync engine statics
+            klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
+            let _ = self.cmd_tx.send(AppCommand::SetLutTetrahedral(
+                self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
+            ));
             // Sync collapsed inspector sections to prefs
             if self.state.remember_inspector_layout {
                 let collapsed_key = egui::Id::new("klipp_collapsed_sections");
@@ -12942,11 +12979,13 @@ impl KlippApp {
     }
 
     /// Check if a track uses magnetic editing (Primary, Connected, or ConnectedStoryline).
+    /// Returns false when the magnetic timeline pref is disabled.
     fn is_magnetic_track(&self, track_index: usize) -> bool {
-        matches!(
-            self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
-            Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
-        )
+        self.state.magnetic_timeline_enabled
+            && matches!(
+                self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
+                Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
+            )
     }
 
     fn handle_skim_transcode(&mut self, media_id: MediaId) {

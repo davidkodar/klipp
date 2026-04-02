@@ -17,6 +17,12 @@ pub fn set_preferred_device(name: Option<String>) {
     *PREFERRED_DEVICE.lock().unwrap() = name;
 }
 
+// TODO: monitoring_mode pref (Software vs Hardware direct monitoring).
+// cpal does not expose a direct/hardware monitoring concept — all audio is
+// routed through software mixing. When hardware monitoring support is added
+// (e.g. via JACK or PipeWire direct routing), read the monitoring_mode pref
+// here to select the path.
+
 /// Flush all samples from a skim consumer (drains to silence).
 pub fn flush_skim_consumer(skim: &SkimConsumer) {
     if let Ok(mut guard) = skim.lock() {

@@ -397,6 +397,76 @@ pub fn apply_3d_lut(rgba: &mut [u8], lut: &LutData, opacity: f32) {
     }
 }
 
+/// Apply a 3D LUT with tetrahedral interpolation to an RGBA buffer.
+/// Tetrahedral is more perceptually accurate than trilinear for steep gradients.
+/// `opacity` controls blend: 0.0 = original, 1.0 = fully graded.
+pub fn apply_3d_lut_tetrahedral(rgba: &mut [u8], lut: &LutData, opacity: f32) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let n = lut.size;
+    let n1 = (n - 1) as f32;
+
+    let idx = |ri: usize, gi: usize, bi: usize| (bi * n * n + gi * n + ri) * 3;
+
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r_in = pixel[0] as f32 / 255.0;
+        let g_in = pixel[1] as f32 / 255.0;
+        let b_in = pixel[2] as f32 / 255.0;
+
+        let r_idx = (r_in * n1).clamp(0.0, n1);
+        let g_idx = (g_in * n1).clamp(0.0, n1);
+        let b_idx = (b_in * n1).clamp(0.0, n1);
+
+        let r0 = (r_idx.floor() as usize).min(n - 2);
+        let g0 = (g_idx.floor() as usize).min(n - 2);
+        let b0 = (b_idx.floor() as usize).min(n - 2);
+
+        let rf = r_idx - r0 as f32;
+        let gf = g_idx - g0 as f32;
+        let bf = b_idx - b0 as f32;
+
+        for (ch, px) in pixel.iter_mut().take(3).enumerate() {
+            let c000 = lut.data[idx(r0, g0, b0) + ch];
+            let c100 = lut.data[idx(r0 + 1, g0, b0) + ch];
+            let c010 = lut.data[idx(r0, g0 + 1, b0) + ch];
+            let c110 = lut.data[idx(r0 + 1, g0 + 1, b0) + ch];
+            let c001 = lut.data[idx(r0, g0, b0 + 1) + ch];
+            let c101 = lut.data[idx(r0 + 1, g0, b0 + 1) + ch];
+            let c011 = lut.data[idx(r0, g0 + 1, b0 + 1) + ch];
+            let c111 = lut.data[idx(r0 + 1, g0 + 1, b0 + 1) + ch];
+
+            // Tetrahedral: split unit cube into 6 tetrahedra based on which
+            // fractional coordinate is largest, middle, smallest
+            let lut_out = if rf > gf {
+                if gf > bf {
+                    // rf > gf > bf — tetrahedron T1
+                    c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf
+                } else if rf > bf {
+                    // rf > bf > gf — tetrahedron T2
+                    c000 + (c100 - c000) * rf + (c101 - c100) * bf + (c111 - c101) * gf
+                } else {
+                    // bf > rf > gf — tetrahedron T3
+                    c000 + (c001 - c000) * bf + (c101 - c001) * rf + (c111 - c101) * gf
+                }
+            } else if rf > bf {
+                // gf > rf > bf — tetrahedron T4
+                c000 + (c010 - c000) * gf + (c110 - c010) * rf + (c111 - c110) * bf
+            } else if gf > bf {
+                // gf > bf > rf — tetrahedron T5
+                c000 + (c010 - c000) * gf + (c011 - c010) * bf + (c111 - c011) * rf
+            } else {
+                // bf > gf > rf — tetrahedron T6
+                c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf
+            };
+
+            let original = *px as f32 / 255.0;
+            let result = original + (lut_out - original) * opacity;
+            *px = (result.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
+}
+
 /// Bake a color grade into a 3D LUT by running every RGB triplet through the
 /// primary grade pipeline. Does NOT capture qualifier, masks, or keyframe
 /// animation — those are spatial/temporal and cannot be represented in a 3D LUT.

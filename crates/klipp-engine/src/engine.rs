@@ -590,6 +590,10 @@ impl PlaybackEngine {
                 self.color_pipeline.enabled = enabled;
                 self.regrade_cached_frame();
             }
+            AppCommand::SetLutTetrahedral(tetrahedral) => {
+                self.color_pipeline.use_tetrahedral = tetrahedral;
+                self.regrade_cached_frame();
+            }
 
             AppCommand::SetTrackVolume { track_index, volume } => {
                 if let Ok(mut m) = self.mixer.lock() {

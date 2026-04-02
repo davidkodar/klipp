@@ -63,6 +63,8 @@ pub struct ColorPipeline {
     pub global_lut: Option<LutData>,
     pub global_lut_path: Option<PathBuf>,
     pub global_lut_opacity: f32,
+    /// Use tetrahedral interpolation for LUT application (more accurate but slightly slower).
+    pub use_tetrahedral: bool,
 }
 
 impl Default for ColorPipeline {
@@ -72,6 +74,7 @@ impl Default for ColorPipeline {
             global_lut: None,
             global_lut_path: None,
             global_lut_opacity: 1.0,
+            use_tetrahedral: true,
         }
     }
 }
@@ -249,7 +252,11 @@ impl ColorPipeline {
             return rgba;
         }
         if let Some(lut) = &self.global_lut {
-            lut::apply_3d_lut(&mut rgba, lut, self.global_lut_opacity);
+            if self.use_tetrahedral {
+                lut::apply_3d_lut_tetrahedral(&mut rgba, lut, self.global_lut_opacity);
+            } else {
+                lut::apply_3d_lut(&mut rgba, lut, self.global_lut_opacity);
+            }
         }
         rgba
     }

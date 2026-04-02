@@ -504,6 +504,8 @@ pub enum AppCommand {
     ClearGlobalLut,
     SetGlobalLutOpacity(f32),
     SetGlobalLutEnabled(bool),
+    /// Switch LUT interpolation: true = tetrahedral, false = trilinear.
+    SetLutTetrahedral(bool),
 
     // Effects (OFX)
     AddEffect { clip_id: ClipId, plugin_name: String },
