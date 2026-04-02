@@ -642,6 +642,9 @@ impl ToolbarPanel {
                 if ui.button("Parade").clicked() { state.show_scopes = true; ui.close_menu(); }
                 ui.separator();
                 if ui.button("Hide Scopes").clicked() { state.show_scopes = false; ui.close_menu(); }
+                ui.separator();
+                let overlay_check = if state.scope_overlay_mode { "\u{2713} " } else { "  " };
+                if ui.button(format!("{overlay_check}Overlay on Viewer")).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
             });
             let color_check = if state.show_color_panel { "\u{2713} " } else { "  " };
             if ui.add(egui::Button::new(format!("{color_check}Color Panel")).shortcut_text("C")).clicked() {

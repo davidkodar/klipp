@@ -11690,6 +11690,29 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
+                    // Scope overlay on viewer (semi-transparent, bottom-right corner)
+                    if self.state.show_scopes && self.state.scope_overlay_mode {
+                        let overlay_w = (viewer_rect.width() * 0.3).min(200.0);
+                        let overlay_h = overlay_w; // square
+                        let overlay_rect = egui::Rect::from_min_size(
+                            egui::pos2(viewer_rect.right() - overlay_w - 8.0, viewer_rect.bottom() - overlay_h - 8.0),
+                            egui::vec2(overlay_w, overlay_h),
+                        );
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
+                            ui.set_min_size(overlay_rect.size());
+                            // Semi-transparent dark background
+                            ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
+                            crate::widgets::scopes::show_scopes(
+                                ui,
+                                &mut self.state.scope_state,
+                                self.state.scope_mode,
+                                &self.frame_buffer,
+                                self.state.scope_quality,
+                                self.prefs.color.vectorscope_skin_angle,
+                            );
+                        });
+                    }
+
                     // Curve editor (between viewer and timeline)
                     if self.state.show_curve_editor && curve_editor_h > 0.0 {
                         self.curve_editor.sync_param_from_state(&self.state);

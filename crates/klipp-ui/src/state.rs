@@ -411,6 +411,8 @@ pub struct AppState {
 
     // Scopes
     pub show_scopes: bool,
+    /// Render scopes as a semi-transparent overlay on the viewer instead of a separate panel.
+    pub scope_overlay_mode: bool,
     pub show_keyframe_editor: bool,
     pub scope_mode: ScopeMode,
     pub scope_state: crate::widgets::scopes::ScopeState,
@@ -929,6 +931,7 @@ impl Default for AppState {
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,
+            scope_overlay_mode: false,
             scope_state: Default::default(),
             show_keyframe_editor: false,
             scope_mode: ScopeMode::Waveform,
