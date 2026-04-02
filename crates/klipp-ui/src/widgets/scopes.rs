@@ -51,7 +51,7 @@ pub fn show_scopes(
     state: &mut ScopeState,
     mode: ScopeMode,
     frame_buffer: &SharedFrameBuffer,
-    quality: klipp_core::ScopeQuality,
+    _quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
 ) {
     let available = ui.available_size();
