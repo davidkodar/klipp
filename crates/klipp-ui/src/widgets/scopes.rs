@@ -56,8 +56,8 @@ pub fn show_scopes(
 ) {
     let available = ui.available_size();
     let ppp = ui.ctx().pixels_per_point();
-    let render_w = ((available.x * ppp) as usize).clamp(100, 400);
-    let render_h = ((available.y * ppp) as usize).clamp(60, 256);
+    let render_w = ((available.x * ppp) as usize).clamp(100, 1920);
+    let render_h = ((available.y * ppp) as usize).clamp(60, 1080);
 
     let mi = mode_index(mode);
 
