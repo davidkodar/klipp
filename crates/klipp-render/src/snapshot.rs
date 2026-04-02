@@ -227,6 +227,24 @@ fn snapshot_video_track(
             }
             // Exceeded depth limit — skip as gap
         }
+
+        // Multicam flattening: if this is the primary clip (angle 0) with
+        // a cut list, expand each cut segment into a snapshot sourcing from
+        // the appropriate angle clip.
+        if clip.multicam_group.is_some()
+            && clip.multicam_angle == 0
+            && !clip.multicam_cuts.is_empty()
+        {
+            flatten_multicam_video_clips(clip, track, media_pool, fps, &mut clips)?;
+            continue;
+        }
+
+        // Skip non-primary multicam angles — they are referenced via the
+        // primary clip's cut list and rendered through flattening above.
+        if clip.multicam_group.is_some() && clip.multicam_angle != 0 {
+            continue;
+        }
+
         clips.push(snapshot_clip(clip, media_pool, fps)?);
     }
 
@@ -242,6 +260,103 @@ fn snapshot_video_track(
         clips,
         transitions,
     })
+}
+
+/// Flatten a primary multicam clip's cut list into individual clip snapshots.
+/// Each cut segment (from time A to time B, showing angle N) is resolved to the
+/// corresponding angle clip in the same track, producing a snapshot that sources
+/// from that angle's media for the relevant time range.
+fn flatten_multicam_video_clips(
+    primary: &klipp_timeline::Clip,
+    track: &Track,
+    media_pool: &MediaPool,
+    fps: f64,
+    out: &mut Vec<ClipSnapshot>,
+) -> Result<(), RenderError> {
+    let group_id = primary.multicam_group.expect("caller checked");
+    let clip_in_secs = primary.timeline_in.to_secs_f64();
+    let clip_out_secs = primary.timeline_out.to_secs_f64();
+    let clip_duration_secs = clip_out_secs - clip_in_secs;
+
+    // Build cut segments: (start_secs, end_secs, angle_index)
+    // Each entry in multicam_cuts is (time_from_clip_start, angle_index).
+    // We fill in the gaps: from the start of the clip to the first cut, between
+    // cuts, and from the last cut to the end.
+    let mut segments: Vec<(f64, f64, u8)> = Vec::new();
+    let cuts = &primary.multicam_cuts;
+    for (i, &(cut_time, angle)) in cuts.iter().enumerate() {
+        let seg_start = cut_time;
+        let seg_end = if i + 1 < cuts.len() {
+            cuts[i + 1].0
+        } else {
+            clip_duration_secs
+        };
+        if seg_end > seg_start {
+            segments.push((seg_start, seg_end, angle));
+        }
+    }
+    // If the first cut doesn't start at 0, insert a segment for angle 0
+    // from clip start to the first cut.
+    if segments.is_empty() || segments[0].0 > 0.001 {
+        let first_end = if segments.is_empty() { clip_duration_secs } else { segments[0].0 };
+        if first_end > 0.001 {
+            segments.insert(0, (0.0, first_end, 0));
+        }
+    }
+
+    // Collect angle clips in this group from the same track
+    let angle_clips: Vec<&klipp_timeline::Clip> = track.clips.iter()
+        .filter(|c| c.multicam_group == Some(group_id) && c.enabled)
+        .collect();
+
+    for (seg_start, seg_end, angle) in &segments {
+        // Find the clip for this angle. If not found, fall back to the primary (angle 0).
+        let angle_clip = angle_clips.iter()
+            .find(|c| c.multicam_angle == *angle)
+            .or_else(|| angle_clips.iter().find(|c| c.multicam_angle == 0));
+
+        let Some(angle_clip) = angle_clip else { continue };
+
+        let kind = match &angle_clip.kind {
+            ClipKind::Media { media_id } => {
+                let media = media_pool
+                    .get(media_id)
+                    .ok_or_else(|| RenderError::Snapshot(format!("multicam media {media_id:?} not in pool")))?;
+                ClipKindSnapshot::Media {
+                    path: media.path.clone(),
+                    has_audio: media.has_audio,
+                }
+            }
+            ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
+            _ => continue,
+        };
+
+        // Map segment times to the parent timeline
+        let parent_in_secs = clip_in_secs + seg_start;
+        let parent_out_secs = clip_in_secs + seg_end;
+
+        // Map to source media time: offset into the angle clip's source
+        let source_start_secs = angle_clip.source_in.to_secs_f64() + seg_start;
+        let source_end_secs = angle_clip.source_in.to_secs_f64() + seg_end;
+
+        out.push(ClipSnapshot {
+            id: angle_clip.id,
+            kind,
+            timeline_start_frame: (parent_in_secs * fps).round() as u64,
+            timeline_end_frame: (parent_out_secs * fps).round() as u64,
+            source_start_secs,
+            source_end_secs,
+            speed: angle_clip.speed,
+            node_graph: angle_clip.node_graph.clone(),
+            effects: angle_clip.effects.clone(),
+            builtin_effects: angle_clip.builtin_effects.clone(),
+            source_rotation: angle_clip.source_rotation,
+            stabilization_data: angle_clip.stabilization_data.clone(),
+            smoothed_trajectory: angle_clip.smoothed_trajectory.clone(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Flatten a compound clip's inner sequence video tracks into the parent clip list.
@@ -363,6 +478,21 @@ fn snapshot_audio_track(
                 continue;
             }
         }
+
+        // Multicam audio flattening: primary clip expands cut list into
+        // audio segments sourcing from the active angle's media.
+        if clip.multicam_group.is_some()
+            && clip.multicam_angle == 0
+            && !clip.multicam_cuts.is_empty()
+        {
+            flatten_multicam_audio_clips(clip, track, media_pool, fps, &mut clips)?;
+            continue;
+        }
+        // Skip non-primary multicam angles (handled via primary's cut list).
+        if clip.multicam_group.is_some() && clip.multicam_angle != 0 {
+            continue;
+        }
+
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
@@ -453,6 +583,76 @@ fn flatten_compound_audio_clips(
             }
         }
     }
+    Ok(())
+}
+
+/// Flatten a primary multicam clip's cut list into audio clip snapshots.
+/// Mirrors `flatten_multicam_video_clips` but produces `AudioClipSnapshot`s.
+fn flatten_multicam_audio_clips(
+    primary: &klipp_timeline::Clip,
+    track: &Track,
+    media_pool: &MediaPool,
+    fps: f64,
+    out: &mut Vec<AudioClipSnapshot>,
+) -> Result<(), RenderError> {
+    let group_id = primary.multicam_group.expect("caller checked");
+    let clip_in_secs = primary.timeline_in.to_secs_f64();
+    let clip_out_secs = primary.timeline_out.to_secs_f64();
+    let clip_duration_secs = clip_out_secs - clip_in_secs;
+
+    // Build cut segments: (start_secs, end_secs, angle_index)
+    let mut segments: Vec<(f64, f64, u8)> = Vec::new();
+    let cuts = &primary.multicam_cuts;
+    for (i, &(cut_time, angle)) in cuts.iter().enumerate() {
+        let seg_start = cut_time;
+        let seg_end = if i + 1 < cuts.len() {
+            cuts[i + 1].0
+        } else {
+            clip_duration_secs
+        };
+        if seg_end > seg_start {
+            segments.push((seg_start, seg_end, angle));
+        }
+    }
+    // Fill in segment from 0 to first cut if needed
+    if segments.is_empty() || segments[0].0 > 0.001 {
+        let first_end = if segments.is_empty() { clip_duration_secs } else { segments[0].0 };
+        if first_end > 0.001 {
+            segments.insert(0, (0.0, first_end, 0));
+        }
+    }
+
+    let angle_clips: Vec<&klipp_timeline::Clip> = track.clips.iter()
+        .filter(|c| c.multicam_group == Some(group_id) && c.enabled)
+        .collect();
+
+    for (seg_start, seg_end, angle) in &segments {
+        let angle_clip = angle_clips.iter()
+            .find(|c| c.multicam_angle == *angle)
+            .or_else(|| angle_clips.iter().find(|c| c.multicam_angle == 0));
+        let Some(angle_clip) = angle_clip else { continue };
+
+        let media_id = match angle_clip.media_id() {
+            Some(mid) => mid,
+            None => continue,
+        };
+        let media = match media_pool.get(&media_id) {
+            Some(m) if m.has_audio => m,
+            _ => continue,
+        };
+
+        let parent_in_secs = clip_in_secs + seg_start;
+        let parent_out_secs = clip_in_secs + seg_end;
+        let source_start_secs = angle_clip.source_in.to_secs_f64() + seg_start;
+
+        out.push(AudioClipSnapshot {
+            timeline_start_frame: (parent_in_secs * fps).round() as u64,
+            timeline_end_frame: (parent_out_secs * fps).round() as u64,
+            source_start_secs,
+            path: media.path.clone(),
+        });
+    }
+
     Ok(())
 }
 

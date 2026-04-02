@@ -311,7 +311,7 @@ impl PreferencesPanel {
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
-            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration"],
+            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync"],
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
@@ -706,6 +706,41 @@ impl PreferencesPanel {
             if ui.add(egui::DragValue::new(&mut v).range(1..=120).speed(1.0).suffix(" fr")).changed() {
                 prefs.editing.default_transition_frames = v; *dirty = true;
             }
+        });
+
+        // ── MULTICAM section ──
+        Self::section_header(ui, "MULTICAM");
+
+        Self::setting_row(ui, "Auto-show angle viewer", |ui| {
+            let mut val = prefs.editing.multicam_auto_viewer;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.editing.multicam_auto_viewer = val;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Show angle badges on timeline", |ui| {
+            let mut val = prefs.editing.multicam_show_angles;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.editing.multicam_show_angles = val;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default sync method", |ui| {
+            use crate::prefs::MulticamSyncMethod;
+            egui::ComboBox::from_id_salt("multicam_sync")
+                .selected_text(match prefs.editing.multicam_sync_method {
+                    MulticamSyncMethod::Manual => "Manual",
+                    MulticamSyncMethod::Timecode => "Timecode",
+                    MulticamSyncMethod::AudioWaveform => "Audio Waveform",
+                })
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Manual, "Manual").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Timecode, "Timecode").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::AudioWaveform, "Audio Waveform").changed() { *dirty = true; }
+                });
         });
 
         let _ = cmds; // suppress unused warning

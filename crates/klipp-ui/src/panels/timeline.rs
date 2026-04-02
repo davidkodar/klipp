@@ -4972,6 +4972,66 @@ impl TimelinePanel {
                     egui::FontId::proportional(8.0), egui::Color32::WHITE);
             }
 
+            // Multicam indicators
+            if clip.multicam_group.is_some() && clip_rect.width() > 20.0 {
+                // Angle badge (top-right corner) — positioned left of FX/lock badges
+                let angle_text = format!("{}", clip.multicam_angle + 1);
+                let badge_rect = egui::Rect::from_min_size(
+                    egui::pos2(clip_rect.right() - 18.0, clip_rect.top() + 2.0),
+                    egui::vec2(16.0, 14.0),
+                );
+                painter.rect_filled(badge_rect, 3.0, egui::Color32::from_rgb(0x40, 0x80, 0xe0));
+                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, &angle_text,
+                    egui::FontId::proportional(9.0), egui::Color32::WHITE);
+
+                // "MC" badge (top-left)
+                let mc_rect = egui::Rect::from_min_size(
+                    egui::pos2(clip_rect.left() + 2.0, clip_rect.top() + 2.0),
+                    egui::vec2(20.0, 14.0),
+                );
+                painter.rect_filled(mc_rect, 3.0, egui::Color32::from_rgba_premultiplied(20, 15, 3, 40));
+                painter.text(mc_rect.center(), egui::Align2::CENTER_CENTER, "MC",
+                    egui::FontId::proportional(8.0), egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+
+                // Cut list visualization (only on primary angle)
+                if clip.multicam_angle == 0 && !clip.multicam_cuts.is_empty() {
+                    let clip_dur = clip.duration().to_secs_f64();
+                    let bar_h = 4.0;
+                    let bar_y = clip_rect.bottom() - bar_h - 1.0;
+
+                    // Color palette for angles
+                    let angle_colors = [
+                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20), // amber
+                        egui::Color32::from_rgb(0x40, 0x80, 0xe0), // blue
+                        egui::Color32::from_rgb(0x40, 0xb0, 0x60), // green
+                        egui::Color32::from_rgb(0xe0, 0x60, 0x60), // red
+                        egui::Color32::from_rgb(0xa0, 0x60, 0xc0), // purple
+                        egui::Color32::from_rgb(0x60, 0xc0, 0xc0), // cyan
+                    ];
+
+                    if clip_dur > 0.0 {
+                        for i in 0..clip.multicam_cuts.len() {
+                            let (start_t, angle) = clip.multicam_cuts[i];
+                            let end_t = if i + 1 < clip.multicam_cuts.len() {
+                                clip.multicam_cuts[i + 1].0
+                            } else {
+                                clip_dur
+                            };
+
+                            let x_start = clip_rect.left() + (start_t / clip_dur) as f32 * clip_rect.width();
+                            let x_end = clip_rect.left() + (end_t / clip_dur) as f32 * clip_rect.width();
+                            let color = angle_colors.get(angle as usize).copied()
+                                .unwrap_or(egui::Color32::from_rgb(0x80, 0x80, 0x80));
+
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(egui::pos2(x_start, bar_y), egui::pos2(x_end, bar_y + bar_h)),
+                                0.0, color,
+                            );
+                        }
+                    }
+                }
+            }
+
             // Locked track overlay: semi-transparent dark with diagonal lines
             if state.sequence().tracks[track_idx].locked {
                 painter.rect_filled(

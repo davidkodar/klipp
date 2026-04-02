@@ -838,6 +838,50 @@ impl ViewerPanel {
             );
         }
 
+        // ── Multicam angle bar (shown below the viewer when multicam is active) ──
+        if state.multicam_viewer_active && state.multicam_angle_count > 0 {
+            let bar_h = 32.0;
+            let bar_rect = egui::Rect::from_min_size(
+                egui::pos2(image_rect.left(), image_rect.bottom() + 4.0),
+                egui::vec2(image_rect.width(), bar_h),
+            );
+
+            let btn_w = (bar_rect.width() / state.multicam_angle_count as f32).min(80.0);
+            for i in 0..state.multicam_angle_count {
+                let is_active = i as u8 == state.multicam_active_angle;
+                let btn_rect = egui::Rect::from_min_size(
+                    egui::pos2(bar_rect.left() + i as f32 * btn_w, bar_rect.top()),
+                    egui::vec2(btn_w - 2.0, bar_h),
+                );
+                let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+                let bg = if is_active {
+                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber for active
+                } else if resp.hovered() {
+                    egui::Color32::from_rgb(0x30, 0x30, 0x38)
+                } else {
+                    egui::Color32::from_rgb(0x22, 0x22, 0x28)
+                };
+                ui.painter().rect_filled(btn_rect, 4.0, bg);
+                // CONTRAST RULE: dark text on amber background
+                let text_color = if is_active {
+                    egui::Color32::from_rgb(0x1a, 0x1a, 0x1e)
+                } else {
+                    egui::Color32::WHITE
+                };
+                ui.painter().text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Angle {}", i + 1),
+                    egui::FontId::proportional(12.0),
+                    text_color,
+                );
+
+                if resp.clicked() {
+                    cmds.push(AppCommand::SwitchMulticamAngle { angle: i + 1 });
+                }
+            }
+        }
+
         // Performance overlay
         if state.show_perf_overlay {
             self.draw_perf_overlay(ui, state, image_rect);

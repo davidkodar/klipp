@@ -181,6 +181,18 @@ impl KeyBindings {
         bind(&mut b, "prev_keyframe", vec![KeyCombo::alt("ArrowLeft")]);
         bind(&mut b, "next_keyframe", vec![KeyCombo::alt("ArrowRight")]);
 
+        // Multicam
+        bind(&mut b, "multicam_angle_1", vec![KeyCombo::new("1")]);
+        bind(&mut b, "multicam_angle_2", vec![KeyCombo::new("2")]);
+        bind(&mut b, "multicam_angle_3", vec![KeyCombo::new("3")]);
+        bind(&mut b, "multicam_angle_4", vec![KeyCombo::new("4")]);
+        bind(&mut b, "multicam_angle_5", vec![KeyCombo::new("5")]);
+        bind(&mut b, "multicam_angle_6", vec![KeyCombo::new("6")]);
+        bind(&mut b, "multicam_angle_7", vec![KeyCombo::new("7")]);
+        bind(&mut b, "multicam_angle_8", vec![KeyCombo::new("8")]);
+        bind(&mut b, "multicam_angle_9", vec![KeyCombo::new("9")]);
+        bind(&mut b, "create_multicam", vec![KeyCombo::alt("C")]);
+
         // Misc
         bind(&mut b, "create_title", vec![KeyCombo::ctrl("T")]);
         bind(&mut b, "connect_clip", vec![KeyCombo::new("G")]);
@@ -328,6 +340,16 @@ impl KeyBindings {
             "toggle_keyframe_editor" => "Toggle Keyframe Editor",
             "prev_keyframe" => "Previous Keyframe",
             "next_keyframe" => "Next Keyframe",
+            "multicam_angle_1" => "Multicam Angle 1",
+            "multicam_angle_2" => "Multicam Angle 2",
+            "multicam_angle_3" => "Multicam Angle 3",
+            "multicam_angle_4" => "Multicam Angle 4",
+            "multicam_angle_5" => "Multicam Angle 5",
+            "multicam_angle_6" => "Multicam Angle 6",
+            "multicam_angle_7" => "Multicam Angle 7",
+            "multicam_angle_8" => "Multicam Angle 8",
+            "multicam_angle_9" => "Multicam Angle 9",
+            "create_multicam" => "Create Multicam Clip",
             "create_title" => "Create Title Clip",
             "connect_clip" => "Connect to Primary",
             "disconnect_clip" => "Disconnect from Primary",
@@ -347,6 +369,10 @@ impl KeyBindings {
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview"]),
             ("Display", &["toggle_snap", "toggle_skimming", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),
+            ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",
+                "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
+                "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
+                "create_multicam"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),
         ]
     }

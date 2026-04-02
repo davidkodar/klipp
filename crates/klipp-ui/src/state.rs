@@ -617,6 +617,13 @@ pub struct AppState {
     /// Duration (in seconds) for title animation fade presets.
     pub title_fade_duration: f32,
 
+    /// Whether the multicam viewer grid is active.
+    pub multicam_viewer_active: bool,
+    /// Number of angles in the current multicam group.
+    pub multicam_angle_count: usize,
+    /// Currently active multicam angle index.
+    pub multicam_active_angle: u8,
+
     /// Pending animation identifier for title creation (consumed by CreateTitleClip handler).
     pub pending_title_animation: Option<String>,
 
@@ -1038,6 +1045,9 @@ impl Default for AppState {
             pending_title_preview_clip: None,
             clear_title_overlay: false,
             title_fade_duration: 0.5,
+            multicam_viewer_active: false,
+            multicam_angle_count: 0,
+            multicam_active_angle: 0,
             pending_title_animation: None,
             viewer_text_edit: false,
             viewer_text_edit_buffer: String::new(),

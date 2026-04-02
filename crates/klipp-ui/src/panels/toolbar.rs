@@ -493,6 +493,29 @@ impl ToolbarPanel {
                 state.show_paste_attributes_dialog = true; ui.close_menu();
             }
             ui.separator();
+            // Multicam
+            if ui.button("Create Multicam Clip").clicked() {
+                cmds.push(AppCommand::CreateMulticamClip);
+                ui.close_menu();
+            }
+            if has_clip {
+                let is_multicam = state.sequence().all_clips()
+                    .find(|c| c.id == state.selected_clip.unwrap())
+                    .and_then(|c| c.multicam_group)
+                    .is_some();
+                if is_multicam {
+                    ui.menu_button("Switch Angle", |ui| {
+                        for angle in 1..=9_usize {
+                            let label = format!("Angle {angle}");
+                            if ui.add(egui::Button::new(&label).shortcut_text(format!("{angle}"))).clicked() {
+                                cmds.push(AppCommand::SwitchMulticamAngle { angle });
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+            }
+            ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Reveal in Browser")).clicked() {
                 if let Some(cid) = state.selected_clip {
                     let mid = state.sequence().all_clips().find(|c| c.id == cid).and_then(|c| c.media_id());
@@ -540,6 +563,10 @@ impl ToolbarPanel {
             });
             if ui.button("Create Compound Clip").clicked() {
                 cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
+                ui.close_menu();
+            }
+            if ui.button("Create Multicam Clip").clicked() {
+                cmds.push(AppCommand::CreateMulticamClip);
                 ui.close_menu();
             }
             ui.separator();

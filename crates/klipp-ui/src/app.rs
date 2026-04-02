@@ -10922,6 +10922,35 @@ impl eframe::App for KlippApp {
             self.state.media_usage_cache_dirty = false;
         }
 
+        // Update multicam viewer state based on selected clip
+        if let Some(clip_id) = self.state.selected_clip {
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let found_clip = seq.all_clips().find(|c| c.id == clip_id);
+            if let Some(clip) = found_clip {
+                if let Some(group_id) = clip.multicam_group {
+                    let angle_count = seq.all_clips().filter(|c| c.multicam_group == Some(group_id)).count();
+                    self.state.multicam_viewer_active = angle_count >= 2;
+                    self.state.multicam_angle_count = angle_count;
+                    // Find active angle from the primary clip's cut list
+                    let primary = seq.all_clips().find(|c| c.multicam_group == Some(group_id) && c.multicam_angle == 0);
+                    if let Some(primary_clip) = primary {
+                        let clip_time = (self.state.playhead - primary_clip.timeline_in).to_secs_f64();
+                        let active = primary_clip.multicam_cuts.iter().rev()
+                            .find(|(t, _)| *t <= clip_time)
+                            .map(|(_, angle)| *angle)
+                            .unwrap_or(0);
+                        self.state.multicam_active_angle = active;
+                    }
+                } else {
+                    self.state.multicam_viewer_active = false;
+                }
+            } else {
+                self.state.multicam_viewer_active = false;
+            }
+        } else {
+            self.state.multicam_viewer_active = false;
+        }
+
         // Window title with project name and dirty indicator
         {
             let title = match &self.state.project_path {

@@ -158,6 +158,15 @@ fn default_skim_resolution() -> u32 {
     480
 }
 
+/// Default multicam sync method for aligning angles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MulticamSyncMethod {
+    #[default]
+    Manual,
+    Timecode,
+    AudioWaveform,
+}
+
 /// Where to show audio fade overlays on the timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FadeOverlayMode {
@@ -279,6 +288,15 @@ pub struct EditingPrefs {
     /// Enable magnetic timeline (FCP-style collision-based editing).
     #[serde(default = "default_true")]
     pub magnetic_timeline: bool,
+    /// Default multicam sync method.
+    #[serde(default)]
+    pub multicam_sync_method: MulticamSyncMethod,
+    /// Auto-switch to multicam viewer when multicam clip is selected.
+    #[serde(default = "default_true")]
+    pub multicam_auto_viewer: bool,
+    /// Show angle numbers overlay on multicam clips in timeline.
+    #[serde(default = "default_true")]
+    pub multicam_show_angles: bool,
 }
 
 fn default_undo_limit() -> usize {
@@ -313,6 +331,9 @@ impl Default for EditingPrefs {
             backup_count: default_backup_count(),
             playhead_follows_playback: true,
             magnetic_timeline: true,
+            multicam_sync_method: MulticamSyncMethod::default(),
+            multicam_auto_viewer: true,
+            multicam_show_angles: true,
         }
     }
 }
