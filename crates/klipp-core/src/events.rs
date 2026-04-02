@@ -457,7 +457,12 @@ pub enum AppCommand {
     GenerateProxy { media_id: MediaId },
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
+    /// Relink a specific offline media item to a new path.
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    /// Relink all offline media by searching a directory recursively.
+    RelinkAllFromDirectory { directory: PathBuf },
+    /// Show the media relink dialog.
+    ShowRelinkDialog,
     AddMediaTag { media_id: MediaId, tag: String },
     RemoveMediaTag { media_id: MediaId, tag_index: usize },
 
@@ -475,6 +480,12 @@ pub enum AppCommand {
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
     SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
+    /// Add or update a keyframe on a mask parameter.
+    AddMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, value: f32 },
+    /// Remove a mask keyframe at a specific time.
+    RemoveMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64 },
+    /// Clear all keyframes for a mask parameter.
+    ClearMaskKeyframes { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String },
     AddKeyframe { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, value: f32 },
     RemoveKeyframe { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64 },
     ClearKeyframes { clip_id: ClipId, node_id: uuid::Uuid, param: String },

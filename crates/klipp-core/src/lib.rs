@@ -12,7 +12,7 @@ pub mod time;
 pub mod types;
 
 pub use error::{KlippError, KlippResult};
-pub use color_grade::{ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, Mask, MaskShape, MaskStack, QualifierSettings};
+pub use color_grade::{ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
 pub use keyframe::{Interpolation, Keyframe};
 pub use events::{AppCommand, AppEvent, AudioParam, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, MarkerColor, RateControl, Tool, VideoParam, ViewerMode};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};

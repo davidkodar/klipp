@@ -363,6 +363,8 @@ impl ToolbarPanel {
             if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
             ui.separator();
             if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            let has_offline = !state.offline_media_ids.is_empty();
+            if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Quit").shortcut_text("Ctrl+Q")).clicked() { cmds.push(AppCommand::Quit); ui.close_menu(); }
         });

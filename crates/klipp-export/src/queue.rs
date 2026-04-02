@@ -200,6 +200,16 @@ impl RenderQueue {
         }
     }
 
+    pub fn remove_job(&mut self, id: Uuid) {
+        if let Some(job) = self.jobs.iter().find(|j| j.id == id) {
+            // Only remove non-active jobs
+            if job.status != RenderJobStatus::Rendering {
+                self.jobs.retain(|j| j.id != id);
+                self.snapshots.retain(|(sid, _)| *sid != id);
+            }
+        }
+    }
+
     pub fn clear_completed(&mut self) {
         self.jobs.retain(|j| {
             j.status != RenderJobStatus::Complete

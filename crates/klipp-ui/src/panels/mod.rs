@@ -8,6 +8,7 @@ pub mod markers;
 pub mod new_project_dialog;
 pub mod project_info;
 pub mod preferences;
+pub mod render_queue;
 pub mod status_bar;
 pub mod timeline;
 pub mod toolbar;

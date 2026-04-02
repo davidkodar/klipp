@@ -148,6 +148,7 @@ impl GraphExecutor {
                 source_frame,
                 frame_number,
                 &empty,
+                clip_time_secs,
             );
 
             // Capture tapped node output for scopes
@@ -192,6 +193,7 @@ impl GraphExecutor {
         source_frame: &[u8],
         frame_number: u64,
         _empty: &[u8],
+        clip_time_secs: f64,
     ) -> Vec<u8> {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
@@ -434,7 +436,9 @@ impl GraphExecutor {
 
             NodeKind::Mask => {
                 if let Some(masks) = &params.masks {
-                    let matte = klipp_color::masks::generate_mask_matte(width, height, masks);
+                    // Evaluate mask keyframes at current clip time
+                    let evaluated = masks.evaluated_at(clip_time_secs);
+                    let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
                     matte
                         .iter()
                         .flat_map(|&v| {

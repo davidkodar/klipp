@@ -1,3 +1,4 @@
+use crate::keyframe::{self, Keyframe};
 use serde::{Deserialize, Serialize};
 
 /// Per-channel RGB curves. Each channel is a list of control points [x, y] in 0..1.
@@ -128,6 +129,107 @@ pub enum MaskShape {
     },
 }
 
+/// Keyframe tracks for animating mask parameters over time.
+/// Each Vec<Keyframe> is empty by default (static mask). When non-empty,
+/// the keyframes override the corresponding static parameter at render time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MaskKeyframes {
+    #[serde(default)]
+    pub center_x: Vec<Keyframe>,
+    #[serde(default)]
+    pub center_y: Vec<Keyframe>,
+    #[serde(default)]
+    pub radius: Vec<Keyframe>,
+    #[serde(default)]
+    pub width: Vec<Keyframe>,
+    #[serde(default)]
+    pub height: Vec<Keyframe>,
+    #[serde(default)]
+    pub rotation: Vec<Keyframe>,
+    #[serde(default)]
+    pub feather: Vec<Keyframe>,
+    #[serde(default)]
+    pub opacity: Vec<Keyframe>,
+    /// LinearGradient start_x
+    #[serde(default)]
+    pub start_x: Vec<Keyframe>,
+    /// LinearGradient start_y
+    #[serde(default)]
+    pub start_y: Vec<Keyframe>,
+    /// LinearGradient end_x
+    #[serde(default)]
+    pub end_x: Vec<Keyframe>,
+    /// LinearGradient end_y
+    #[serde(default)]
+    pub end_y: Vec<Keyframe>,
+}
+
+impl MaskKeyframes {
+    /// Returns true if no keyframe tracks have any keyframes.
+    pub fn is_empty(&self) -> bool {
+        self.center_x.is_empty()
+            && self.center_y.is_empty()
+            && self.radius.is_empty()
+            && self.width.is_empty()
+            && self.height.is_empty()
+            && self.rotation.is_empty()
+            && self.feather.is_empty()
+            && self.opacity.is_empty()
+            && self.start_x.is_empty()
+            && self.start_y.is_empty()
+            && self.end_x.is_empty()
+            && self.end_y.is_empty()
+    }
+
+    /// Get a mutable reference to the keyframe track for a given parameter name.
+    pub fn track_mut(&mut self, param: &str) -> Option<&mut Vec<Keyframe>> {
+        match param {
+            "center_x" => Some(&mut self.center_x),
+            "center_y" => Some(&mut self.center_y),
+            "radius" => Some(&mut self.radius),
+            "width" => Some(&mut self.width),
+            "height" => Some(&mut self.height),
+            "rotation" => Some(&mut self.rotation),
+            "feather" => Some(&mut self.feather),
+            "opacity" => Some(&mut self.opacity),
+            "start_x" => Some(&mut self.start_x),
+            "start_y" => Some(&mut self.start_y),
+            "end_x" => Some(&mut self.end_x),
+            "end_y" => Some(&mut self.end_y),
+            _ => None,
+        }
+    }
+
+    /// Get an immutable reference to the keyframe track for a given parameter name.
+    pub fn track(&self, param: &str) -> Option<&Vec<Keyframe>> {
+        match param {
+            "center_x" => Some(&self.center_x),
+            "center_y" => Some(&self.center_y),
+            "radius" => Some(&self.radius),
+            "width" => Some(&self.width),
+            "height" => Some(&self.height),
+            "rotation" => Some(&self.rotation),
+            "feather" => Some(&self.feather),
+            "opacity" => Some(&self.opacity),
+            "start_x" => Some(&self.start_x),
+            "start_y" => Some(&self.start_y),
+            "end_x" => Some(&self.end_x),
+            "end_y" => Some(&self.end_y),
+            _ => None,
+        }
+    }
+
+    /// List of animatable parameter names for a given mask shape variant.
+    pub fn params_for_shape(shape: &MaskShape) -> &'static [&'static str] {
+        match shape {
+            MaskShape::Circle { .. } => &["center_x", "center_y", "radius", "feather", "opacity"],
+            MaskShape::Rectangle { .. } => &["center_x", "center_y", "width", "height", "rotation", "feather", "opacity"],
+            MaskShape::LinearGradient { .. } => &["start_x", "start_y", "end_x", "end_y", "feather", "opacity"],
+            MaskShape::Bezier { .. } => &["feather", "opacity"],
+        }
+    }
+}
+
 /// A single mask with shape, feathering, and blend controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mask {
@@ -136,6 +238,8 @@ pub struct Mask {
     pub invert: bool,
     pub opacity: f32,   // 0-1
     pub enabled: bool,
+    #[serde(default)]
+    pub keyframes: MaskKeyframes,
 }
 
 impl Default for Mask {
@@ -146,6 +250,113 @@ impl Default for Mask {
             invert: false,
             opacity: 1.0,
             enabled: true,
+            keyframes: MaskKeyframes::default(),
+        }
+    }
+}
+
+impl Mask {
+    /// Evaluate keyframes at the given time and return a copy of this mask
+    /// with animated parameters overridden.
+    pub fn evaluated_at(&self, time_secs: f64) -> Mask {
+        if self.keyframes.is_empty() {
+            return self.clone();
+        }
+
+        let mut result = self.clone();
+
+        // Evaluate feather and opacity (common to all shapes)
+        if !self.keyframes.feather.is_empty() {
+            result.feather = keyframe::evaluate(&self.keyframes.feather, time_secs, self.feather);
+        }
+        if !self.keyframes.opacity.is_empty() {
+            result.opacity = keyframe::evaluate(&self.keyframes.opacity, time_secs, self.opacity);
+        }
+
+        // Evaluate shape-specific parameters
+        match &self.shape {
+            MaskShape::Circle { center_x, center_y, radius } => {
+                let cx = if !self.keyframes.center_x.is_empty() {
+                    keyframe::evaluate(&self.keyframes.center_x, time_secs, *center_x)
+                } else { *center_x };
+                let cy = if !self.keyframes.center_y.is_empty() {
+                    keyframe::evaluate(&self.keyframes.center_y, time_secs, *center_y)
+                } else { *center_y };
+                let r = if !self.keyframes.radius.is_empty() {
+                    keyframe::evaluate(&self.keyframes.radius, time_secs, *radius)
+                } else { *radius };
+                result.shape = MaskShape::Circle { center_x: cx, center_y: cy, radius: r };
+            }
+            MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
+                let cx = if !self.keyframes.center_x.is_empty() {
+                    keyframe::evaluate(&self.keyframes.center_x, time_secs, *center_x)
+                } else { *center_x };
+                let cy = if !self.keyframes.center_y.is_empty() {
+                    keyframe::evaluate(&self.keyframes.center_y, time_secs, *center_y)
+                } else { *center_y };
+                let w = if !self.keyframes.width.is_empty() {
+                    keyframe::evaluate(&self.keyframes.width, time_secs, *width)
+                } else { *width };
+                let h = if !self.keyframes.height.is_empty() {
+                    keyframe::evaluate(&self.keyframes.height, time_secs, *height)
+                } else { *height };
+                let rot = if !self.keyframes.rotation.is_empty() {
+                    keyframe::evaluate(&self.keyframes.rotation, time_secs, *rotation)
+                } else { *rotation };
+                result.shape = MaskShape::Rectangle { center_x: cx, center_y: cy, width: w, height: h, rotation: rot };
+            }
+            MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                let sx = if !self.keyframes.start_x.is_empty() {
+                    keyframe::evaluate(&self.keyframes.start_x, time_secs, *start_x)
+                } else { *start_x };
+                let sy = if !self.keyframes.start_y.is_empty() {
+                    keyframe::evaluate(&self.keyframes.start_y, time_secs, *start_y)
+                } else { *start_y };
+                let ex = if !self.keyframes.end_x.is_empty() {
+                    keyframe::evaluate(&self.keyframes.end_x, time_secs, *end_x)
+                } else { *end_x };
+                let ey = if !self.keyframes.end_y.is_empty() {
+                    keyframe::evaluate(&self.keyframes.end_y, time_secs, *end_y)
+                } else { *end_y };
+                result.shape = MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey };
+            }
+            MaskShape::Bezier { .. } => {
+                // Bezier point animation deferred — too complex for initial implementation
+            }
+        }
+
+        result
+    }
+
+    /// Get the current static value of a named parameter.
+    pub fn param_value(&self, param: &str) -> Option<f32> {
+        match param {
+            "feather" => Some(self.feather),
+            "opacity" => Some(self.opacity),
+            _ => match &self.shape {
+                MaskShape::Circle { center_x, center_y, radius } => match param {
+                    "center_x" => Some(*center_x),
+                    "center_y" => Some(*center_y),
+                    "radius" => Some(*radius),
+                    _ => None,
+                },
+                MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match param {
+                    "center_x" => Some(*center_x),
+                    "center_y" => Some(*center_y),
+                    "width" => Some(*width),
+                    "height" => Some(*height),
+                    "rotation" => Some(*rotation),
+                    _ => None,
+                },
+                MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match param {
+                    "start_x" => Some(*start_x),
+                    "start_y" => Some(*start_y),
+                    "end_x" => Some(*end_x),
+                    "end_y" => Some(*end_y),
+                    _ => None,
+                },
+                MaskShape::Bezier { .. } => None,
+            }
         }
     }
 }
@@ -159,6 +370,22 @@ pub struct MaskStack {
 impl MaskStack {
     pub fn is_empty(&self) -> bool {
         self.masks.is_empty() || self.masks.iter().all(|m| !m.enabled)
+    }
+
+    /// Returns true if any mask in the stack has keyframes.
+    pub fn has_keyframes(&self) -> bool {
+        self.masks.iter().any(|m| !m.keyframes.is_empty())
+    }
+
+    /// Evaluate all mask keyframes at the given time and return a new stack
+    /// with animated parameters resolved.
+    pub fn evaluated_at(&self, time_secs: f64) -> MaskStack {
+        if !self.has_keyframes() {
+            return self.clone();
+        }
+        MaskStack {
+            masks: self.masks.iter().map(|m| m.evaluated_at(time_secs)).collect(),
+        }
     }
 }
 

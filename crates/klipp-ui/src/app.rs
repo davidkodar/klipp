@@ -2654,6 +2654,74 @@ impl KlippApp {
                     self.sync_and_refresh_frame();
                     continue;
                 }
+                AppCommand::AddMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs, value } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            // Insert or update keyframe at this time
+                                            let epsilon = 1e-6;
+                                            if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
+                                                kf.value = *value;
+                                            } else {
+                                                track.push(klipp_core::Keyframe {
+                                                    time_secs: *time_secs,
+                                                    value: *value,
+                                                    interpolation: klipp_core::Interpolation::Linear,
+                                                    tangent_out: (0.0, 0.0),
+                                                    tangent_in: (0.0, 0.0),
+                                                });
+                                                track.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::RemoveMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            let epsilon = 1e-6;
+                                            track.retain(|k| (k.time_secs - time_secs).abs() >= epsilon);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
+                AppCommand::ClearMaskKeyframes { clip_id, node_id, mask_index, ref param } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            track.clear();
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_and_refresh_frame();
+                    continue;
+                }
                 AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -7230,11 +7298,68 @@ impl KlippApp {
                     // Forward to engine (don't continue — let it send to cmd_tx)
                 }
                 AppCommand::RelinkMedia { media_id, new_path } => {
+                    let was_offline;
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        was_offline = item.offline;
                         item.path = new_path.clone();
                         item.offline = !new_path.exists();
+                    } else {
+                        was_offline = false;
                     }
                     self.state.offline_media_ids.retain(|id| id != media_id);
+                    // Re-probe the media to refresh metadata/thumbnails
+                    if was_offline && new_path.exists() {
+                        let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                            path: new_path.clone(),
+                            media_id: *media_id,
+                        });
+                    }
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::RelinkAllFromDirectory { directory } => {
+                    let offline: Vec<_> = self.state.media_pool.all()
+                        .filter(|m| m.offline)
+                        .map(|m| (m.id, m.filename.clone()))
+                        .collect();
+
+                    let mut file_map = std::collections::HashMap::new();
+                    fn scan_dir(dir: &std::path::Path, map: &mut std::collections::HashMap<String, PathBuf>, depth: u32) {
+                        if depth > 5 { return; }
+                        if let Ok(entries) = std::fs::read_dir(dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.is_dir() {
+                                    scan_dir(&path, map, depth + 1);
+                                } else if let Some(name) = path.file_name() {
+                                    map.insert(name.to_string_lossy().to_string(), path);
+                                }
+                            }
+                        }
+                    }
+                    scan_dir(&directory, &mut file_map, 0);
+
+                    let mut relinked = 0;
+                    for (media_id, filename) in &offline {
+                        if let Some(new_path) = file_map.get(filename) {
+                            if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                                item.path = new_path.clone();
+                                item.offline = false;
+                                relinked += 1;
+                                self.state.offline_media_ids.retain(|id| id != media_id);
+                                let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                                    path: new_path.clone(),
+                                    media_id: *media_id,
+                                });
+                            }
+                        }
+                    }
+                    self.state.toast.show(format!("Relinked {relinked}/{} offline items", offline.len()));
+                    self.state.dirty = true;
+                    continue;
+                }
+                AppCommand::ShowRelinkDialog => {
+                    self.state.show_relink_dialog = true;
                     continue;
                 }
                 AppCommand::AddMediaTag { media_id, tag } => {
@@ -11749,17 +11874,20 @@ impl eframe::App for KlippApp {
 
                                 if self.state.show_node_strip && self.state.selected_node_id.is_some() {
                                     // Node strip visible + node selected → show that node's params
+                                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
                                     let cmds = self.node_inspector_panel.show(
-                                        ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme,
+                                        ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
                                     );
                                     all_cmds.extend(cmds);
                                 } else {
                                     // Simple tabbed mode (default)
+                                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
                                     let cmds = self.node_inspector_panel.show_simple(
                                         ui, &mut clip.node_graph, clip_id,
                                         &mut self.state.selected_node_id,
                                         &mut self.state.color_tab,
                                         &self.theme,
+                                        clip_time_secs,
                                     );
                                     all_cmds.extend(cmds);
                                 }
@@ -12277,51 +12405,74 @@ impl eframe::App for KlippApp {
         // Relink dialog
         if self.state.show_relink_dialog {
             let mut open = true;
-            egui::Window::new("Missing Media")
+            egui::Window::new("Relink Offline Media")
                 .collapsible(false)
                 .resizable(true)
+                .default_width(600.0)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("The following files could not be found:");
-                    ui.add_space(8.0);
-                    let offline_ids = self.state.offline_media_ids.clone();
-                    for mid in &offline_ids {
-                        if let Some(item) = self.state.media_pool.get(mid) {
-                            ui.horizontal(|ui| {
-                                ui.add(Icon::XCircle.image(14.0).tint(egui::Color32::from_rgb(255, 100, 100)));
-                                ui.label(&item.filename);
-                                ui.label(item.path.to_string_lossy().to_string());
-                            });
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Skip All").clicked() {
+                    let offline_items: Vec<_> = self.state.media_pool.all()
+                        .filter(|m| m.offline)
+                        .map(|m| (m.id, m.filename.clone(), m.path.clone()))
+                        .collect();
+
+                    if offline_items.is_empty() {
+                        ui.label("All media is online.");
+                        ui.add_space(8.0);
+                        if ui.button("Close").clicked() {
                             self.state.show_relink_dialog = false;
                         }
-                        if ui.button("Relink All...").clicked() {
-                            if let Some(dir) = rfd::FileDialog::new()
-                                .set_title("Select folder to search for media")
-                                .pick_folder()
-                            {
-                                let offline = self.state.offline_media_ids.clone();
-                                for mid in &offline {
-                                    if let Some(item) = self.state.media_pool.get(mid) {
-                                        let filename = item.filename.clone();
-                                        // Search recursively for matching filename
-                                        if let Some(found) = find_file_recursive(&dir, &filename) {
+                    } else {
+                        ui.label(format!("{} offline item(s)", offline_items.len()));
+                        ui.add_space(4.0);
+
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("Search Directory...").clicked() {
+                                if let Some(dir) = rfd::FileDialog::new()
+                                    .set_title("Select folder to search for media")
+                                    .pick_folder()
+                                {
+                                    all_cmds.push(AppCommand::RelinkAllFromDirectory { directory: dir });
+                                }
+                            }
+                            if ui.button("Skip All").clicked() {
+                                self.state.show_relink_dialog = false;
+                            }
+                        });
+
+                        ui.separator();
+
+                        // Scrollable list of offline items
+                        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                            for (id, filename, path) in &offline_items {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(255, 80, 80),
+                                        "OFFLINE",
+                                    );
+                                    ui.label(filename);
+                                    ui.label(
+                                        egui::RichText::new(path.to_string_lossy())
+                                            .size(10.0)
+                                            .color(egui::Color32::from_rgb(120, 120, 130)),
+                                    );
+                                    if ui.small_button("Browse...").clicked() {
+                                        if let Some(new_path) = rfd::FileDialog::new()
+                                            .set_title(&format!("Locate {}", filename))
+                                            .pick_file()
+                                        {
                                             all_cmds.push(AppCommand::RelinkMedia {
-                                                media_id: *mid,
-                                                new_path: found,
+                                                media_id: *id,
+                                                new_path,
                                             });
                                         }
                                     }
-                                }
-                                self.state.show_relink_dialog = false;
+                                });
                             }
-                        }
-                    });
+                        });
+                    }
                 });
             if !open {
                 self.state.show_relink_dialog = false;
@@ -12825,226 +12976,26 @@ impl KlippApp {
         if !self.state.show_render_queue {
             return;
         }
-        let mut open = true;
-        egui::Window::new("Render Queue")
-            .open(&mut open)
-            .default_width(500.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                if self.state.render_queue.jobs.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(80, 80, 90),
-                        "No render jobs",
-                    );
-                    return;
-                }
-
-                let mut cancel_id = None;
-                let dim = egui::Color32::from_rgb(110, 115, 125);
-                let subtle = egui::Color32::from_rgb(140, 150, 165);
-
-                for job in &self.state.render_queue.jobs {
-                    // ── File name + status icon ──
-                    ui.horizontal(|ui| {
-                        let (icon, color) = match job.status {
-                            klipp_export::RenderJobStatus::Queued => ("||", dim),
-                            klipp_export::RenderJobStatus::Rendering => (">", egui::Color32::from_rgb(100, 180, 255)),
-                            klipp_export::RenderJobStatus::Complete => ("OK", egui::Color32::from_rgb(100, 200, 120)),
-                            klipp_export::RenderJobStatus::Failed => ("!!", egui::Color32::from_rgb(255, 100, 100)),
-                            klipp_export::RenderJobStatus::Cancelled => ("--", dim),
-                        };
-                        ui.colored_label(color, icon);
-                        ui.strong(&job.label);
-
-                        // Codec badge
-                        let codec_badge = job.settings.video_codec.label();
-                        ui.colored_label(dim, format!(" \u{2022} {codec_badge}"));
-                    });
-
-                    // ── Progress bar (primary: percentage + ETA) ──
-                    let elapsed_secs = job.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-
-                    let bar_text = match job.status {
-                        klipp_export::RenderJobStatus::Rendering => {
-                            let pct = (job.progress * 100.0) as u32;
-                            let remaining_str = if job.progress > 0.01 && elapsed_secs > 2 {
-                                let total_est = elapsed_secs as f64 / job.progress as f64;
-                                let remaining = (total_est - elapsed_secs as f64).max(0.0) as u64;
-                                let m = remaining / 60;
-                                let s = remaining % 60;
-                                if m > 0 {
-                                    format!(" \u{2014} {m}m {s:02}s remaining")
-                                } else {
-                                    format!(" \u{2014} {s}s remaining")
-                                }
-                            } else {
-                                " \u{2014} calculating\u{2026}".to_string()
-                            };
-                            format!("{pct}%{remaining_str}")
-                        }
-                        klipp_export::RenderJobStatus::Complete => {
-                            match (job.started_at, job.completed_at) {
-                                (Some(start), Some(end)) => {
-                                    let secs = end.duration_since(start).as_secs();
-                                    let m = secs / 60;
-                                    let s = secs % 60;
-                                    let elapsed = if m > 0 { format!("{m}m {s:02}s") } else { format!("{s}s") };
-                                    let avg_speed = if secs > 0 && job.total_frames > 0 && job.timeline_fps > 0.0 {
-                                        let render_fps = job.total_frames as f64 / secs as f64;
-                                        format!(" \u{2022} {:.1}\u{00D7} real-time", render_fps / job.timeline_fps)
-                                    } else {
-                                        String::new()
-                                    };
-                                    format!("Completed in {elapsed}{avg_speed}")
-                                }
-                                _ => "Completed".to_string(),
-                            }
-                        }
-                        klipp_export::RenderJobStatus::Failed => "Export failed".to_string(),
-                        klipp_export::RenderJobStatus::Cancelled => "Cancelled".to_string(),
-                        klipp_export::RenderJobStatus::Queued => "Waiting in queue\u{2026}".to_string(),
-                    };
-
-                    // Draw custom progress bar
-                    let bar_height = 22.0;
-                    let (bar_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), bar_height),
-                        egui::Sense::hover(),
-                    );
-                    let painter = ui.painter_at(bar_rect);
-                    painter.rect_filled(bar_rect, 4.0, egui::Color32::from_rgb(35, 37, 42));
-                    let fill_width = bar_rect.width() * job.progress;
-                    if fill_width > 0.5 {
-                        let fill_rect = egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height));
-                        let fill_color = match job.status {
-                            klipp_export::RenderJobStatus::Rendering => egui::Color32::from_rgb(55, 130, 210),
-                            klipp_export::RenderJobStatus::Complete => egui::Color32::from_rgb(50, 170, 85),
-                            klipp_export::RenderJobStatus::Failed => egui::Color32::from_rgb(190, 55, 55),
-                            _ => egui::Color32::from_rgb(80, 85, 95),
-                        };
-                        painter.rect_filled(fill_rect, 4.0, fill_color);
-                    }
-                    // White text with black shadow
-                    let font = egui::FontId::proportional(12.0);
-                    let text_pos = bar_rect.center();
-                    painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, &bar_text, font.clone(), egui::Color32::from_rgb(0, 0, 0));
-                    painter.text(text_pos, egui::Align2::CENTER_CENTER, &bar_text, font, egui::Color32::WHITE);
-
-                    ui.add_space(2.0);
-
-                    // ── Clip duration (separate line, clear context) ──
-                    if job.status == klipp_export::RenderJobStatus::Rendering
-                        && job.total_frames > 0
-                        && job.timeline_fps > 0.0
-                    {
-                        let dur_secs = job.total_frames as f64 / job.timeline_fps;
-                        let dm = dur_secs as u64 / 60;
-                        let ds = dur_secs as u64 % 60;
-                        ui.colored_label(subtle, format!("Clip duration: {dm}:{ds:02}"));
-                    }
-
-                    // ── Render stage (what's happening now) ──
-                    if job.status == klipp_export::RenderJobStatus::Rendering && !job.render_stage.is_empty() {
-                        ui.colored_label(subtle, &job.render_stage);
-                    }
-
-                    // ── Speed line (secondary — smaller, dimmer) ──
-                    if job.status == klipp_export::RenderJobStatus::Rendering && elapsed_secs > 0 && job.frames_done > 0 {
-                        let render_fps = job.frames_done as f64 / elapsed_secs as f64;
-                        let speed = if job.timeline_fps > 0.0 { render_fps / job.timeline_fps } else { 0.0 };
-                        ui.colored_label(dim, format!("{:.1}\u{00D7} real-time \u{2022} {:.0} fps", speed, render_fps));
-                    }
-
-                    // ── Hardware info (tertiary — smallest, dimmest) ──
-                    let bg_dim = egui::Color32::from_rgb(90, 95, 105);
-                    if !job.hw_info.is_empty() {
-                        let hw_clean = job.hw_info
-                            .replace("Decode: ", "")
-                            .replace("Encode: ", "")
-                            .replace(" | ", " \u{2022} ");
-                        ui.colored_label(bg_dim, format!("GPU: {hw_clean}"));
-                    }
-
-                    // ── Error message ──
-                    if let Some(err) = &job.error {
-                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
-                    }
-
-                    ui.add_space(4.0);
-
-                    // ── Action buttons + collapsible details ──
-                    ui.horizontal(|ui| {
-                        match job.status {
-                            klipp_export::RenderJobStatus::Queued
-                            | klipp_export::RenderJobStatus::Rendering => {
-                                let btn = egui::Button::new("Stop Render")
-                                    .fill(egui::Color32::from_rgb(160, 50, 50));
-                                if ui.add(btn).clicked() {
-                                    cancel_id = Some(job.id);
-                                }
-                                ui.add_space(8.0);
-                            }
-                            _ => {}
-                        }
-
-                        // Collapsible details (default: hidden)
-                        // Use a stable ID not dependent on ui.id() (which changes inside horizontal)
-                        let details_id = egui::Id::new("render_details").with(job.id);
-                        let mut show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
-                        let details_text = if show_details { "v Details" } else { "> Details" };
-                        let details_btn = ui.add(
-                            egui::Button::new(egui::RichText::new(details_text).color(bg_dim).size(12.0))
-                                .frame(false)
-                        );
-                        if details_btn.clicked() {
-                            show_details = !show_details;
-                        }
-                        ui.data_mut(|d| d.insert_temp(details_id, show_details));
-                    });
-
-                    // ── Details panel (collapsed by default) ──
-                    let details_id = egui::Id::new("render_details").with(job.id);
-                    let show_details = ui.data_mut(|d| *d.get_temp_mut_or_default::<bool>(details_id));
-                    if show_details {
-                        ui.add_space(2.0);
-                        ui.indent("render_details", |ui| {
-                            let res = job.settings.resolution.as_ref()
-                                .map(|r| format!("{}×{}", r.width, r.height))
-                                .unwrap_or_else(|| "Sequence resolution".into());
-                            let crf_str = if job.settings.video_codec.uses_crf() {
-                                format!("CRF {}", job.settings.crf)
-                            } else {
-                                "N/A".into()
-                            };
-                            let audio_str = job.settings.audio_codec.label();
-                            let bitrate_str = job.settings.audio_bitrate_kbps
-                                .map(|b| format!("{b} kbps"))
-                                .unwrap_or_else(|| "default".into());
-
-                            ui.colored_label(bg_dim, format!("Codec: {}", job.settings.video_codec.label()));
-                            ui.colored_label(bg_dim, format!("Resolution: {}", res));
-                            ui.colored_label(bg_dim, format!("Quality: {}", crf_str));
-                            ui.colored_label(bg_dim, format!("Audio: {} {}", audio_str, bitrate_str));
-                            ui.colored_label(bg_dim, format!("Frames: {}", job.total_frames));
-                        });
-                    }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                }
-
-                if let Some(id) = cancel_id {
+        let actions = crate::panels::render_queue::RenderQueuePanel::show(
+            ctx,
+            &self.state.render_queue,
+            &self.theme,
+        );
+        for action in actions {
+            match action {
+                crate::panels::render_queue::RenderQueueAction::CancelJob(id) => {
                     self.state.render_queue.cancel_job(id);
                 }
-
-                ui.add_space(4.0);
-                if ui.button("Clear Completed").clicked() {
+                crate::panels::render_queue::RenderQueueAction::RemoveJob(id) => {
+                    self.state.render_queue.remove_job(id);
+                }
+                crate::panels::render_queue::RenderQueueAction::ClearCompleted => {
                     self.state.render_queue.clear_completed();
                 }
-            });
-        if !open {
-            self.state.show_render_queue = false;
+                crate::panels::render_queue::RenderQueueAction::Close => {
+                    self.state.show_render_queue = false;
+                }
+            }
         }
     }
 
