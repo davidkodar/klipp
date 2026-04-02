@@ -6844,10 +6844,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let tone = |x: f32| -> f32 { return min(x * (x * 0.6 + 0.4) / (x * (x * 0.6 + 0.85) + 0.15), 1.0); };
-    let ro = u32(clamp(sqrt(tone(r_acc)) * 255.0, 0.0, 255.0));
-    let go = u32(clamp(sqrt(tone(g_acc)) * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(sqrt(tone(b_acc)) * 255.0, 0.0, 255.0));
+    // Log tone mapping (same as parade/waveform)
+    let gain = 300.0;
+    let log_gain = log(1.0 + gain);
+    let r_out = pow(log(1.0 + r_acc * gain) / log_gain, 1.0 / 2.2);
+    let g_out = pow(log(1.0 + g_acc * gain) / log_gain, 1.0 / 2.2);
+    let b_out = pow(log(1.0 + b_acc * gain) / log_gain, 1.0 / 2.2);
+    let ro = u32(clamp(r_out * 255.0, 0.0, 255.0));
+    let go = u32(clamp(g_out * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(b_out * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";
