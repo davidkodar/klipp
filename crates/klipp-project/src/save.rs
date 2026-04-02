@@ -225,6 +225,13 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         multicam_group: c.multicam_group.map(|g| g.to_string()),
                         multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
                         multicam_cuts: c.multicam_cuts.clone(),
+                        solo: if c.solo { Some(true) } else { None },
+                        grade_versions: c.grade_versions.iter().map(|gv| GradeVersionJson {
+                            name: gv.name.clone(),
+                            node_graph: gv.node_graph.clone(),
+                        }).collect(),
+                        active_grade_version: c.active_grade_version,
+                        track_points: c.track_points.clone(),
                     }
                 }).collect(),
             }

@@ -10575,16 +10575,16 @@ impl KlippApp {
             if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
-            // 1-9 — Switch multicam angle (only when not text editing)
-            if !text_editing && !i.modifiers.ctrl && !i.modifiers.alt {
-                for (key, angle) in [
-                    (egui::Key::Num1, 1), (egui::Key::Num2, 2), (egui::Key::Num3, 3),
-                    (egui::Key::Num4, 4), (egui::Key::Num5, 5), (egui::Key::Num6, 6),
-                    (egui::Key::Num7, 7), (egui::Key::Num8, 8), (egui::Key::Num9, 9),
-                ] {
-                    if i.key_pressed(key) {
+            // 1-9 — Switch multicam angle (via keybinding system for remapping support)
+            if !text_editing {
+                for angle in 1usize..=9 {
+                    let action = format!("multicam_angle_{angle}");
+                    if kb.is_action_pressed(&action, i) {
                         cmds.push(AppCommand::SwitchMulticamAngle { angle });
                     }
+                }
+                if kb.is_action_pressed("create_multicam", i) {
+                    cmds.push(AppCommand::CreateMulticamClip);
                 }
             }
             // N — Toggle snap

@@ -292,16 +292,19 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
                     source_rotation: c.source_rotation.unwrap_or(0),
                     enabled: c.enabled.unwrap_or(true),
-                    solo: false,
-                    grade_versions: Vec::new(),
-                    active_grade_version: None,
+                    solo: c.solo.unwrap_or(false),
+                    grade_versions: c.grade_versions.iter().map(|gv| klipp_timeline::GradeVersion {
+                        name: gv.name.clone(),
+                        node_graph: gv.node_graph.clone(),
+                    }).collect(),
+                    active_grade_version: c.active_grade_version,
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
                     multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
                     multicam_angle: c.multicam_angle.unwrap_or(0),
                     multicam_cuts: c.multicam_cuts.clone(),
                     stabilization_data: None,
                     smoothed_trajectory: None,
-                    track_points: Vec::new(),
+                    track_points: c.track_points.clone(),
                 }
             }).collect();
             track

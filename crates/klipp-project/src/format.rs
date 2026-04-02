@@ -204,6 +204,20 @@ pub struct ClipJson {
     pub multicam_angle: Option<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub multicam_cuts: Vec<(f64, u8)>,
+    #[serde(default)]
+    pub solo: Option<bool>,
+    #[serde(default)]
+    pub grade_versions: Vec<GradeVersionJson>,
+    #[serde(default)]
+    pub active_grade_version: Option<usize>,
+    #[serde(default)]
+    pub track_points: Vec<klipp_core::TrackPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradeVersionJson {
+    pub name: String,
+    pub node_graph: klipp_nodes::NodeGraph,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
