@@ -1,6 +1,6 @@
 # Klipp
 
-**Klipp** is a free, open-source professional non-linear video editor for Linux.
+**Klipp** is a free, open-source non-linear video editor for Linux.
 
 > *Klipp* is Swedish for "cut" — the fundamental act of film editing.
 
