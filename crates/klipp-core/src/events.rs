@@ -485,6 +485,8 @@ pub enum AppCommand {
     ToggleBeforeAfter,
     SetMattePreview(bool),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
+    /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
+    AutoWhiteBalance { clip_id: ClipId },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },

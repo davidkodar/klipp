@@ -60,6 +60,7 @@ pub fn show_scopes(
     mode: ScopeMode,
     frame_buffer: &SharedFrameBuffer,
     quality: klipp_core::ScopeQuality,
+    skin_tone_angle: f32,
 ) {
     let available = ui.available_size();
     let ppp = ui.ctx().pixels_per_point();
@@ -93,7 +94,7 @@ pub fn show_scopes(
                 ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
                 ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
                 ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
             };
 
             if let Some(ref mut tex) = state.textures[mi] {
@@ -121,7 +122,7 @@ pub fn show_scopes(
                         ScopeMode::Waveform => render_waveform(&fb.data, fb.width, fb.height, step, render_w, render_h),
                         ScopeMode::Parade => render_parade(&fb.data, fb.width, fb.height, step, render_w, render_h),
                         ScopeMode::Histogram => render_histogram(&fb.data, fb.width, fb.height, step, render_w, render_h),
-                        ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h),
+                        ScopeMode::Vectorscope => render_vectorscope(&fb.data, fb.width, fb.height, step, render_w, render_h, skin_tone_angle),
                     };
                     if let Some(ref mut tex) = state.textures[idx] {
                         tex.set(image, egui::TextureOptions::LINEAR);
@@ -494,7 +495,7 @@ fn render_histogram(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, 
 }
 
 #[inline(never)]
-fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32) -> egui::ColorImage {
     let size = rw.min(rh);
     let mut buf = AccumBuffer::new(size, size);
     let center = size as f32 / 2.0;
@@ -537,14 +538,41 @@ fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize
         }
     }
 
-    // 2. Skin tone reference line (from center toward ~123° / I-line)
-    let skin_angle = 33.0_f32.to_radians();
+    // 2. Skin tone reference line (I-line) from center at configurable angle
+    // Convert from the standard vectorscope convention (123 deg = skin tone I-line)
+    // to our coordinate system: angle in degrees, measured counter-clockwise from +X axis.
+    // The vectorscope uses Cb/Cr axes where skin tone is at ~33 deg in our rendering space.
+    // User-facing angle of 123 deg maps to 33 deg in the rendered Cb/Cr space.
+    let skin_rad = (skin_tone_angle - 90.0).to_radians();
     for i in 0..(radius as usize) {
         let t = i as f32;
-        let sx = (center + skin_angle.cos() * t) as usize;
-        let sy = (center - skin_angle.sin() * t) as usize;
+        let sx = (center + skin_rad.cos() * t) as usize;
+        let sy = (center - skin_rad.sin() * t) as usize;
         if sx < size && sy < size {
-            buf.add(sx, sy, 0.06, 0.04, 0.02);
+            // Semi-transparent amber/warm colored line
+            buf.add(sx, sy, 0.10, 0.07, 0.02);
+            // Wider: draw neighboring pixels for visibility
+            if sx + 1 < size { buf.add(sx + 1, sy, 0.05, 0.035, 0.01); }
+            if sx > 0 { buf.add(sx - 1, sy, 0.05, 0.035, 0.01); }
+        }
+    }
+    // "I" label at the end of the skin tone line
+    {
+        let end_t = radius - 12.0;
+        let lx = (center + skin_rad.cos() * end_t) as usize;
+        let ly = (center - skin_rad.sin() * end_t) as usize;
+        // Draw a simple 3x5 "I" glyph
+        let glyph = [
+            (0, 0), (1, 0), (2, 0),  // top bar
+            (1, 1), (1, 2), (1, 3),   // stem
+            (0, 4), (1, 4), (2, 4),   // bottom bar
+        ];
+        for (dx, dy) in &glyph {
+            let gx = lx.wrapping_add(*dx as usize);
+            let gy = ly.wrapping_add(*dy as usize);
+            if gx < size && gy < size {
+                buf.add(gx, gy, 0.15, 0.10, 0.03);
+            }
         }
     }
 

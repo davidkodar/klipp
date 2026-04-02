@@ -45,6 +45,166 @@ pub fn apply_saturation(rgba: &mut [u8], factor: f32) {
     }
 }
 
+/// Vibrance: saturation-weighted boost — muted colors get boosted more,
+/// already-saturated colors (especially skin tones) are left alone.
+/// amount = 0.0 is identity. Range -1.0 to 1.0.
+pub fn apply_vibrance(r: &mut f64, g: &mut f64, b: &mut f64, amount: f64) {
+    let max = r.max(*g).max(*b);
+    let min = r.min(*g).min(*b);
+    let sat = max - min;
+    let luma = 0.2126 * *r + 0.7152 * *g + 0.0722 * *b;
+    let weight = 1.0 - sat.clamp(0.0, 1.0);
+    let boost = 1.0 + amount * weight;
+    *r = luma + (*r - luma) * boost;
+    *g = luma + (*g - luma) * boost;
+    *b = luma + (*b - luma) * boost;
+}
+
+/// Apply vibrance to an entire RGBA buffer.
+/// amount = 0.0 is identity. Range -1.0 to 1.0.
+pub fn apply_vibrance_buffer(rgba: &mut [u8], amount: f32) {
+    if amount == 0.0 {
+        return;
+    }
+    let amt = amount as f64;
+    for pixel in rgba.chunks_exact_mut(4) {
+        let mut r = pixel[0] as f64 / 255.0;
+        let mut g = pixel[1] as f64 / 255.0;
+        let mut b = pixel[2] as f64 / 255.0;
+        apply_vibrance(&mut r, &mut g, &mut b, amt);
+        pixel[0] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+/// Clarity / midtone detail enhancement.
+/// Enhances local contrast in the midtones using an unsharp-mask approach.
+/// amount = 0.0 is identity. Range -1.0 to 1.0.
+pub fn apply_clarity_inplace(rgba: &mut [u8], width: u32, height: u32, amount: f32) {
+    if amount == 0.0 || width == 0 || height == 0 {
+        return;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let pixel_count = w * h;
+
+    // 1. Extract luma channel
+    let mut luma = vec![0.0f32; pixel_count];
+    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+        luma[i] = 0.2126 * chunk[0] as f32 / 255.0
+                 + 0.7152 * chunk[1] as f32 / 255.0
+                 + 0.0722 * chunk[2] as f32 / 255.0;
+    }
+
+    // 2. Box blur (two-pass separable, radius ~20)
+    let radius: usize = 20;
+    let mut blurred = luma.clone();
+
+    // Horizontal pass
+    let mut temp = vec![0.0f32; pixel_count];
+    for y in 0..h {
+        let row = y * w;
+        let mut sum = 0.0f32;
+        let mut count = 0u32;
+        // Initialize window
+        for x in 0..=(radius.min(w - 1)) {
+            sum += blurred[row + x];
+            count += 1;
+        }
+        temp[row] = sum / count as f32;
+        for x in 1..w {
+            // Add right pixel
+            let right = x + radius;
+            if right < w {
+                sum += blurred[row + right];
+                count += 1;
+            }
+            // Remove left pixel
+            if x > radius {
+                sum -= blurred[row + x - radius - 1];
+                count -= 1;
+            }
+            temp[row + x] = sum / count as f32;
+        }
+    }
+    blurred = temp;
+
+    // Vertical pass
+    let mut temp = vec![0.0f32; pixel_count];
+    for x in 0..w {
+        let mut sum = 0.0f32;
+        let mut count = 0u32;
+        for y in 0..=(radius.min(h - 1)) {
+            sum += blurred[y * w + x];
+            count += 1;
+        }
+        temp[x] = sum / count as f32;
+        for y in 1..h {
+            let bottom = y + radius;
+            if bottom < h {
+                sum += blurred[bottom * w + x];
+                count += 1;
+            }
+            if y > radius {
+                sum -= blurred[(y - radius - 1) * w + x];
+                count -= 1;
+            }
+            temp[y * w + x] = sum / count as f32;
+        }
+    }
+    blurred = temp;
+
+    // 3. Apply detail enhancement weighted by midtone presence
+    for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
+        let detail = luma[i] - blurred[i];
+        // Midtone weight: peaks at 0.5 luma, zero at black/white
+        let midtone_weight = 1.0 - (2.0 * luma[i] - 1.0).abs();
+        let adjustment = detail * amount * midtone_weight * 255.0;
+        chunk[0] = ((chunk[0] as f32 + adjustment).clamp(0.0, 255.0)) as u8;
+        chunk[1] = ((chunk[1] as f32 + adjustment).clamp(0.0, 255.0)) as u8;
+        chunk[2] = ((chunk[2] as f32 + adjustment).clamp(0.0, 255.0)) as u8;
+    }
+}
+
+/// Auto white balance using the gray world assumption.
+/// Returns (temperature_adjustment, tint_adjustment) compatible with ColorGradeParams.
+pub fn auto_white_balance(rgba: &[u8], _width: u32, _height: u32) -> (f32, f32) {
+    let mut sum_r: f64 = 0.0;
+    let mut sum_g: f64 = 0.0;
+    let mut sum_b: f64 = 0.0;
+    let mut count: u64 = 0;
+
+    // Sample every 4th pixel for performance
+    for chunk in rgba.chunks_exact(4).step_by(4) {
+        sum_r += chunk[0] as f64;
+        sum_g += chunk[1] as f64;
+        sum_b += chunk[2] as f64;
+        count += 1;
+    }
+
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+
+    let avg_r = sum_r / count as f64;
+    let avg_g = sum_g / count as f64;
+    let avg_b = sum_b / count as f64;
+
+    // Gray world: ideal is avg_r == avg_g == avg_b
+    // Temperature: how far B is from R. If avg_b > avg_r, image is too cool.
+    // Scale to the temperature param range (roughly -50..50)
+    let rb_diff = (avg_b - avg_r) / 255.0;
+    let temperature = (rb_diff * 100.0).clamp(-50.0, 50.0) as f32;
+
+    // Tint: how far G deviates from the R/B midpoint
+    let rb_mid = (avg_r + avg_b) / 2.0;
+    let g_diff = (avg_g - rb_mid) / 255.0;
+    let tint = (-g_diff * 100.0).clamp(-50.0, 50.0) as f32;
+
+    (temperature, tint)
+}
+
 /// Temperature/tint shift.
 /// temperature > 0 = warmer (more red, less blue).
 /// tint > 0 = more green, < 0 = more magenta.

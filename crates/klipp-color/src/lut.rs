@@ -557,7 +557,7 @@ mod tests {
 
     fn identity_grade_params() -> crate::ColorGradeParams {
         crate::ColorGradeParams {
-            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            exposure: 0.0, contrast: 0.0, saturation: 1.0, vibrance: 0.0,
             temperature: 0.0, tint: 0.0,
             highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
             lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
@@ -566,7 +566,7 @@ mod tests {
             gamma_sat: 0.0, gamma_bri: 0.0,
             gain_sat: 0.0, gain_bri: 0.0,
             offset_sat: 0.0, offset_bri: 0.0,
-            hue: 0.0, global_mix: 1.0,
+            hue: 0.0, global_mix: 1.0, clarity: 0.0,
             curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
             huesat: Default::default(), huesat_mix: 1.0,
             qualifier: Default::default(), masks: Default::default(),

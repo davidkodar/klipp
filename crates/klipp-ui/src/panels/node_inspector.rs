@@ -209,12 +209,19 @@ impl NodeInspectorPanel {
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
                     if reset {
                         node.params.contrast = Some(0.0);
+                        node.params.clarity = Some(0.0);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: 0.0 });
                     }
                     let mut val = node.params.contrast.unwrap_or(0.0);
                     if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme) {
                         node.params.contrast = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
+                    }
+                    let mut cval = node.params.clarity.unwrap_or(0.0);
+                    if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, "", theme) {
+                        node.params.clarity = Some(cval);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
                     }
                 }
                 section_divider(ui);
@@ -228,12 +235,19 @@ impl NodeInspectorPanel {
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
                     if reset {
                         node.params.saturation = Some(1.0);
+                        node.params.vibrance = Some(0.0);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: 0.0 });
                     }
                     let mut val = node.params.saturation.unwrap_or(1.0);
                     if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme) {
                         node.params.saturation = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
+                    }
+                    let mut vval = node.params.vibrance.unwrap_or(0.0);
+                    if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, "", theme) {
+                        node.params.vibrance = Some(vval);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
                     }
                 }
                 section_divider(ui);
@@ -303,6 +317,17 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
                 }
 
+                // Auto White Balance button
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    if ui.add(egui::Button::new(
+                        egui::RichText::new("Auto WB").size(11.0)
+                    ).min_size(egui::vec2(60.0, 18.0))).clicked() {
+                        cmds.push(AppCommand::AutoWhiteBalance { clip_id });
+                    }
+                });
+                ui.add_space(2.0);
+
                 // Hue: rainbow spectrum
                 let mut hue = node.params.hue.unwrap_or(0.0);
                 if hue_slider_row(ui, "Hue", &mut hue, theme) {
@@ -368,12 +393,22 @@ impl NodeInspectorPanel {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
                 }
+                let mut cval = params.clarity.unwrap_or(0.0);
+                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "") {
+                    params.clarity = Some(cval);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "clarity".into(), value: cval });
+                }
             }
             NodeKind::Saturation => {
                 let mut val = params.saturation.unwrap_or(1.0);
                 if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "") {
                     params.saturation = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: val });
+                }
+                let mut vval = params.vibrance.unwrap_or(0.0);
+                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "") {
+                    params.vibrance = Some(vval);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "vibrance".into(), value: vval });
                 }
             }
             NodeKind::ToneControls => {

@@ -8,6 +8,8 @@ pub struct ColorGradeParams {
     pub exposure: f32,
     pub contrast: f32,
     pub saturation: f32,
+    /// Vibrance: saturation-weighted boost (-1.0 to 1.0, 0.0 = identity)
+    pub vibrance: f32,
     pub temperature: f32,
     pub tint: f32,
     pub highlights: f32,
@@ -31,6 +33,8 @@ pub struct ColorGradeParams {
     /// Global controls
     pub hue: f32,
     pub global_mix: f32,
+    /// Clarity / midtone detail (-1.0 to 1.0, 0.0 = identity)
+    pub clarity: f32,
     /// Pre-computed curve LUTs (None = identity/skip)
     pub curve_luts: Option<CurveLuts>,
     pub curves_preserve_luma: bool,
@@ -120,6 +124,8 @@ impl ColorPipeline {
         transforms::apply_contrast(&mut rgba, params.contrast);
         // 6. Saturation
         transforms::apply_saturation(&mut rgba, params.saturation);
+        // 6b. Vibrance
+        transforms::apply_vibrance_buffer(&mut rgba, params.vibrance);
         // 7. Curves (with optional preserve luma + mix)
         if let Some(luts) = &params.curve_luts {
             let pre_curves = if params.curves_preserve_luma || params.curves_mix < 0.999 {
@@ -163,6 +169,8 @@ impl ColorPipeline {
         transforms::apply_temperature_tint(&mut rgba, params.temperature, params.tint);
         // 10. Hue rotation
         transforms::apply_hue_rotation(&mut rgba, params.hue);
+        // 10b. Clarity (midtone detail — operates on full frame)
+        transforms::apply_clarity_inplace(&mut rgba, width, height, params.clarity);
         // 11. Global mix
         if let Some(orig) = &original {
             transforms::apply_global_mix(&mut rgba, orig, params.global_mix);
@@ -255,7 +263,7 @@ pub fn builtin_creative_presets() -> Vec<(&'static str, ColorGradeParams)> {
     /// Helper — returns identity params as a baseline.
     fn base() -> ColorGradeParams {
         ColorGradeParams {
-            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            exposure: 0.0, contrast: 0.0, saturation: 1.0, vibrance: 0.0,
             temperature: 0.0, tint: 0.0,
             highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
             lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
@@ -264,7 +272,7 @@ pub fn builtin_creative_presets() -> Vec<(&'static str, ColorGradeParams)> {
             gamma_sat: 0.0, gamma_bri: 0.0,
             gain_sat: 0.0, gain_bri: 0.0,
             offset_sat: 0.0, offset_bri: 0.0,
-            hue: 0.0, global_mix: 1.0,
+            hue: 0.0, global_mix: 1.0, clarity: 0.0,
             curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
             huesat: Default::default(), huesat_mix: 1.0,
             qualifier: Default::default(), masks: Default::default(),
@@ -397,7 +405,7 @@ mod tests {
 
     fn make_identity_params() -> ColorGradeParams {
         ColorGradeParams {
-            exposure: 0.0, contrast: 0.0, saturation: 1.0,
+            exposure: 0.0, contrast: 0.0, saturation: 1.0, vibrance: 0.0,
             temperature: 0.0, tint: 0.0,
             highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
             lift: (0.0, 0.0, 0.0), gamma: (0.0, 0.0, 0.0),
@@ -406,7 +414,7 @@ mod tests {
             gamma_sat: 0.0, gamma_bri: 0.0,
             gain_sat: 0.0, gain_bri: 0.0,
             offset_sat: 0.0, offset_bri: 0.0,
-            hue: 0.0, global_mix: 1.0,
+            hue: 0.0, global_mix: 1.0, clarity: 0.0,
             curve_luts: None, curves_preserve_luma: false, curves_mix: 1.0,
             huesat: Default::default(), huesat_mix: 1.0,
             qualifier: Default::default(), masks: Default::default(),

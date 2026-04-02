@@ -2787,6 +2787,31 @@ impl KlippApp {
                     self.sync_and_refresh_frame();
                     continue;
                 }
+                AppCommand::AutoWhiteBalance { clip_id } => {
+                    // Grab current frame and compute auto WB correction
+                    let fb = self.frame_buffer.lock().unwrap();
+                    if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
+                        let (temp_adj, tint_adj) = klipp_color::auto_white_balance(
+                            &fb.data, fb.width, fb.height,
+                        );
+                        drop(fb);
+                        // Apply to the clip's ColorBalance node
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        for track in &mut seq.tracks {
+                            if let Some(clip) = track.find_clip_mut(*clip_id) {
+                                if let Some(node) = clip.node_graph.nodes.iter_mut()
+                                    .find(|n| n.kind == klipp_nodes::NodeKind::ColorBalance)
+                                {
+                                    node.params.temperature = Some(temp_adj);
+                                    node.params.tint = Some(tint_adj);
+                                }
+                                break;
+                            }
+                        }
+                        self.sync_and_refresh_frame();
+                    }
+                    continue;
+                }
                 AppCommand::ToggleColorPanel => {
                     // Toggle between Edit and Color workspace
                     use crate::state::Workspace;
@@ -11511,6 +11536,7 @@ impl eframe::App for KlippApp {
                                     self.state.scope_mode,
                                     &self.frame_buffer,
                                     self.state.scope_quality,
+                                    self.prefs.color.vectorscope_skin_angle,
                                 );
                             });
                             // Force repaint to recalculate layout on next frame

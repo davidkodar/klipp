@@ -21,10 +21,16 @@ pub struct NodeParams {
     // Contrast
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contrast: Option<f32>,
+    // Clarity (midtone detail)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<f32>,
 
     // Saturation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saturation: Option<f32>,
+    // Vibrance
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrance: Option<f32>,
 
     // ToneControls
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,7 +171,9 @@ impl NodeParams {
         match param_name {
             "exposure" => self.exposure = Some(value),
             "contrast" => self.contrast = Some(value),
+            "clarity" => self.clarity = Some(value),
             "saturation" => self.saturation = Some(value),
+            "vibrance" => self.vibrance = Some(value),
             "temperature" => self.temperature = Some(value),
             "tint" => self.tint = Some(value),
             "highlights" => self.highlights = Some(value),

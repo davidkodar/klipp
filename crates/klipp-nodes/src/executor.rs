@@ -219,6 +219,10 @@ impl GraphExecutor {
                 if con != 0.0 {
                     klipp_color::apply_contrast(&mut frame, con);
                 }
+                let clarity = params.clarity.unwrap_or(0.0);
+                if clarity != 0.0 {
+                    klipp_color::apply_clarity_inplace(&mut frame, width, height, clarity);
+                }
                 frame
             }
 
@@ -227,6 +231,10 @@ impl GraphExecutor {
                 let sat = params.saturation.unwrap_or(1.0);
                 if sat != 1.0 {
                     klipp_color::apply_saturation(&mut frame, sat);
+                }
+                let vib = params.vibrance.unwrap_or(0.0);
+                if vib != 0.0 {
+                    klipp_color::apply_vibrance_buffer(&mut frame, vib);
                 }
                 frame
             }
