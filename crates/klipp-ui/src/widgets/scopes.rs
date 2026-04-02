@@ -6,8 +6,8 @@ pub struct ScopeState {
     /// One cached texture per scope mode — switching is instant.
     textures: [Option<egui::TextureHandle>; 4], // Waveform, Parade, Vectorscope, Histogram
     last_update: std::time::Instant,
-    /// Hash of the frame data used for each cached texture.
-    frame_hashes: [u64; 4],
+    /// Frame generation counter used for each cached texture (from FrameBuffer.generation).
+    frame_generations: [u64; 4],
     /// Render sizes used for each cached texture.
     render_sizes: [(usize, usize); 4],
     /// GPU scopes pipeline (lazy-initialized on first use).
@@ -29,7 +29,7 @@ impl Default for ScopeState {
         Self {
             textures: [None, None, None, None],
             last_update: std::time::Instant::now(),
-            frame_hashes: [0; 4],
+            frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             render_sizes: [(0, 0); 4],
             gpu_scopes: None,
             gpu_scopes_init_attempted: false,
@@ -37,25 +37,6 @@ impl Default for ScopeState {
     }
 }
 const UPDATE_INTERVAL_MS: u128 = 32; // ~30fps for background pre-render of other modes
-
-
-/// Quick hash of frame data (sample a few bytes to detect changes).
-fn quick_frame_hash(data: &[u8]) -> u64 {
-    if data.len() < 32 { return 0; }
-    let mut h: u64 = data.len() as u64;
-    // Sample 8 positions spread across the frame
-    let step = data.len() / 8;
-    for i in 0..8 {
-        let idx = i * step;
-        if idx + 7 < data.len() {
-            let bytes = [data[idx], data[idx+1], data[idx+2], data[idx+3],
-                         data[idx+4], data[idx+5], data[idx+6], data[idx+7]];
-            h ^= u64::from_le_bytes(bytes).wrapping_mul(0x517cc1b727220a95);
-            h = h.rotate_left(17);
-        }
-    }
-    h
-}
 
 /// Render scopes into the given UI area.
 /// Each scope mode has its own cached texture — switching modes is instant.
@@ -81,18 +62,18 @@ pub fn show_scopes(
     let has_data = fb.width > 0 && fb.height > 0 && !fb.data.is_empty();
 
     if has_data {
-        let frame_hash = quick_frame_hash(&fb.data);
+        let frame_gen = fb.generation;
         let base_step: u32 = if fb.width > 1280 { 3 } else if fb.width > 640 { 2 } else { 1 };
         let step: u32 = (base_step as usize * quality.sample_step() / 2).max(1) as u32;
 
         // ALWAYS ensure the current mode's texture exists — instant display on tab switch
         let current_stale = state.textures[mi].is_none()
-            || state.frame_hashes[mi] != frame_hash
+            || state.frame_generations[mi] != frame_gen
             || state.render_sizes[mi] != (render_w, render_h);
 
         if current_stale {
             // Render the CURRENT mode immediately — no throttle
-            state.frame_hashes[mi] = frame_hash;
+            state.frame_generations[mi] = frame_gen;
             state.render_sizes[mi] = (render_w, render_h);
 
             // Lazy-init GPU scopes pipeline
@@ -150,10 +131,10 @@ pub fn show_scopes(
                 let idx = mode_index(m);
                 if idx == mi { continue; } // Already rendered above
                 let stale = state.textures[idx].is_none()
-                    || state.frame_hashes[idx] != frame_hash
+                    || state.frame_generations[idx] != frame_gen
                     || state.render_sizes[idx] != (render_w, render_h);
                 if stale {
-                    state.frame_hashes[idx] = frame_hash;
+                    state.frame_generations[idx] = frame_gen;
                     state.render_sizes[idx] = (render_w, render_h);
                     let image = match m {
                         ScopeMode::Waveform => {

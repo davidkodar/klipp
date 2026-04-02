@@ -1673,7 +1673,7 @@ impl KlippApp {
             {
                 let graph = &clip.node_graph;
                 if !graph.is_identity() {
-                    let clip_time = 0.0; // Approximate — exact time not critical for preview
+                    let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
                     if let Ok((graded, _)) = self.ui_executor.execute(
                         &pregrade.0, graph, pregrade.1, pregrade.2,
                         clip_time, 0, None, None,

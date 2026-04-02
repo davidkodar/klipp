@@ -11,6 +11,9 @@ pub struct FrameBuffer {
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
+    /// Monotonically increasing counter — bumped on every write_frame().
+    /// Scopes use this instead of hashing frame data to detect changes.
+    pub generation: u64,
 }
 
 impl FrameBuffer {
@@ -23,6 +26,7 @@ impl FrameBuffer {
             width,
             height,
             dirty: false,
+            generation: 0,
         }
     }
 
@@ -31,6 +35,7 @@ impl FrameBuffer {
         self.width = width;
         self.height = height;
         self.dirty = true;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn clear(&mut self) {
