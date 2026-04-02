@@ -11870,6 +11870,17 @@ impl eframe::App for KlippApp {
 
         // 4c3. Project Info window
         if self.state.show_project_info {
+            // Modal backdrop
+            egui::Area::new(egui::Id::new("project_info_backdrop"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::PanelResizeLine)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let resp = ui.allocate_rect(screen, egui::Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
+                    if resp.clicked() { self.state.show_project_info = false; }
+                });
+
             let mut still_open = true;
             crate::panels::project_info::show_project_info(
                 ctx,
