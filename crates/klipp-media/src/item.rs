@@ -202,6 +202,10 @@ pub struct MediaItem {
     /// Pixel format string (e.g. "yuv420p", "yuv420p10le"). From ffmpeg.
     #[serde(default)]
     pub pixel_format: Option<String>,
+    /// Auto-detected log format based on color_transfer, camera make/model, and bit depth.
+    /// Used to suggest InputTransform when clips are added to the timeline.
+    #[serde(default)]
+    pub detected_log_format: klipp_core::LogFormat,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -214,4 +218,80 @@ pub struct MediaItem {
     /// Audio cache entry — set after background conforming completes.
     #[serde(skip)]
     pub audio_cache: Option<crate::audio_cache::AudioCacheEntry>,
+}
+
+impl MediaItem {
+    /// Detect the likely log format from metadata (color_transfer, camera, bit depth, pixel format).
+    pub fn detect_log_format(&self) -> klipp_core::LogFormat {
+        use klipp_core::LogFormat;
+
+        // Check explicit transfer characteristics from ffmpeg first
+        if let Some(ref trc) = self.color_transfer {
+            let t = trc.to_lowercase();
+            if t.contains("pq") || t.contains("st 2084") || t.contains("smpte2084") {
+                return LogFormat::PQ;
+            }
+            if t.contains("hlg") || t.contains("arib") || t.contains("bt.2100") {
+                return LogFormat::HLG;
+            }
+            if t.contains("s-log") || t.contains("slog") {
+                return LogFormat::SLog3;
+            }
+            if t.contains("log") && t.contains("c") {
+                return LogFormat::LogC3;
+            }
+            if t.contains("v-log") || t.contains("vlog") {
+                return LogFormat::VLog;
+            }
+        }
+
+        // For camera-specific detection, only suggest if bit depth > 8 (10-bit+ = likely log)
+        let is_high_bit = self.bit_depth.unwrap_or(8) > 8
+            || self.pixel_format.as_deref().is_some_and(|pf|
+                pf.contains("10") || pf.contains("12") || pf.contains("16"));
+
+        if !is_high_bit {
+            return LogFormat::Srgb;
+        }
+
+        // Camera make/model heuristics
+        let make = self.camera_make.as_deref().unwrap_or("").to_lowercase();
+        let model = self.camera_model.as_deref().unwrap_or("").to_lowercase();
+
+        if make.contains("arri") || model.contains("alexa") || model.contains("amira") {
+            return if model.contains("35") { LogFormat::LogC4 } else { LogFormat::LogC3 };
+        }
+        if make.contains("sony") || model.contains("fx") || model.contains("a7") || model.contains("venice") {
+            return LogFormat::SLog3;
+        }
+        if make.contains("panasonic") || model.contains("gh") || model.contains("s1") || model.contains("s5") {
+            return LogFormat::VLog;
+        }
+        if make.contains("canon") || model.contains("eos") || model.contains("c70") || model.contains("c300") {
+            return LogFormat::CanonLog3;
+        }
+        if make.contains("red") || model.contains("dsmc") || model.contains("komodo") || model.contains("raptor") {
+            return LogFormat::RedLog3G10;
+        }
+        if make.contains("blackmagic") || model.contains("bmpcc") || model.contains("ursa") {
+            return LogFormat::BmdFilmGen5;
+        }
+        if make.contains("nikon") || model.contains("z 8") || model.contains("z 9") {
+            return LogFormat::NLog;
+        }
+        if make.contains("fuji") || model.contains("x-h") || model.contains("x-t") {
+            return LogFormat::FLog;
+        }
+        if make.contains("dji") || model.contains("mavic") || model.contains("inspire") {
+            return LogFormat::DJIDLog;
+        }
+        if make.contains("gopro") {
+            return LogFormat::GoProFlat;
+        }
+        if make.contains("apple") || model.contains("iphone") {
+            return LogFormat::AppleLog;
+        }
+
+        LogFormat::Srgb
+    }
 }

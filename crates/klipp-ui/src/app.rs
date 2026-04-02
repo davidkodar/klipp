@@ -571,7 +571,7 @@ impl KlippApp {
                         (duration, fps, false)
                     };
 
-                    let media_item = MediaItem {
+                    let mut media_item = MediaItem {
                         id: media_id,
                         path: path.clone(),
                         filename,
@@ -616,10 +616,18 @@ impl KlippApp {
                         color_primaries,
                         color_transfer,
                         pixel_format,
+                        detected_log_format: Default::default(),
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
                     };
+
+                    // Auto-detect log format from metadata
+                    let detected = media_item.detect_log_format();
+                    if detected != klipp_core::LogFormat::Srgb {
+                        tracing::info!("Auto-detected log format {:?} for {:?}", detected, path.file_name().unwrap_or_default());
+                    }
+                    media_item.detected_log_format = detected;
 
                     if source_rotation != 0 {
                         tracing::info!("Media {:?} has source rotation: {}°", path.file_name().unwrap_or_default(), source_rotation);
@@ -1626,6 +1634,19 @@ impl KlippApp {
         }
     }
 
+    /// Apply the auto-detected log format from the media pool to a clip's InputTransform node.
+    fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
+        let detected = self.state.media_pool.get(&media_id)
+            .map(|m| m.detected_log_format)
+            .unwrap_or_default();
+        if detected != klipp_core::LogFormat::Srgb {
+            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+            if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                clip.set_input_log_format(detected);
+            }
+        }
+    }
+
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap();
         *seq = self.state.sequences[self.state.active_sequence_idx].clone();
@@ -1749,9 +1770,13 @@ impl KlippApp {
                         let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                             .position(|t| t.kind == target_kind)
                             .unwrap_or(0);
-                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index) {
-                            let clip_id = track.append_clip(*media_id, duration);
-                            let clip = track.find_clip(clip_id).unwrap().clone();
+                        let appended_id = {
+                            let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index);
+                            track.map(|t| t.append_clip(*media_id, duration))
+                        };
+                        if let Some(clip_id) = appended_id {
+                            self.apply_detected_log_format(clip_id, *media_id);
+                            let clip = self.state.sequences[self.state.active_sequence_idx].tracks[track_index].find_clip(clip_id).unwrap().clone();
                             self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyAppendClip {
                                 clip,
                                 track_index,
@@ -1783,13 +1808,17 @@ impl KlippApp {
                                 // Magnetic path: append via MagneticEditor
                                 let source_in = klipp_core::RationalTime { value: 0, rate: duration.rate };
                                 let source_out = duration;
-                                let clip = klipp_timeline::Clip::media(
+                                let mut clip = klipp_timeline::Clip::media(
                                     *media_id,
                                     klipp_core::RationalTime::ZERO, // will be set by append_primary
                                     klipp_core::RationalTime::ZERO,
                                     source_in,
                                     source_out,
                                 );
+                                // Auto-apply detected log format
+                                if let Some(item) = self.state.media_pool.get(media_id) {
+                                    clip.set_input_log_format(item.detected_log_format);
+                                }
                                 let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
                                     &mut self.state.sequences[self.state.active_sequence_idx], clip);
                                 // Get the clip id from the result
@@ -1801,9 +1830,11 @@ impl KlippApp {
                                 self.state.dirty = true;
                             } else {
                                 // Legacy path for Free tracks
+                                let mid = *media_id;
                                 let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
-                                let clip_id = track.append_clip(*media_id, duration);
-                                let clip = track.find_clip(clip_id).unwrap().clone();
+                                let clip_id = track.append_clip(mid, duration);
+                                self.apply_detected_log_format(clip_id, mid);
+                                let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyAppendClip {
                                     clip,
                                     track_index: *track_index,
@@ -7639,6 +7670,7 @@ impl KlippApp {
                         color_primaries: None,
                         color_transfer: None,
                         pixel_format: None,
+                        detected_log_format: Default::default(),
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
@@ -10449,6 +10481,72 @@ impl KlippApp {
                 && i.key_pressed(egui::Key::V)
             {
                 self.state.show_scopes = !self.state.show_scopes;
+            }
+            // Shift+V — cycle scope mode
+            if kb.is_action_pressed("cycle_scope_mode", i) {
+                use crate::state::ScopeMode;
+                self.state.scope_mode = match self.state.scope_mode {
+                    ScopeMode::Waveform => ScopeMode::Parade,
+                    ScopeMode::Parade => ScopeMode::Vectorscope,
+                    ScopeMode::Vectorscope => ScopeMode::Histogram,
+                    ScopeMode::Histogram => ScopeMode::Waveform,
+                };
+                if !self.state.show_scopes {
+                    self.state.show_scopes = true;
+                }
+            }
+            // [ / ] — navigate color nodes
+            if kb.is_action_pressed("prev_color_node", i) || kb.is_action_pressed("next_color_node", i) {
+                let forward = kb.is_action_pressed("next_color_node", i);
+                if let Some(clip_id) = self.state.selected_clip {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) {
+                        let nodes = &clip.node_graph.nodes;
+                        if !nodes.is_empty() {
+                            let current_idx = self.state.selected_node_id
+                                .and_then(|sel| nodes.iter().position(|n| n.id == sel));
+                            let next_idx = match current_idx {
+                                Some(idx) => {
+                                    if forward {
+                                        (idx + 1) % nodes.len()
+                                    } else {
+                                        (idx + nodes.len() - 1) % nodes.len()
+                                    }
+                                }
+                                None => 0,
+                            };
+                            self.state.selected_node_id = Some(nodes[next_idx].id);
+                        }
+                    }
+                }
+            }
+            // Alt+D — toggle bypass on selected node
+            if kb.is_action_pressed("toggle_node_bypass", i) {
+                if let Some(node_id) = self.state.selected_node_id {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                node.enabled = !node.enabled;
+                            }
+                        }
+                        self.sync_sequence_to_engine();
+                    }
+                }
+            }
+            // Ctrl+Shift+R — reset current color node to defaults
+            if kb.is_action_pressed("reset_current_node", i) {
+                if let Some(node_id) = self.state.selected_node_id {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                node.params = klipp_nodes::NodeParams::default();
+                            }
+                        }
+                        self.sync_sequence_to_engine();
+                    }
+                }
             }
             // Copy / Copy Attributes
             if kb.is_action_pressed("copy_clip", i) {

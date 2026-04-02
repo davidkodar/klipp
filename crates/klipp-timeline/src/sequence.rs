@@ -848,6 +848,19 @@ impl Clip {
         }
     }
 
+    /// Set the InputTransform node's log_format on this clip's node graph.
+    /// If the format is Srgb (default), does nothing.
+    pub fn set_input_log_format(&mut self, format: klipp_core::LogFormat) {
+        if format == klipp_core::LogFormat::Srgb {
+            return;
+        }
+        if let Some(node) = self.node_graph.nodes.iter_mut()
+            .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
+        {
+            node.params.log_format = Some(format);
+        }
+    }
+
     /// Create a gap placeholder clip with the given timeline extent.
     /// Rescales timeline_out to match timeline_in's rate if they differ.
     pub fn gap(timeline_in: Timecode, timeline_out: Timecode) -> Self {

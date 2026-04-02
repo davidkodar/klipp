@@ -193,6 +193,13 @@ impl KeyBindings {
         bind(&mut b, "multicam_angle_9", vec![KeyCombo::new("9")]);
         bind(&mut b, "create_multicam", vec![KeyCombo::alt("C")]);
 
+        // Color grading
+        bind(&mut b, "prev_color_node", vec![KeyCombo::new("[")]);
+        bind(&mut b, "next_color_node", vec![KeyCombo::new("]")]);
+        bind(&mut b, "toggle_node_bypass", vec![KeyCombo::alt("D")]);
+        bind(&mut b, "reset_current_node", vec![KeyCombo::ctrl_shift("R")]);
+        bind(&mut b, "cycle_scope_mode", vec![KeyCombo::shift("V")]);
+
         // Misc
         bind(&mut b, "create_title", vec![KeyCombo::ctrl("T")]);
         bind(&mut b, "connect_clip", vec![KeyCombo::new("G")]);
@@ -350,6 +357,11 @@ impl KeyBindings {
             "multicam_angle_8" => "Multicam Angle 8",
             "multicam_angle_9" => "Multicam Angle 9",
             "create_multicam" => "Create Multicam Clip",
+            "prev_color_node" => "Previous Color Node",
+            "next_color_node" => "Next Color Node",
+            "toggle_node_bypass" => "Toggle Node Bypass",
+            "reset_current_node" => "Reset Current Node",
+            "cycle_scope_mode" => "Cycle Scope Mode",
             "create_title" => "Create Title Clip",
             "connect_clip" => "Connect to Primary",
             "disconnect_clip" => "Disconnect from Primary",
@@ -373,6 +385,7 @@ impl KeyBindings {
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
                 "create_multicam"]),
+            ("Color", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "cycle_scope_mode"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),
         ]
     }

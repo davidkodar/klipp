@@ -315,23 +315,27 @@ impl GraphExecutor {
             }
 
             NodeKind::WheelSatBri => {
-                let mut frame = primary_input.to_vec();
-                klipp_color::apply_wheel_sat_bri(
-                    &mut frame,
-                    params.lift_sat.unwrap_or(0.0),
-                    params.lift_bri.unwrap_or(0.0),
-                    params.gamma_sat.unwrap_or(0.0),
-                    params.gamma_bri.unwrap_or(0.0),
-                    params.gain_sat.unwrap_or(0.0),
-                    params.gain_bri.unwrap_or(0.0),
-                    params.offset_sat.unwrap_or(0.0),
-                    params.offset_bri.unwrap_or(0.0),
-                );
-                frame
+                let ls = params.lift_sat.unwrap_or(0.0);
+                let lb = params.lift_bri.unwrap_or(0.0);
+                let gs = params.gamma_sat.unwrap_or(0.0);
+                let gb = params.gamma_bri.unwrap_or(0.0);
+                let gas = params.gain_sat.unwrap_or(0.0);
+                let gab = params.gain_bri.unwrap_or(0.0);
+                let os = params.offset_sat.unwrap_or(0.0);
+                let ob = params.offset_bri.unwrap_or(0.0);
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.apply_wheel_sat_bri_gpu(
+                        primary_input.to_vec(), width, height,
+                        ls, lb, gs, gb, gas, gab, os, ob,
+                    )
+                } else {
+                    let mut frame = primary_input.to_vec();
+                    klipp_color::apply_wheel_sat_bri(&mut frame, ls, lb, gs, gb, gas, gab, os, ob);
+                    frame
+                }
             }
 
             NodeKind::RGBCurves => {
-                let mut frame = primary_input.to_vec();
                 // Use cached LUTs if available, otherwise build fresh
                 let luts = self
                     .curve_lut_cache
@@ -345,25 +349,48 @@ impl GraphExecutor {
                             .map(|c| Arc::new(build_curve_luts(c)))
                     });
                 if let Some(luts) = luts {
-                    klipp_color::curves::apply_curves(
-                        &mut frame,
-                        &luts.master,
-                        &luts.red,
-                        &luts.green,
-                        &luts.blue,
-                    );
-                    // Preserve luma
-                    if params.curves_preserve_luma.unwrap_or(false) {
-                        apply_preserve_luma(&mut frame, primary_input);
-                    }
-                    // Curves mix
-                    if let Some(mix) = params.curves_mix {
+                    let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
+                    let mix = params.curves_mix.unwrap_or(1.0);
+
+                    // GPU path: pack LUTs into a flat array
+                    if let Some(gpu) = &mut self.gpu {
+                        let mut lut_data = [0.0f32; 1024];
+                        for (i, &v) in luts.master.iter().enumerate().take(256) {
+                            lut_data[i] = v as f32 / 255.0;
+                        }
+                        for (i, &v) in luts.red.iter().enumerate().take(256) {
+                            lut_data[256 + i] = v as f32 / 255.0;
+                        }
+                        for (i, &v) in luts.green.iter().enumerate().take(256) {
+                            lut_data[512 + i] = v as f32 / 255.0;
+                        }
+                        for (i, &v) in luts.blue.iter().enumerate().take(256) {
+                            lut_data[768 + i] = v as f32 / 255.0;
+                        }
+                        gpu.apply_rgb_curves_gpu(
+                            primary_input.to_vec(), width, height,
+                            &lut_data, preserve_luma, mix,
+                        )
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::curves::apply_curves(
+                            &mut frame,
+                            &luts.master,
+                            &luts.red,
+                            &luts.green,
+                            &luts.blue,
+                        );
+                        if preserve_luma {
+                            apply_preserve_luma(&mut frame, primary_input);
+                        }
                         if mix < 0.999 {
                             klipp_color::apply_global_mix(&mut frame, primary_input, mix);
                         }
+                        frame
                     }
+                } else {
+                    primary_input.to_vec()
                 }
-                frame
             }
 
             NodeKind::HueSatCurves => {
@@ -388,23 +415,29 @@ impl GraphExecutor {
             }
 
             NodeKind::ColorBalance => {
-                let mut frame = primary_input.to_vec();
                 let temp = params.temperature.unwrap_or(0.0);
                 let tint = params.tint.unwrap_or(0.0);
-                if temp != 0.0 || tint != 0.0 {
-                    klipp_color::apply_temperature_tint(&mut frame, temp, tint);
-                }
-                if let Some(hue) = params.hue {
+                let hue = params.hue.unwrap_or(0.0);
+                let mix = params.global_mix.unwrap_or(1.0);
+
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.apply_color_balance_gpu(
+                        primary_input.to_vec(), width, height,
+                        temp, tint, hue, mix,
+                    )
+                } else {
+                    let mut frame = primary_input.to_vec();
+                    if temp != 0.0 || tint != 0.0 {
+                        klipp_color::apply_temperature_tint(&mut frame, temp, tint);
+                    }
                     if hue.abs() > 0.01 {
                         klipp_color::apply_hue_rotation(&mut frame, hue);
                     }
-                }
-                if let Some(mix) = params.global_mix {
                     if mix < 0.999 {
                         klipp_color::apply_global_mix(&mut frame, primary_input, mix);
                     }
+                    frame
                 }
-                frame
             }
 
             NodeKind::Qualifier => {

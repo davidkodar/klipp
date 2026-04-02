@@ -139,6 +139,14 @@ pub fn color_wheel_sized(
         changed = true;
     }
 
+    // Right-click: reset wheel + master to neutral
+    if wheel_resp.secondary_clicked() {
+        offset[0] = 0.0;
+        offset[1] = 0.0;
+        *master = 0.0;
+        changed = true;
+    }
+
     // ── Puck ──
     let puck_x = wc.x + offset[0] * wheel_radius * 0.5;
     let puck_y = wc.y + offset[1] * wheel_radius * 0.5;
@@ -233,7 +241,7 @@ pub fn color_wheel_sized(
             changed = true;
         }
     }
-    if master_resp.double_clicked() {
+    if master_resp.double_clicked() || master_resp.secondary_clicked() {
         *master = 0.0;
         changed = true;
     }

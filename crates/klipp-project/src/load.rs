@@ -98,6 +98,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             color_primaries: None,
             color_transfer: None,
             pixel_format: None,
+            detected_log_format: Default::default(),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,

@@ -4963,6 +4963,15 @@ impl TimelinePanel {
                 }
             }
 
+            // Color grade indicator — bottom-right amber dot
+            if !clip.node_graph.is_identity() && clip_rect.width() > 20.0 {
+                let dot_x = clip_rect.right() - 8.0;
+                let dot_y = clip_rect.bottom() - 7.0;
+                let dot_pos = egui::pos2(dot_x, dot_y);
+                painter.circle_filled(dot_pos, 3.5, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                painter.circle_filled(dot_pos, 2.5, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+            }
+
             // Group badge [G] — bottom-left
             if clip.group_id.is_some() && clip_rect.width() > 30.0 {
                 let g_pos = egui::pos2(clip_rect.left() + 10.0, clip_rect.bottom() - 8.0);

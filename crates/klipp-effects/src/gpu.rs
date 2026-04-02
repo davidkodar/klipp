@@ -77,6 +77,13 @@ pub struct GpuEffectsPipeline {
     lut3d_pipeline: wgpu::ComputePipeline,
     lut3d_buf: Option<wgpu::Buffer>,
     lut3d_buf_size: u64,
+    // Compute pipeline — color balance (temperature/tint/hue)
+    color_balance_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — wheel sat/bri (per-wheel saturation & brightness)
+    wheel_sat_bri_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
+    rgb_curves_pipeline: wgpu::ComputePipeline,
+    rgb_curves_lut_buf: wgpu::Buffer,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
@@ -378,6 +385,9 @@ impl GpuEffectsPipeline {
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE, &pipeline_cache);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER, &pipeline_cache);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION, &pipeline_cache);
+        let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE, &pipeline_cache);
+        let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI, &pipeline_cache);
+        let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES, &pipeline_cache);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER, &pipeline_cache);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN, &pipeline_cache);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H, &pipeline_cache);
@@ -392,9 +402,17 @@ impl GpuEffectsPipeline {
             mapped_at_creation: false,
         });
 
+        // RGB curves LUT buffer: 4 channels × 256 entries × 4 bytes = 4096 bytes
+        let rgb_curves_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rgb_curves_lut"),
+            size: 4 * 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION, &pipeline_cache);
 
-        let pipeline_count = 45;
+        let pipeline_count = 48;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -468,6 +486,10 @@ impl GpuEffectsPipeline {
             lut3d_pipeline,
             lut3d_buf: None,
             lut3d_buf_size: 0,
+            color_balance_pipeline,
+            wheel_sat_bri_pipeline,
+            rgb_curves_pipeline,
+            rgb_curves_lut_buf,
             qualifier_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
@@ -611,6 +633,127 @@ impl GpuEffectsPipeline {
             _pad0: 0,
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply color balance (temperature, tint, hue rotation, global mix) on GPU.
+    pub fn apply_color_balance_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        temperature: f32,
+        tint: f32,
+        hue: f32,
+        global_mix: f32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.write_params(&GpuColorBalanceParams {
+            width, height, temperature, tint, hue, global_mix,
+            _pad0: 0, _pad1: 0,
+        });
+        self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply per-wheel saturation & brightness adjustments on GPU.
+    pub fn apply_wheel_sat_bri_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        lift_sat: f32, lift_bri: f32,
+        gamma_sat: f32, gamma_bri: f32,
+        gain_sat: f32, gain_bri: f32,
+        offset_sat: f32, offset_bri: f32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        self.write_params(&GpuWheelSatBriParams {
+            width, height,
+            lift_sat, lift_bri, gamma_sat, gamma_bri,
+            gain_sat, gain_bri, offset_sat, offset_bri,
+            _pad0: 0, _pad1: 0,
+        });
+        self.dispatch(&self.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
+
+        self.download(buf_b, byte_size)
+    }
+
+    /// Apply RGB curves on GPU using pre-computed LUTs.
+    /// `lut_data` must be 4×256 f32 values (master, red, green, blue).
+    pub fn apply_rgb_curves_gpu(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        lut_data: &[f32; 1024], // 4 × 256
+        preserve_luma: bool,
+        mix: f32,
+    ) -> Vec<u8> {
+        let byte_size = (width * height * 4) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, &rgba);
+
+        // Upload curve LUT data
+        self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
+
+        self.write_params(&GpuRgbCurvesParams {
+            width, height,
+            preserve_luma: if preserve_luma { 1 } else { 0 },
+            mix,
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        // Create bind group with 4 bindings (reuse huesat_bgl layout)
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rgb_curves_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None, timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.rgb_curves_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
 
         self.download(buf_b, byte_size)
     }
@@ -2105,6 +2248,45 @@ struct GpuHueSatParams {
     _pad0: u32,
 }
 // 4 fields × 4 bytes = 16 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuColorBalanceParams {
+    width: u32,
+    height: u32,
+    temperature: f32,
+    tint: f32,
+    hue: f32,
+    global_mix: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuWheelSatBriParams {
+    width: u32,
+    height: u32,
+    lift_sat: f32,
+    lift_bri: f32,
+    gamma_sat: f32,
+    gamma_bri: f32,
+    gain_sat: f32,
+    gain_bri: f32,
+    offset_sat: f32,
+    offset_bri: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuRgbCurvesParams {
+    width: u32,
+    height: u32,
+    preserve_luma: u32,
+    mix: f32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -5209,5 +5391,195 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bo = u32(clamp(color.z, 0.0, 255.0));
     let ao = u32(clamp(color.w, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (ao << 24u);
+}
+";
+
+// ── Color Balance (temperature / tint / hue rotation / global mix) ────────────
+const SHADER_COLOR_BALANCE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    temperature: f32,
+    tint: f32,
+    hue: f32,
+    global_mix: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    let orig_r = f32(pixel & 0xFFu) / 255.0;
+    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    let t = params.temperature / 100.0 * 0.1;
+    let g_tint = params.tint / 100.0 * 0.1;
+
+    var r = orig_r + t;
+    var g = orig_g + g_tint;
+    var b = orig_b - t;
+
+    // Hue rotation in RGB (Rodrigues rotation around (1,1,1)/sqrt(3) axis)
+    if abs(params.hue) > 0.01 {
+        let angle = params.hue * 3.14159265 / 180.0;
+        let cos_a = cos(angle);
+        let sin_a = sin(angle);
+        let k = 1.0 / 3.0;
+        let new_r = r * (cos_a + k * (1.0 - cos_a)) + g * (k * (1.0 - cos_a) - 0.57735 * sin_a) + b * (k * (1.0 - cos_a) + 0.57735 * sin_a);
+        let new_g = r * (k * (1.0 - cos_a) + 0.57735 * sin_a) + g * (cos_a + k * (1.0 - cos_a)) + b * (k * (1.0 - cos_a) - 0.57735 * sin_a);
+        let new_b = r * (k * (1.0 - cos_a) - 0.57735 * sin_a) + g * (k * (1.0 - cos_a) + 0.57735 * sin_a) + b * (cos_a + k * (1.0 - cos_a));
+        r = new_r;
+        g = new_g;
+        b = new_b;
+    }
+
+    // Global mix
+    r = orig_r + (r - orig_r) * params.global_mix;
+    g = orig_g + (g - orig_g) * params.global_mix;
+    b = orig_b + (b - orig_b) * params.global_mix;
+
+    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── WheelSatBri (per-wheel saturation and brightness adjustments) ─────────────
+const SHADER_WHEEL_SAT_BRI: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    lift_sat: f32,
+    lift_bri: f32,
+    gamma_sat: f32,
+    gamma_bri: f32,
+    gain_sat: f32,
+    gain_bri: f32,
+    offset_sat: f32,
+    offset_bri: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    var r = f32(pixel & 0xFFu) / 255.0;
+    var g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    var b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+    let lift_w = max(1.0 - luma, 0.0);
+    let gamma_w = max(sin(clamp(luma, 0.0, 1.0) * 3.14159265), 0.0);
+    let gain_w = luma;
+
+    let bri_adj = params.lift_bri * lift_w + params.gamma_bri * gamma_w + params.gain_bri * gain_w + params.offset_bri;
+
+    r = r + bri_adj;
+    g = g + bri_adj;
+    b = b + bri_adj;
+
+    let sat_adj = params.lift_sat * lift_w + params.gamma_sat * gamma_w + params.gain_sat * gain_w + params.offset_sat;
+    let sat_factor = 1.0 + sat_adj;
+    let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = luma2 + (r - luma2) * sat_factor;
+    g = luma2 + (g - luma2) * sat_factor;
+    b = luma2 + (b - luma2) * sat_factor;
+
+    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+}
+";
+
+// ── RGB Curves (LUT-based curve application) ──────────────────────────────────
+const SHADER_RGB_CURVES: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    preserve_luma: u32,
+    mix: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> lut: array<f32>;
+// LUT layout: 4 channels x 256 entries = 1024 floats
+// 0..255   = master
+// 256..511 = red
+// 512..767 = green
+// 768..1023 = blue
+
+fn lut_lookup(channel: u32, val: f32) -> f32 {
+    let base = channel * 256u;
+    let idx_f = val * 255.0;
+    let idx0 = u32(clamp(idx_f, 0.0, 254.0));
+    let idx1 = idx0 + 1u;
+    let frac = idx_f - f32(idx0);
+    return lut[base + idx0] * (1.0 - frac) + lut[base + idx1] * frac;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let pixel = input[idx];
+    let orig_r = f32(pixel & 0xFFu) / 255.0;
+    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
+    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
+    let a = (pixel >> 24u) & 0xFFu;
+
+    // Apply per-channel curves, then master
+    var r = lut_lookup(1u, orig_r);
+    var g = lut_lookup(2u, orig_g);
+    var b = lut_lookup(3u, orig_b);
+    r = lut_lookup(0u, r);
+    g = lut_lookup(0u, g);
+    b = lut_lookup(0u, b);
+
+    // Preserve luma: scale output to match input luma
+    if params.preserve_luma != 0u {
+        let orig_luma = 0.2126 * orig_r + 0.7152 * orig_g + 0.0722 * orig_b;
+        let new_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if new_luma > 0.0001 {
+            let scale = orig_luma / new_luma;
+            r = r * scale;
+            g = g * scale;
+            b = b * scale;
+        }
+    }
+
+    // Mix with original
+    r = orig_r + (r - orig_r) * params.mix;
+    g = orig_g + (g - orig_g) * params.mix;
+    b = orig_b + (b - orig_b) * params.mix;
+
+    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
+    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
+    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
+    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
 }
 ";
