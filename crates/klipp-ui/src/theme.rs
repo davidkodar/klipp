@@ -2,6 +2,14 @@ use egui::Color32;
 
 /// All design tokens for the Klipp GUI. Every colour, size, and spacing
 /// constant lives here — do not hardcode `Color32` literals elsewhere.
+///
+/// # Contrast Rule
+///
+/// **Any amber/gold/yellow background MUST use `text_on_accent` (dark) for text.**
+/// Never use `text_primary`, `text_secondary`, or any light color on an amber background.
+/// The accent color (`#e8a020`) works great as TEXT on dark backgrounds, but when used
+/// as a BACKGROUND fill, all text on top must be dark (`#1a1a1e` or black).
+/// Violating this makes text nearly unreadable.
 pub struct KlippTheme {
     // Backgrounds — darkest to lightest
     pub bg_void: Color32,
