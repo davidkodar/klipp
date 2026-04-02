@@ -1659,9 +1659,7 @@ impl KlippApp {
         self.sync_sequence_to_engine();
 
         // Fast UI-thread re-grade at reduced resolution for instant scope feedback.
-        // Uses CPU-only executor (no GPU contention) on a downscaled frame (~480x270).
-        // The engine also re-grades at full resolution asynchronously for the viewer.
-        let pregrade = {
+        let fb_snapshot = {
             let fb = self.frame_buffer.lock().unwrap();
             if fb.pregrade_data.is_empty() || fb.width == 0 {
                 None
@@ -1670,7 +1668,10 @@ impl KlippApp {
             }
         };
 
-        if let Some((pregrade_data, full_w, full_h)) = pregrade {
+        // Try to produce a graded scope_preview; fall back to pregrade on any failure
+        let mut preview: Option<(Vec<u8>, u32, u32)> = None;
+
+        if let Some((ref pregrade_data, full_w, full_h)) = fb_snapshot {
             if let Some(cid) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
@@ -1678,7 +1679,6 @@ impl KlippApp {
                 {
                     let graph = &clip.node_graph;
                     if !graph.is_identity() {
-                        // Downscale for fast CPU grade (~1/4 resolution each axis = 1/16 pixels)
                         let scale = if full_w > 960 { 4u32 } else if full_w > 480 { 2 } else { 1 };
                         let small_w = full_w / scale;
                         let small_h = full_h / scale;
@@ -1694,19 +1694,31 @@ impl KlippApp {
                         }
 
                         let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                        if let Ok((graded, _)) = self.scope_executor.execute(
+                        match self.scope_executor.execute(
                             &small, graph, small_w, small_h,
                             clip_time, 0, None, None,
                         ) {
-                            let mut fb = self.frame_buffer.lock().unwrap();
-                            fb.scope_preview = graded;
-                            fb.scope_preview_w = small_w;
-                            fb.scope_preview_h = small_h;
-                            fb.generation = fb.generation.wrapping_add(1);
+                            Ok((graded, _)) => { preview = Some((graded, small_w, small_h)); }
+                            Err(_) => { preview = Some((small, small_w, small_h)); }
                         }
                     }
                 }
             }
+        }
+
+        // ALWAYS bump generation so scopes detect the change
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            if let Some((data, w, h)) = preview {
+                fb.scope_preview = data;
+                fb.scope_preview_w = w;
+                fb.scope_preview_h = h;
+            } else {
+                // Clear scope_preview so scopes fall back to fb.data
+                fb.scope_preview.clear();
+                fb.scope_preview_w = 0;
+            }
+            fb.generation = fb.generation.wrapping_add(1);
         }
 
         // Also tell the engine to re-grade at full resolution for the viewer
