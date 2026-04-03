@@ -1464,12 +1464,16 @@ impl KlippApp {
             pixels,
         };
 
-        // Always recreate texture to avoid stale handles after fullscreen transitions
-        self.viewer.video_texture = Some(ctx.load_texture(
-            "klipp-video-frame",
-            image,
-            egui::TextureOptions::LINEAR,
-        ));
+        // Reuse existing texture handle to avoid GPU allocation per frame
+        if let Some(ref mut tex) = self.viewer.video_texture {
+            tex.set(image, egui::TextureOptions::LINEAR);
+        } else {
+            self.viewer.video_texture = Some(ctx.load_texture(
+                "klipp-video-frame",
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
         let texture_ms = t_texture.elapsed().as_secs_f64() * 1000.0;
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
