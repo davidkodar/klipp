@@ -122,6 +122,50 @@ pub enum PlaybackState {
     Paused,
 }
 
+/// Bidirectional frame cache for instant backward stepping.
+/// Stores pre-grade RGBA frames keyed by frame number.
+struct FrameCache {
+    entries: Vec<Option<FrameCacheEntry>>,
+    capacity: usize,
+}
+
+struct FrameCacheEntry {
+    frame_number: i64,       // playhead.value at this frame
+    rgba: Vec<u8>,           // pre-grade RGBA
+    width: u32,
+    height: u32,
+}
+
+impl FrameCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: (0..capacity).map(|_| None).collect(),
+            capacity,
+        }
+    }
+
+    /// Insert a frame into the cache. Uses frame_number as hash key.
+    fn insert(&mut self, frame_number: i64, rgba: Vec<u8>, width: u32, height: u32) {
+        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
+        self.entries[slot] = Some(FrameCacheEntry { frame_number, rgba, width, height });
+    }
+
+    /// Look up a frame by number. Returns (rgba, width, height) if found.
+    fn get(&self, frame_number: i64) -> Option<(&[u8], u32, u32)> {
+        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
+        self.entries[slot].as_ref()
+            .filter(|e| e.frame_number == frame_number)
+            .map(|e| (e.rgba.as_slice(), e.width, e.height))
+    }
+
+    /// Clear the entire cache (on clip change, seek, etc.)
+    fn clear(&mut self) {
+        for entry in &mut self.entries {
+            *entry = None;
+        }
+    }
+}
+
 pub struct PlaybackEngine {
     cmd_rx: Receiver<AppCommand>,
     event_tx: Sender<AppEvent>,
@@ -182,6 +226,9 @@ pub struct PlaybackEngine {
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
     cached_pregrade_frame: Option<(Vec<u8>, u32, u32)>, // (rgba, width, height)
+    // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
+    // backward stepping without FFmpeg seeks.
+    frame_cache: FrameCache,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -302,6 +349,7 @@ impl PlaybackEngine {
             scope_render_mode: 0,
             matte_preview_node: None,
             cached_pregrade_frame: None,
+            frame_cache: FrameCache::new(60), // ~2.5s at 24fps
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -2610,6 +2658,8 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        // Clear frame cache on explicit seek (cache is only valid for sequential stepping)
+        self.frame_cache.clear();
         // Check for standalone title clip (no media clip at this timecode on any track)
         {
             let seq = self.sequence.read().unwrap();
@@ -2854,6 +2904,8 @@ impl PlaybackEngine {
                 drop(seq);
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
+                // Cache pre-grade frame for backward stepping
+                self.frame_cache.insert(self.playhead.value, rgba.clone(), w, h);
                 let rgba = self.post_process_rgba(rgba, w, h);
                 let mut fb = self.frame_buffer.lock().unwrap();
                 fb.write_frame(rgba, w, h);
@@ -2905,6 +2957,8 @@ impl PlaybackEngine {
 
                     let (w, h) = (frame.width, frame.height);
                     let rgba = frame.to_rgba();
+                    // Cache pre-grade frame for backward stepping
+                    self.frame_cache.insert(self.playhead.value, rgba.clone(), w, h);
                     let rgba = self.post_process_rgba(rgba, w, h);
                     let mut fb = self.frame_buffer.lock().unwrap();
                     fb.write_frame(rgba, w, h);
@@ -2931,12 +2985,28 @@ impl PlaybackEngine {
                 dec.pause();
             }
         } else {
-            // Backward: need to seek since decoders only go forward
-            let new_tc = RationalTime {
-                value: (self.playhead.value - 1).max(0),
-                rate: self.playhead.rate,
-            };
-            self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+            // Backward: check frame cache first (instant), fall back to FFmpeg seek
+            let target_frame = (self.playhead.value + direction).max(0);
+            if let Some((rgba, w, h)) = self.frame_cache.get(target_frame) {
+                // Cache hit — instant backward step, no FFmpeg seek needed
+                let rgba = rgba.to_vec();
+                self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
+                // Re-grade the cached pre-grade frame through the full pipeline
+                let rgba = self.post_process_rgba(rgba, w, h);
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(rgba, w, h);
+                drop(fb);
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                (self.repaint_cb)();
+            } else {
+                // Cache miss — full FFmpeg seek (slow but unavoidable)
+                let new_tc = RationalTime {
+                    value: target_frame,
+                    rate: self.playhead.rate,
+                };
+                self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+            }
         }
     }
 
@@ -3097,6 +3167,8 @@ impl PlaybackEngine {
         self.ensure_gpu_effects();
         // Cache the pre-grade frame for instant re-grading when paused
         self.cached_pregrade_frame = Some((rgba.clone(), width, height));
+        // Also insert into bidirectional frame cache for instant backward stepping
+        self.frame_cache.insert(self.playhead.value, rgba.clone(), width, height);
         // Also store in shared frame buffer so UI thread can re-grade directly
         {
             let mut fb = self.frame_buffer.lock().unwrap();
