@@ -1560,6 +1560,18 @@ impl PreferencesPanel {
         cache_dir_row(ui, "Waveform cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/waveforms", dirty, "wave_dir");
         cache_dir_row(ui, "Render cache", &mut prefs.media_cache.render_cache_dir, "~/.cache/klipp/render", dirty, "render_dir");
 
+        // ── RENDER CACHE section ──
+        Self::section_header(ui, "RENDER CACHE");
+
+        Self::setting_row(ui, "Smart render cache", |ui| {
+            let mut val = prefs.media_cache.enable_render_cache;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.media_cache.enable_render_cache = val;
+                cmds.push(AppCommand::SetRenderCacheEnabled(val));
+                *dirty = true;
+            }
+        });
+
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS");
 

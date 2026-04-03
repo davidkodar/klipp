@@ -703,6 +703,9 @@ pub struct MediaCachePrefs {
     /// Render cache directory override (None = ~/.cache/klipp/render).
     #[serde(default)]
     pub render_cache_dir: Option<PathBuf>,
+    /// Enable smart render cache (pre-renders graded frames to disk).
+    #[serde(default = "default_true")]
+    pub enable_render_cache: bool,
     /// Maximum total cache size in GB.
     #[serde(default = "default_cache_size_gb")]
     pub max_cache_size_gb: u32,
@@ -722,7 +725,7 @@ fn default_thumb_h() -> u32 { 256 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
         Self {
-            filmstrip_cache_dir: None, audio_cache_dir: None, render_cache_dir: None,
+            filmstrip_cache_dir: None, audio_cache_dir: None, render_cache_dir: None, enable_render_cache: true,
             max_cache_size_gb: default_cache_size_gb(),
             skim_transcode_quality: default_skim_quality(),
             thumbnail_height: default_thumb_h(),

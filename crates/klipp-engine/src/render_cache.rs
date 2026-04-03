@@ -144,6 +144,10 @@ impl DiskRenderCache {
         self.enabled = enabled;
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Read a cached frame from disk. Returns (rgba, width, height) or None.
     pub fn get(&mut self, key: &RenderCacheKey) -> Option<(Vec<u8>, u32, u32)> {
         if !self.enabled { return None; }

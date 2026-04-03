@@ -458,6 +458,8 @@ pub enum AppCommand {
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
+    /// Enable or disable the smart render cache.
+    SetRenderCacheEnabled(bool),
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
     BeginScrub,

@@ -733,6 +733,13 @@ impl PlaybackEngine {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
             }
+            AppCommand::SetRenderCacheEnabled(enabled) => {
+                self.render_cache_disk.set_enabled(enabled);
+                if !enabled {
+                    self.render_cache_hot.clear();
+                }
+                debug!("Render cache enabled={enabled}");
+            }
             AppCommand::CleanOrphanedCaches => {
                 // Handled on UI thread — ignore in engine
             }
@@ -3120,6 +3127,8 @@ impl PlaybackEngine {
     /// Priority: ±2 seconds from playhead first, then rest of clip.
     /// Runs ONE frame per call to stay responsive to new commands.
     fn prerender_cache_frames(&mut self) {
+        // Skip if render cache is disabled
+        if !self.render_cache_disk.is_enabled() { return; }
         // Only pre-render if we have a clip with a non-identity grade
         let clip_info = {
             let seq = self.sequence.read().unwrap();
