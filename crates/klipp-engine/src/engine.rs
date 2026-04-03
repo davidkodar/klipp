@@ -3078,10 +3078,11 @@ impl PlaybackEngine {
         }
     }
 
-    /// Drain any ready frames from the decoder queue into the frame cache,
-    /// then resume the decoder so it keeps filling the queue for future steps.
+    /// Bidirectional prefetch: fill cache with frames both behind and ahead
+    /// of the current playhead. After this call, stepping in either direction
+    /// is an instant cache hit.
     fn prefetch_ahead(&mut self) {
-        // Drain all currently queued frames into the cache
+        // 1. Drain any currently queued forward frames into cache
         if let Some(dec) = &self.v1_decoder {
             let mut queue = dec.frame_queue().lock().unwrap();
             while let Some(frame) = queue.pop() {
@@ -3089,7 +3090,6 @@ impl PlaybackEngine {
                 let pts = frame.pts;
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
-                // Compute the frame number from PTS
                 let seq = self.sequence.read().unwrap();
                 let frame_num = if let Some(clip) = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -3108,7 +3108,64 @@ impl PlaybackEngine {
                 self.frame_cache.insert(frame_num, rgba, w, h);
             }
         }
-        // Resume decoder so it keeps filling the queue in the background
+
+        // 2. Check if backward frames need prefilling
+        let current = self.playhead.value;
+        let backward_needed = (1..=30).any(|i| {
+            let f = current - i;
+            f >= 0 && self.frame_cache.get(f).is_none()
+        });
+
+        if backward_needed {
+            // Seek backward and decode forward to fill the cache behind us.
+            // This is a one-time cost that makes all subsequent backward steps instant.
+            let prefetch_start = (current - 30).max(0);
+            if let Some(dec) = &self.v1_decoder {
+                let seek_secs = RationalTime { value: prefetch_start, rate: self.playhead.rate }.to_secs_f64();
+                dec.seek(seek_secs);
+                dec.frame_queue().lock().unwrap().clear();
+                dec.resume();
+            }
+
+            let deadline = std::time::Instant::now() + Duration::from_millis(400);
+            while std::time::Instant::now() < deadline {
+                let popped = self.v1_decoder.as_ref()
+                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                if let Some(frame) = popped {
+                    if frame.is_eof { break; }
+                    let (w, h) = (frame.width, frame.height);
+                    let rgba = frame.to_rgba();
+                    let frame_num = {
+                        let seq = self.sequence.read().unwrap();
+                        if let Some(clip) = seq.tracks.iter()
+                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .find_map(|t| t.clips.get(self.current_clip_index))
+                        {
+                            let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
+                            let spd = clip.speed.max(0.001);
+                            let elapsed_tc = RationalTime::from_secs_f64(
+                                (source_elapsed / spd).max(0.0), self.fps.rate(),
+                            );
+                            (clip.timeline_in + elapsed_tc).value
+                        } else { break; }
+                    };
+                    self.frame_cache.insert(frame_num, rgba, w, h);
+                    // Stop a few frames past current (forward will be handled by decoder resume)
+                    if frame_num > current + 5 { break; }
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            // Re-seek decoder back to current position for forward prefetch
+            if let Some(dec) = &self.v1_decoder {
+                let current_secs = self.playhead.to_secs_f64();
+                dec.seek(current_secs);
+                dec.frame_queue().lock().unwrap().clear();
+            }
+        }
+
+        // 3. Resume decoder for continuous forward prefetch
         if let Some(dec) = &self.v1_decoder {
             dec.resume();
         }
