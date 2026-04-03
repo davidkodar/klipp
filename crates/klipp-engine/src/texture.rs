@@ -24,6 +24,9 @@ pub struct FrameBuffer {
     /// Monotonically increasing counter — bumped on every write_frame().
     /// Scopes use this instead of hashing frame data to detect changes.
     pub generation: u64,
+    /// Render cache status per clip: (clip_id, cached_frame_count, total_frame_count).
+    /// Updated periodically by the engine for timeline visualization.
+    pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
 }
 
 impl FrameBuffer {
@@ -44,6 +47,7 @@ impl FrameBuffer {
             height,
             dirty: false,
             generation: 0,
+            render_cache_ranges: Vec::new(),
         }
     }
 

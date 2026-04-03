@@ -411,6 +411,7 @@ impl PlaybackEngine {
 
             // Coalesce: keep only the last seek/setplayhead, drop earlier ones
             let commands = coalesce_commands(commands);
+            let had_commands = !commands.is_empty();
 
             for cmd in commands {
                 if self.handle_command(cmd) {
@@ -423,6 +424,9 @@ impl PlaybackEngine {
                 self.update_playback();
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
+            } else if self.state == PlaybackState::Paused && !had_commands {
+                // Engine is idle while paused — pre-render nearby frames into cache
+                self.prerender_cache_frames();
             }
 
             // Emit perf stats periodically
@@ -3112,6 +3116,133 @@ impl PlaybackEngine {
     /// Bidirectional prefetch: fill cache with frames both behind and ahead
     /// of the current playhead. After this call, stepping in either direction
     /// is an instant cache hit.
+    /// Pre-render nearby frames into the render cache during idle time.
+    /// Priority: ±2 seconds from playhead first, then rest of clip.
+    /// Runs ONE frame per call to stay responsive to new commands.
+    fn prerender_cache_frames(&mut self) {
+        // Only pre-render if we have a clip with a non-identity grade
+        let clip_info = {
+            let seq = self.sequence.read().unwrap();
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|t| t.clip_at_timecode(self.playhead))
+                .and_then(|(_, clip)| {
+                    if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
+                        None
+                    } else {
+                        Some((
+                            clip.id,
+                            clip.timeline_in.value,
+                            clip.timeline_out.value,
+                            crate::render_cache::compute_grade_hash(
+                                &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
+                            ),
+                        ))
+                    }
+                })
+        };
+
+        let (clip_id, clip_start, clip_end, grade_hash) = match clip_info {
+            Some(info) => info,
+            None => return,
+        };
+
+        let current = self.playhead.value;
+        let fps = self.fps.rate() as i64;
+        let range = fps * 2; // ±2 seconds
+
+        // Priority 1: frames within ±2 seconds of playhead
+        // Priority 2: rest of the clip outward from playhead
+        let candidates: Vec<i64> = {
+            let mut frames = Vec::new();
+            // Near playhead first (alternating forward/backward)
+            for offset in 1..=range {
+                let fwd = current + offset;
+                let bwd = current - offset;
+                if fwd < clip_end { frames.push(fwd); }
+                if bwd >= clip_start { frames.push(bwd); }
+            }
+            // Rest of clip
+            for f in (clip_start..current.saturating_sub(range as i64)).rev() {
+                frames.push(f);
+            }
+            for f in (current + range + 1)..clip_end {
+                frames.push(f);
+            }
+            frames
+        };
+
+        // Find the first uncached frame and pre-render it
+        for frame_num in candidates {
+            let key = crate::render_cache::RenderCacheKey {
+                clip_id,
+                frame_number: frame_num,
+                grade_hash,
+            };
+
+            // Skip if already in hot or cold cache
+            if self.render_cache_hot.get(&key).is_some() { continue; }
+            if self.render_cache_disk.get(&key).is_some() { continue; }
+
+            // Check if we have the pre-grade frame in the decode cache
+            if let Some((rgba, w, h)) = self.frame_cache.get(frame_num) {
+                let rgba = rgba.to_vec();
+                // Save/restore playhead so grading evaluates at the right time
+                let saved_playhead = self.playhead;
+                self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
+
+                let graded = self.post_process_rgba_inner(rgba, w, h);
+
+                self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
+                self.render_cache_disk.put(&key, &graded, w, h);
+
+                // Restore playhead
+                self.playhead = saved_playhead;
+                return; // One frame per call — stay responsive
+            }
+        }
+
+        // Update render cache ranges for timeline visualization
+        self.update_render_cache_ranges();
+    }
+
+    /// Update the shared frame buffer with current render cache coverage per clip.
+    fn update_render_cache_ranges(&mut self) {
+        let seq = self.sequence.read().unwrap();
+        let mut ranges = Vec::new();
+
+        for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+            for clip in &track.clips {
+                if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
+                    continue;
+                }
+                let grade_hash = crate::render_cache::compute_grade_hash(
+                    &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
+                );
+                let total = (clip.timeline_out.value - clip.timeline_in.value).max(1) as u32;
+                let mut cached = 0u32;
+                for f in clip.timeline_in.value..clip.timeline_out.value {
+                    let key = crate::render_cache::RenderCacheKey {
+                        clip_id: clip.id,
+                        frame_number: f,
+                        grade_hash,
+                    };
+                    if self.render_cache_hot.get(&key).is_some() {
+                        cached += 1;
+                    }
+                    // Don't check disk here — too slow for timeline display
+                }
+                if cached > 0 {
+                    ranges.push((clip.id, cached, total));
+                }
+            }
+        }
+        drop(seq);
+
+        let mut fb = self.frame_buffer.lock().unwrap();
+        fb.render_cache_ranges = ranges;
+    }
+
     fn prefetch_ahead(&mut self) {
         // 1. Drain any currently queued forward frames into cache
         if let Some(dec) = &self.v1_decoder {

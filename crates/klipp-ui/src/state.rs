@@ -299,6 +299,8 @@ pub struct AppState {
     pub showing_thumbnail_preview: bool,
     /// Set to true when a SeekTo is sent, cleared when FrameReady arrives.
     pub awaiting_seek_frame: bool,
+    /// Render cache coverage per clip: (clip_id, cached_count, total_count).
+    pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
 
     // Phase 4: Relink
     pub show_relink_dialog: bool,
@@ -937,6 +939,7 @@ impl Default for AppState {
             pre_scrub_use_proxies: true,
             showing_thumbnail_preview: false,
             awaiting_seek_frame: false,
+            render_cache_ranges: Vec::new(),
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
             show_about_dialog: false,

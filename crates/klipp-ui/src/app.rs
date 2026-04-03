@@ -1338,6 +1338,8 @@ impl KlippApp {
     fn upload_frame_to_egui(&mut self, ctx: &egui::Context) {
         let t_total = std::time::Instant::now();
         let mut fb = self.frame_buffer.lock().unwrap();
+        // Sync render cache ranges for timeline visualization
+        self.state.render_cache_ranges = fb.render_cache_ranges.clone();
         if !fb.dirty {
             return;
         }

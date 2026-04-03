@@ -4973,6 +4973,22 @@ impl TimelinePanel {
                 }
             }
 
+            // Render cache indicator — 3px amber bar at top edge showing cached frame %
+            if let Some(&(_, cached, total)) = state.render_cache_ranges.iter()
+                .find(|(id, _, _)| *id == clip.id)
+            {
+                if cached > 0 && total > 0 && clip_rect.width() > 10.0 {
+                    let frac = (cached as f32 / total as f32).clamp(0.0, 1.0);
+                    let bar_w = clip_rect.width() * frac;
+                    let bar_rect = egui::Rect::from_min_size(
+                        clip_rect.left_top(),
+                        egui::vec2(bar_w, 3.0),
+                    );
+                    painter.rect_filled(bar_rect, 0.0,
+                        egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 160));
+                }
+            }
+
             // Color grade indicator — bottom-right amber dot
             if !clip.node_graph.is_identity() && clip_rect.width() > 20.0 {
                 let dot_x = clip_rect.right() - 8.0;
