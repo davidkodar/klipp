@@ -1604,61 +1604,84 @@ impl PreferencesPanel {
                 });
         });
 
-        // ── MANAGEMENT section ──
-        Self::section_header(ui, "MANAGEMENT");
+        // ── CACHE SIZES section ──
+        Self::section_header(ui, "CACHE SIZES");
 
-        // Calculate actual cache sizes
+        let klipp_cache = dirs::cache_dir().unwrap_or_default().join("klipp");
         let render_dir = prefs.media_cache.render_cache_dir.clone()
-            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/render"));
+            .unwrap_or_else(|| klipp_cache.join("render"));
         let thumb_dir = prefs.media_cache.filmstrip_cache_dir.clone()
-            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/thumbnails"));
+            .unwrap_or_else(|| klipp_cache.join("thumbnails"));
         let wave_dir = prefs.media_cache.audio_cache_dir.clone()
-            .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/waveforms"));
+            .unwrap_or_else(|| klipp_cache.join("waveforms"));
+        let skim_dir = klipp_cache.join("skim");
+        let proxy_dir = prefs.proxy.proxy_cache_dir.clone()
+            .unwrap_or_else(|| klipp_cache.join("proxies"));
 
         let dir_size = |path: &std::path::Path| -> u64 {
-            std::fs::read_dir(path).ok().map(|entries| {
-                entries.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()
-            }).unwrap_or(0)
+            walkdir::WalkDir::new(path).into_iter()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
         };
+
         let render_size = dir_size(&render_dir);
-        let total_size = render_size + dir_size(&thumb_dir) + dir_size(&wave_dir);
+        let thumb_size = dir_size(&thumb_dir);
+        let wave_size = dir_size(&wave_dir);
+        let skim_size = dir_size(&skim_dir);
+        let proxy_size = dir_size(&proxy_dir);
+        let total_size = render_size + thumb_size + wave_size + skim_size + proxy_size;
 
         let format_size = |bytes: u64| -> String {
             if bytes >= 1_073_741_824 { format!("{:.1} GB", bytes as f64 / 1_073_741_824.0) }
-            else { format!("{} MB", bytes / 1_048_576) }
+            else if bytes >= 1_048_576 { format!("{:.1} MB", bytes as f64 / 1_048_576.0) }
+            else if bytes >= 1024 { format!("{} KB", bytes / 1024) }
+            else { format!("{} B", bytes) }
         };
 
-        // Clear render cache
-        Self::setting_row_with_subtitle(ui, "Clear render cache", &format_size(render_size), |ui| {
-            let btn_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(56.0, 24.0),
-            );
+        let clear_btn = |ui: &mut egui::Ui, label: &str, dir: &std::path::Path| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
-            // CONTRAST RULE: amber-bordered button uses accent text on dark bg (not amber bg)
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), Self::ACCENT);
             if resp.clicked() {
-                let _ = std::fs::remove_dir_all(&render_dir);
-                let _ = std::fs::create_dir_all(&render_dir);
+                let _ = std::fs::remove_dir_all(dir);
+                let _ = std::fs::create_dir_all(dir);
             }
+        };
+
+        Self::setting_row_with_subtitle(ui, "Render cache", &format_size(render_size), |ui| {
+            clear_btn(ui, "Clear", &render_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Filmstrip thumbnails", &format_size(thumb_size), |ui| {
+            clear_btn(ui, "Clear", &thumb_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Audio waveforms", &format_size(wave_size), |ui| {
+            clear_btn(ui, "Clear", &wave_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Skim transcodes", &format_size(skim_size), |ui| {
+            clear_btn(ui, "Clear", &skim_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Proxy files", &format_size(proxy_size), |ui| {
+            clear_btn(ui, "Clear", &proxy_dir);
         });
 
+        ui.add_space(4.0);
+
         // Clear all caches
-        Self::setting_row_with_subtitle(ui, "Clear all caches", &format_size(total_size), |ui| {
-            let btn_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(70.0, 24.0),
-            );
+        Self::setting_row_with_subtitle(ui, "All caches", &format_size(total_size), |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(70.0, 24.0));
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x50, 0x20, 0x10) } else { egui::Color32::from_rgb(0x40, 0x18, 0x08) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0xe0, 0x60, 0x30)));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), egui::Color32::from_rgb(0xe0, 0x60, 0x30));
             if resp.clicked() {
-                for d in [&render_dir, &thumb_dir, &wave_dir] {
+                for d in [&render_dir, &thumb_dir, &wave_dir, &skim_dir, &proxy_dir] {
                     let _ = std::fs::remove_dir_all(d);
                     let _ = std::fs::create_dir_all(d);
                 }

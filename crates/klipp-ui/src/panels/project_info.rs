@@ -85,6 +85,16 @@ pub fn show_project_info(
             let clip_count: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
             info_row(ui, theme, "Clips", &clip_count.to_string());
 
+            // Proxy/skim count
+            let proxy_count = state.media_pool.all().filter(|m| m.proxy_ready).count();
+            let skim_count = state.media_pool.all().filter(|m| m.skim_file.is_some()).count();
+            if proxy_count > 0 {
+                info_row(ui, theme, "Proxies", &format!("{proxy_count} files"));
+            }
+            if skim_count > 0 {
+                info_row(ui, theme, "Skim files", &format!("{skim_count} files"));
+            }
+
             ui.separator();
             ui.label(
                 egui::RichText::new("Project Settings")
