@@ -1808,6 +1808,87 @@ impl KlippApp {
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
+    /// Scan all cache directories and remove files not referenced by current media pool.
+    fn clean_orphaned_caches(&self) -> String {
+        let klipp_cache = dirs::cache_dir().unwrap_or_default().join("klipp");
+
+        // Collect all valid cache keys from the current media pool
+        let mut valid_media_ids = std::collections::HashSet::new();
+        let mut valid_cache_keys = std::collections::HashSet::new();
+
+        for item in self.state.media_pool.all() {
+            // Media ID (used by proxy files)
+            valid_media_ids.insert(format!("{}", item.id.0));
+
+            // Content cache key (used by filmstrips, skim, thumbnails, audio)
+            if let Some(key) = klipp_media::disk_cache::compute_cache_key(&item.path) {
+                valid_cache_keys.insert(key);
+            }
+        }
+
+        let mut total_removed = 0u64;
+        let mut files_removed = 0usize;
+
+        // Scan each cache directory
+        let dirs_and_matchers: Vec<(std::path::PathBuf, Box<dyn Fn(&str) -> bool>)> = vec![
+            // Proxy: {media_id}.mp4
+            (
+                self.prefs.proxy.proxy_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("proxies")),
+                Box::new(|stem: &str| valid_media_ids.contains(stem)),
+            ),
+            // Skim: {cache_key}.mkv or {media_id}.mkv
+            (
+                klipp_cache.join("skim"),
+                Box::new(|stem: &str| valid_cache_keys.contains(stem) || valid_media_ids.contains(stem)),
+            ),
+            // Filmstrips: {cache_key}.strip
+            (
+                self.prefs.media_cache.filmstrip_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("thumbnails")),
+                Box::new(|stem: &str| valid_cache_keys.contains(stem)),
+            ),
+            // Audio: {cache_key}.pcm / .peaks or {media_id}.pcm / .peaks
+            (
+                self.prefs.media_cache.audio_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("waveforms")),
+                Box::new(|stem: &str| valid_cache_keys.contains(stem) || valid_media_ids.contains(stem)),
+            ),
+            // Render cache: skip orphan scan — not tied to individual media files.
+            // Use the explicit "Clear render cache" button instead.
+        ];
+
+        for (dir, is_valid) in &dirs_and_matchers {
+            if !dir.exists() { continue; }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if !path.is_file() { continue; }
+                    let stem = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if !is_valid(stem) {
+                        if let Ok(meta) = path.metadata() {
+                            total_removed += meta.len();
+                            files_removed += 1;
+                        }
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+
+        if files_removed == 0 {
+            "No orphaned cache files found".to_string()
+        } else {
+            let size_str = if total_removed >= 1_073_741_824 {
+                format!("{:.1} GB", total_removed as f64 / 1_073_741_824.0)
+            } else if total_removed >= 1_048_576 {
+                format!("{:.1} MB", total_removed as f64 / 1_048_576.0)
+            } else {
+                format!("{} KB", total_removed / 1024)
+            };
+            format!("Cleaned {files_removed} orphaned files ({size_str})")
+        }
+    }
+
     fn sync_media_pool_to_engine(&self) {
         let mut pool = self.media_pool_shared.write().unwrap();
         *pool = self.state.media_pool.clone();
@@ -7471,6 +7552,11 @@ impl KlippApp {
                 AppCommand::SetUseProxies(enabled) => {
                     self.state.use_proxies = *enabled;
                     // Forward to engine (don't continue — let it send to cmd_tx)
+                }
+                AppCommand::CleanOrphanedCaches => {
+                    let cleaned = self.clean_orphaned_caches();
+                    self.state.toast.show(cleaned);
+                    continue;
                 }
                 AppCommand::BeginScrub => {
                     // Auto-switch to proxy during scrub if preference enabled

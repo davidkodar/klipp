@@ -715,6 +715,9 @@ impl PlaybackEngine {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
             }
+            AppCommand::CleanOrphanedCaches => {
+                // Handled on UI thread — ignore in engine
+            }
             AppCommand::BeginScrub => {
                 // Engine can optimize decode during scrub (handled via use_proxies on UI side)
             }

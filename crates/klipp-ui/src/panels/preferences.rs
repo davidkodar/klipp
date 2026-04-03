@@ -240,7 +240,7 @@ impl PreferencesPanel {
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
                             PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
                             PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
-                            PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty),
+                            PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::Color => self.show_color(ui, prefs, prefs_dirty),
                             PrefsTab::Title => self.show_title(ui, prefs, prefs_dirty),
                             PrefsTab::Timeline => self.show_timeline(ui, prefs, prefs_dirty),
@@ -1502,7 +1502,7 @@ impl PreferencesPanel {
         });
     }
 
-    fn show_media_cache(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+    fn show_media_cache(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, cmds: &mut Vec<AppCommand>) {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
@@ -1668,6 +1668,23 @@ impl PreferencesPanel {
         });
         Self::setting_row_with_subtitle(ui, "Proxy files", &format_size(proxy_size), |ui| {
             clear_btn(ui, "Clear", &proxy_dir);
+        });
+
+        ui.add_space(4.0);
+
+        // Orphan cleanup
+        Self::section_header(ui, "CLEANUP");
+
+        Self::setting_row_with_subtitle(ui, "Orphaned cache files", "Files not used by any project", |ui| {
+            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(100.0, 24.0));
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Scan & Clean", egui::FontId::proportional(11.0), Self::ACCENT);
+            if resp.clicked() {
+                cmds.push(AppCommand::CleanOrphanedCaches);
+            }
         });
 
         ui.add_space(4.0);
