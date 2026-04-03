@@ -154,7 +154,6 @@ pub fn show_scopes(
     _quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
 ) {
-    let render_w: usize = 1440;
     let render_h: usize = 512;
 
     let mi = mode_index(mode);
@@ -168,7 +167,7 @@ pub fn show_scopes(
             let gen = fb.generation;
             let stale = state.textures[mi].is_none()
                 || state.frame_generations[mi] != gen
-                || state.render_sizes[mi] != (render_w, render_h)
+                || state.render_sizes[mi] != (fb.width as usize, render_h)
                 || state.last_settings_generation != state.settings_generation;
             if stale {
                 // Use GPU-rendered scope texture from engine if available and mode matches
@@ -186,10 +185,10 @@ pub fn show_scopes(
                     };
                     Some((ScopeImage::Ready(image), gen))
                 } else {
-                    // Always use full resolution frame for scope rendering
-                    // (scope_preview is too low-res for quality traces)
                     let (src, w, h) = (&fb.data[..], fb.width, fb.height);
                     let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
+                    // Internal render width = source video width (downscale to display = thin traces)
+                    let render_w = w as usize;
 
                     // Direct accumulation rendering (DaVinci technique)
                     let image = match mode {
@@ -211,7 +210,6 @@ pub fn show_scopes(
 
     if let Some((scope_img, gen)) = scope_result {
         state.frame_generations[mi] = gen;
-        state.render_sizes[mi] = (render_w, render_h);
         state.last_settings_generation = state.settings_generation;
         for idx in 0..4 {
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
@@ -220,14 +218,15 @@ pub fn show_scopes(
         let mut image = match scope_img {
             ScopeImage::Ready(img) => img,
         };
+        state.render_sizes[mi] = (image.size[0], image.size[1]);
 
         // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend)
         if state.bloom && mode != ScopeMode::Vectorscope {
             let w = image.size[0];
             let h = image.size[1];
-            let threshold = 0.35_f32; // only bloom pixels brighter than this
-            let bloom_strength = 0.5_f32;
-            let radius = 4usize;
+            let threshold = 0.25_f32;
+            let bloom_strength = 0.4_f32;
+            let radius = 8usize;
 
             // 1. Extract bright pass
             let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
@@ -539,22 +538,20 @@ fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usiz
     }
 
     // 2. Resolve: phosphor color ramp (mix base_color → white based on intensity)
-    let knee = 12.0_f32;
-    // Base phosphor color (green P1 with slight teal: 0, 180, 60)
+    let knee = 3.0_f32;
     let base_r = 0.0_f32;
-    let base_g = 0.7_f32;
-    let base_b = 0.15_f32;
+    let base_g = 0.9_f32;
+    let base_b = 0.0_f32;
 
-    let mut pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
+    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
         if count == 0 {
-            return egui::Color32::from_rgb(0x04, 0x04, 0x07);
+            return egui::Color32::BLACK;
         }
         let c = count as f32;
         let intensity = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
 
-        // Phosphor ramp: mix(base_color, white, intensity²)
-        // Low intensity = pure base color, high intensity = white
-        let white_mix = intensity * intensity; // quadratic — stays colored longer
+        // Phosphor ramp: mix(base_color, white, intensity³)
+        let white_mix = intensity * intensity * intensity; // cubic — stays colored longer
         let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
         let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
         let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
@@ -602,20 +599,20 @@ fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize,
     }
 
     // 2. Resolve: phosphor color ramp per channel (mix base → white)
-    let knee = 12.0_f32;
-    let bg = egui::Color32::from_rgb(0x04, 0x04, 0x07);
-    let gap_color = egui::Color32::from_rgb(0x0a, 0x0a, 0x0e);
+    let knee = 3.0_f32;
+    let bg = egui::Color32::BLACK;
+    let gap_color = egui::Color32::from_rgb(0x06, 0x06, 0x06);
 
-    // Phosphor base colors for each channel
+    // Pure saturated base colors — no secondary channel bleed
     let bases: [[f32; 3]; 3] = [
-        [0.8, 0.05, 0.03],  // red
-        [0.03, 0.8, 0.05],  // green
-        [0.05, 0.08, 0.8],  // blue
+        [0.9, 0.0, 0.0],  // red
+        [0.0, 0.9, 0.0],  // green
+        [0.0, 0.0, 0.9],  // blue
     ];
 
     let resolve = |count: f32, base: &[f32; 3]| -> (u8, u8, u8) {
         let intensity = (count / (count + knee)).sqrt().clamp(0.0, 1.0);
-        let white_mix = intensity * intensity;
+        let white_mix = intensity * intensity * intensity; // cubic — stays colored longer
         let r = (base[0] + (1.0 - base[0]) * white_mix) * intensity;
         let g = (base[1] + (1.0 - base[1]) * white_mix) * intensity;
         let b = (base[2] + (1.0 - base[2]) * white_mix) * intensity;
