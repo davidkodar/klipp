@@ -608,8 +608,10 @@ impl PlaybackEngine {
                             value: new_tc.value.max(0).min(seq_dur.value),
                             rate: new_tc.rate,
                         };
-                        self.seek_in_sequence(clamped);
-                        // Re-grade after multi-frame seek so scopes update
+                        // Use longer timeout for multi-frame seeks (1s jump needs more decode time)
+                        self.seek_in_sequence_with_timeout(clamped, Duration::from_millis(200));
+                        // If the grab timed out and no new frame was produced, regrade the
+                        // cached frame so scopes still update from the old frame.
                         if self.state != PlaybackState::Playing {
                             self.regrade_cached_frame();
                         }
