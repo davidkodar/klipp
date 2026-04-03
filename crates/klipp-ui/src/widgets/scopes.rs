@@ -47,9 +47,9 @@ pub fn show_scopes(
 ) {
     let available = ui.available_size();
     let _ppp = ui.ctx().pixels_per_point();
-    // Fixed render size like DaVinci (720×256). Displayed with bilinear upscale.
-    let render_w: usize = 720;
-    let render_h: usize = 256;
+    // High-res render target — downscaled by egui with bilinear filtering for thin traces.
+    let render_w: usize = 1440;
+    let render_h: usize = 512;
 
     let mi = mode_index(mode);
 
@@ -363,19 +363,16 @@ fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usiz
         }
     }
 
-    // 2. Tone map + colorize
-    let gain: f32 = 300.0;
-    let log_gain = (1.0 + gain).ln();
-    let inv_gamma = 1.0 / 2.2;
+    // 2. Tone map with Reinhard + sqrt gamma
+    let knee = 12.0_f32;
 
-    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
+    let mut pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
         if count == 0 {
             return egui::Color32::from_rgb(0x04, 0x04, 0x07);
         }
-        let brightness = (1.0 + count as f32 * gain).ln() / log_gain;
-        let out = brightness.powf(inv_gamma).clamp(0.0, 1.0);
+        let c = count as f32;
+        let out = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
 
-        // Green trace with white-hot at high density
         let r = (out * 0.15 * 255.0) as u8;
         let g = (out * 255.0) as u8;
         let b = (out * 0.15 * 255.0) as u8;
@@ -417,47 +414,59 @@ fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize,
         }
     }
 
-    // 2. Tone map + colorize into output
-    let gain: f32 = 300.0;
-    let log_gain = (1.0 + gain).ln();
-    let inv_gamma = 1.0 / 2.2;
+    // 2. Tone map with Reinhard + sqrt gamma, colorize into output
+    let knee = 12.0_f32;
     let bg = egui::Color32::from_rgb(0x04, 0x04, 0x07);
     let gap_color = egui::Color32::from_rgb(0x0a, 0x0a, 0x0e);
 
     let mut pixels = vec![bg; scope_w * scope_h];
 
+    for i in 0..section_w * scope_h {
+        let r_count = accum_r[i] as f32;
+        let g_count = accum_g[i] as f32;
+        let b_count = accum_b[i] as f32;
+        if r_count == 0.0 && g_count == 0.0 && b_count == 0.0 { continue; }
+
+        let r_val = (r_count / (r_count + knee)).sqrt();
+        let g_val = (g_count / (g_count + knee)).sqrt();
+        let b_val = (b_count / (b_count + knee)).sqrt();
+
+        let py = i / section_w;
+        let local_x = i % section_w;
+
+        // Red section
+        if r_count > 0.0 {
+            let px = local_x;
+            let ro = (r_val * 255.0).min(255.0) as u8;
+            let go = (r_val * 0.06 * 255.0).min(255.0) as u8;
+            let bo = (r_val * 0.03 * 255.0).min(255.0) as u8;
+            pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
+        }
+        // Green section
+        if g_count > 0.0 {
+            let px = section_w + gap + local_x;
+            let ro = (g_val * 0.03 * 255.0).min(255.0) as u8;
+            let go = (g_val * 255.0).min(255.0) as u8;
+            let bo = (g_val * 0.06 * 255.0).min(255.0) as u8;
+            pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
+        }
+        // Blue section
+        if b_count > 0.0 {
+            let px = (section_w + gap) * 2 + local_x;
+            if px < scope_w {
+                let ro = (b_val * 0.06 * 255.0).min(255.0) as u8;
+                let go = (b_val * 0.08 * 255.0).min(255.0) as u8;
+                let bo = (b_val * 255.0).min(255.0) as u8;
+                pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
+            }
+        }
+    }
+
+    // Gap lines
     for py in 0..scope_h {
-        for px in 0..scope_w {
-            // Which section?
-            let (accum, color_r, color_g, color_b) = if px < section_w {
-                (&accum_r, 1.0_f32, 0.06_f32, 0.03_f32)
-            } else if px < section_w + gap {
-                pixels[py * scope_w + px] = gap_color;
-                continue;
-            } else if px < section_w * 2 + gap {
-                (&accum_g, 0.03, 1.0, 0.06)
-            } else if px < section_w * 2 + gap * 2 {
-                pixels[py * scope_w + px] = gap_color;
-                continue;
-            } else {
-                (&accum_b, 0.06, 0.08, 1.0)
-            };
-
-            let local_x = if px < section_w { px }
-                else if px < section_w * 2 + gap { px - section_w - gap }
-                else { px - section_w * 2 - gap * 2 };
-            if local_x >= section_w { continue; }
-
-            let count = accum[py * section_w + local_x];
-            if count == 0 { continue; }
-
-            let brightness = (1.0 + count as f32 * gain).ln() / log_gain;
-            let out = brightness.powf(inv_gamma).clamp(0.0, 1.0);
-
-            let r = (out * color_r * 255.0).min(255.0) as u8;
-            let g = (out * color_g * 255.0).min(255.0) as u8;
-            let b = (out * color_b * 255.0).min(255.0) as u8;
-            pixels[py * scope_w + px] = egui::Color32::from_rgb(r, g, b);
+        for dx in 0..gap {
+            pixels[py * scope_w + section_w + dx] = gap_color;
+            pixels[py * scope_w + section_w * 2 + gap + dx] = gap_color;
         }
     }
 

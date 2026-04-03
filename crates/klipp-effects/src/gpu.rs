@@ -323,22 +323,12 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
 
-        // Push error handler to capture shader validation errors instead of panicking
+        // Push error handler to capture shader validation errors
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-        // Create pipeline cache for in-session shader compilation caching.
-        // SAFETY: data is None (empty cache), which is always safe.
-        let pipeline_cache = unsafe {
-            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-                label: Some("klipp_pipeline_cache"),
-                data: None,
-                fallback: true,
-            })
-        };
 
         let pipeline_compile_start = std::time::Instant::now();
 
-        let create_pipeline = |dev: &wgpu::Device, layout: &wgpu::PipelineLayout, label: &str, shader_src: &str, cache: &wgpu::PipelineCache| -> wgpu::ComputePipeline {
+        let create_pipeline = |dev: &wgpu::Device, layout: &wgpu::PipelineLayout, label: &str, shader_src: &str| -> wgpu::ComputePipeline {
             let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(shader_src.into()),
@@ -349,47 +339,47 @@ impl GpuEffectsPipeline {
                 module: &module,
                 entry_point: "main",
                 compilation_options: Default::default(),
-                cache: Some(cache),
+                cache: None,
             })
         };
 
-        let opacity_pipeline = create_pipeline(&device, &pipeline_layout, "opacity", SHADER_OPACITY, &pipeline_cache);
-        let blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "blur_h", SHADER_BLUR_H, &pipeline_cache);
-        let blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "blur_v", SHADER_BLUR_V, &pipeline_cache);
-        let sharpen_pipeline = create_pipeline(&device, &pipeline_layout, "sharpen", SHADER_SHARPEN, &pipeline_cache);
-        let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP, &pipeline_cache);
-        let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM, &pipeline_cache);
-        let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY, &pipeline_cache);
-        let bloom_threshold_pipeline = create_pipeline(&device, &pipeline_layout, "bloom_threshold", SHADER_BLOOM_THRESHOLD, &pipeline_cache);
+        let opacity_pipeline = create_pipeline(&device, &pipeline_layout, "opacity", SHADER_OPACITY);
+        let blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "blur_h", SHADER_BLUR_H);
+        let blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "blur_v", SHADER_BLUR_V);
+        let sharpen_pipeline = create_pipeline(&device, &pipeline_layout, "sharpen", SHADER_SHARPEN);
+        let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP);
+        let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
+        let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
+        let bloom_threshold_pipeline = create_pipeline(&device, &pipeline_layout, "bloom_threshold", SHADER_BLOOM_THRESHOLD);
         // Bloom/glow blend uses 4-binding layout (input, bright/blurred, output, params) — same as transitions
-        let bloom_blend_pipeline = create_pipeline(&device, &transition_pl, "bloom_blend", SHADER_BLOOM_BLEND, &pipeline_cache);
-        let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND, &pipeline_cache);
-        let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS, &pipeline_cache);
-        let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE, &pipeline_cache);
-        let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE, &pipeline_cache);
-        let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK, &pipeline_cache);
-        let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION, &pipeline_cache);
-        let invert_pipeline = create_pipeline(&device, &pipeline_layout, "invert", SHADER_INVERT, &pipeline_cache);
-        let posterize_pipeline = create_pipeline(&device, &pipeline_layout, "posterize", SHADER_POSTERIZE, &pipeline_cache);
-        let mosaic_pipeline = create_pipeline(&device, &pipeline_layout, "mosaic", SHADER_MOSAIC, &pipeline_cache);
-        let edge_detect_pipeline = create_pipeline(&device, &pipeline_layout, "edge_detect", SHADER_EDGE_DETECT, &pipeline_cache);
-        let channel_mixer_pipeline = create_pipeline(&device, &pipeline_layout, "channel_mixer", SHADER_CHANNEL_MIXER, &pipeline_cache);
-        let directional_blur_pipeline = create_pipeline(&device, &pipeline_layout, "directional_blur", SHADER_DIRECTIONAL_BLUR, &pipeline_cache);
-        let emboss_pipeline = create_pipeline(&device, &pipeline_layout, "emboss", SHADER_EMBOSS, &pipeline_cache);
-        let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR, &pipeline_cache);
-        let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION, &pipeline_cache);
-        let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE, &pipeline_cache);
-        let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE, &pipeline_cache);
-        let denoise_pipeline = create_pipeline(&device, &pipeline_layout, "denoise", SHADER_DENOISE, &pipeline_cache);
-        let gamma_pipeline = create_pipeline(&device, &pipeline_layout, "gamma", SHADER_GAMMA, &pipeline_cache);
-        let hsv_adjust_pipeline = create_pipeline(&device, &pipeline_layout, "hsv_adjust", SHADER_HSV_ADJUST, &pipeline_cache);
-        let noise_generator_pipeline = create_pipeline(&device, &pipeline_layout, "noise_generator", SHADER_NOISE_GENERATOR, &pipeline_cache);
-        let median_filter_pipeline = create_pipeline(&device, &pipeline_layout, "median_filter", SHADER_MEDIAN_FILTER, &pipeline_cache);
-        let radial_blur_pipeline = create_pipeline(&device, &pipeline_layout, "radial_blur", SHADER_RADIAL_BLUR, &pipeline_cache);
-        let levels_pipeline = create_pipeline(&device, &pipeline_layout, "levels", SHADER_LEVELS, &pipeline_cache);
-        let letterbox_pipeline = create_pipeline(&device, &pipeline_layout, "letterbox", SHADER_LETTERBOX, &pipeline_cache);
-        let chromatic_aberration_pipeline = create_pipeline(&device, &pipeline_layout, "chromatic_aberration", SHADER_CHROMATIC_ABERRATION, &pipeline_cache);
-        let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE, &pipeline_cache);
+        let bloom_blend_pipeline = create_pipeline(&device, &transition_pl, "bloom_blend", SHADER_BLOOM_BLEND);
+        let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
+        let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
+        let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
+        let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE);
+        let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK);
+        let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION);
+        let invert_pipeline = create_pipeline(&device, &pipeline_layout, "invert", SHADER_INVERT);
+        let posterize_pipeline = create_pipeline(&device, &pipeline_layout, "posterize", SHADER_POSTERIZE);
+        let mosaic_pipeline = create_pipeline(&device, &pipeline_layout, "mosaic", SHADER_MOSAIC);
+        let edge_detect_pipeline = create_pipeline(&device, &pipeline_layout, "edge_detect", SHADER_EDGE_DETECT);
+        let channel_mixer_pipeline = create_pipeline(&device, &pipeline_layout, "channel_mixer", SHADER_CHANNEL_MIXER);
+        let directional_blur_pipeline = create_pipeline(&device, &pipeline_layout, "directional_blur", SHADER_DIRECTIONAL_BLUR);
+        let emboss_pipeline = create_pipeline(&device, &pipeline_layout, "emboss", SHADER_EMBOSS);
+        let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR);
+        let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
+        let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
+        let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
+        let denoise_pipeline = create_pipeline(&device, &pipeline_layout, "denoise", SHADER_DENOISE);
+        let gamma_pipeline = create_pipeline(&device, &pipeline_layout, "gamma", SHADER_GAMMA);
+        let hsv_adjust_pipeline = create_pipeline(&device, &pipeline_layout, "hsv_adjust", SHADER_HSV_ADJUST);
+        let noise_generator_pipeline = create_pipeline(&device, &pipeline_layout, "noise_generator", SHADER_NOISE_GENERATOR);
+        let median_filter_pipeline = create_pipeline(&device, &pipeline_layout, "median_filter", SHADER_MEDIAN_FILTER);
+        let radial_blur_pipeline = create_pipeline(&device, &pipeline_layout, "radial_blur", SHADER_RADIAL_BLUR);
+        let levels_pipeline = create_pipeline(&device, &pipeline_layout, "levels", SHADER_LEVELS);
+        let letterbox_pipeline = create_pipeline(&device, &pipeline_layout, "letterbox", SHADER_LETTERBOX);
+        let chromatic_aberration_pipeline = create_pipeline(&device, &pipeline_layout, "chromatic_aberration", SHADER_CHROMATIC_ABERRATION);
+        let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
         let huesat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -438,26 +428,26 @@ impl GpuEffectsPipeline {
             bind_group_layouts: &[&huesat_bgl],
             push_constant_ranges: &[],
         });
-        let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT, &pipeline_cache);
-        let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D, &pipeline_cache);
-        let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE, &pipeline_cache);
-        let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER, &pipeline_cache);
-        let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION, &pipeline_cache);
-        let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE, &pipeline_cache);
-        let color_warper_pipeline = create_pipeline(&device, &pipeline_layout, "color_warper", SHADER_COLOR_WARPER, &pipeline_cache);
-        let input_transform_pipeline = create_pipeline(&device, &huesat_pl, "input_transform", SHADER_INPUT_TRANSFORM, &pipeline_cache);
-        let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H, &pipeline_cache);
-        let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V, &pipeline_cache);
-        let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY, &pipeline_cache);
-        let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK, &pipeline_cache);
-        let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE, &pipeline_cache);
-        let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI, &pipeline_cache);
-        let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES, &pipeline_cache);
-        let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER, &pipeline_cache);
-        let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN, &pipeline_cache);
-        let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H, &pipeline_cache);
-        let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V, &pipeline_cache);
-        let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE, &pipeline_cache);
+        let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
+        let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
+        let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
+        let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
+        let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
+        let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE);
+        let color_warper_pipeline = create_pipeline(&device, &pipeline_layout, "color_warper", SHADER_COLOR_WARPER);
+        let input_transform_pipeline = create_pipeline(&device, &huesat_pl, "input_transform", SHADER_INPUT_TRANSFORM);
+        let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H);
+        let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
+        let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
+        let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK);
+        let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
+        let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
+        let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES);
+        let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
+        let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
+        let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
+        let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
+        let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE);
 
         // LUT buffer: 6 curves × 256 entries × 4 bytes = 6144 bytes
         let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -483,7 +473,7 @@ impl GpuEffectsPipeline {
             mapped_at_creation: false,
         });
 
-        let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION, &pipeline_cache);
+        let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
 
         // ── Scope rendering pipelines ──
         // Scope accumulation: input(read), bins(read_write atomic), params(uniform)
@@ -506,12 +496,12 @@ impl GpuEffectsPipeline {
             label: Some("scope_render_pl"), bind_group_layouts: &[&scope_bgl], push_constant_ranges: &[],
         });
 
-        let scope_waveform_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_wf_accum", SHADER_SCOPE_WAVEFORM, &pipeline_cache);
-        let scope_parade_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_parade_accum", SHADER_SCOPE_PARADE, &pipeline_cache);
-        let scope_histogram_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_hist_accum", SHADER_SCOPE_HISTOGRAM, &pipeline_cache);
-        let scope_render_wf_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_wf", SHADER_SCOPE_RENDER_WF, &pipeline_cache);
-        let scope_render_parade_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_parade", SHADER_SCOPE_RENDER_PARADE, &pipeline_cache);
-        let scope_render_hist_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_hist", SHADER_SCOPE_RENDER_HIST, &pipeline_cache);
+        let scope_waveform_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_wf_accum", SHADER_SCOPE_WAVEFORM);
+        let scope_parade_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_parade_accum", SHADER_SCOPE_PARADE);
+        let scope_histogram_pipeline = create_pipeline(&device, &scope_accum_pl, "scope_hist_accum", SHADER_SCOPE_HISTOGRAM);
+        let scope_render_wf_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_wf", SHADER_SCOPE_RENDER_WF);
+        let scope_render_parade_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_parade", SHADER_SCOPE_RENDER_PARADE);
+        let scope_render_hist_pipeline = create_pipeline(&device, &scope_render_pl, "scope_render_hist", SHADER_SCOPE_RENDER_HIST);
 
         let scope_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scope_params"), size: PARAMS_SIZE,
