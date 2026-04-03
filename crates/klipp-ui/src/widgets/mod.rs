@@ -4,6 +4,7 @@ pub mod curves_editor;
 pub mod keyframe_editor;
 pub mod resizer;
 pub mod scopes;
+pub mod scope_window;
 pub mod role_pill;
 pub mod scrubby_param;
 pub use scrubby_param::EasePreset;

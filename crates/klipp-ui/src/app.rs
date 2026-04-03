@@ -170,6 +170,8 @@ pub struct KlippApp {
     media_watcher: Option<notify::RecommendedWatcher>,
     // Curve editor panel (spline editor for keyframe animation)
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
+    // Floating scope window runtime (textures, UI state)
+    scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
 }
 
 impl KlippApp {
@@ -258,6 +260,7 @@ impl KlippApp {
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
+            scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
         };
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
@@ -11443,7 +11446,8 @@ impl eframe::App for KlippApp {
         let pointer_over_foreground = ctx.input(|i| i.pointer.hover_pos())
             .and_then(|pos| ctx.layer_id_at(pos))
             .is_some_and(|layer| layer.order == egui::Order::Foreground || layer.order == egui::Order::Tooltip);
-        self.state.modal_or_popup_open = popup_open || pointer_over_foreground;
+        self.state.modal_or_popup_open = popup_open || pointer_over_foreground
+            || self.scope_window_runtime.pointer_over;
 
         // Smooth playhead interpolation BEFORE draining events
         if self.state.playback == PlaybackState::Playing {
@@ -11722,6 +11726,46 @@ impl eframe::App for KlippApp {
         // 3. Handle transport keyboard shortcuts
         let transport_cmds = self.transport.handle_keyboard(ctx, &self.state);
         all_cmds.extend(transport_cmds);
+
+        // 3b. Scope cursor: sample pixel under pointer from frame buffer
+        // (runs after viewer sets viewer_image_rect on previous frame)
+        self.state.scope_cursor = None;
+        self.scope_window_runtime.pointer_over = false; // reset before sampling
+        if let Some(image_rect) = self.state.viewer_image_rect {
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                if image_rect.contains(pos) {
+                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                    let fb = self.frame_buffer.lock().unwrap();
+                    if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
+                        let px = ((nx * fb.width as f32) as u32).min(fb.width - 1);
+                        let py = ((ny * fb.height as f32) as u32).min(fb.height - 1);
+                        let idx = ((py * fb.width + px) * 4) as usize;
+                        if idx + 2 < fb.data.len() {
+                            let sr = fb.data[idx] as f32 / 255.0;
+                            let sg = fb.data[idx + 1] as f32 / 255.0;
+                            let sb = fb.data[idx + 2] as f32 / 255.0;
+                            self.state.scope_cursor = Some(
+                                crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3c. Floating scope window (disabled in fullscreen — clean playback like DaVinci/FCP)
+        if !self.state.fullscreen_viewer {
+            crate::widgets::scope_window::show_scope_window(
+                ctx,
+                &mut self.state.scope_window,
+                &mut self.scope_window_runtime,
+                &self.frame_buffer,
+                self.prefs.color.vectorscope_skin_angle,
+                self.state.playback == PlaybackState::Playing,
+                self.state.scope_cursor,
+            );
+        }
 
         // 4. Unsaved changes dialog
         let dialog_cmds = self.show_unsaved_dialog(ctx);
@@ -12636,6 +12680,7 @@ impl eframe::App for KlippApp {
                                 &self.frame_buffer,
                                 self.state.scope_quality,
                                 self.prefs.color.vectorscope_skin_angle,
+                                self.state.playback == PlaybackState::Playing,
                             );
                         });
                     }
@@ -12769,6 +12814,13 @@ impl eframe::App for KlippApp {
                                                 self.state.scope_settings_open = !self.state.scope_settings_open;
                                             }
 
+                                            // Floating scope window button
+                                            let win_color = if self.state.scope_window.open { theme.text_accent } else { theme.text_dim };
+                                            if ui.add(egui::Button::new(egui::RichText::new("\u{229e}").size(12.0).color(win_color))
+                                                .frame(false)).on_hover_text("Floating scope window").clicked() {
+                                                self.state.scope_window.open = !self.state.scope_window.open;
+                                            }
+
                                             // Overlay toggle
                                             let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
                                             if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
@@ -12809,21 +12861,23 @@ impl eframe::App for KlippApp {
                                 ui.set_min_size(live_scopes_rect.size());
                                 ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
                                 // Detect scope setting changes and bump settings_generation
-                                let prev = (self.state.scope_scale, self.state.scope_low_pass, self.state.scope_bloom,
-                                    self.state.scope_show_r, self.state.scope_show_g, self.state.scope_show_b,
-                                    self.state.scope_quality);
-                                // (settings may have changed from header/dropdown this frame)
-                                let cur = prev; // snapshot current
-                                if self.state.scope_state.scale != cur.0
-                                    || self.state.scope_state.low_pass != cur.1
-                                    || self.state.scope_state.bloom != cur.2
+                                if self.state.scope_state.scale != self.state.scope_scale
+                                    || self.state.scope_state.low_pass != self.state.scope_low_pass
+                                    || self.state.scope_state.bloom != self.state.scope_bloom
+                                    || self.state.scope_state.show_r != self.state.scope_show_r
+                                    || self.state.scope_state.show_g != self.state.scope_show_g
+                                    || self.state.scope_state.show_b != self.state.scope_show_b
+                                    || self.state.scope_state.quality != self.state.scope_quality
                                 {
-                                    self.state.scope_state.settings_generation =
-                                        self.state.scope_state.settings_generation.wrapping_add(1);
+                                    self.state.scope_state.increment_settings_generation();
                                 }
                                 self.state.scope_state.scale = self.state.scope_scale;
                                 self.state.scope_state.low_pass = self.state.scope_low_pass;
                                 self.state.scope_state.bloom = self.state.scope_bloom;
+                                self.state.scope_state.show_r = self.state.scope_show_r;
+                                self.state.scope_state.show_g = self.state.scope_show_g;
+                                self.state.scope_state.show_b = self.state.scope_show_b;
+                                self.state.scope_state.quality = self.state.scope_quality;
                                 crate::widgets::scopes::show_scopes(
                                     ui,
                                     &mut self.state.scope_state,
@@ -12831,6 +12885,7 @@ impl eframe::App for KlippApp {
                                     &self.frame_buffer,
                                     self.state.scope_quality,
                                     self.prefs.color.vectorscope_skin_angle,
+                                    self.state.playback == PlaybackState::Playing,
                                 );
                             });
                             // Force repaint to recalculate layout on next frame

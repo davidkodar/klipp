@@ -303,6 +303,9 @@ impl ViewerPanel {
             egui::vec2(display_w, display_h),
         );
 
+        // Store viewer image rect for scope cursor sampling
+        state.viewer_image_rect = Some(image_rect);
+
         // Grade still split-view comparison (takes priority over before/after)
         let grade_still_active = state.grade_still_compare
             && state.active_grade_still.is_some()

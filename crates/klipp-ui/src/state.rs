@@ -448,6 +448,14 @@ pub struct AppState {
     pub scope_low_pass: bool,
     pub scope_bloom: bool,
     pub scope_settings_open: bool,
+    /// Floating scope window state.
+    pub scope_window: ScopeWindowState,
+
+    /// Scope cursor: pixel color under the viewer mouse pointer (for scope overlay indicators).
+    /// Computed each frame from the frame buffer when pointer is over the viewer image.
+    pub scope_cursor: Option<ScopeCursorData>,
+    /// Viewer image rect (set by viewer each frame for scope cursor sampling).
+    pub viewer_image_rect: Option<egui::Rect>,
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
@@ -742,7 +750,7 @@ pub enum ScopeMode {
 }
 
 /// Scope scale display mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ScopeScale {
     #[default]
     TenBit,
@@ -763,6 +771,318 @@ impl ScopeScale {
     }
     pub fn button_label(&self) -> &'static str {
         match self { Self::TenBit => "10-bit", Self::Ire => "IRE", Self::Percent => "%" }
+    }
+}
+
+/// Pixel data sampled from the viewer for scope cursor overlay.
+#[derive(Debug, Clone, Copy)]
+pub struct ScopeCursorData {
+    /// Normalized x position in the video frame (0.0–1.0).
+    pub x_frac: f32,
+    /// Linear RGB values (0.0–1.0).
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    /// Luma (BT.709).
+    pub luma: f32,
+    /// CbCr for vectorscope.
+    pub cb: f32,
+    pub cr: f32,
+}
+
+impl ScopeCursorData {
+    pub fn from_srgb(x_frac: f32, sr: f32, sg: f32, sb: f32) -> Self {
+        let luma = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+        let cb = -0.1146 * sr - 0.3854 * sg + 0.5000 * sb;
+        let cr = 0.5000 * sr - 0.4542 * sg - 0.0458 * sb;
+        Self { x_frac, r: sr, g: sg, b: sb, luma, cb, cr }
+    }
+}
+
+// ── Floating scope window types ─────────────────────────────────────────
+
+/// Scope type for floating window panes (extends ScopeMode with CIE).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ScopeType {
+    #[default]
+    Waveform,
+    Parade,
+    Vectorscope,
+    Histogram,
+    CIEChromaticity,
+}
+
+impl ScopeType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Waveform => "Waveform",
+            Self::Parade => "Parade",
+            Self::Vectorscope => "Vectorscope",
+            Self::Histogram => "Histogram",
+            Self::CIEChromaticity => "CIE Chromaticity",
+        }
+    }
+
+    pub const ALL: [ScopeType; 5] = [
+        Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity,
+    ];
+
+    /// Convert to ScopeMode for the existing render pipeline (CIE has no render mode).
+    pub fn to_scope_mode(&self) -> Option<ScopeMode> {
+        match self {
+            Self::Waveform => Some(ScopeMode::Waveform),
+            Self::Parade => Some(ScopeMode::Parade),
+            Self::Vectorscope => Some(ScopeMode::Vectorscope),
+            Self::Histogram => Some(ScopeMode::Histogram),
+            Self::CIEChromaticity => None,
+        }
+    }
+}
+
+/// Layout configuration for the floating scope window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ScopeLayout {
+    OnePane,
+    TwoPane,
+    #[default]
+    FourPane,
+    NinePane,
+}
+
+impl ScopeLayout {
+    pub fn pane_count(&self) -> usize {
+        match self {
+            Self::OnePane => 1,
+            Self::TwoPane => 2,
+            Self::FourPane => 4,
+            Self::NinePane => 9,
+        }
+    }
+
+    /// Grid dimensions (cols, rows) for this layout.
+    pub fn grid(&self) -> (usize, usize) {
+        match self {
+            Self::OnePane => (1, 1),
+            Self::TwoPane => (2, 1),
+            Self::FourPane => (2, 2),
+            Self::NinePane => (3, 3),
+        }
+    }
+}
+
+/// Waveform channel selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WaveformChannel {
+    #[default]
+    Y,
+    R,
+    G,
+    B,
+}
+
+impl WaveformChannel {
+    pub fn label(&self) -> &'static str {
+        match self { Self::Y => "Y", Self::R => "R", Self::G => "G", Self::B => "B" }
+    }
+}
+
+/// Skin tone indicator angle (degrees) — standard vectorscope convention.
+pub const SKIN_TONE_ANGLE_DEGREES: f32 = 123.0;
+
+/// Per-pane scope settings — unified struct with all per-type fields.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PaneScopeSettings {
+    // ── Common ──
+    pub waveform_channel: WaveformChannel,
+    pub low_pass: bool,
+    pub bloom: bool,
+    pub quality: klipp_core::ScopeQuality,
+    pub scale: ScopeScale,
+
+    // ── Waveform-specific ──
+    pub colorize: bool,
+    pub extents: bool,
+    pub waveform_brightness: f32,
+    pub graticule_brightness: f32,
+    pub show_reference_levels: bool,
+    pub reference_low: f32,
+    pub reference_high: f32,
+
+    // ── Vectorscope-specific ──
+    pub vectorscope_brightness: f32,
+    pub vectorscope_graticule_brightness: f32,
+    pub low_range: f32,
+    pub high_range: f32,
+    pub show_2x_zoom: bool,
+    pub show_skin_tone_indicator: bool,
+    pub show_graticule: bool,
+
+    // ── Parade-specific ──
+    pub overlay_on_viewer: bool,
+
+    // ── Scope cursor (picker overlay) ──
+    pub show_scope_cursor: bool,
+}
+
+impl Default for PaneScopeSettings {
+    fn default() -> Self {
+        Self {
+            waveform_channel: WaveformChannel::Y,
+            low_pass: false,
+            bloom: true,
+            quality: klipp_core::ScopeQuality::Medium,
+            scale: ScopeScale::TenBit,
+            // Waveform
+            colorize: true,
+            extents: false,
+            waveform_brightness: 0.5,
+            graticule_brightness: 0.5,
+            show_reference_levels: false,
+            reference_low: 0.0,
+            reference_high: 1023.0,
+            // Vectorscope
+            vectorscope_brightness: 0.5,
+            vectorscope_graticule_brightness: 0.5,
+            low_range: 0.30,
+            high_range: 0.70,
+            show_2x_zoom: false,
+            show_skin_tone_indicator: false,
+            show_graticule: true,
+            // Parade
+            overlay_on_viewer: false,
+            // Scope cursor
+            show_scope_cursor: true,
+        }
+    }
+}
+
+/// Compute tone map gain from waveform brightness setting (0.0–1.0).
+pub fn compute_tone_map_gain(settings: &PaneScopeSettings) -> f32 {
+    // Map 0.0–1.0 brightness to 0.3–3.0 gain range (log-ish)
+    0.3 + settings.waveform_brightness * 2.7
+}
+
+/// Compute graticule alpha from brightness setting (0.0–1.0).
+pub fn graticule_alpha(brightness: f32) -> f32 {
+    // Always at least slightly visible, up to full brightness
+    (0.05 + brightness * 0.95).clamp(0.05, 1.0)
+}
+
+/// Reference line position for a given value and panel height.
+pub struct ReferenceLine {
+    pub y: f32,
+    pub value: f32,
+}
+
+/// Compute reference level line positions.
+pub fn compute_reference_lines(settings: &PaneScopeSettings, height: f32) -> Vec<ReferenceLine> {
+    if !settings.show_reference_levels {
+        return Vec::new();
+    }
+    let max = settings.scale.max_val();
+    let draw_h = height - 14.0 - 16.0; // PAD_TOP, PAD_BOTTOM
+    let val_to_y = |val: f32| -> f32 {
+        14.0 + (1.0 - val / max) * draw_h
+    };
+    vec![
+        ReferenceLine { y: val_to_y(settings.reference_high), value: settings.reference_high },
+        ReferenceLine { y: val_to_y(settings.reference_low), value: settings.reference_low },
+    ]
+}
+
+/// Saturation ring for vectorscope.
+pub struct SaturationRing {
+    pub radius: f32,
+    pub range_value: f32,
+}
+
+/// Compute vectorscope saturation ring radii.
+pub fn compute_saturation_rings(settings: &PaneScopeSettings, diameter: f32) -> Vec<SaturationRing> {
+    let max_r = diameter / 2.0 - 8.0;
+    vec![
+        SaturationRing { radius: settings.low_range * max_r, range_value: settings.low_range },
+        SaturationRing { radius: settings.high_range * max_r, range_value: settings.high_range },
+    ]
+}
+
+/// Configuration for a single pane in the floating scope window.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PaneConfig {
+    pub scope_type: ScopeType,
+    pub settings: PaneScopeSettings,
+}
+
+impl PaneConfig {
+    pub fn new(scope_type: ScopeType) -> Self {
+        Self { scope_type, settings: PaneScopeSettings::default() }
+    }
+
+    /// Default pane configurations for a given layout.
+    pub fn default_for_layout(layout: ScopeLayout) -> Vec<PaneConfig> {
+        let defaults = [
+            ScopeType::Parade,
+            ScopeType::Waveform,
+            ScopeType::Vectorscope,
+            ScopeType::Histogram,
+            ScopeType::Waveform,
+            ScopeType::Parade,
+            ScopeType::Histogram,
+            ScopeType::Vectorscope,
+            ScopeType::Waveform,
+        ];
+        defaults[..layout.pane_count()].iter().map(|&t| PaneConfig::new(t)).collect()
+    }
+}
+
+/// Waveform scale style (for ··· menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WaveformScaleStyle {
+    #[default]
+    TenBit,
+    Ire,
+    Percent,
+}
+
+/// Vectorscope scale style (for ··· menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum VectorscopeScaleStyle {
+    #[default]
+    SeventyFive,
+    Hundred,
+}
+
+impl VectorscopeScaleStyle {
+    pub fn label(&self) -> &'static str {
+        match self { Self::SeventyFive => "75% color bars", Self::Hundred => "100% color bars" }
+    }
+}
+
+/// Persistent state for the floating scope window.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScopeWindowState {
+    pub open: bool,
+    pub layout: ScopeLayout,
+    pub panes: Vec<PaneConfig>,
+    pub global_low_pass: bool,
+    pub global_quality: klipp_core::ScopeQuality,
+    pub waveform_scale: WaveformScaleStyle,
+    pub vectorscope_scale: VectorscopeScaleStyle,
+    pub qualifier_focus: bool,
+}
+
+impl Default for ScopeWindowState {
+    fn default() -> Self {
+        let layout = ScopeLayout::FourPane;
+        Self {
+            open: false,
+            layout,
+            panes: PaneConfig::default_for_layout(layout),
+            global_low_pass: false,
+            global_quality: klipp_core::ScopeQuality::Medium,
+            waveform_scale: WaveformScaleStyle::default(),
+            vectorscope_scale: VectorscopeScaleStyle::default(),
+            qualifier_focus: false,
+        }
     }
 }
 
@@ -1019,6 +1339,9 @@ impl Default for AppState {
             scope_low_pass: false,
             scope_bloom: true,
             scope_settings_open: false,
+            scope_window: ScopeWindowState::default(),
+            scope_cursor: None,
+            viewer_image_rect: None,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
             qualifier_sample_request: None,

@@ -1,5 +1,6 @@
 use crate::state::{ScopeMode, ScopeScale};
 use klipp_engine::SharedFrameBuffer;
+use std::time::Instant;
 
 /// Scope render result — either from GPU engine or CPU direct rendering.
 enum ScopeImage {
@@ -20,9 +21,17 @@ pub struct ScopeState {
     pub low_pass: bool,
     /// Enable bloom on dense regions.
     pub bloom: bool,
+    /// R/G/B channel pill states (synced from AppState each frame).
+    pub show_r: bool,
+    pub show_g: bool,
+    pub show_b: bool,
+    /// Quality setting (synced from AppState each frame).
+    pub quality: klipp_core::ScopeQuality,
     /// Incremented when any scope setting changes (triggers re-render).
     pub settings_generation: u64,
     last_settings_generation: u64,
+    /// Throttle: last time a scope render completed.
+    last_render_time: Option<Instant>,
 }
 
 fn mode_index(mode: ScopeMode) -> usize {
@@ -31,6 +40,13 @@ fn mode_index(mode: ScopeMode) -> usize {
         ScopeMode::Parade => 1,
         ScopeMode::Vectorscope => 2,
         ScopeMode::Histogram => 3,
+    }
+}
+
+impl ScopeState {
+    /// Bump the settings generation counter to trigger a re-render.
+    pub fn increment_settings_generation(&mut self) {
+        self.settings_generation = self.settings_generation.wrapping_add(1);
     }
 }
 
@@ -43,17 +59,22 @@ impl Default for ScopeState {
             scale: ScopeScale::TenBit,
             low_pass: false,
             bloom: true,
+            show_r: true,
+            show_g: true,
+            show_b: true,
+            quality: klipp_core::ScopeQuality::Medium,
             settings_generation: 0,
             last_settings_generation: u64::MAX,
+            last_render_time: None,
         }
     }
 }
 
 // ── Scale system constants ─────────────────────────────────────────────
-const AXIS_W: f32 = 44.0;
-const PAD_TOP: f32 = 14.0;
-const PAD_BOTTOM: f32 = 16.0;
-const PAD_RIGHT: f32 = 8.0;
+pub(crate) const AXIS_W: f32 = 40.0;
+pub(crate) const PAD_TOP: f32 = 14.0;
+pub(crate) const PAD_BOTTOM: f32 = 16.0;
+pub(crate) const PAD_RIGHT: f32 = 8.0;
 
 fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
     let max = scale.max_val();
@@ -61,87 +82,121 @@ fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
     rect.min.y + PAD_TOP + (1.0 - val / max) * draw_h
 }
 
-fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize) {
+/// Return major tick values for the given scale mode.
+fn major_ticks(scale: ScopeScale) -> Vec<u32> {
+    match scale {
+        ScopeScale::TenBit => vec![0, 128, 256, 384, 512, 640, 768, 896, 1023],
+        _ => (0..=10).map(|i| i * 10).collect(),
+    }
+}
+
+pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize) {
     let painter = ui.painter_at(rect);
     let amber = |a: u8| egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, a);
     let font = egui::FontId::monospace(9.0);
 
-    let (major_vals, minor_step): (Vec<f32>, f32) = match scale {
-        ScopeScale::TenBit => ((0..=8).map(|i| i as f32 * 128.0).chain(std::iter::once(1023.0)).collect(), 32.0),
-        _ => ((0..=10).map(|i| i as f32 * 10.0).collect(), 5.0),
+    let major_vals: Vec<f32> = major_ticks(scale).into_iter().map(|v| v as f32).collect();
+    let minor_step: f32 = match scale {
+        ScopeScale::TenBit => 32.0,
+        _ => 5.0,
     };
 
-    // Minor grid lines
+    // Minor grid lines — rgba(245,180,60,0.04) full width, 3px tick rgba(245,180,60,0.25)
     let max = scale.max_val();
     let mut v = 0.0;
     while v <= max {
         let y = val_to_y(v, &rect, scale);
         if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
             painter.line_segment(
-                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x - PAD_RIGHT, y)],
+                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
                 egui::Stroke::new(0.5, amber(10)),
             );
-            // 3px tick
+            // 3px tick on axis
             painter.line_segment(
                 [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-                egui::Stroke::new(0.5, amber(20)),
+                egui::Stroke::new(0.5, amber(64)),
             );
         }
         v += minor_step;
     }
 
-    // Major grid lines + labels
+    // Major grid lines + labels — rgba(245,180,60,0.20) full width, 6px tick rgba(245,180,60,0.60)
     for &val in &major_vals {
         let y = val_to_y(val, &rect, scale);
         painter.line_segment(
-            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x - PAD_RIGHT, y)],
-            egui::Stroke::new(0.5, amber(50)),
+            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+            egui::Stroke::new(0.5, amber(51)),
         );
-        // 6px tick
+        // 6px tick on axis
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-            egui::Stroke::new(0.5, amber(80)),
+            egui::Stroke::new(0.5, amber(153)),
         );
-        // Label
-        let label = if scale == ScopeScale::TenBit { format!("{}", val as u32) } else { format!("{}", val as u32) };
+        // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
+        let label = format!("{}", val as u32);
         let align = if val < 0.1 { egui::Align2::RIGHT_TOP } else { egui::Align2::RIGHT_BOTTOM };
-        painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), amber(190));
+        painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), amber(191));
     }
 
-    // Axis separator
+    // Axis separator — 1px vertical at x=AXIS_W, rgba(255,255,255,0.08)
     painter.line_segment(
         [egui::pos2(rect.min.x + AXIS_W, rect.min.y), egui::pos2(rect.min.x + AXIS_W, rect.max.y - PAD_BOTTOM)],
-        egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
-    // Bottom tick row
+    // Bottom baseline — horizontal at y=(height-PAD_BOTTOM), rgba(255,255,255,0.08)
     let bottom_y = rect.max.y - PAD_BOTTOM;
     painter.line_segment(
-        [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x - PAD_RIGHT, bottom_y)],
-        egui::Stroke::new(0.5, amber(30)),
+        [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x, bottom_y)],
+        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
+
+    // Bottom ticks — major every 25% (6px, amber 0.40), minor between (3px, amber 0.15)
     let trace_w = rect.width() - AXIS_W - PAD_RIGHT;
     for i in 0..=20 {
         let frac = i as f32 / 20.0;
         let x = rect.min.x + AXIS_W + frac * trace_w;
         let is_major = i % 5 == 0;
         let tick_h = if is_major { 6.0 } else { 3.0 };
-        let color = if is_major { amber(100) } else { amber(38) };
+        let color = if is_major { amber(102) } else { amber(38) };
         painter.line_segment(
             [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y + tick_h)],
             egui::Stroke::new(0.5, color),
         );
     }
 
-    // Parade section separators
+    // Parade section separators — rgba(255,255,255,0.05) within trace area
     if is_parade && section_count == 3 {
         let third = trace_w / 3.0;
         for i in 1..3 {
             let x = rect.min.x + AXIS_W + third * i as f32;
             painter.line_segment(
                 [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
-                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12)),
+                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
             );
+        }
+    }
+}
+
+/// Apply 5-tap horizontal Gaussian low pass filter to a ColorImage.
+fn apply_low_pass_filter(image: &mut egui::ColorImage) {
+    let w = image.size[0];
+    let h = image.size[1];
+    let weights = [0.05_f32, 0.20, 0.50, 0.20, 0.05];
+    let src = image.pixels.clone();
+    for y in 0..h {
+        for x in 2..w.saturating_sub(2) {
+            let idx = x + y * w;
+            let mut r = 0.0_f32;
+            let mut g = 0.0_f32;
+            let mut b = 0.0_f32;
+            for (di, &wt) in weights.iter().enumerate() {
+                let si = idx - 2 + di;
+                r += src[si].r() as f32 * wt;
+                g += src[si].g() as f32 * wt;
+                b += src[si].b() as f32 * wt;
+            }
+            image.pixels[idx] = egui::Color32::from_rgb(r as u8, g as u8, b as u8);
         }
     }
 }
@@ -154,6 +209,7 @@ pub fn show_scopes(
     frame_buffer: &SharedFrameBuffer,
     _quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
+    is_playing: bool,
 ) {
     let render_h: usize = 512;
 
@@ -170,7 +226,11 @@ pub fn show_scopes(
                 || state.frame_generations[mi] != gen
                 || state.render_sizes[mi] != (fb.width as usize, render_h)
                 || state.last_settings_generation != state.settings_generation;
-            if stale {
+
+            // Throttle during playback: max one update per 80ms
+            let throttled = is_playing && state.last_render_time
+                .map_or(false, |t| t.elapsed().as_millis() < 80);
+            if stale && !throttled {
                 // Use GPU-rendered scope texture from engine if available and mode matches
                 let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
                     && fb.scope_texture_mode == mi as u8;
@@ -212,6 +272,7 @@ pub fn show_scopes(
     if let Some((scope_img, gen)) = scope_result {
         state.frame_generations[mi] = gen;
         state.last_settings_generation = state.settings_generation;
+        state.last_render_time = Some(Instant::now());
         for idx in 0..4 {
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
@@ -295,25 +356,7 @@ pub fn show_scopes(
 
         // Post-processing: horizontal low pass filter (5-tap gaussian)
         if state.low_pass && mode != ScopeMode::Vectorscope {
-            let w = image.size[0];
-            let h = image.size[1];
-            let weights = [0.05_f32, 0.20, 0.50, 0.20, 0.05];
-            let src = image.pixels.clone();
-            for y in 0..h {
-                for x in 2..w.saturating_sub(2) {
-                    let idx = x + y * w;
-                    let mut r = 0.0_f32;
-                    let mut g = 0.0_f32;
-                    let mut b = 0.0_f32;
-                    for (di, &wt) in weights.iter().enumerate() {
-                        let si = idx - 2 + di;
-                        r += src[si].r() as f32 * wt;
-                        g += src[si].g() as f32 * wt;
-                        b += src[si].b() as f32 * wt;
-                    }
-                    image.pixels[idx] = egui::Color32::from_rgb(r as u8, g as u8, b as u8);
-                }
-            }
+            apply_low_pass_filter(&mut image);
         }
 
         if let Some(ref mut tex) = state.textures[mi] {
@@ -517,7 +560,7 @@ impl AccumBuffer {
 
 /// Render waveform using DaVinci's additive accumulation technique.
 /// Each video pixel maps to a point in scope space. Additive blending + log tone mapping = natural glow.
-fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
+pub(crate) fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
     // 1. Accumulate: each video pixel adds 1 at (scope_x, luma * scope_h)
     let mut accum = vec![0u32; scope_w * scope_h];
 
@@ -567,9 +610,117 @@ fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usiz
     egui::ColorImage { size: [scope_w, scope_h], pixels }
 }
 
+/// Render waveform for a specific channel (Y=luma, R, G, B).
+pub(crate) fn render_waveform_channel(
+    rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize,
+    channel: crate::state::WaveformChannel,
+) -> egui::ColorImage {
+    use crate::state::WaveformChannel;
+
+    let mut accum = vec![0u32; scope_w * scope_h];
+
+    for y in 0..video_h {
+        for x in 0..video_w {
+            let idx = ((y * video_w + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { break; }
+            let r = rgba[idx] as f32 / 255.0;
+            let g = rgba[idx + 1] as f32 / 255.0;
+            let b = rgba[idx + 2] as f32 / 255.0;
+
+            let val = match channel {
+                WaveformChannel::Y => (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999),
+                WaveformChannel::R => r.clamp(0.0, 0.999),
+                WaveformChannel::G => g.clamp(0.0, 0.999),
+                WaveformChannel::B => b.clamp(0.0, 0.999),
+            };
+
+            let sx = (x as usize * scope_w) / video_w as usize;
+            let sy = scope_h - 1 - (val * scope_h as f32) as usize;
+            if sx < scope_w && sy < scope_h {
+                accum[sy * scope_w + sx] += 1;
+            }
+        }
+    }
+
+    let knee = 3.0_f32;
+    let (base_r, base_g, base_b) = match channel {
+        WaveformChannel::Y => (0.7, 0.7, 0.7),
+        WaveformChannel::R => (0.9, 0.0, 0.0),
+        WaveformChannel::G => (0.0, 0.9, 0.0),
+        WaveformChannel::B => (0.0, 0.0, 0.9),
+    };
+
+    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
+        if count == 0 { return egui::Color32::BLACK; }
+        let c = count as f32;
+        let intensity = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
+        let white_mix = intensity * intensity * intensity;
+        let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
+        let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
+        let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
+        egui::Color32::from_rgb(
+            (r * 255.0).min(255.0) as u8,
+            (g * 255.0).min(255.0) as u8,
+            (b * 255.0).min(255.0) as u8,
+        )
+    }).collect();
+
+    egui::ColorImage { size: [scope_w, scope_h], pixels }
+}
+
+/// Render histogram as 3 stacked R/G/B bands (for floating window).
+pub(crate) fn render_histogram_stacked(
+    r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: &[u32; 256],
+    rw: usize, rh: usize,
+) -> egui::ColorImage {
+    let band_h = rh / 3;
+    let mut pixels = vec![egui::Color32::BLACK; rw * rh];
+
+    let channels: [(&[u32; 256], [f32; 3], usize); 3] = [
+        (r_bins, [1.0, 0.12, 0.08], 0),
+        (g_bins, [0.08, 0.95, 0.12], band_h),
+        (b_bins, [0.12, 0.25, 1.0], band_h * 2),
+    ];
+
+    for (bins, color, y_offset) in &channels {
+        let max_count = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
+        let bin_scale = rw as f32 / 256.0;
+
+        for px_x in 0..rw {
+            let bin = ((px_x as f32 / bin_scale) as usize).min(255);
+            let count = bins[bin];
+            if count == 0 { continue; }
+            let height_frac = (count as f32 / max_count).sqrt();
+            let height_px = (height_frac * band_h as f32) as usize;
+
+            for dy in 0..height_px.min(band_h) {
+                let y = y_offset + band_h - 1 - dy;
+                if y >= rh { continue; }
+                let fade = 1.0 - (dy as f32 / height_px.max(1) as f32) * 0.5;
+                let r = (color[0] * fade * 255.0).min(255.0) as u8;
+                let g = (color[1] * fade * 255.0).min(255.0) as u8;
+                let b = (color[2] * fade * 255.0).min(255.0) as u8;
+                pixels[y * rw + px_x] = egui::Color32::from_rgb(r, g, b);
+            }
+        }
+    }
+
+    // Thin separators between bands
+    let sep_color = egui::Color32::from_rgb(0x18, 0x18, 0x1c);
+    for &y in &[band_h, band_h * 2] {
+        if y < rh {
+            for x in 0..rw {
+                pixels[y * rw + x] = sep_color;
+            }
+        }
+    }
+
+    egui::ColorImage { size: [rw, rh], pixels }
+}
+
 /// Render parade using DaVinci's additive accumulation technique.
 /// Three separate accumulation buffers for R, G, B displayed side by side.
-fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
+pub(crate) fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
     let gap = 2usize;
     let section_w = (scope_w - gap * 2) / 3;
 
@@ -662,7 +813,7 @@ fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize,
 }
 
 #[inline(never)]
-fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: &[u32; 256], luma_bins: &[u32; 256], rw: usize, rh: usize) -> egui::ColorImage {
+pub(crate) fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: &[u32; 256], luma_bins: &[u32; 256], rw: usize, rh: usize) -> egui::ColorImage {
     let mut buf = AccumBuffer::new(rw, rh);
 
     let max_count = r_bins.iter().chain(g_bins.iter()).chain(b_bins.iter())
@@ -696,7 +847,7 @@ fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: 
 }
 
 #[inline(never)]
-fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32) -> egui::ColorImage {
+pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32) -> egui::ColorImage {
     let size = rw.min(rh);
     let mut buf = AccumBuffer::new(size, size);
     let center = size as f32 / 2.0;
@@ -832,6 +983,146 @@ fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize
     buf.to_image([4.0, 4.0, 7.0], 2.2)
 }
 
+/// Render CIE 1931 xy chromaticity diagram.
+/// Plots image pixels in CIE xy space with spectral locus outline and sRGB gamut triangle.
+pub(crate) fn render_cie_chromaticity(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+    let size = rw.min(rh);
+    let mut buf = AccumBuffer::new(size, size);
+
+    // The CIE xy diagram spans roughly x=[0, 0.8], y=[0, 0.9].
+    // Map to pixel coords with some margin.
+    let margin = 12.0;
+    let plot_size = size as f32 - margin * 2.0;
+    let xy_to_px = |x: f32, y: f32| -> (usize, usize) {
+        let px = (margin + x / 0.8 * plot_size) as usize;
+        // y=0 at bottom, y=0.9 at top → invert
+        let py = (margin + (1.0 - y / 0.9) * plot_size) as usize;
+        (px.min(size - 1), py.min(size - 1))
+    };
+
+    // ── 1. Spectral locus outline (CIE 1931 standard observer, 380–700nm) ──
+    // Subset of xy coordinates along the spectral locus boundary
+    let locus: &[(f32, f32)] = &[
+        (0.1741, 0.0050), (0.1740, 0.0050), (0.1738, 0.0049), // 380-400nm
+        (0.1736, 0.0049), (0.1733, 0.0048), (0.1726, 0.0048),
+        (0.1714, 0.0051), (0.1689, 0.0069), (0.1644, 0.0109),
+        (0.1566, 0.0177), (0.1440, 0.0297), (0.1241, 0.0578), // 440-460nm
+        (0.0913, 0.1327), (0.0687, 0.2007), (0.0454, 0.2950),
+        (0.0235, 0.4127), (0.0082, 0.5384), (0.0039, 0.6548),
+        (0.0139, 0.7502), (0.0389, 0.8120), (0.0743, 0.8338), // 520-540nm
+        (0.1142, 0.8262), (0.1547, 0.8059), (0.1929, 0.7816),
+        (0.2296, 0.7543), (0.2658, 0.7243), (0.3016, 0.6923),
+        (0.3373, 0.6589), (0.3731, 0.6245), (0.4087, 0.5896), // 580-600nm
+        (0.4441, 0.5547), (0.4788, 0.5202), (0.5125, 0.4866),
+        (0.5448, 0.4544), (0.5752, 0.4242), (0.6029, 0.3965),
+        (0.6270, 0.3725), (0.6482, 0.3514), (0.6658, 0.3340), // 640-660nm
+        (0.6801, 0.3197), (0.6915, 0.3083), (0.7006, 0.2993),
+        (0.7079, 0.2920), (0.7140, 0.2859), (0.7190, 0.2809),
+        (0.7230, 0.2770), (0.7260, 0.2740), (0.7283, 0.2717), // 700-780nm
+    ];
+
+    // Draw locus as a connected line
+    let locus_color = 0.12_f32;
+    for pair in locus.windows(2) {
+        let (x0, y0) = xy_to_px(pair[0].0, pair[0].1);
+        let (x1, y1) = xy_to_px(pair[1].0, pair[1].1);
+        // Bresenham-ish: just draw both endpoints; AccumBuffer handles it
+        if x0 < size && y0 < size { buf.add(x0, y0, locus_color, locus_color, locus_color * 1.2); }
+        if x1 < size && y1 < size { buf.add(x1, y1, locus_color, locus_color, locus_color * 1.2); }
+        // Interpolate some intermediate points for smoother line
+        for t in 1..8 {
+            let f = t as f32 / 8.0;
+            let ix = (pair[0].0 + (pair[1].0 - pair[0].0) * f, pair[0].1 + (pair[1].1 - pair[0].1) * f);
+            let (px, py) = xy_to_px(ix.0, ix.1);
+            if px < size && py < size { buf.add(px, py, locus_color * 0.6, locus_color * 0.6, locus_color * 0.8); }
+        }
+    }
+    // Close the locus: line from last spectral point to first (purple line)
+    if let (Some(first), Some(last)) = (locus.first(), locus.last()) {
+        for t in 0..20 {
+            let f = t as f32 / 20.0;
+            let ix = (last.0 + (first.0 - last.0) * f, last.1 + (first.1 - last.1) * f);
+            let (px, py) = xy_to_px(ix.0, ix.1);
+            if px < size && py < size { buf.add(px, py, locus_color * 0.8, 0.02, locus_color * 0.8); }
+        }
+    }
+
+    // ── 2. sRGB / Rec.709 gamut triangle ──
+    let srgb_r = (0.6400_f32, 0.3300_f32);
+    let srgb_g = (0.3000, 0.6000);
+    let srgb_b = (0.1500, 0.0600);
+    let gamut_verts = [(srgb_r, srgb_g), (srgb_g, srgb_b), (srgb_b, srgb_r)];
+    let gamut_colors = [
+        (0.15_f32, 0.06, 0.06), // R-G edge: reddish
+        (0.06, 0.12, 0.06),     // G-B edge: greenish
+        (0.06, 0.06, 0.15),     // B-R edge: bluish
+    ];
+    for (edge, color) in gamut_verts.iter().zip(gamut_colors.iter()) {
+        for t in 0..60 {
+            let f = t as f32 / 60.0;
+            let x = edge.0.0 + (edge.1.0 - edge.0.0) * f;
+            let y = edge.0.1 + (edge.1.1 - edge.0.1) * f;
+            let (px, py) = xy_to_px(x, y);
+            if px < size && py < size {
+                buf.add(px, py, color.0, color.1, color.2);
+                // Thicken
+                if px + 1 < size { buf.add(px + 1, py, color.0 * 0.5, color.1 * 0.5, color.2 * 0.5); }
+            }
+        }
+    }
+
+    // ── 3. D65 white point marker ──
+    let (wpx, wpy) = xy_to_px(0.3127, 0.3290);
+    for dx in 0..3_usize {
+        for dy in 0..3_usize {
+            let gx = wpx.saturating_sub(1) + dx;
+            let gy = wpy.saturating_sub(1) + dy;
+            if gx < size && gy < size { buf.add(gx, gy, 0.2, 0.2, 0.2); }
+        }
+    }
+
+    // ── 4. Plot image data ──
+    let sample_step = (step * 3).max(3) as usize;
+    for y in (0..height).step_by(sample_step) {
+        for x in (0..width).step_by(sample_step) {
+            let idx = ((y * width + x) * 4) as usize;
+            if idx + 2 >= rgba.len() { continue; }
+            // sRGB → linear
+            let sr = rgba[idx] as f32 / 255.0;
+            let sg = rgba[idx + 1] as f32 / 255.0;
+            let sb = rgba[idx + 2] as f32 / 255.0;
+            let to_linear = |v: f32| -> f32 {
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            let lr = to_linear(sr);
+            let lg = to_linear(sg);
+            let lb = to_linear(sb);
+
+            // Linear sRGB → CIE XYZ (D65)
+            let cap_x = 0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb;
+            let cap_y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb;
+            let z = 0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb;
+
+            let sum = cap_x + cap_y + z;
+            if sum < 0.001 { continue; } // skip near-black
+
+            // XYZ → xy chromaticity
+            let cx = cap_x / sum;
+            let cy = cap_y / sum;
+
+            let (px, py) = xy_to_px(cx, cy);
+            if px < size && py < size {
+                // Plot with actual pixel color, brightness-weighted
+                let brightness = cap_y.sqrt().min(1.0);
+                let boost = 0.15 + brightness * 0.6;
+                buf.add(px, py, sr * boost, sg * boost, sb * boost);
+            }
+        }
+    }
+
+    buf.to_image([4.0, 4.0, 7.0], 2.0)
+}
+
 /// Convert hue (0..1) to RGB for the rainbow ring
 pub fn hue_to_rgb(h: f32) -> (f32, f32, f32) {
     let h = h * 6.0;
@@ -870,5 +1161,190 @@ fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ScopeScale;
+
+    #[test]
+    fn test_settings_gen_increments_on_bloom_toggle() {
+        let mut state = ScopeState::default();
+        let gen_before = state.settings_generation;
+        state.bloom = !state.bloom;
+        state.increment_settings_generation();
+        assert!(state.settings_generation > gen_before);
+    }
+
+    #[test]
+    fn test_settings_gen_increments_on_low_pass_toggle() {
+        let mut state = ScopeState::default();
+        let gen_before = state.settings_generation;
+        state.low_pass = !state.low_pass;
+        state.increment_settings_generation();
+        assert!(state.settings_generation > gen_before);
+    }
+
+    #[test]
+    fn test_val_to_y_10bit_range() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        // 1023 should map to PAD_TOP
+        let y_top = val_to_y(1023.0, &rect, ScopeScale::TenBit);
+        assert!((y_top - PAD_TOP).abs() < 1.0, "1023 at y={y_top}, expected ~{PAD_TOP}");
+        // 0 should map to height - PAD_BOTTOM
+        let y_bot = val_to_y(0.0, &rect, ScopeScale::TenBit);
+        assert!((y_bot - (300.0 - PAD_BOTTOM)).abs() < 1.0, "0 at y={y_bot}, expected ~{}", 300.0 - PAD_BOTTOM);
+    }
+
+    #[test]
+    fn test_val_to_y_ire_range() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        let y_top = val_to_y(100.0, &rect, ScopeScale::Ire);
+        assert!((y_top - PAD_TOP).abs() < 1.0, "100 IRE at y={y_top}, expected ~{PAD_TOP}");
+        let y_bot = val_to_y(0.0, &rect, ScopeScale::Ire);
+        assert!((y_bot - (300.0 - PAD_BOTTOM)).abs() < 1.0, "0 IRE at y={y_bot}, expected ~{}", 300.0 - PAD_BOTTOM);
+    }
+
+    #[test]
+    fn test_low_pass_filter_changes_pixels() {
+        // Create a 10x1 image with a spike at position 5
+        let mut pixels = vec![egui::Color32::BLACK; 10];
+        pixels[5] = egui::Color32::from_rgb(255, 0, 0);
+        let mut image = egui::ColorImage { size: [10, 1], pixels };
+        apply_low_pass_filter(&mut image);
+        // After filtering, neighbors of the spike should be non-zero
+        assert!(image.pixels[4].r() > 0, "Left neighbor should pick up red from spike");
+        assert!(image.pixels[6].r() > 0, "Right neighbor should pick up red from spike");
+        // Center should be reduced from 255
+        assert!(image.pixels[5].r() < 255, "Center spike should be reduced by filter");
+    }
+
+    // ── Phase 2 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_pad_top_prevents_label_clipping() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 400.0));
+        let y = val_to_y(1023.0, &rect, ScopeScale::TenBit);
+        assert!(y >= PAD_TOP - 1.0, "1023 label at y={} is too close to top edge", y);
+    }
+
+    #[test]
+    fn test_major_ticks_10bit() {
+        let ticks = major_ticks(ScopeScale::TenBit);
+        assert_eq!(ticks, vec![0, 128, 256, 384, 512, 640, 768, 896, 1023]);
+    }
+
+    #[test]
+    fn test_major_ticks_ire() {
+        let ticks = major_ticks(ScopeScale::Ire);
+        assert_eq!(ticks, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    }
+
+    #[test]
+    fn test_major_ticks_percent() {
+        let ticks = major_ticks(ScopeScale::Percent);
+        assert_eq!(ticks, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    }
+
+    #[test]
+    fn test_axis_w_is_40() {
+        assert_eq!(AXIS_W, 40.0);
+    }
+
+    // ── Phase 3 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_scope_layout_pane_count() {
+        use crate::state::ScopeLayout;
+        assert_eq!(ScopeLayout::OnePane.pane_count(), 1);
+        assert_eq!(ScopeLayout::TwoPane.pane_count(), 2);
+        assert_eq!(ScopeLayout::FourPane.pane_count(), 4);
+        assert_eq!(ScopeLayout::NinePane.pane_count(), 9);
+    }
+
+    #[test]
+    fn test_pane_config_default() {
+        use crate::state::{PaneConfig, ScopeLayout, ScopeType};
+        let config = PaneConfig::default_for_layout(ScopeLayout::FourPane);
+        assert_eq!(config.len(), 4);
+        assert_eq!(config[0].scope_type, ScopeType::Parade);
+        assert_eq!(config[1].scope_type, ScopeType::Waveform);
+        assert_eq!(config[2].scope_type, ScopeType::Vectorscope);
+        assert_eq!(config[3].scope_type, ScopeType::Histogram);
+    }
+
+    #[test]
+    fn test_waveform_channel_luma_formula() {
+        let r = 1.0_f32;
+        let g = 0.0_f32;
+        let b = 0.0_f32;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        assert!((luma - 0.2126).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_scope_window_state_persistence() {
+        use crate::state::{ScopeLayout, ScopeWindowState};
+        let state = ScopeWindowState {
+            open: true,
+            layout: ScopeLayout::FourPane,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: ScopeWindowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.layout, ScopeLayout::FourPane);
+        assert!(restored.open);
+    }
+
+    // ── Phase 4 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_waveform_brightness_affects_gain() {
+        use crate::state::{PaneScopeSettings, compute_tone_map_gain};
+        let settings = PaneScopeSettings { waveform_brightness: 0.5, ..Default::default() };
+        let gain = compute_tone_map_gain(&settings);
+        let settings_bright = PaneScopeSettings { waveform_brightness: 1.0, ..Default::default() };
+        let gain_bright = compute_tone_map_gain(&settings_bright);
+        assert!(gain_bright > gain, "Brighter setting should produce higher gain");
+    }
+
+    #[test]
+    fn test_graticule_brightness_affects_alpha() {
+        use crate::state::graticule_alpha;
+        let alpha_dim = graticule_alpha(0.25);
+        let alpha_bright = graticule_alpha(1.0);
+        assert!(alpha_bright > alpha_dim);
+        assert!(alpha_dim > 0.0, "Even dim graticule should be visible");
+    }
+
+    #[test]
+    fn test_reference_levels_render_when_enabled() {
+        use crate::state::{PaneScopeSettings, compute_reference_lines};
+        let settings = PaneScopeSettings {
+            show_reference_levels: true,
+            reference_low: 64.0,
+            reference_high: 940.0,
+            ..Default::default()
+        };
+        let lines = compute_reference_lines(&settings, 300.0);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].y < lines[1].y, "High value should be above low value on screen");
+    }
+
+    #[test]
+    fn test_skin_tone_angle_constant() {
+        use crate::state::SKIN_TONE_ANGLE_DEGREES;
+        assert_eq!(SKIN_TONE_ANGLE_DEGREES, 123.0);
+    }
+
+    #[test]
+    fn test_vectorscope_range_rings() {
+        use crate::state::{PaneScopeSettings, compute_saturation_rings};
+        let settings = PaneScopeSettings { low_range: 0.30, high_range: 0.70, ..Default::default() };
+        let rings = compute_saturation_rings(&settings, 200.0);
+        assert_eq!(rings.len(), 2);
+        assert!(rings[0].radius < rings[1].radius, "Low range ring should have smaller radius");
     }
 }
