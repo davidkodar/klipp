@@ -609,6 +609,10 @@ impl PlaybackEngine {
                             rate: new_tc.rate,
                         };
                         self.seek_in_sequence(clamped);
+                        // Re-grade after multi-frame seek so scopes update
+                        if self.state != PlaybackState::Playing {
+                            self.regrade_cached_frame();
+                        }
                     }
                 }
             }
