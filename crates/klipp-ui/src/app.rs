@@ -7414,8 +7414,11 @@ impl KlippApp {
                     if self.prefs.proxy.auto_switch_during_scrub {
                         self.state.use_proxies = self.state.pre_scrub_use_proxies;
                         let _ = self.cmd_tx.send(AppCommand::SetUseProxies(self.state.pre_scrub_use_proxies));
-                        // Seek to current position at full-res to update the viewer
-                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        // If proxies were off before scrub, re-seek at full-res so the
+                        // viewer shows the final position in full quality
+                        if !self.state.pre_scrub_use_proxies {
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                        }
                     }
                     continue;
                 }
