@@ -50,9 +50,10 @@ impl Default for ScopeState {
 }
 
 // ── Scale system constants ─────────────────────────────────────────────
-const AXIS_W: f32 = 40.0;
-const PAD_TOP: f32 = 6.0;
-const PAD_BOTTOM: f32 = 14.0;
+const AXIS_W: f32 = 44.0;
+const PAD_TOP: f32 = 14.0;
+const PAD_BOTTOM: f32 = 16.0;
+const PAD_RIGHT: f32 = 8.0;
 
 fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
     let max = scale.max_val();
@@ -77,7 +78,7 @@ fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: boo
         let y = val_to_y(v, &rect, scale);
         if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
             painter.line_segment(
-                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x - PAD_RIGHT, y)],
                 egui::Stroke::new(0.5, amber(10)),
             );
             // 3px tick
@@ -93,7 +94,7 @@ fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: boo
     for &val in &major_vals {
         let y = val_to_y(val, &rect, scale);
         painter.line_segment(
-            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x - PAD_RIGHT, y)],
             egui::Stroke::new(0.5, amber(50)),
         );
         // 6px tick
@@ -116,10 +117,10 @@ fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: boo
     // Bottom tick row
     let bottom_y = rect.max.y - PAD_BOTTOM;
     painter.line_segment(
-        [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x, bottom_y)],
+        [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x - PAD_RIGHT, bottom_y)],
         egui::Stroke::new(0.5, amber(30)),
     );
-    let trace_w = rect.width() - AXIS_W;
+    let trace_w = rect.width() - AXIS_W - PAD_RIGHT;
     for i in 0..=20 {
         let frac = i as f32 / 20.0;
         let x = rect.min.x + AXIS_W + frac * trace_w;
@@ -364,7 +365,7 @@ pub fn show_scopes(
             // Waveform/Parade/Histogram: scope image + scale overlay
             let img_rect = egui::Rect::from_min_max(
                 egui::pos2(full_rect.min.x + AXIS_W, full_rect.min.y + PAD_TOP),
-                egui::pos2(full_rect.max.x, full_rect.max.y - PAD_BOTTOM),
+                egui::pos2(full_rect.max.x - PAD_RIGHT, full_rect.max.y - PAD_BOTTOM),
             );
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
