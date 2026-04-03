@@ -229,6 +229,13 @@ pub struct PlaybackEngine {
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
+    // Smart render cache — stores post-grade frames on disk (LZ4 compressed).
+    // Hot tier: last 30 graded frames in RAM. Cold tier: disk LZ4.
+    render_cache_hot: crate::render_cache::HotCache,
+    render_cache_disk: crate::render_cache::DiskRenderCache,
+    /// Current grade hash for the active clip (cached to avoid recomputing per frame).
+    current_grade_hash: u64,
+    current_grade_clip_id: Option<klipp_core::ClipId>,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -350,6 +357,13 @@ impl PlaybackEngine {
             matte_preview_node: None,
             cached_pregrade_frame: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
+            render_cache_hot: crate::render_cache::HotCache::new(30),
+            render_cache_disk: crate::render_cache::DiskRenderCache::new(
+                dirs::cache_dir().unwrap_or_default().join("klipp/render"),
+                20, // 20 GB default max
+            ),
+            current_grade_hash: 0,
+            current_grade_clip_id: None,
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -768,6 +782,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SequenceUpdated => {
+                // Invalidate grade hash so render cache re-checks on next frame
+                self.current_grade_hash = 0;
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
                 // Re-read clip speed in case SpeedRamp changed it during playback
@@ -3350,7 +3366,76 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.pregrade_data = rgba.clone();
         }
+
+        // ── Smart render cache: check for cached graded frame ──
+        // Compute grade hash for current clip (recompute if clip changed)
+        let cache_key = {
+            let seq = self.sequence.read().unwrap();
+            let clip = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|t| t.clip_at_timecode(self.playhead))
+                .map(|(_, c)| c);
+            if let Some(clip) = clip {
+                if self.current_grade_clip_id != Some(clip.id) || self.current_grade_hash == 0 {
+                    self.current_grade_hash = crate::render_cache::compute_grade_hash(
+                        &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
+                    );
+                    self.current_grade_clip_id = Some(clip.id);
+                }
+                if !clip.node_graph.is_identity() || !clip.builtin_effects.is_empty() {
+                    Some(crate::render_cache::RenderCacheKey {
+                        clip_id: clip.id,
+                        frame_number: self.playhead.value,
+                        grade_hash: self.current_grade_hash,
+                    })
+                } else {
+                    None // Identity grade — no need to cache
+                }
+            } else {
+                None
+            }
+        };
+
+        // Check hot cache first, then disk cache
+        if let Some(ref key) = cache_key {
+            let cached_result = self.render_cache_hot.get(key)
+                .filter(|(_, w, h)| *w == width && *h == height)
+                .map(|(data, w, h)| (data.to_vec(), w, h))
+                .or_else(|| {
+                    self.render_cache_disk.get(key)
+                        .filter(|(_, w, h)| *w == width && *h == height)
+                });
+
+            if let Some((cached, _w, _h)) = cached_result {
+                // Promote to hot cache if it came from disk
+                self.render_cache_hot.insert(key.clone(), cached.clone(), width, height);
+                // Still render scope texture for the cached frame
+                if let Some(gpu) = &mut self.gpu_effects {
+                    let scope_w = 720u32;
+                    let scope_h = 256u32;
+                    let mode = self.scope_render_mode;
+                    let tex = match mode {
+                        1 => gpu.render_scope_parade(&cached, width, height, scope_w, scope_h),
+                        3 => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
+                        _ => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
+                    };
+                    let mut fb = self.frame_buffer.lock().unwrap();
+                    fb.scope_texture = tex;
+                    fb.scope_texture_w = scope_w;
+                    fb.scope_texture_h = scope_h;
+                    fb.scope_texture_mode = mode;
+                }
+                return cached;
+            }
+        }
+
         let result = self.post_process_rgba_inner(rgba, width, height);
+
+        // Store in render cache (both hot and cold)
+        if let Some(key) = cache_key {
+            self.render_cache_hot.insert(key.clone(), result.clone(), width, height);
+            self.render_cache_disk.put(&key, &result, width, height);
+        }
 
         // Render GPU scope texture from the graded frame (same as regrade_cached_frame)
         if let Some(gpu) = &mut self.gpu_effects {

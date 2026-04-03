@@ -21,6 +21,9 @@ resolver = "2"
 # ─── Shared dependency versions across all crates ───────────────────────────
 [workspace.dependencies]
 
+# Fast compression for render cache
+lz4_flex = "0.11"
+
 # Core async runtime
 tokio = { version = "1", features = ["full"] }
 
