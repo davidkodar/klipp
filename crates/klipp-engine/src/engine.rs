@@ -3339,7 +3339,26 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.pregrade_data = rgba.clone();
         }
-        self.post_process_rgba_inner(rgba, width, height)
+        let result = self.post_process_rgba_inner(rgba, width, height);
+
+        // Render GPU scope texture from the graded frame (same as regrade_cached_frame)
+        if let Some(gpu) = &mut self.gpu_effects {
+            let scope_w = 720u32;
+            let scope_h = 256u32;
+            let mode = self.scope_render_mode;
+            let tex = match mode {
+                1 => gpu.render_scope_parade(&result, width, height, scope_w, scope_h),
+                3 => gpu.render_scope_histogram(&result, width, height, scope_w, scope_h),
+                _ => gpu.render_scope_waveform(&result, width, height, scope_w, scope_h),
+            };
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.scope_texture = tex;
+            fb.scope_texture_w = scope_w;
+            fb.scope_texture_h = scope_h;
+            fb.scope_texture_mode = mode;
+        }
+
+        result
     }
 
     /// Re-grade the cached pre-grade frame without re-decoding.
