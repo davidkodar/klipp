@@ -12423,6 +12423,7 @@ impl eframe::App for KlippApp {
                             ui.set_min_size(overlay_rect.size());
                             // Semi-transparent dark background
                             ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
+                            self.state.scope_state.scale = self.state.scope_scale;
                             crate::widgets::scopes::show_scopes(
                                 ui,
                                 &mut self.state.scope_state,
@@ -12505,10 +12506,12 @@ impl eframe::App for KlippApp {
                                     }
                                     // Node strip toggle removed — node system disabled
 
-                                    // Scope mode selector (when scopes visible)
+                                    // Scope mode selector + controls (when scopes visible)
                                     if self.state.show_scopes {
                                         ui.separator();
-                                        use crate::state::ScopeMode;
+                                        use crate::state::{ScopeMode, ScopeScale};
+
+                                        // Mode tabs
                                         for (mode, label) in [
                                             (ScopeMode::Waveform, "Wave"),
                                             (ScopeMode::Parade, "Parade"),
@@ -12521,16 +12524,63 @@ impl eframe::App for KlippApp {
                                             if ui.selectable_label(active, text).clicked() {
                                                 self.state.scope_mode = mode;
                                                 let mode_byte = match mode {
-                                                    crate::state::ScopeMode::Waveform => 0u8,
-                                                    crate::state::ScopeMode::Parade => 1,
-                                                    crate::state::ScopeMode::Vectorscope => 2,
-                                                    crate::state::ScopeMode::Histogram => 3,
+                                                    ScopeMode::Waveform => 0u8,
+                                                    ScopeMode::Parade => 1,
+                                                    ScopeMode::Vectorscope => 2,
+                                                    ScopeMode::Histogram => 3,
                                                 };
                                                 let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
                                                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                                                 ui.ctx().request_repaint();
                                             }
                                         }
+
+                                        // R/G/B channel pills (only for Waveform/Parade)
+                                        if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
+                                            ui.add_space(4.0);
+                                            ui.separator();
+                                            ui.add_space(2.0);
+                                            for (label, color, enabled) in [
+                                                ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
+                                                ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
+                                                ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
+                                            ] {
+                                                let bg = if *enabled { color } else { egui::Color32::from_rgb(0x30, 0x30, 0x35) };
+                                                let text_c = if *enabled { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                                                let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
+                                                    .fill(bg)
+                                                    .min_size(egui::vec2(20.0, 16.0))
+                                                    .rounding(3.0);
+                                                if ui.add(btn).clicked() { *enabled = !*enabled; }
+                                            }
+                                        }
+
+                                        // Right-side controls
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            // Settings gear
+                                            let gear_color = if self.state.scope_settings_open { theme.text_accent } else { theme.text_dim };
+                                            if ui.add(egui::Button::new(egui::RichText::new("\u{2699}").size(12.0).color(gear_color))
+                                                .frame(false)).clicked() {
+                                                self.state.scope_settings_open = !self.state.scope_settings_open;
+                                            }
+
+                                            // Overlay toggle
+                                            let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
+                                            if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
+                                                .frame(false)).on_hover_text("Overlay on viewer").clicked() {
+                                                self.state.scope_overlay_mode = !self.state.scope_overlay_mode;
+                                            }
+
+                                            // Scale selector
+                                            egui::ComboBox::from_id_salt("scope_scale_sel")
+                                                .width(50.0)
+                                                .selected_text(egui::RichText::new(self.state.scope_scale.button_label()).size(9.0))
+                                                .show_ui(ui, |ui| {
+                                                    for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
+                                                        ui.selectable_value(&mut self.state.scope_scale, s, s.label());
+                                                    }
+                                                });
+                                        });
                                     }
                                 });
                             });
@@ -12553,6 +12603,22 @@ impl eframe::App for KlippApp {
                             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(live_scopes_rect), |ui| {
                                 ui.set_min_size(live_scopes_rect.size());
                                 ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
+                                // Detect scope setting changes and bump settings_generation
+                                let prev = (self.state.scope_scale, self.state.scope_low_pass, self.state.scope_bloom,
+                                    self.state.scope_show_r, self.state.scope_show_g, self.state.scope_show_b,
+                                    self.state.scope_quality);
+                                // (settings may have changed from header/dropdown this frame)
+                                let cur = prev; // snapshot current
+                                if self.state.scope_state.scale != cur.0
+                                    || self.state.scope_state.low_pass != cur.1
+                                    || self.state.scope_state.bloom != cur.2
+                                {
+                                    self.state.scope_state.settings_generation =
+                                        self.state.scope_state.settings_generation.wrapping_add(1);
+                                }
+                                self.state.scope_state.scale = self.state.scope_scale;
+                                self.state.scope_state.low_pass = self.state.scope_low_pass;
+                                self.state.scope_state.bloom = self.state.scope_bloom;
                                 crate::widgets::scopes::show_scopes(
                                     ui,
                                     &mut self.state.scope_state,
@@ -12564,6 +12630,52 @@ impl eframe::App for KlippApp {
                             });
                             // Force repaint to recalculate layout on next frame
                             ui.ctx().request_repaint();
+                        }
+
+                        // Scope settings dropdown
+                        if self.state.scope_settings_open && self.state.show_scopes {
+                            use crate::state::ScopeScale;
+                            let dropdown_id = egui::Id::new("scope_settings_dropdown");
+                            egui::Area::new(dropdown_id)
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0))
+                                .show(ctx, |ui| {
+                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                        ui.set_min_width(200.0);
+                                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
+
+                                        // DISPLAY section
+                                        ui.label(egui::RichText::new("DISPLAY").size(9.0).color(theme.text_dim).strong());
+                                        ui.checkbox(&mut self.state.scope_low_pass, "Low Pass Filter");
+                                        ui.checkbox(&mut self.state.scope_bloom, "Bloom on dense regions");
+                                        ui.checkbox(&mut self.state.scope_overlay_mode, "Overlay on viewer");
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("QUALITY").size(9.0).color(theme.text_dim).strong());
+                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Low, "Draft (every 4px)");
+                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Medium, "Standard (every 2px)");
+                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::High, "Full (every px)");
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("SCALE").size(9.0).color(theme.text_dim).strong());
+                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
+                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
+                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
+                                    });
+                                });
+
+                            // Close on click outside
+                            if ui.input(|i| i.pointer.primary_clicked()) {
+                                let dropdown_rect = egui::Rect::from_min_size(
+                                    egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0),
+                                    egui::vec2(210.0, 250.0),
+                                );
+                                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                    if !dropdown_rect.contains(pos) && !toggle_bar_rect.contains(pos) {
+                                        self.state.scope_settings_open = false;
+                                    }
+                                }
+                            }
                         }
 
                         // Node strip panel — read live state

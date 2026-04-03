@@ -431,6 +431,13 @@ pub struct AppState {
     pub show_keyframe_editor: bool,
     pub scope_mode: ScopeMode,
     pub scope_state: crate::widgets::scopes::ScopeState,
+    pub scope_scale: ScopeScale,
+    pub scope_show_r: bool,
+    pub scope_show_g: bool,
+    pub scope_show_b: bool,
+    pub scope_low_pass: bool,
+    pub scope_bloom: bool,
+    pub scope_settings_open: bool,
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
@@ -724,6 +731,31 @@ pub enum ScopeMode {
     Histogram,
 }
 
+/// Scope scale display mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeScale {
+    #[default]
+    TenBit,
+    Ire,
+    Percent,
+}
+
+impl ScopeScale {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::TenBit => "10-bit",
+            Self::Ire => "0\u{2013}100 IRE",
+            Self::Percent => "0\u{2013}100%",
+        }
+    }
+    pub fn max_val(&self) -> f32 {
+        match self { Self::TenBit => 1023.0, _ => 100.0 }
+    }
+    pub fn button_label(&self) -> &'static str {
+        match self { Self::TenBit => "10-bit", Self::Ire => "IRE", Self::Percent => "%" }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlayheadFollow {
     /// No auto-scroll
@@ -965,6 +997,13 @@ impl Default for AppState {
             scope_state: Default::default(),
             show_keyframe_editor: false,
             scope_mode: ScopeMode::Waveform,
+            scope_scale: ScopeScale::TenBit,
+            scope_show_r: true,
+            scope_show_g: true,
+            scope_show_b: true,
+            scope_low_pass: false,
+            scope_bloom: true,
+            scope_settings_open: false,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
             qualifier_sample_request: None,

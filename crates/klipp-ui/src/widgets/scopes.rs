@@ -1,4 +1,4 @@
-use crate::state::ScopeMode;
+use crate::state::{ScopeMode, ScopeScale};
 use klipp_engine::SharedFrameBuffer;
 
 /// Scope render result — either from GPU engine or CPU direct rendering.
@@ -14,6 +14,15 @@ pub struct ScopeState {
     frame_generations: [u64; 4],
     /// Render sizes used for each cached texture.
     render_sizes: [(usize, usize); 4],
+    /// Current scale mode (synced from AppState each frame).
+    pub scale: ScopeScale,
+    /// Enable horizontal low pass filter on scope output.
+    pub low_pass: bool,
+    /// Enable bloom on dense regions.
+    pub bloom: bool,
+    /// Incremented when any scope setting changes (triggers re-render).
+    pub settings_generation: u64,
+    last_settings_generation: u64,
 }
 
 fn mode_index(mode: ScopeMode) -> usize {
@@ -31,12 +40,112 @@ impl Default for ScopeState {
             textures: [None, None, None, None],
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             render_sizes: [(0, 0); 4],
+            scale: ScopeScale::TenBit,
+            low_pass: false,
+            bloom: true,
+            settings_generation: 0,
+            last_settings_generation: u64::MAX,
         }
     }
 }
 
-/// Render scopes into the given UI area.
-/// Each scope mode has its own cached texture — switching modes is instant.
+// ── Scale system constants ─────────────────────────────────────────────
+const AXIS_W: f32 = 40.0;
+const PAD_TOP: f32 = 6.0;
+const PAD_BOTTOM: f32 = 14.0;
+
+fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
+    let max = scale.max_val();
+    let draw_h = rect.height() - PAD_TOP - PAD_BOTTOM;
+    rect.min.y + PAD_TOP + (1.0 - val / max) * draw_h
+}
+
+fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize) {
+    let painter = ui.painter_at(rect);
+    let amber = |a: u8| egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, a);
+    let font = egui::FontId::monospace(9.0);
+
+    let (major_vals, minor_step): (Vec<f32>, f32) = match scale {
+        ScopeScale::TenBit => ((0..=8).map(|i| i as f32 * 128.0).chain(std::iter::once(1023.0)).collect(), 32.0),
+        _ => ((0..=10).map(|i| i as f32 * 10.0).collect(), 5.0),
+    };
+
+    // Minor grid lines
+    let max = scale.max_val();
+    let mut v = 0.0;
+    while v <= max {
+        let y = val_to_y(v, &rect, scale);
+        if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
+            painter.line_segment(
+                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+                egui::Stroke::new(0.5, amber(10)),
+            );
+            // 3px tick
+            painter.line_segment(
+                [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
+                egui::Stroke::new(0.5, amber(20)),
+            );
+        }
+        v += minor_step;
+    }
+
+    // Major grid lines + labels
+    for &val in &major_vals {
+        let y = val_to_y(val, &rect, scale);
+        painter.line_segment(
+            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+            egui::Stroke::new(0.5, amber(50)),
+        );
+        // 6px tick
+        painter.line_segment(
+            [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
+            egui::Stroke::new(0.5, amber(80)),
+        );
+        // Label
+        let label = if scale == ScopeScale::TenBit { format!("{}", val as u32) } else { format!("{}", val as u32) };
+        let align = if val < 0.1 { egui::Align2::RIGHT_TOP } else { egui::Align2::RIGHT_BOTTOM };
+        painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), amber(190));
+    }
+
+    // Axis separator
+    painter.line_segment(
+        [egui::pos2(rect.min.x + AXIS_W, rect.min.y), egui::pos2(rect.min.x + AXIS_W, rect.max.y - PAD_BOTTOM)],
+        egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+    );
+
+    // Bottom tick row
+    let bottom_y = rect.max.y - PAD_BOTTOM;
+    painter.line_segment(
+        [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x, bottom_y)],
+        egui::Stroke::new(0.5, amber(30)),
+    );
+    let trace_w = rect.width() - AXIS_W;
+    for i in 0..=20 {
+        let frac = i as f32 / 20.0;
+        let x = rect.min.x + AXIS_W + frac * trace_w;
+        let is_major = i % 5 == 0;
+        let tick_h = if is_major { 6.0 } else { 3.0 };
+        let color = if is_major { amber(100) } else { amber(38) };
+        painter.line_segment(
+            [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y + tick_h)],
+            egui::Stroke::new(0.5, color),
+        );
+    }
+
+    // Parade section separators
+    if is_parade && section_count == 3 {
+        let third = trace_w / 3.0;
+        for i in 1..3 {
+            let x = rect.min.x + AXIS_W + third * i as f32;
+            painter.line_segment(
+                [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
+                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12)),
+            );
+        }
+    }
+}
+
+/// Show the complete scope panel with header, scale, and traces.
 pub fn show_scopes(
     ui: &mut egui::Ui,
     state: &mut ScopeState,
@@ -45,9 +154,6 @@ pub fn show_scopes(
     _quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
 ) {
-    let available = ui.available_size();
-    let _ppp = ui.ctx().pixels_per_point();
-    // High-res render target — downscaled by egui with bilinear filtering for thin traces.
     let render_w: usize = 1440;
     let render_h: usize = 512;
 
@@ -62,7 +168,8 @@ pub fn show_scopes(
             let gen = fb.generation;
             let stale = state.textures[mi].is_none()
                 || state.frame_generations[mi] != gen
-                || state.render_sizes[mi] != (render_w, render_h);
+                || state.render_sizes[mi] != (render_w, render_h)
+                || state.last_settings_generation != state.settings_generation;
             if stale {
                 // Use GPU-rendered scope texture from engine if available and mode matches
                 let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
@@ -105,13 +212,109 @@ pub fn show_scopes(
     if let Some((scope_img, gen)) = scope_result {
         state.frame_generations[mi] = gen;
         state.render_sizes[mi] = (render_w, render_h);
+        state.last_settings_generation = state.settings_generation;
         for idx in 0..4 {
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        let image = match scope_img {
+        let mut image = match scope_img {
             ScopeImage::Ready(img) => img,
         };
+
+        // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend)
+        if state.bloom && mode != ScopeMode::Vectorscope {
+            let w = image.size[0];
+            let h = image.size[1];
+            let threshold = 0.35_f32; // only bloom pixels brighter than this
+            let bloom_strength = 0.5_f32;
+            let radius = 4usize;
+
+            // 1. Extract bright pass
+            let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
+                let r = p.r() as f32 / 255.0;
+                let g = p.g() as f32 / 255.0;
+                let b = p.b() as f32 / 255.0;
+                let lum = r * 0.3 + g * 0.6 + b * 0.1;
+                if lum > threshold {
+                    [r, g, b]
+                } else {
+                    [0.0, 0.0, 0.0]
+                }
+            }).collect();
+
+            // 2. Separable Gaussian blur (horizontal then vertical)
+            for _pass in 0..1 {
+                // Horizontal
+                let src = bright.clone();
+                for y in 0..h {
+                    for x in radius..w.saturating_sub(radius) {
+                        let mut sum = [0.0_f32; 3];
+                        let mut wt_sum = 0.0_f32;
+                        for dx in 0..=radius * 2 {
+                            let sx = x + dx - radius;
+                            let d = (dx as f32 - radius as f32).abs();
+                            let wt = (-d * d / (2.0 * (radius as f32 * 0.5).powi(2))).exp();
+                            sum[0] += src[y * w + sx][0] * wt;
+                            sum[1] += src[y * w + sx][1] * wt;
+                            sum[2] += src[y * w + sx][2] * wt;
+                            wt_sum += wt;
+                        }
+                        bright[y * w + x] = [sum[0] / wt_sum, sum[1] / wt_sum, sum[2] / wt_sum];
+                    }
+                }
+                // Vertical
+                let src = bright.clone();
+                for x in 0..w {
+                    for y in radius..h.saturating_sub(radius) {
+                        let mut sum = [0.0_f32; 3];
+                        let mut wt_sum = 0.0_f32;
+                        for dy in 0..=radius * 2 {
+                            let sy = y + dy - radius;
+                            let d = (dy as f32 - radius as f32).abs();
+                            let wt = (-d * d / (2.0 * (radius as f32 * 0.5).powi(2))).exp();
+                            sum[0] += src[sy * w + x][0] * wt;
+                            sum[1] += src[sy * w + x][1] * wt;
+                            sum[2] += src[sy * w + x][2] * wt;
+                            wt_sum += wt;
+                        }
+                        bright[y * w + x] = [sum[0] / wt_sum, sum[1] / wt_sum, sum[2] / wt_sum];
+                    }
+                }
+            }
+
+            // 3. Additive blend back
+            for (pixel, bloom) in image.pixels.iter_mut().zip(bright.iter()) {
+                let r = (pixel.r() as f32 / 255.0 + bloom[0] * bloom_strength).min(1.0);
+                let g = (pixel.g() as f32 / 255.0 + bloom[1] * bloom_strength).min(1.0);
+                let b = (pixel.b() as f32 / 255.0 + bloom[2] * bloom_strength).min(1.0);
+                *pixel = egui::Color32::from_rgb(
+                    (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
+                );
+            }
+        }
+
+        // Post-processing: horizontal low pass filter (5-tap gaussian)
+        if state.low_pass && mode != ScopeMode::Vectorscope {
+            let w = image.size[0];
+            let h = image.size[1];
+            let weights = [0.05_f32, 0.20, 0.50, 0.20, 0.05];
+            let src = image.pixels.clone();
+            for y in 0..h {
+                for x in 2..w.saturating_sub(2) {
+                    let idx = x + y * w;
+                    let mut r = 0.0_f32;
+                    let mut g = 0.0_f32;
+                    let mut b = 0.0_f32;
+                    for (di, &wt) in weights.iter().enumerate() {
+                        let si = idx - 2 + di;
+                        r += src[si].r() as f32 * wt;
+                        g += src[si].g() as f32 * wt;
+                        b += src[si].b() as f32 * wt;
+                    }
+                    image.pixels[idx] = egui::Color32::from_rgb(r as u8, g as u8, b as u8);
+                }
+            }
+        }
 
         if let Some(ref mut tex) = state.textures[mi] {
             tex.set(image, egui::TextureOptions::LINEAR);
@@ -122,85 +325,57 @@ pub fn show_scopes(
         }
     }
 
-    // Display the cached texture for this mode
+    // Display the cached texture with scale overlay
+    let available = ui.available_size();
     if let Some(tex) = &state.textures[mi] {
         ui.ctx().request_repaint();
 
-        // Vectorscope must be displayed as a perfect square (centered)
-        // Other scopes fill the available area
         let is_vector = mode == ScopeMode::Vectorscope;
-        let display_size = if is_vector {
-            let side = available.x.min(available.y);
-            egui::vec2(side, side)
-        } else {
-            available
-        };
-
-        // Center the scope in the available area
         let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
-        let img_rect = if is_vector {
-            // Center square in the allocated rect
-            let offset_x = (full_rect.width() - display_size.x) / 2.0;
-            let offset_y = (full_rect.height() - display_size.y) / 2.0;
-            egui::Rect::from_min_size(
-                egui::pos2(full_rect.min.x + offset_x, full_rect.min.y + offset_y),
-                display_size,
-            )
-        } else {
-            full_rect
-        };
 
-        // Dark background behind the scope
+        // Dark background
         ui.painter().rect_filled(full_rect, 0.0, egui::Color32::from_rgb(0x04, 0x04, 0x07));
-        ui.painter().image(
-            tex.id(), img_rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
 
-        // Overlay labels
-        let label_font = egui::FontId::monospace(8.0);
-        let label_color = egui::Color32::from_rgb(0x90, 0x78, 0x30);
-        let shadow_color = egui::Color32::from_rgb(0x08, 0x08, 0x0c);
+        if is_vector {
+            // Vectorscope: centered square, no scale
+            let side = full_rect.width().min(full_rect.height());
+            let offset_x = (full_rect.width() - side) / 2.0;
+            let offset_y = (full_rect.height() - side) / 2.0;
+            let img_rect = egui::Rect::from_min_size(
+                egui::pos2(full_rect.min.x + offset_x, full_rect.min.y + offset_y),
+                egui::vec2(side, side),
+            );
+            ui.painter().image(tex.id(), img_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE);
 
-        match mode {
-            ScopeMode::Waveform | ScopeMode::Parade => {
-                for &(ire, label) in &[(100, "100"), (75, "75"), (50, "50"), (25, "25"), (0, "0")] {
-                    let y = img_rect.max.y - (ire as f32 / 100.0) * img_rect.height();
-                    let pos = egui::pos2(img_rect.min.x + 2.0, y);
-                    ui.painter().text(egui::pos2(pos.x + 0.5, pos.y + 0.5),
-                        egui::Align2::LEFT_CENTER, label, label_font.clone(), shadow_color);
-                    ui.painter().text(pos,
-                        egui::Align2::LEFT_CENTER, label, label_font.clone(), label_color);
-                }
+            // Vectorscope labels
+            let label_font = egui::FontId::monospace(8.0);
+            let label_color = egui::Color32::from_rgb(0x90, 0x78, 0x30);
+            let cx = img_rect.center().x;
+            let cy = img_rect.center().y;
+            let r = side / 2.0 - 4.0;
+            for (name, cb, cr) in &[("R", 0.17_f32, 0.29_f32), ("Mg", 0.28, -0.05), ("B", 0.12, -0.34),
+                                     ("Cy", -0.17, -0.29), ("G", -0.28, 0.05), ("Yl", -0.12, 0.34)] {
+                let tx = cx + cb * r * 2.0;
+                let ty = cy - cr * r * 2.0 - 6.0;
+                ui.painter().text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM, name, label_font.clone(), label_color);
             }
-            ScopeMode::Histogram => {
-                let bottom_y = img_rect.max.y - 2.0;
-                for &(val, x_frac) in &[("0", 0.0_f32), ("128", 0.5), ("255", 1.0)] {
-                    let x = img_rect.min.x + x_frac * img_rect.width();
-                    let align = if x_frac < 0.1 { egui::Align2::LEFT_BOTTOM }
-                        else if x_frac > 0.9 { egui::Align2::RIGHT_BOTTOM }
-                        else { egui::Align2::CENTER_BOTTOM };
-                    ui.painter().text(egui::pos2(x + 0.5, bottom_y + 0.5),
-                        align, val, label_font.clone(), shadow_color);
-                    ui.painter().text(egui::pos2(x, bottom_y),
-                        align, val, label_font.clone(), label_color);
-                }
-            }
-            ScopeMode::Vectorscope => {
-                // Labels at color target positions
-                let cx = img_rect.center().x;
-                let cy = img_rect.center().y;
-                let r = img_rect.width().min(img_rect.height()) / 2.0 - 4.0;
-                let labels = [("R", 0.17_f32, 0.29_f32), ("Mg", 0.28, -0.05), ("B", 0.12, -0.34),
-                              ("Cy", -0.17, -0.29), ("G", -0.28, 0.05), ("Yl", -0.12, 0.34)];
-                for (name, cb, cr) in &labels {
-                    let tx = cx + cb * r * 2.0;
-                    let ty = cy - cr * r * 2.0 - 6.0;
-                    ui.painter().text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM,
-                        name, label_font.clone(), label_color);
-                }
-            }
+        } else {
+            // Waveform/Parade/Histogram: scope image + scale overlay
+            let img_rect = egui::Rect::from_min_max(
+                egui::pos2(full_rect.min.x + AXIS_W, full_rect.min.y + PAD_TOP),
+                egui::pos2(full_rect.max.x, full_rect.max.y - PAD_BOTTOM),
+            );
+            ui.painter().image(tex.id(), img_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE);
+
+            // Draw scale system on top
+            // Read scale from the scope_state (passed via the ScopeState struct)
+            let scale = state.scale;
+            let is_parade = mode == ScopeMode::Parade;
+            draw_scale(ui, full_rect, scale, is_parade, 3);
         }
     } else {
         ui.label(egui::RichText::new("No frame data").color(egui::Color32::from_rgb(0x50, 0x50, 0x60)).size(10.0));
@@ -363,20 +538,32 @@ fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usiz
         }
     }
 
-    // 2. Tone map with Reinhard + sqrt gamma
+    // 2. Resolve: phosphor color ramp (mix base_color → white based on intensity)
     let knee = 12.0_f32;
+    // Base phosphor color (green P1 with slight teal: 0, 180, 60)
+    let base_r = 0.0_f32;
+    let base_g = 0.7_f32;
+    let base_b = 0.15_f32;
 
     let mut pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
         if count == 0 {
             return egui::Color32::from_rgb(0x04, 0x04, 0x07);
         }
         let c = count as f32;
-        let out = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
+        let intensity = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
 
-        let r = (out * 0.15 * 255.0) as u8;
-        let g = (out * 255.0) as u8;
-        let b = (out * 0.15 * 255.0) as u8;
-        egui::Color32::from_rgb(r, g, b)
+        // Phosphor ramp: mix(base_color, white, intensity²)
+        // Low intensity = pure base color, high intensity = white
+        let white_mix = intensity * intensity; // quadratic — stays colored longer
+        let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
+        let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
+        let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
+
+        egui::Color32::from_rgb(
+            (r * 255.0).min(255.0) as u8,
+            (g * 255.0).min(255.0) as u8,
+            (b * 255.0).min(255.0) as u8,
+        )
     }).collect();
 
     egui::ColorImage { size: [scope_w, scope_h], pixels }
@@ -414,10 +601,26 @@ fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize,
         }
     }
 
-    // 2. Tone map with Reinhard + sqrt gamma, colorize into output
+    // 2. Resolve: phosphor color ramp per channel (mix base → white)
     let knee = 12.0_f32;
     let bg = egui::Color32::from_rgb(0x04, 0x04, 0x07);
     let gap_color = egui::Color32::from_rgb(0x0a, 0x0a, 0x0e);
+
+    // Phosphor base colors for each channel
+    let bases: [[f32; 3]; 3] = [
+        [0.8, 0.05, 0.03],  // red
+        [0.03, 0.8, 0.05],  // green
+        [0.05, 0.08, 0.8],  // blue
+    ];
+
+    let resolve = |count: f32, base: &[f32; 3]| -> (u8, u8, u8) {
+        let intensity = (count / (count + knee)).sqrt().clamp(0.0, 1.0);
+        let white_mix = intensity * intensity;
+        let r = (base[0] + (1.0 - base[0]) * white_mix) * intensity;
+        let g = (base[1] + (1.0 - base[1]) * white_mix) * intensity;
+        let b = (base[2] + (1.0 - base[2]) * white_mix) * intensity;
+        ((r * 255.0).min(255.0) as u8, (g * 255.0).min(255.0) as u8, (b * 255.0).min(255.0) as u8)
+    };
 
     let mut pixels = vec![bg; scope_w * scope_h];
 
@@ -427,36 +630,23 @@ fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize,
         let b_count = accum_b[i] as f32;
         if r_count == 0.0 && g_count == 0.0 && b_count == 0.0 { continue; }
 
-        let r_val = (r_count / (r_count + knee)).sqrt();
-        let g_val = (g_count / (g_count + knee)).sqrt();
-        let b_val = (b_count / (b_count + knee)).sqrt();
-
         let py = i / section_w;
         let local_x = i % section_w;
 
-        // Red section
         if r_count > 0.0 {
             let px = local_x;
-            let ro = (r_val * 255.0).min(255.0) as u8;
-            let go = (r_val * 0.06 * 255.0).min(255.0) as u8;
-            let bo = (r_val * 0.03 * 255.0).min(255.0) as u8;
+            let (ro, go, bo) = resolve(r_count, &bases[0]);
             pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
         }
-        // Green section
         if g_count > 0.0 {
             let px = section_w + gap + local_x;
-            let ro = (g_val * 0.03 * 255.0).min(255.0) as u8;
-            let go = (g_val * 255.0).min(255.0) as u8;
-            let bo = (g_val * 0.06 * 255.0).min(255.0) as u8;
+            let (ro, go, bo) = resolve(g_count, &bases[1]);
             pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
         }
-        // Blue section
         if b_count > 0.0 {
             let px = (section_w + gap) * 2 + local_x;
             if px < scope_w {
-                let ro = (b_val * 0.06 * 255.0).min(255.0) as u8;
-                let go = (b_val * 0.08 * 255.0).min(255.0) as u8;
-                let bo = (b_val * 255.0).min(255.0) as u8;
+                let (ro, go, bo) = resolve(b_count, &bases[2]);
                 pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
             }
         }
