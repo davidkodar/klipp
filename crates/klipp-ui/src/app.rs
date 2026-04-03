@@ -669,9 +669,16 @@ impl KlippApp {
                         self.state.pending_skim_transcodes.push(media_id);
                     }
 
-                    // Don't auto-generate proxies — CUDA NVDEC + 1080p downscale
-                    // handles playback fine. Proxies can be requested manually via
-                    // the GenerateProxy command if needed.
+                    // Auto-generate proxy for heavy media (disabled by default, opt-in via preferences)
+                    if self.prefs.proxy.auto_generate_on_import && !is_still {
+                        // Only proxy media that benefits: 4K+ or high bitrate (>100 Mbps)
+                        let needs_proxy = resolution.width >= 3840
+                            || resolution.width * resolution.height > 3840 * 2160
+                            || video_bitrate_kbps.unwrap_or(0) > 100_000;
+                        if needs_proxy {
+                            self.spawn_proxy_generation(media_id);
+                        }
+                    }
                 }
                 AppEvent::MediaLoadFailed { media_id: _, error } => {
                     self.state.pending_media_path = None;

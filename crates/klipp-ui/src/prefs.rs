@@ -448,7 +448,7 @@ impl Default for PlaybackPrefs {
 impl Default for ProxyPrefs {
     fn default() -> Self {
         Self {
-            auto_generate_on_import: true,
+            auto_generate_on_import: false,
             auto_switch_during_scrub: false,
             proxy_resolution: ProxyResolution::default(),
             proxy_cache_dir: None,
