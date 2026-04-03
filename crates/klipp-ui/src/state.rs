@@ -291,6 +291,10 @@ pub struct AppState {
 
     // Phase 4: Proxy
     pub use_proxies: bool,
+    /// True while the user is actively scrubbing (dragging playhead on timeline).
+    pub is_scrubbing: bool,
+    /// Saved proxy state before scrub started (restored when scrub ends).
+    pub pre_scrub_use_proxies: bool,
 
     // Phase 4: Relink
     pub show_relink_dialog: bool,
@@ -925,6 +929,8 @@ impl Default for AppState {
             selected_media_ids: std::collections::HashSet::new(),
             last_clicked_media_id: None,
             use_proxies: true,
+            is_scrubbing: false,
+            pre_scrub_use_proxies: true,
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
             show_about_dialog: false,

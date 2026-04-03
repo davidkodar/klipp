@@ -414,6 +414,16 @@ impl TimelinePanel {
             }
 
             let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
+            // Track scrub start/end for proxy auto-switch
+            if ruler_response.drag_started() && !state.is_scrubbing {
+                state.is_scrubbing = true;
+                state.pre_scrub_use_proxies = state.use_proxies;
+                cmds.push(AppCommand::BeginScrub);
+            }
+            if ruler_response.drag_stopped() && state.is_scrubbing {
+                state.is_scrubbing = false;
+                cmds.push(AppCommand::EndScrub);
+            }
             if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
                 if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;

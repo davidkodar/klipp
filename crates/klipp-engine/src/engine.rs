@@ -715,6 +715,12 @@ impl PlaybackEngine {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;
             }
+            AppCommand::BeginScrub => {
+                // Engine can optimize decode during scrub (handled via use_proxies on UI side)
+            }
+            AppCommand::EndScrub => {
+                // Scrub ended — UI will restore proxy state
+            }
 
             AppCommand::SetLoopPlayback(enabled) => {
                 debug!("SetLoopPlayback: {enabled}");

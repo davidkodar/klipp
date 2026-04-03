@@ -7400,6 +7400,25 @@ impl KlippApp {
                     self.state.use_proxies = *enabled;
                     // Forward to engine (don't continue — let it send to cmd_tx)
                 }
+                AppCommand::BeginScrub => {
+                    // Auto-switch to proxy during scrub if preference enabled
+                    if self.prefs.proxy.auto_switch_during_scrub {
+                        self.state.pre_scrub_use_proxies = self.state.use_proxies;
+                        self.state.use_proxies = true;
+                        let _ = self.cmd_tx.send(AppCommand::SetUseProxies(true));
+                    }
+                    continue;
+                }
+                AppCommand::EndScrub => {
+                    // Restore proxy state after scrub
+                    if self.prefs.proxy.auto_switch_during_scrub {
+                        self.state.use_proxies = self.state.pre_scrub_use_proxies;
+                        let _ = self.cmd_tx.send(AppCommand::SetUseProxies(self.state.pre_scrub_use_proxies));
+                        // Seek to current position at full-res to update the viewer
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                    }
+                    continue;
+                }
                 AppCommand::RelinkMedia { media_id, new_path } => {
                     let was_offline;
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {

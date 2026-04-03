@@ -457,6 +457,10 @@ pub enum AppCommand {
     GenerateProxy { media_id: MediaId },
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
+    /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
+    BeginScrub,
+    /// End timeline scrubbing — engine restores full-res decode.
+    EndScrub,
     /// Relink a specific offline media item to a new path.
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
     /// Relink all offline media by searching a directory recursively.

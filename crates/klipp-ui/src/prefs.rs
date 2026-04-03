@@ -407,6 +407,10 @@ impl Default for ExportPrefs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyPrefs {
     pub auto_generate_on_import: bool,
+    /// Automatically switch to proxy files during timeline scrubbing for speed.
+    /// Disabled by default — opt-in only.
+    #[serde(default)]
+    pub auto_switch_during_scrub: bool,
     pub proxy_resolution: ProxyResolution,
     /// None = ~/.cache/klipp/proxies
     pub proxy_cache_dir: Option<PathBuf>,
@@ -445,6 +449,7 @@ impl Default for ProxyPrefs {
     fn default() -> Self {
         Self {
             auto_generate_on_import: true,
+            auto_switch_during_scrub: false,
             proxy_resolution: ProxyResolution::default(),
             proxy_cache_dir: None,
         }

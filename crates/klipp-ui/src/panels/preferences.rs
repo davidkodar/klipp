@@ -1040,6 +1040,14 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row(ui, "Auto-switch during scrub", |ui| {
+            let mut val = prefs.proxy.auto_switch_during_scrub;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.proxy.auto_switch_during_scrub = val;
+                *dirty = true;
+            }
+        });
+
         Self::setting_row(ui, "Proxy resolution", |ui| {
             egui::ComboBox::from_id_salt("proxy_resolution")
                 .selected_text(prefs.proxy.proxy_resolution.label())
