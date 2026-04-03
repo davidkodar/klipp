@@ -1334,8 +1334,9 @@ impl KlippApp {
         if !fb.dirty {
             return;
         }
-        // Full-res frame arrived — clear preview flag
+        // Full-res frame arrived — clear preview flags
         self.state.showing_thumbnail_preview = false;
+        self.state.awaiting_seek_frame = false;
 
         let w = fb.width as usize;
         let h = fb.height as usize;
@@ -8951,6 +8952,10 @@ impl KlippApp {
                 }
                 _ => {}
             }
+            // Track seek commands for filmstrip preview
+            if matches!(&cmd, AppCommand::SeekTo(_) | AppCommand::SeekRelative(_)) {
+                self.state.awaiting_seek_frame = true;
+            }
             let _ = self.cmd_tx.send(cmd);
         }
         // Batch: re-grade once for all node param changes in this frame
@@ -11419,10 +11424,10 @@ impl eframe::App for KlippApp {
         self.drain_proxy_events();
         self.drain_proxy_progress();
         self.poll_render_queue();
-        // Show filmstrip thumbnail preview if no full-res frame is ready
-        {
+        // Show filmstrip thumbnail preview only while waiting for a seek result
+        if self.state.awaiting_seek_frame && !self.state.showing_thumbnail_preview {
             let is_dirty = self.frame_buffer.lock().unwrap().dirty;
-            if !is_dirty && self.state.playback != klipp_engine::PlaybackState::Playing {
+            if !is_dirty {
                 self.show_filmstrip_preview(ctx);
             }
         }

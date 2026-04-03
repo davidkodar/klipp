@@ -297,6 +297,8 @@ pub struct AppState {
     pub pre_scrub_use_proxies: bool,
     /// True while waiting for a full-res frame after a seek — viewer shows filmstrip preview.
     pub showing_thumbnail_preview: bool,
+    /// Set to true when a SeekTo is sent, cleared when FrameReady arrives.
+    pub awaiting_seek_frame: bool,
 
     // Phase 4: Relink
     pub show_relink_dialog: bool,
@@ -934,6 +936,7 @@ impl Default for AppState {
             is_scrubbing: false,
             pre_scrub_use_proxies: true,
             showing_thumbnail_preview: false,
+            awaiting_seek_frame: false,
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
             show_about_dialog: false,
