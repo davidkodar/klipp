@@ -1259,12 +1259,83 @@ impl KlippApp {
         self.state.effect_thumbnails.poll_and_upload(ctx);
     }
 
+    /// Show nearest filmstrip thumbnail as instant viewer preview while full-res decodes.
+    fn show_filmstrip_preview(&mut self, ctx: &egui::Context) {
+        let playhead_secs = self.state.playhead.to_secs_f64();
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+
+        // Find the clip at the playhead
+        let media_id = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clip_at_timecode(self.state.playhead))
+            .and_then(|(_, clip)| {
+                clip.media_id().map(|mid| {
+                    let source_secs = (playhead_secs - clip.timeline_in.to_secs_f64())
+                        * clip.speed + clip.source_in.to_secs_f64();
+                    (mid, source_secs)
+                })
+            });
+
+        if let Some((mid, source_secs)) = media_id {
+            if let Some(filmstrip) = self.state.filmstrip_textures.get(&mid) {
+                if !filmstrip.is_empty() {
+                    // Binary search for nearest filmstrip frame
+                    let idx = match filmstrip.binary_search_by(|f| {
+                        f.0.partial_cmp(&source_secs).unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
+                        Ok(i) => i,
+                        Err(i) => {
+                            if i == 0 { 0 }
+                            else if i >= filmstrip.len() { filmstrip.len() - 1 }
+                            else {
+                                let d_left = (filmstrip[i - 1].0 - source_secs).abs();
+                                let d_right = (filmstrip[i].0 - source_secs).abs();
+                                if d_left <= d_right { i - 1 } else { i }
+                            }
+                        }
+                    };
+
+                    // Get the filmstrip texture and create a clone for the viewer
+                    let (_, ref thumb_tex) = filmstrip[idx];
+                    let size = thumb_tex.size_vec2();
+                    if size.x > 0.0 && size.y > 0.0 {
+                        // Read the filmstrip frame pixels from thumbnail cache
+                        if let Some(frames) = self.state.thumbnail_cache.filmstrip(&mid) {
+                            if let Some(frame) = frames.get(idx) {
+                                let fw = frame.width as usize;
+                                let fh = frame.height as usize;
+                                if frame.rgba.len() == fw * fh * 4 {
+                                    let pixels: Vec<egui::Color32> = frame.rgba.chunks_exact(4)
+                                        .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                                        .collect();
+                                    let image = egui::ColorImage { size: [fw, fh], pixels };
+                                    // Upload as viewer texture — bilinear upscale handles the rest
+                                    if let Some(ref mut tex) = self.viewer.video_texture {
+                                        tex.set(image, egui::TextureOptions::LINEAR);
+                                    } else {
+                                        self.viewer.video_texture = Some(ctx.load_texture(
+                                            "klipp-video-preview", image, egui::TextureOptions::LINEAR,
+                                        ));
+                                    }
+                                    self.state.showing_thumbnail_preview = true;
+                                    ctx.request_repaint();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn upload_frame_to_egui(&mut self, ctx: &egui::Context) {
         let t_total = std::time::Instant::now();
         let mut fb = self.frame_buffer.lock().unwrap();
         if !fb.dirty {
             return;
         }
+        // Full-res frame arrived — clear preview flag
+        self.state.showing_thumbnail_preview = false;
 
         let w = fb.width as usize;
         let h = fb.height as usize;
@@ -11348,6 +11419,13 @@ impl eframe::App for KlippApp {
         self.drain_proxy_events();
         self.drain_proxy_progress();
         self.poll_render_queue();
+        // Show filmstrip thumbnail preview if no full-res frame is ready
+        {
+            let is_dirty = self.frame_buffer.lock().unwrap().dirty;
+            if !is_dirty && self.state.playback != klipp_engine::PlaybackState::Playing {
+                self.show_filmstrip_preview(ctx);
+            }
+        }
         self.upload_frame_to_egui(ctx);
         self.upload_title_overlay(ctx);
         self.recompute_char_positions_if_needed();

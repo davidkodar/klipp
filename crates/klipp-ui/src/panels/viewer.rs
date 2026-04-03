@@ -830,7 +830,16 @@ impl ViewerPanel {
         // Timecode + zoom now shown in playbar below scrub bar
 
         // Proxy badge
-        if state.use_proxies && current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
+        if state.showing_thumbnail_preview {
+            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
+            ui.painter().text(
+                badge_pos,
+                egui::Align2::RIGHT_TOP,
+                "PREVIEW",
+                egui::FontId::monospace(9.0),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
+            );
+        } else if state.use_proxies && current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
             let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
             ui.painter().text(
                 badge_pos,
