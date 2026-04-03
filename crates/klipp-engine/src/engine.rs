@@ -349,7 +349,7 @@ impl PlaybackEngine {
             scope_render_mode: 0,
             matte_preview_node: None,
             cached_pregrade_frame: None,
-            frame_cache: FrameCache::new(60), // ~2.5s at 24fps
+            frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             ofx_host: {
                 let mut h = klipp_plugin::OfxHost::new();
                 h.discover_plugins();
@@ -2873,19 +2873,31 @@ impl PlaybackEngine {
 
     /// Step forward or backward by one frame without a full seek.
     fn step_frame(&mut self, direction: i64) {
+        let target_frame = self.playhead.value + direction;
+
+        // Check frame cache first (works for both forward AND backward)
+        if let Some((rgba, w, h)) = self.frame_cache.get(target_frame) {
+            let rgba = rgba.to_vec();
+            self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
+            let rgba = self.post_process_rgba(rgba, w, h);
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame(rgba, w, h);
+            drop(fb);
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            let _ = self.event_tx.send(AppEvent::FrameReady);
+            (self.repaint_cb)();
+            // Keep decoder filling the queue for future steps
+            self.prefetch_ahead();
+            return;
+        }
+
         if direction >= 0 {
-            // Forward: drain any stale frames, then resume decoder to get the next one
-            let last_frame = self.v1_decoder.as_ref().and_then(|dec| {
-                let mut last = None;
-                while let Some(frame) = dec.frame_queue().lock().unwrap().pop() {
-                    if !frame.is_eof {
-                        last = Some(frame);
-                    }
-                }
-                last
-            });
-            // If we got a queued frame, use it as the step
-            if let Some(frame) = last_frame {
+            // Forward: pop ONE frame from decoder queue (don't drain all)
+            let next_frame = self.v1_decoder.as_ref().and_then(|dec| {
+                dec.frame_queue().lock().unwrap().pop()
+            }).filter(|f| !f.is_eof);
+
+            if let Some(frame) = next_frame {
                 let chirp_pos = frame.pts_secs();
                 let seq = self.sequence.read().unwrap();
                 if let Some(clip) = seq.tracks.iter()
@@ -2920,6 +2932,7 @@ impl PlaybackEngine {
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                 let _ = self.event_tx.send(AppEvent::FrameReady);
                 (self.repaint_cb)();
+                self.prefetch_ahead();
                 return;
             }
             // No queued frames — resume decoder to produce one
@@ -2973,10 +2986,9 @@ impl PlaybackEngine {
                     }
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     let _ = self.event_tx.send(AppEvent::FrameReady);
-                    if let Some(dec) = &self.v1_decoder {
-                        dec.pause();
-                    }
                     (self.repaint_cb)();
+                    // Don't pause — prefetch_ahead will drain queue and keep decoder running
+                    self.prefetch_ahead();
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(2));
@@ -2985,28 +2997,49 @@ impl PlaybackEngine {
                 dec.pause();
             }
         } else {
-            // Backward: check frame cache first (instant), fall back to FFmpeg seek
-            let target_frame = (self.playhead.value + direction).max(0);
-            if let Some((rgba, w, h)) = self.frame_cache.get(target_frame) {
-                // Cache hit — instant backward step, no FFmpeg seek needed
-                let rgba = rgba.to_vec();
-                self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
-                // Re-grade the cached pre-grade frame through the full pipeline
-                let rgba = self.post_process_rgba(rgba, w, h);
-                let mut fb = self.frame_buffer.lock().unwrap();
-                fb.write_frame(rgba, w, h);
-                drop(fb);
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                let _ = self.event_tx.send(AppEvent::FrameReady);
-                (self.repaint_cb)();
-            } else {
-                // Cache miss — full FFmpeg seek (slow but unavoidable)
-                let new_tc = RationalTime {
-                    value: target_frame,
-                    rate: self.playhead.rate,
+            // Backward: cache was already checked above and missed.
+            // Fall back to FFmpeg seek (slow but unavoidable).
+            let new_tc = RationalTime {
+                value: target_frame.max(0),
+                rate: self.playhead.rate,
+            };
+            self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+        }
+    }
+
+    /// Drain any ready frames from the decoder queue into the frame cache,
+    /// then resume the decoder so it keeps filling the queue for future steps.
+    fn prefetch_ahead(&mut self) {
+        // Drain all currently queued frames into the cache
+        if let Some(dec) = &self.v1_decoder {
+            let mut queue = dec.frame_queue().lock().unwrap();
+            while let Some(frame) = queue.pop() {
+                if frame.is_eof { break; }
+                let pts = frame.pts;
+                let (w, h) = (frame.width, frame.height);
+                let rgba = frame.to_rgba();
+                // Compute the frame number from PTS
+                let seq = self.sequence.read().unwrap();
+                let frame_num = if let Some(clip) = seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|t| t.clips.get(self.current_clip_index))
+                {
+                    let source_elapsed = pts.to_secs_f64() - clip.source_in.to_secs_f64();
+                    let spd = clip.speed.max(0.001);
+                    let elapsed_tc = RationalTime::from_secs_f64(
+                        (source_elapsed / spd).max(0.0), self.fps.rate(),
+                    );
+                    (clip.timeline_in + elapsed_tc).value
+                } else {
+                    continue;
                 };
-                self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+                drop(seq);
+                self.frame_cache.insert(frame_num, rgba, w, h);
             }
+        }
+        // Resume decoder so it keeps filling the queue in the background
+        if let Some(dec) = &self.v1_decoder {
+            dec.resume();
         }
     }
 
