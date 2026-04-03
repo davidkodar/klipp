@@ -2997,13 +2997,84 @@ impl PlaybackEngine {
                 dec.pause();
             }
         } else {
-            // Backward: cache was already checked above and missed.
-            // Fall back to FFmpeg seek (slow but unavoidable).
-            let new_tc = RationalTime {
-                value: target_frame.max(0),
+            // Backward: cache miss. Seek to target AND prefill cache with nearby frames.
+            // Strategy: seek to (target - 30) and decode forward to fill cache,
+            // so subsequent backward steps are instant cache hits.
+            let prefetch_start = (target_frame - 30).max(0);
+            let seek_tc = RationalTime {
+                value: prefetch_start,
                 rate: self.playhead.rate,
             };
-            self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+
+            // Seek decoder to prefetch start position
+            if let Some(dec) = &self.v1_decoder {
+                dec.seek(seek_tc.to_secs_f64());
+                dec.frame_queue().lock().unwrap().clear();
+                dec.resume();
+            }
+
+            // Decode frames from prefetch_start up to and including target_frame
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            let mut found_target = false;
+            while std::time::Instant::now() < deadline {
+                let popped = self.v1_decoder.as_ref()
+                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                if let Some(frame) = popped {
+                    if frame.is_eof { break; }
+                    let (w, h) = (frame.width, frame.height);
+                    let rgba = frame.to_rgba();
+
+                    // Compute frame number from PTS
+                    let frame_num = {
+                        let seq = self.sequence.read().unwrap();
+                        if let Some(clip) = seq.tracks.iter()
+                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .find_map(|t| t.clips.get(self.current_clip_index))
+                        {
+                            let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
+                            let spd = clip.speed.max(0.001);
+                            let elapsed_tc = RationalTime::from_secs_f64(
+                                (source_elapsed / spd).max(0.0), self.fps.rate(),
+                            );
+                            (clip.timeline_in + elapsed_tc).value
+                        } else {
+                            break;
+                        }
+                    };
+
+                    // Cache the pre-grade frame
+                    self.frame_cache.insert(frame_num, rgba.clone(), w, h);
+
+                    // When we reach the target frame, display it
+                    if frame_num >= target_frame && !found_target {
+                        found_target = true;
+                        self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
+                        let rgba = self.post_process_rgba(rgba, w, h);
+                        let mut fb = self.frame_buffer.lock().unwrap();
+                        fb.write_frame(rgba, w, h);
+                        drop(fb);
+                        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                        let _ = self.event_tx.send(AppEvent::FrameReady);
+                        (self.repaint_cb)();
+                        // Keep decoding a few more frames into cache, then stop
+                    }
+
+                    // Stop after caching a few frames past target
+                    if frame_num > target_frame + 5 { break; }
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            if let Some(dec) = &self.v1_decoder {
+                dec.pause();
+            }
+
+            // If we didn't find the target (rare), fall back to basic seek
+            if !found_target {
+                let new_tc = RationalTime { value: target_frame.max(0), rate: self.playhead.rate };
+                self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
+            }
         }
     }
 
