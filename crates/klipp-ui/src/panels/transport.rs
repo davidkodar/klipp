@@ -338,6 +338,7 @@ impl TransportBar {
         }
 
         let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
+        let fps_rate = state.fps.rate() as i64;
         ctx.input(|i| {
             if !text_editing && i.key_pressed(egui::Key::Space) {
                 if state.playback == PlaybackState::Playing {
@@ -347,10 +348,20 @@ impl TransportBar {
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
-                cmds.push(AppCommand::SeekRelative(-1));
+                if i.modifiers.shift {
+                    // Shift+Left = 1 second back
+                    cmds.push(AppCommand::SeekRelative(-fps_rate));
+                } else {
+                    cmds.push(AppCommand::SeekRelative(-1));
+                }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
-                cmds.push(AppCommand::SeekRelative(1));
+                if i.modifiers.shift {
+                    // Shift+Right = 1 second forward
+                    cmds.push(AppCommand::SeekRelative(fps_rate));
+                } else {
+                    cmds.push(AppCommand::SeekRelative(1));
+                }
             }
             if !text_editing && i.key_pressed(egui::Key::Home) {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero()));

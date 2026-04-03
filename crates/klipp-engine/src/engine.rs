@@ -4107,20 +4107,37 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
 
     let mut result = Vec::with_capacity(commands.len());
     let mut last_seek: Option<AppCommand> = None;
+    let mut relative_sum: i64 = 0;
     let mut has_sequence_updated = false;
 
     for cmd in commands {
         match &cmd {
             AppCommand::SeekTo(_) | AppCommand::SetPlayhead(_) => {
+                // Flush any pending relative seek before absolute seek
+                if relative_sum != 0 {
+                    result.push(AppCommand::SeekRelative(relative_sum));
+                    relative_sum = 0;
+                }
                 // Replace any pending seek with this newer one
                 last_seek = Some(cmd);
             }
+            AppCommand::SeekRelative(frames) => {
+                // Sum all relative seeks into one net offset
+                // (prevents OS key repeat from queueing multiple seeks)
+                if let Some(seek) = last_seek.take() {
+                    result.push(seek);
+                }
+                relative_sum += frames;
+            }
             AppCommand::SequenceUpdated => {
-                // Coalesce multiple SequenceUpdated into one (deferred to end)
                 has_sequence_updated = true;
             }
             _ => {
-                // Flush pending seek before non-seek command
+                // Flush pending seeks before other commands
+                if relative_sum != 0 {
+                    result.push(AppCommand::SeekRelative(relative_sum));
+                    relative_sum = 0;
+                }
                 if let Some(seek) = last_seek.take() {
                     result.push(seek);
                 }
@@ -4129,12 +4146,13 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
         }
     }
 
-    // Flush final pending seek
+    // Flush remaining
+    if relative_sum != 0 {
+        result.push(AppCommand::SeekRelative(relative_sum));
+    }
     if let Some(seek) = last_seek.take() {
         result.push(seek);
     }
-
-    // Flush single coalesced SequenceUpdated at end
     if has_sequence_updated {
         result.push(AppCommand::SequenceUpdated);
     }
