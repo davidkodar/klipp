@@ -119,7 +119,7 @@ pub fn show_scope_window(
                             // Right-aligned: close button
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.add(egui::Button::new(
-                                    egui::RichText::new("\u{2715}").size(11.0).color(egui::Color32::from_rgb(0x80, 0x80, 0x88))
+                                    egui::RichText::new("x").size(11.0).color(egui::Color32::from_rgb(0x80, 0x80, 0x88))
                                 ).frame(false)).clicked() {
                                     state.open = false;
                                 }
@@ -330,7 +330,7 @@ fn draw_pane(
                             .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(
-                                egui::RichText::new("\u{2715}").size(10.0)
+                                egui::RichText::new("x").size(10.0)
                                     .color(egui::Color32::from_rgb(0x90, 0x90, 0x98))
                             ).frame(false)).clicked() {
                                 runtime.settings_pane = None;
@@ -397,6 +397,7 @@ fn render_pane_scope(
                         super::scopes::render_waveform_channel(
                             src, w, h, render_w, render_h,
                             pane.settings.waveform_channel,
+                            pane.settings.colorize,
                         )
                     }
                     ScopeType::Parade => {

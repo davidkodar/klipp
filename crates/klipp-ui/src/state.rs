@@ -152,6 +152,16 @@ pub enum Workspace {
     Export,
 }
 
+/// Where to dock the color grading tools (wheels, curves, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorToolsPosition {
+    /// Color tools in the right-side inspector panel (default).
+    #[default]
+    Right,
+    /// Color tools in a panel below the viewer.
+    Bottom,
+}
+
 /// A saved workspace layout (panel visibility + name).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedWorkspaceLayout {
@@ -416,6 +426,8 @@ pub struct AppState {
 
     // Color panel / node graph
     pub show_color_panel: bool,
+    /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
+    pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
     pub selected_node_id: Option<klipp_nodes::NodeId>,
     /// Whether the compact node strip is visible in Color workspace.
@@ -1312,6 +1324,7 @@ impl Default for AppState {
             global_lut_opacity: 1.0,
             global_lut_enabled: true,
             show_color_panel: false,
+            color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             show_node_strip: false,
             color_tab: ColorTab::default(),

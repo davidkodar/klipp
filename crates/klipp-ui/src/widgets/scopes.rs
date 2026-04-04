@@ -611,12 +611,40 @@ pub(crate) fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, sc
 }
 
 /// Render waveform for a specific channel (Y=luma, R, G, B).
+/// When `colorize` is true, traces show actual pixel colors instead of monochrome.
 pub(crate) fn render_waveform_channel(
     rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize,
-    channel: crate::state::WaveformChannel,
+    channel: crate::state::WaveformChannel, colorize: bool,
 ) -> egui::ColorImage {
     use crate::state::WaveformChannel;
 
+    if colorize {
+        // Colorized mode: accumulate actual RGB colors
+        let mut buf = AccumBuffer::new(scope_w, scope_h);
+        for y in 0..video_h {
+            for x in 0..video_w {
+                let idx = ((y * video_w + x) * 4) as usize;
+                if idx + 2 >= rgba.len() { break; }
+                let r = rgba[idx] as f32 / 255.0;
+                let g = rgba[idx + 1] as f32 / 255.0;
+                let b = rgba[idx + 2] as f32 / 255.0;
+                let val = match channel {
+                    WaveformChannel::Y => (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999),
+                    WaveformChannel::R => r.clamp(0.0, 0.999),
+                    WaveformChannel::G => g.clamp(0.0, 0.999),
+                    WaveformChannel::B => b.clamp(0.0, 0.999),
+                };
+                let sx = (x as usize * scope_w) / video_w as usize;
+                let sy = scope_h - 1 - (val * scope_h as f32) as usize;
+                if sx < scope_w && sy < scope_h {
+                    buf.add(sx, sy, r * 0.5, g * 0.5, b * 0.5);
+                }
+            }
+        }
+        return buf.to_image([0.0, 0.0, 0.0], 1.8);
+    }
+
+    // Monochrome mode: simple count accumulation with phosphor ramp
     let mut accum = vec![0u32; scope_w * scope_h];
 
     for y in 0..video_h {
@@ -644,7 +672,7 @@ pub(crate) fn render_waveform_channel(
 
     let knee = 3.0_f32;
     let (base_r, base_g, base_b) = match channel {
-        WaveformChannel::Y => (0.7, 0.7, 0.7),
+        WaveformChannel::Y => (0.0, 0.9, 0.0), // green luma trace (standard)
         WaveformChannel::R => (0.9, 0.0, 0.0),
         WaveformChannel::G => (0.0, 0.9, 0.0),
         WaveformChannel::B => (0.0, 0.0, 0.9),

@@ -12601,6 +12601,9 @@ impl eframe::App for KlippApp {
                         }
                     });
 
+                    let color_tools_bottom = in_color_ws
+                        && self.state.color_tools_position == crate::state::ColorToolsPosition::Bottom;
+
                     // Viewer (center top) — pure black, absolutely no border
                     // Paint black fill slightly expanded to cover any sub-pixel gaps
                     ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
@@ -12716,7 +12719,23 @@ impl eframe::App for KlippApp {
                                         self.state.show_scopes = !self.state.show_scopes;
                                         ui.ctx().request_repaint();
                                     }
-                                    // Node strip toggle removed — node system disabled
+                                    // Color tools position toggle
+                                    ui.separator();
+                                    {
+                                        use crate::state::ColorToolsPosition;
+                                        let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
+                                        let label = if is_bottom { "Tools: Bottom" } else { "Tools: Right" };
+                                        let color = if is_bottom { theme.text_accent } else { theme.text_dim };
+                                        if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
+                                            .frame(false)).on_hover_text("Toggle color tools position").clicked()
+                                        {
+                                            self.state.color_tools_position = if is_bottom {
+                                                ColorToolsPosition::Right
+                                            } else {
+                                                ColorToolsPosition::Bottom
+                                            };
+                                        }
+                                    }
 
                                     // Scope mode selector + controls (when scopes visible)
                                     if self.state.show_scopes {
@@ -12805,8 +12824,45 @@ impl eframe::App for KlippApp {
                             });
                         }
 
-                        // Scopes panel — read live state (toggle bar may have changed it this frame)
-                        if self.state.show_scopes {
+                        // Bottom panel: color tools (when docked at bottom) OR scopes (default)
+                        if color_tools_bottom {
+                            // Color tools in the bottom panel (replacing scopes)
+                            let tools_h = if scopes_h > 0.0 { scopes_h } else {
+                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+                                let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
+                                (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6)
+                            };
+                            let tools_rect = egui::Rect::from_min_size(
+                                egui::pos2(center_left, toggle_bar_rect.max.y),
+                                egui::vec2(center_w, tools_h),
+                            );
+                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+                                ui.set_min_size(tools_rect.size());
+                                ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
+                                if let Some(clip_id) = self.state.selected_clip {
+                                    let seq_idx = self.state.active_sequence_idx;
+                                    let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                                        .find_map(|t| t.find_clip_mut(clip_id));
+                                    if let Some(clip) = clip {
+                                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                                        let cmds = self.node_inspector_panel.show_simple_horizontal(
+                                            ui, &mut clip.node_graph, clip_id,
+                                            &mut self.state.selected_node_id,
+                                            &mut self.state.color_tab,
+                                            &self.theme,
+                                            clip_time_secs,
+                                        );
+                                        all_cmds.extend(cmds);
+                                    }
+                                } else {
+                                    ui.centered_and_justified(|ui| {
+                                        ui.label(egui::RichText::new("Select a clip to grade")
+                                            .size(12.0).color(theme.text_dim));
+                                    });
+                                }
+                            });
+                            ui.ctx().request_repaint();
+                        } else if self.state.show_scopes {
                             // Compute rect dynamically from current state
                             let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
                                 // Scopes just got enabled this frame — give it reasonable default

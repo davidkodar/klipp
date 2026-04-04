@@ -86,6 +86,34 @@ impl NodeInspectorPanel {
         theme: &KlippTheme,
         clip_time_secs: f64,
     ) -> Vec<AppCommand> {
+        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, clip_time_secs, false)
+    }
+
+    /// Show color inspector with horizontal layout (for bottom panel — wide, short).
+    pub fn show_simple_horizontal(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        selected_node: &mut Option<NodeId>,
+        color_tab: &mut ColorTab,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+    ) -> Vec<AppCommand> {
+        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, clip_time_secs, true)
+    }
+
+    fn show_simple_layout(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        selected_node: &mut Option<NodeId>,
+        color_tab: &mut ColorTab,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+        wide_layout: bool,
+    ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
         // ── Tab row (equal-width, amber underline on active) ──
@@ -142,41 +170,284 @@ impl NodeInspectorPanel {
         }
 
         // ── Tab content ──
+        // In wide layout, non-Wheels tabs need width constraints (sliders shouldn't be 1000px wide)
+        let needs_width_cap = wide_layout && *color_tab != ColorTab::Wheels;
         egui::ScrollArea::vertical()
             .id_salt("simple_inspector_scroll")
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-
-                match color_tab {
-                    ColorTab::Adjustments => {
-                        self.show_adjustments_tab(ui, graph, clip_id, selected_node, &mut cmds, theme);
+                let full_w = ui.available_width();
+                if needs_width_cap {
+                    // Center a constrained column — max ~480px for sliders
+                    let max_content_w = 480.0_f32.min(full_w);
+                    let pad = ((full_w - max_content_w) / 2.0).max(0.0);
+                    if pad > 10.0 { ui.add_space(0.0); } // force layout
+                    ui.set_max_width(max_content_w);
+                    // Center by adding horizontal indent
+                    if pad > 10.0 {
+                        ui.indent("wide_center", |ui| {
+                            ui.set_max_width(max_content_w);
+                            Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
+                        });
+                    } else {
+                        Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
                     }
-                    _ => {
-                        // Other tabs: find matching nodes and show their inspector
-                        let target_kinds: Vec<NodeKind> = match color_tab {
-                            ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
-                            ColorTab::Curves => vec![NodeKind::RGBCurves],
-                            ColorTab::HueSat => vec![NodeKind::HueSatCurves],
-                            ColorTab::Warper => vec![NodeKind::ColorWarper],
-                            _ => vec![],
-                        };
-                        for target_kind in &target_kinds {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
-                                let node_id = node.id;
-                                let node_kind = node.kind.clone();
-                                *selected_node = Some(node_id);
-                                let node_enabled = &mut node.enabled;
-                                let params = &mut node.params;
-                                let keyframes = &mut node.keyframes;
-                                self.show_inspector(ui, node_id, &node_kind, node_enabled,
-                                    params, keyframes, clip_id, &mut cmds, theme, clip_time_secs);
-                            }
-                        }
-                    }
+                } else {
+                    ui.set_min_width(full_w);
+                    Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
                 }
             });
 
         cmds
+    }
+
+    fn render_tab_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        selected_node: &mut Option<NodeId>,
+        color_tab: &mut ColorTab,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+        wide_layout: bool,
+    ) {
+        match color_tab {
+            ColorTab::Adjustments => {
+                self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme);
+            }
+            ColorTab::Wheels if wide_layout => {
+                // Wide layout: combined wheels + sat/bri in unified columns
+                self.show_wheels_wide(ui, graph, clip_id, cmds, theme);
+            }
+            _ => {
+                let target_kinds: Vec<NodeKind> = match color_tab {
+                    ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
+                    ColorTab::Curves => vec![NodeKind::RGBCurves],
+                    ColorTab::HueSat => vec![NodeKind::HueSatCurves],
+                    ColorTab::Warper => vec![NodeKind::ColorWarper],
+                    _ => vec![],
+                };
+                for target_kind in &target_kinds {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
+                        let node_id = node.id;
+                        let node_kind = node.kind.clone();
+                        *selected_node = Some(node_id);
+                        let node_enabled = &mut node.enabled;
+                        let params = &mut node.params;
+                        let keyframes = &mut node.keyframes;
+                        self.show_inspector_layout(ui, node_id, &node_kind, node_enabled,
+                            params, keyframes, clip_id, cmds, theme, clip_time_secs, wide_layout);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wide-layout combined wheels + sat/bri — each wheel column includes its sliders beneath.
+    fn show_wheels_wide(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        // Find both nodes
+        let wheels_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled);
+        let satbri_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled);
+
+        let avail_w = ui.available_width();
+        // 4 columns with 2px gaps between them: 3 gaps = 6px
+        let cell_w = ((avail_w - 6.0) / 4.0).floor();
+        let wheel_d = (cell_w - 14.0).clamp(50.0, 150.0);
+
+        // Linear / Log toggle
+        if let Some(wi) = wheels_idx {
+            let log_mode = graph.nodes[wi].params.wheels_log_mode.unwrap_or(false);
+            let node_id = graph.nodes[wi].id;
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                if ui.selectable_label(!log_mode, "Linear").clicked() && log_mode {
+                    graph.nodes[wi].params.wheels_log_mode = Some(false);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 0.0 });
+                }
+                if ui.selectable_label(log_mode, "Log (HDR)").clicked() && !log_mode {
+                    graph.nodes[wi].params.wheels_log_mode = Some(true);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 1.0 });
+                }
+            });
+            ui.add_space(4.0);
+        }
+
+        // Helper: render one wheel + its sat/bri sliders in a column
+        let wheels_node_id = wheels_idx.map(|i| graph.nodes[i].id);
+        let satbri_node_id = satbri_idx.map(|i| graph.nodes[i].id);
+
+        // Define the 4 wheel groups: (label, wheel_state_accessor, param_prefix, sat_param, bri_param)
+        let groups: [(&str, &str); 4] = [
+            ("Lift", "lift"), ("Gamma", "gamma"), ("Gain", "gain"), ("Offset", "offset"),
+        ];
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (label, prefix) in &groups {
+                let col_rect = ui.allocate_exact_size(
+                    egui::vec2(cell_w, wheel_d + 120.0),
+                    egui::Sense::hover(),
+                ).0;
+                let mut col_ui = ui.child_ui(col_rect, egui::Layout::top_down(egui::Align::Center), None);
+
+                // Wheel
+                if let Some(wi) = wheels_idx {
+                    let params = &mut graph.nodes[wi].params;
+                    let node_id = wheels_node_id.unwrap();
+                    let (x_field, y_field, m_field) = match *prefix {
+                        "lift" => (&mut params.lift_x, &mut params.lift_y, &mut params.lift_master),
+                        "gamma" => (&mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master),
+                        "gain" => (&mut params.gain_x, &mut params.gain_y, &mut params.gain_master),
+                        _ => (&mut params.offset_x, &mut params.offset_y, &mut params.offset_master),
+                    };
+                    let mut offset = [x_field.unwrap_or(0.0), y_field.unwrap_or(0.0)];
+                    let mut master = m_field.unwrap_or(0.0);
+                    let wheel_state = match *prefix {
+                        "lift" => &mut self.lift_wheel,
+                        "gamma" => &mut self.gamma_wheel,
+                        "gain" => &mut self.gain_wheel,
+                        _ => &mut self.offset_wheel,
+                    };
+                    let resp = color_wheel::color_wheel_sized(
+                        &mut col_ui, wheel_state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
+                    );
+                    if resp.changed {
+                        *x_field = Some(offset[0]);
+                        *y_field = Some(offset[1]);
+                        *m_field = Some(master);
+                        push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                    }
+                }
+
+                // Sat/Bri sliders painted manually below the wheel
+                if let Some(si) = satbri_idx {
+                    let params = &mut graph.nodes[si].params;
+                    let node_id = satbri_node_id.unwrap();
+                    let sat_name = format!("{prefix}_sat");
+                    let bri_name = format!("{prefix}_bri");
+                    let sat_field = match *prefix {
+                        "lift" => &mut params.lift_sat,
+                        "gamma" => &mut params.gamma_sat,
+                        "gain" => &mut params.gain_sat,
+                        _ => &mut params.offset_sat,
+                    };
+                    let bri_field = match *prefix {
+                        "lift" => &mut params.lift_bri,
+                        "gamma" => &mut params.gamma_bri,
+                        "gain" => &mut params.gain_bri,
+                        _ => &mut params.offset_bri,
+                    };
+
+                    let painter = col_ui.painter().clone();
+                    let text_dim = theme.text_dim;
+                    let accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+                    let track_bg = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+                    let slider_h = 14.0;
+                    let label_h = 12.0;
+                    let margin = 12.0;
+                    let track_w = cell_w - margin * 2.0;
+                    let value_w = 30.0;
+                    let track_draw_w = track_w - value_w - 4.0;
+
+                    let cursor_y = col_ui.cursor().min.y;
+                    let cx = col_rect.min.x + margin;
+
+                    // -- Saturation --
+                    let sat_label_y = cursor_y + 4.0;
+                    painter.text(
+                        egui::pos2(col_rect.center().x, sat_label_y + label_h / 2.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Saturation",
+                        egui::FontId::proportional(8.0),
+                        text_dim,
+                    );
+                    let sat_track_y = sat_label_y + label_h + 2.0;
+                    let sat_track_rect = egui::Rect::from_min_size(
+                        egui::pos2(cx, sat_track_y + slider_h / 2.0 - 1.5),
+                        egui::vec2(track_draw_w, 3.0),
+                    );
+                    painter.rect_filled(sat_track_rect, 2.0, track_bg);
+                    let sat_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, sat_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
+                    let sat_resp = col_ui.allocate_rect(sat_hit, egui::Sense::click_and_drag());
+                    let mut s = sat_field.unwrap_or(0.0);
+                    if sat_resp.dragged() || sat_resp.clicked() {
+                        if let Some(pos) = sat_resp.interact_pointer_pos() {
+                            let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
+                            s = t * 2.0 - 1.0;
+                            *sat_field = Some(s);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.clone(), value: s });
+                        }
+                    }
+                    if sat_resp.double_clicked() || sat_resp.secondary_clicked() {
+                        s = 0.0; *sat_field = Some(s);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name, value: 0.0 });
+                    }
+                    let sat_t = (s + 1.0) / 2.0;
+                    let sat_thumb_x = cx + sat_t * track_draw_w;
+                    painter.circle_filled(egui::pos2(sat_thumb_x, sat_track_y + slider_h / 2.0), 4.0, accent);
+                    let is_default = s.abs() < 0.005;
+                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    painter.text(
+                        egui::pos2(cx + track_draw_w + value_w + 2.0, sat_track_y + slider_h / 2.0),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("{s:+.2}"),
+                        egui::FontId::monospace(8.0),
+                        val_color,
+                    );
+
+                    // -- Brightness --
+                    let bri_label_y = sat_track_y + slider_h + 4.0;
+                    painter.text(
+                        egui::pos2(col_rect.center().x, bri_label_y + label_h / 2.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Brightness",
+                        egui::FontId::proportional(8.0),
+                        text_dim,
+                    );
+                    let bri_track_y = bri_label_y + label_h + 2.0;
+                    let bri_track_rect = egui::Rect::from_min_size(
+                        egui::pos2(cx, bri_track_y + slider_h / 2.0 - 1.5),
+                        egui::vec2(track_draw_w, 3.0),
+                    );
+                    painter.rect_filled(bri_track_rect, 2.0, track_bg);
+                    let bri_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, bri_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
+                    let bri_resp = col_ui.allocate_rect(bri_hit, egui::Sense::click_and_drag());
+                    let mut b = bri_field.unwrap_or(0.0);
+                    if bri_resp.dragged() || bri_resp.clicked() {
+                        if let Some(pos) = bri_resp.interact_pointer_pos() {
+                            let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
+                            b = t * 2.0 - 1.0;
+                            *bri_field = Some(b);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.clone(), value: b });
+                        }
+                    }
+                    if bri_resp.double_clicked() || bri_resp.secondary_clicked() {
+                        b = 0.0; *bri_field = Some(b);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name, value: 0.0 });
+                    }
+                    let bri_t = (b + 1.0) / 2.0;
+                    let bri_thumb_x = cx + bri_t * track_draw_w;
+                    painter.circle_filled(egui::pos2(bri_thumb_x, bri_track_y + slider_h / 2.0), 4.0, accent);
+                    let is_default = b.abs() < 0.005;
+                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    painter.text(
+                        egui::pos2(cx + track_draw_w + value_w + 2.0, bri_track_y + slider_h / 2.0),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("{b:+.2}"),
+                        egui::FontId::monospace(8.0),
+                        val_color,
+                    );
+                }
+            }
+        });
     }
 
     /// Adjustments tab — matches the HTML mockup layout exactly.
@@ -410,6 +681,23 @@ impl NodeInspectorPanel {
         theme: &KlippTheme,
         clip_time_secs: f64,
     ) {
+        self.show_inspector_layout(ui, node_id, kind, enabled, params, _keyframes, clip_id, cmds, theme, clip_time_secs, false)
+    }
+
+    fn show_inspector_layout(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        kind: &NodeKind,
+        enabled: &mut bool,
+        params: &mut NodeParams,
+        _keyframes: &mut klipp_nodes::NodeKeyframeTracks,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+        wide_layout: bool,
+    ) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -474,8 +762,11 @@ impl NodeInspectorPanel {
             }
             NodeKind::ColorWheels => {
                 let avail_w = ui.available_width();
-                let two_col = avail_w >= 250.0;
-                let wheel_d = if two_col {
+                let four_col = wide_layout && avail_w >= 450.0;
+                let two_col = !four_col && avail_w >= 250.0;
+                let wheel_d = if four_col {
+                    ((avail_w - 40.0) / 4.0).clamp(50.0, 130.0)
+                } else if two_col {
                     ((avail_w - 20.0) / 2.0).clamp(50.0, 110.0)
                 } else {
                     (avail_w - 10.0).clamp(60.0, 140.0)
@@ -507,7 +798,7 @@ impl NodeInspectorPanel {
                     let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
                     let mut master = m.unwrap_or(0.0);
                     let resp = color_wheel::color_wheel_sized(
-                        ui, state, theme, label, &mut offset, &mut master, wheel_d,
+                        ui, state, theme, label, &mut offset, &mut master, wheel_d, None,
                     );
                     if resp.changed {
                         *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
@@ -548,7 +839,28 @@ impl NodeInspectorPanel {
                     }
                 } else {
                     // Linear wheels: Lift / Gamma / Gain / Offset (traditional)
-                    if two_col {
+                    if four_col {
+                        // Wide layout: all 4 wheels in one horizontal row, left-aligned
+                        let cell_w = wheel_d + 10.0;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Lift", &mut self.lift_wheel,
+                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
+                            });
+                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Gamma", &mut self.gamma_wheel,
+                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
+                            });
+                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Gain", &mut self.gain_wheel,
+                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
+                            });
+                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
+                                show_wheel(ui, "Offset", &mut self.offset_wheel,
+                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
+                            });
+                        });
+                    } else if two_col {
                         let pair_w = (wheel_d + 10.0) * 2.0;
                         let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
                         ui.horizontal_wrapped(|ui| {
@@ -586,31 +898,73 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::WheelSatBri => {
-                for (group_label, sat_name, bri_name, sat_val, bri_val) in [
+                let groups = [
                     ("LIFT", "lift_sat", "lift_bri", params.lift_sat.unwrap_or(0.0), params.lift_bri.unwrap_or(0.0)),
                     ("GAMMA", "gamma_sat", "gamma_bri", params.gamma_sat.unwrap_or(0.0), params.gamma_bri.unwrap_or(0.0)),
                     ("GAIN", "gain_sat", "gain_bri", params.gain_sat.unwrap_or(0.0), params.gain_bri.unwrap_or(0.0)),
                     ("OFFSET", "offset_sat", "offset_bri", params.offset_sat.unwrap_or(0.0), params.offset_bri.unwrap_or(0.0)),
-                ] {
-                    let (reset, is_open) = section_header(ui, group_label, true, theme);
-                    if is_open {
-                        if reset {
-                            params.apply_override(sat_name, 0.0);
-                            params.apply_override(bri_name, 0.0);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                ];
+                if wide_layout && ui.available_width() >= 450.0 {
+                    // Wide: 4 columns matching wheel widths, left-aligned
+                    let avail = ui.available_width();
+                    // Match wheel cell_w: same formula as ColorWheels four_col
+                    let wheel_d = ((avail - 40.0) / 4.0).clamp(50.0, 130.0);
+                    let col_w = wheel_d + 10.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (group_label, sat_name, bri_name, sat_val, bri_val) in &groups {
+                            ui.allocate_ui(egui::vec2(col_w, 55.0), |ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(egui::RichText::new(*group_label).size(8.0).color(theme.text_dim).strong());
+                                let slider_w = col_w - 40.0; // room for label + value
+                                let mut s = *sat_val;
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("S").size(8.0).color(theme.text_dim));
+                                    ui.add_sized([slider_w, 14.0],
+                                        egui::Slider::new(&mut s, -1.0..=1.0).show_value(false));
+                                    ui.label(egui::RichText::new(format!("{s:.2}")).size(8.0).color(theme.text_dim));
+                                });
+                                if s != *sat_val {
+                                    params.apply_override(sat_name, s);
+                                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: (*sat_name).into(), value: s });
+                                }
+                                let mut b = *bri_val;
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("B").size(8.0).color(theme.text_dim));
+                                    ui.add_sized([slider_w, 14.0],
+                                        egui::Slider::new(&mut b, -1.0..=1.0).show_value(false));
+                                    ui.label(egui::RichText::new(format!("{b:.2}")).size(8.0).color(theme.text_dim));
+                                });
+                                if b != *bri_val {
+                                    params.apply_override(bri_name, b);
+                                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: (*bri_name).into(), value: b });
+                                }
+                            });
                         }
-                        let mut s = sat_val;
-                        if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme) {
-                            params.apply_override(sat_name, s);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
+                    });
+                } else {
+                    // Normal: stacked vertically with collapsible sections
+                    for (group_label, sat_name, bri_name, sat_val, bri_val) in groups {
+                        let (reset, is_open) = section_header(ui, group_label, true, theme);
+                        if is_open {
+                            if reset {
+                                params.apply_override(sat_name, 0.0);
+                                params.apply_override(bri_name, 0.0);
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                            }
+                            let mut s = sat_val;
+                            if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme) {
+                                params.apply_override(sat_name, s);
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
+                            }
+                            let mut b = bri_val;
+                            if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme) {
+                                params.apply_override(bri_name, b);
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
+                            }
+                            section_divider(ui);
                         }
-                        let mut b = bri_val;
-                        if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme) {
-                            params.apply_override(bri_name, b);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
-                        }
-                        section_divider(ui);
                     }
                 }
             }

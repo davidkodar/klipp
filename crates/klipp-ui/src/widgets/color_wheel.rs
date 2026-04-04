@@ -21,7 +21,7 @@ pub fn color_wheel(
     offset: &mut [f32; 2],
     master: &mut f32,
 ) -> WheelResponse {
-    color_wheel_sized(ui, state, _theme, label, offset, master, 108.0)
+    color_wheel_sized(ui, state, _theme, label, offset, master, 108.0, None)
 }
 
 /// Like `color_wheel` but with a custom diameter (in pixels).
@@ -33,6 +33,7 @@ pub fn color_wheel_sized(
     offset: &mut [f32; 2],
     master: &mut f32,
     wheel_diameter: f32,
+    forced_width: Option<f32>,
 ) -> WheelResponse {
     let mut changed = false;
     let mut drag_started = false;
@@ -50,7 +51,7 @@ pub fn color_wheel_sized(
     let pills_total_w = pill_w * 3.0 + pill_gap * 2.0;
 
     let total_h = label_h + wheel_diameter + spacing + rgb_row_h + spacing + master_row_h;
-    let total_w = pills_total_w.max(wheel_diameter + 8.0) + 4.0; // ensure pills fit
+    let total_w = forced_width.unwrap_or_else(|| pills_total_w.max(wheel_diameter + 8.0) + 4.0);
 
     let (full_rect, _) = ui.allocate_exact_size(
         egui::vec2(total_w, total_h),
