@@ -103,34 +103,6 @@ impl Default for ExportDialogState {
     }
 }
 
-/// Lightweight playback frame timing diagnostics.
-struct FrameTimings {
-    last_frame_time: std::time::Instant,
-    last_report: std::time::Instant,
-    swap_pending_us: u64,
-    texture_upload_us: u64,
-    ui_render_us: u64,
-    frame_intervals: Vec<f32>,
-    missed_frames: u64,
-    total_frames: u64,
-}
-
-impl Default for FrameTimings {
-    fn default() -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            last_frame_time: now,
-            last_report: now,
-            swap_pending_us: 0,
-            texture_upload_us: 0,
-            ui_render_us: 0,
-            frame_intervals: Vec::new(),
-            missed_frames: 0,
-            total_frames: 0,
-        }
-    }
-}
-
 pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
@@ -200,8 +172,6 @@ pub struct KlippApp {
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)
     scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
-    // Playback frame timing diagnostics
-    frame_timings: FrameTimings,
 }
 
 impl KlippApp {
@@ -291,7 +261,6 @@ impl KlippApp {
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
-            frame_timings: FrameTimings::default(),
         };
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
@@ -1374,7 +1343,6 @@ impl KlippApp {
         let t_total = std::time::Instant::now();
 
         // ── Phase 1: minimal lock — take data, release immediately (~5µs) ──
-        let t_swap = std::time::Instant::now();
         let frame_data = {
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.swap_pending();
@@ -1400,19 +1368,7 @@ impl KlippApp {
             (rgba, original, fw, fh, w, h)
             // lock released immediately — fb.data is now empty
         };
-        let swap_us = t_swap.elapsed().as_micros() as u64;
         let (mut rgba_bytes, original_bytes, fb_width, fb_height, w, h) = frame_data;
-
-        // Track frame timing
-        if self.state.playback == PlaybackState::Playing {
-            let now = std::time::Instant::now();
-            let interval = now.duration_since(self.frame_timings.last_frame_time).as_secs_f32() * 1000.0;
-            self.frame_timings.last_frame_time = now;
-            self.frame_timings.frame_intervals.push(interval);
-            self.frame_timings.total_frames += 1;
-            self.frame_timings.swap_pending_us += swap_us;
-            if interval > 62.5 { self.frame_timings.missed_frames += 1; }
-        }
 
         // Full-res frame arrived — clear preview flags
         self.state.showing_thumbnail_preview = false;
@@ -1615,11 +1571,6 @@ impl KlippApp {
             tracing::info!(
                 "PERF upload_frame: {w}x{h} total={total_ms:.1}ms (convert={convert_ms:.1}ms texture={texture_ms:.1}ms)"
             );
-        }
-
-        // Collect texture upload timing
-        if self.state.playback == PlaybackState::Playing {
-            self.frame_timings.texture_upload_us += (texture_ms * 1000.0) as u64;
         }
 
         // Put frame data back so scopes can read it (~5µs pointer move)
