@@ -107,7 +107,7 @@ pub fn color_wheel_sized(
     painter.line_segment([egui::pos2(wc.x - wheel_radius, wc.y), egui::pos2(wc.x + wheel_radius, wc.y)], guide_stroke);
     painter.line_segment([egui::pos2(wc.x, wc.y - wheel_radius), egui::pos2(wc.x, wc.y + wheel_radius)], guide_stroke);
     // Outer ring
-    painter.circle_stroke(wc, wheel_radius, egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128)));
+    // Outer ring removed — texture has feathered antialiased edge
 
     // ── Wheel interaction ──
     let wheel_resp = ui.allocate_rect(wheel_rect, egui::Sense::click_and_drag());

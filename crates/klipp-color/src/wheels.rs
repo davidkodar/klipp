@@ -50,9 +50,10 @@ pub fn wheel_offset_to_rgb(offset_x: f32, offset_y: f32, master: f32) -> (f32, f
 pub fn generate_wheel_texture(radius: u32) -> Vec<u8> {
     let size = radius * 2;
     let mut pixels = vec![0u8; (size * size * 4) as usize];
-    let cx = radius as f32;
-    let cy = radius as f32;
-    let r = radius as f32;
+    // Use 0.5-offset center so the circle is symmetric across pixel grid
+    let cx = radius as f32 - 0.5;
+    let cy = radius as f32 - 0.5;
+    let r = radius as f32 - 1.5; // shrink slightly so edge never clips
 
     for y in 0..size {
         for x in 0..size {
@@ -61,20 +62,22 @@ pub fn generate_wheel_texture(radius: u32) -> Vec<u8> {
             let dist = (dx * dx + dy * dy).sqrt();
 
             let idx = ((y * size + x) * 4) as usize;
-            if dist > r {
-                // Outside circle — transparent
+
+            if dist > r + 1.0 {
                 pixels[idx + 3] = 0;
                 continue;
             }
 
             let hue = (dy.atan2(dx).to_degrees() + 360.0) % 360.0;
-            let sat = (dist / r).min(1.0);
+            let sat = (dist / r).clamp(0.0, 1.0);
             let (rv, gv, bv) = hsv_to_rgb(hue, sat, 0.82);
 
-            pixels[idx] = (rv * 255.0) as u8;
+            let alpha = (r + 1.0 - dist).clamp(0.0, 1.0);
+
+            pixels[idx]     = (rv * 255.0) as u8;
             pixels[idx + 1] = (gv * 255.0) as u8;
             pixels[idx + 2] = (bv * 255.0) as u8;
-            pixels[idx + 3] = 255;
+            pixels[idx + 3] = (alpha * 255.0) as u8;
         }
     }
     pixels

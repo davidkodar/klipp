@@ -6,10 +6,57 @@ use klipp_timeline::{
     Clip, ClipKind, FontStyle, Sequence, TextAlignment, TitleBackground, TitleData,
     TitlePosition, TitleShadow, Track, TrackKind,
 };
+use klipp_nodes::{NodeGraph, NodeKind, NodeId};
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+/// Migrate old project graphs forward — insert nodes that were added in later versions.
+fn migrate_graph(graph: &mut NodeGraph) {
+    // ColorWarper: added between HueSatCurves and ColorBalance
+    let has_warper = graph.nodes.iter().any(|n| n.kind == NodeKind::ColorWarper);
+    if !has_warper {
+        let id = NodeId::new_v4();
+        let node = klipp_nodes::Node {
+            id,
+            kind: NodeKind::ColorWarper,
+            label: "Color Warper".to_string(),
+            enabled: true,
+            params: klipp_nodes::NodeParams::default(),
+            keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+        };
+        // Insert after HueSatCurves in the node list
+        if let Some(pos) = graph.nodes.iter().position(|n| n.kind == NodeKind::HueSatCurves) {
+            graph.nodes.insert(pos + 1, node);
+        } else {
+            // Fallback: insert before Output
+            if let Some(pos) = graph.nodes.iter().position(|n| n.kind == NodeKind::Output) {
+                graph.nodes.insert(pos, node);
+            } else {
+                graph.nodes.push(node);
+            }
+        }
+        // Wire it into the edge chain: find the edge from HueSat→next and splice in
+        if let Some(huesat_id) = graph.nodes.iter().find(|n| n.kind == NodeKind::HueSatCurves).map(|n| n.id) {
+            if let Some(edge_idx) = graph.edges.iter().position(|e| e.from_node == huesat_id) {
+                let old_target = graph.edges[edge_idx].to_node;
+                let old_port = graph.edges[edge_idx].to_port;
+                // HueSat → Warper
+                graph.edges[edge_idx].to_node = id;
+                graph.edges[edge_idx].to_port = 0;
+                // Warper → old target
+                graph.edges.push(klipp_nodes::Edge {
+                    from_node: id,
+                    from_port: 0,
+                    to_node: old_target,
+                    to_port: old_port,
+                });
+            }
+        }
+        info!("Migrated graph: added ColorWarper node");
+    }
+}
 
 /// Result of loading a project: sequences, media pool, color settings, active sequence ID, created_at.
 pub type LoadResult = (Vec<Sequence>, MediaPool, crate::save::ColorSettings, Option<String>, Option<String>);
@@ -217,7 +264,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
                     source_in: RationalTime { value: c.source_in, rate: c.rate },
                     source_out: RationalTime { value: c.source_out, rate: c.rate },
-                    node_graph: c.node_graph.clone().unwrap_or_default(),
+                    node_graph: {
+                        let mut g = c.node_graph.clone().unwrap_or_default();
+                        migrate_graph(&mut g);
+                        g
+                    },
                     builtin_effects: c.builtin_effects.as_ref()
                         .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())
                         .unwrap_or_default(),
@@ -294,9 +345,13 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     source_rotation: c.source_rotation.unwrap_or(0),
                     enabled: c.enabled.unwrap_or(true),
                     solo: c.solo.unwrap_or(false),
-                    grade_versions: c.grade_versions.iter().map(|gv| klipp_timeline::GradeVersion {
-                        name: gv.name.clone(),
-                        node_graph: gv.node_graph.clone(),
+                    grade_versions: c.grade_versions.iter().map(|gv| {
+                        let mut g = gv.node_graph.clone();
+                        migrate_graph(&mut g);
+                        klipp_timeline::GradeVersion {
+                            name: gv.name.clone(),
+                            node_graph: g,
+                        }
                     }).collect(),
                     active_grade_version: c.active_grade_version,
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),

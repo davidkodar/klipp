@@ -296,7 +296,7 @@ impl NodeInspectorPanel {
                     egui::vec2(cell_w, wheel_d + 120.0),
                     egui::Sense::hover(),
                 ).0;
-                let mut col_ui = ui.child_ui(col_rect, egui::Layout::top_down(egui::Align::Center), None);
+                let mut col_ui = ui.new_child(egui::UiBuilder::new().max_rect(col_rect).layout(egui::Layout::top_down(egui::Align::Center)));
 
                 // Wheel
                 if let Some(wi) = wheels_idx {
@@ -347,9 +347,9 @@ impl NodeInspectorPanel {
                     };
 
                     let painter = col_ui.painter().clone();
-                    let text_dim = theme.text_dim;
+                    let _text_dim = theme.text_dim;
                     let accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
-                    let track_bg = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+                    let track_bg = egui::Color32::from_rgb(0x3a, 0x3a, 0x46);
                     let slider_h = 14.0;
                     let label_h = 12.0;
                     let margin = 12.0;
@@ -367,12 +367,12 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Saturation",
                         egui::FontId::proportional(8.0),
-                        text_dim,
+                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
                     );
                     let sat_track_y = sat_label_y + label_h + 2.0;
                     let sat_track_rect = egui::Rect::from_min_size(
                         egui::pos2(cx, sat_track_y + slider_h / 2.0 - 1.5),
-                        egui::vec2(track_draw_w, 3.0),
+                        egui::vec2(track_draw_w, 4.0),
                     );
                     painter.rect_filled(sat_track_rect, 2.0, track_bg);
                     let sat_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, sat_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
@@ -396,7 +396,7 @@ impl NodeInspectorPanel {
                     let is_default = s.abs() < 0.005;
                     let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
                     painter.text(
-                        egui::pos2(cx + track_draw_w + value_w + 2.0, sat_track_y + slider_h / 2.0),
+                        egui::pos2(cx + track_draw_w + value_w - 2.0, sat_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
                         format!("{s:+.2}"),
                         egui::FontId::monospace(8.0),
@@ -410,12 +410,12 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Brightness",
                         egui::FontId::proportional(8.0),
-                        text_dim,
+                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
                     );
                     let bri_track_y = bri_label_y + label_h + 2.0;
                     let bri_track_rect = egui::Rect::from_min_size(
                         egui::pos2(cx, bri_track_y + slider_h / 2.0 - 1.5),
-                        egui::vec2(track_draw_w, 3.0),
+                        egui::vec2(track_draw_w, 4.0),
                     );
                     painter.rect_filled(bri_track_rect, 2.0, track_bg);
                     let bri_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, bri_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
@@ -439,7 +439,7 @@ impl NodeInspectorPanel {
                     let is_default = b.abs() < 0.005;
                     let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
                     painter.text(
-                        egui::pos2(cx + track_draw_w + value_w + 2.0, bri_track_y + slider_h / 2.0),
+                        egui::pos2(cx + track_draw_w + value_w - 2.0, bri_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
                         format!("{b:+.2}"),
                         egui::FontId::monospace(8.0),

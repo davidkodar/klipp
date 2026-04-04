@@ -12848,7 +12848,7 @@ impl eframe::App for KlippApp {
                                         let cmds = self.node_inspector_panel.show_simple_horizontal(
                                             ui, &mut clip.node_graph, clip_id,
                                             &mut self.state.selected_node_id,
-                                            &mut self.state.color_tab,
+                                            &mut self.state.color_tab_bottom,
                                             &self.theme,
                                             clip_time_secs,
                                         );

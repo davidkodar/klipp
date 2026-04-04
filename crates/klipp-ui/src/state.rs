@@ -433,7 +433,8 @@ pub struct AppState {
     /// Whether the compact node strip is visible in Color workspace.
     pub show_node_strip: bool,
     /// Active tab in the simple (non-node) color inspector.
-    pub color_tab: ColorTab,
+    pub color_tab: ColorTab,        // right inspector panel
+    pub color_tab_bottom: ColorTab, // bottom panel
     pub color_grade_drag_start: Option<klipp_nodes::NodeGraph>,
     pub color_grade_clipboard: Option<klipp_nodes::NodeGraph>,
     pub curves_single_mode: bool,
@@ -1328,6 +1329,7 @@ impl Default for AppState {
             selected_node_id: None,
             show_node_strip: false,
             color_tab: ColorTab::default(),
+            color_tab_bottom: ColorTab::default(),
             color_grade_drag_start: None,
             color_grade_clipboard: None,
             curves_single_mode: false,
