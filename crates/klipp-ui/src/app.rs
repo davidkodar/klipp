@@ -10052,6 +10052,9 @@ impl KlippApp {
                     )),
                     thumbnail_path: generate_poster_frame(&self.frame_buffer, path, &self.state.media_pool, self.state.sequence_duration().to_secs_f64()),
                     total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
+                    clip_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.iter().map(|t| t.clips.len() as u32).sum()),
+                    track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
+                    missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
@@ -10177,6 +10180,9 @@ impl KlippApp {
                     )),
                     thumbnail_path: existing_thumb,
                     total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
+                    clip_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.iter().map(|t| t.clips.len() as u32).sum()),
+                    track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
+                    missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
@@ -10444,6 +10450,10 @@ impl KlippApp {
                 self.state.show_command_palette = true;
                 self.state.command_palette_query.clear();
                 self.state.command_palette_selected = 0;
+            }
+            // Ctrl+W — Close Project (return to project selector)
+            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::W) {
+                cmds.push(AppCommand::CloseProject);
             }
             // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
             if kb.is_action_pressed("undo", i) {
@@ -14537,50 +14547,7 @@ fn autosave_path_for(project_path: &Path) -> PathBuf {
 
 /// Generate an ISO 8601 UTC timestamp string.
 pub fn iso8601_now() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    // Simple UTC date-time without external crate
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-    // Days since 1970-01-01
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let leap = is_leap(year);
-    let month_days: [u64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(y: u64) -> bool {
-    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// Generate a poster frame thumbnail and save as PNG.

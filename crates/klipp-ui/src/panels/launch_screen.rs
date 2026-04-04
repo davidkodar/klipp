@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 const CARD_W: f32 = 220.0;
-const CARD_H: f32 = 200.0;
+const CARD_H: f32 = 220.0;
 const CARD_GAP: f32 = 16.0;
 const SIDEBAR_W: f32 = 300.0;
 
@@ -525,14 +525,21 @@ impl LaunchScreen {
             egui::FontId::proportional(12.0),
             theme.text_secondary,
         );
-        // Dropdown arrow
-        ui.painter().text(
-            egui::pos2(sort_rect.max.x - 14.0, sort_rect.center().y),
-            egui::Align2::CENTER_CENTER,
-            "\u{25BE}",
-            egui::FontId::proportional(12.0),
-            theme.text_dim,
-        );
+        // Dropdown arrow (painter-drawn triangle)
+        {
+            let cx = sort_rect.max.x - 14.0;
+            let cy = sort_rect.center().y;
+            let s = 3.5;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(cx - s, cy - s * 0.5),
+                    egui::pos2(cx + s, cy - s * 0.5),
+                    egui::pos2(cx, cy + s * 0.7),
+                ],
+                theme.text_dim,
+                egui::Stroke::NONE,
+            ));
+        }
         // Sort dropdown menu
         sort_resp.context_menu(|ui| {
             for mode in [SortMode::Modified, SortMode::Name, SortMode::Size] {
@@ -797,28 +804,60 @@ impl LaunchScreen {
                         theme.text_primary,
                     );
 
-                    // Metadata line
+                    // Metadata line (fps · res · dur · size + counts)
                     let meta = build_meta_string(rp);
-                    if !meta.is_empty() {
+                    let counts = build_counts_string(rp);
+                    let combined = if meta.is_empty() {
+                        counts
+                    } else if counts.is_empty() {
+                        meta
+                    } else {
+                        format!("{meta}  \u{00B7}  {counts}")
+                    };
+                    if !combined.is_empty() {
                         ui.painter().text(
                             egui::pos2(text_x, rect.min.y + 30.0),
                             egui::Align2::LEFT_TOP,
-                            &meta,
+                            &combined,
                             egui::FontId::monospace(10.0),
                             theme.text_dim,
                         );
                     }
 
-                    // Timestamp (right-aligned)
+                    // Missing media warning (right of name)
+                    if rp.missing_media == Some(true) {
+                        let warn_x = text_x + ui.painter().layout_no_wrap(
+                            rp.name.clone(),
+                            egui::FontId::proportional(13.0),
+                            theme.text_primary,
+                        ).size().x + 8.0;
+                        draw_missing_media_badge(ui, egui::pos2(warn_x + 18.0, rect.min.y + 6.0));
+                    }
+
+                    // Timestamp (right-aligned) with clock icon
                     if let Some(ref saved) = rp.last_saved {
                         let time_str = relative_time(saved);
-                        ui.painter().text(
-                            egui::pos2(rect.max.x - pad, rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            &time_str,
-                            egui::FontId::proportional(11.0),
-                            theme.text_dim,
-                        );
+                        if !time_str.is_empty() {
+                            let time_galley = ui.painter().layout_no_wrap(
+                                time_str.clone(),
+                                egui::FontId::proportional(11.0),
+                                theme.text_dim,
+                            );
+                            let text_w = time_galley.size().x;
+                            let text_right = rect.max.x - pad;
+                            let icon_size = 9.0;
+                            let text_left = text_right - text_w;
+                            let icon_x = text_left - icon_size - 3.0;
+                            let icon_cy = rect.center().y;
+                            draw_clock_icon(ui.painter(), egui::pos2(icon_x + icon_size / 2.0, icon_cy), icon_size, theme.text_dim);
+                            ui.painter().text(
+                                egui::pos2(text_right, icon_cy),
+                                egui::Align2::RIGHT_CENTER,
+                                &time_str,
+                                egui::FontId::proportional(11.0),
+                                theme.text_dim,
+                            );
+                        }
                     }
 
                     if resp.clicked() {
@@ -943,9 +982,35 @@ impl LaunchScreen {
         // Try to load/show actual thumbnail
         let has_thumb = if let Some(ref thumb_path) = rp.thumbnail_path {
             if let Some(tex) = self.thumbnail_textures.get(thumb_path) {
+                // Fit image within thumb_rect preserving aspect ratio
+                let img_aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
+                let rect_aspect = thumb_rect.width() / thumb_rect.height();
+                let fitted = if img_aspect > rect_aspect {
+                    // Image is wider — fit to width, letterbox top/bottom
+                    let h = thumb_rect.width() / img_aspect;
+                    let y_off = (thumb_rect.height() - h) / 2.0;
+                    egui::Rect::from_min_size(
+                        egui::pos2(thumb_rect.min.x, thumb_rect.min.y + y_off),
+                        egui::vec2(thumb_rect.width(), h),
+                    )
+                } else {
+                    // Image is taller — fit to height, pillarbox left/right
+                    let w = thumb_rect.height() * img_aspect;
+                    let x_off = (thumb_rect.width() - w) / 2.0;
+                    egui::Rect::from_min_size(
+                        egui::pos2(thumb_rect.min.x + x_off, thumb_rect.min.y),
+                        egui::vec2(w, thumb_rect.height()),
+                    )
+                };
+                // Dark background behind pillarbox/letterbox bars
+                ui.painter().rect_filled(
+                    thumb_rect,
+                    egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 },
+                    egui::Color32::from_rgb(18, 18, 18),
+                );
                 ui.painter().image(
                     tex.id(),
-                    thumb_rect,
+                    fitted,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
@@ -1008,8 +1073,15 @@ impl LaunchScreen {
             egui::Stroke::new(1.5, egui::Color32::WHITE),
         );
 
+        // Missing media warning badge (top-right of thumbnail)
+        if rp.missing_media == Some(true) {
+            draw_missing_media_badge(ui, egui::pos2(thumb_rect.max.x, thumb_rect.min.y));
+        }
+
         // ── Info area (bottom ~40%) ──
-        let info_top = rect.min.y + thumb_h + 8.0;
+        let info_top = rect.min.y + thumb_h + 6.0;
+        let left_x = rect.min.x + 10.0;
+        let max_w = rect.width() - 20.0;
 
         // Project name
         let name_galley = ui.painter().layout_no_wrap(
@@ -1017,39 +1089,58 @@ impl LaunchScreen {
             egui::FontId::proportional(13.0),
             theme.text_primary,
         );
-        let name_max_w = rect.width() - 20.0;
         let name_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + 10.0, info_top),
-            egui::vec2(name_max_w, name_galley.size().y),
+            egui::pos2(left_x, info_top),
+            egui::vec2(max_w, name_galley.size().y),
         );
         ui.painter().with_clip_rect(name_rect).galley(
-            egui::pos2(rect.min.x + 10.0, info_top),
+            egui::pos2(left_x, info_top),
             name_galley,
             theme.text_primary,
         );
 
-        // Metadata line
+        // Metadata line (fps, resolution, duration, size)
         let meta = build_meta_string(rp);
+        let mut y_cursor = info_top + 18.0;
         if !meta.is_empty() {
             ui.painter().text(
-                egui::pos2(rect.min.x + 10.0, info_top + 20.0),
+                egui::pos2(left_x, y_cursor),
                 egui::Align2::LEFT_TOP,
                 &meta,
-                egui::FontId::monospace(10.0),
+                egui::FontId::monospace(9.5),
                 theme.text_dim,
             );
+            y_cursor += 13.0;
         }
 
-        // Modified timestamp
+        // Counts line (clips, tracks)
+        let counts = build_counts_string(rp);
+        if !counts.is_empty() {
+            ui.painter().text(
+                egui::pos2(left_x, y_cursor),
+                egui::Align2::LEFT_TOP,
+                &counts,
+                egui::FontId::proportional(9.5),
+                theme.text_dim,
+            );
+            y_cursor += 13.0;
+        }
+
+        // Modified timestamp with clock icon
         if let Some(ref saved) = rp.last_saved {
             let time_str = relative_time(saved);
-            ui.painter().text(
-                egui::pos2(rect.min.x + 10.0, info_top + 36.0),
-                egui::Align2::LEFT_TOP,
-                &time_str,
-                egui::FontId::proportional(10.0),
-                theme.text_secondary,
-            );
+            if !time_str.is_empty() {
+                let icon_size = 8.0;
+                let icon_center = egui::pos2(left_x + icon_size / 2.0, y_cursor + 5.5);
+                draw_clock_icon(ui.painter(), icon_center, icon_size, theme.text_secondary);
+                ui.painter().text(
+                    egui::pos2(left_x + icon_size + 4.0, y_cursor),
+                    egui::Align2::LEFT_TOP,
+                    &time_str,
+                    egui::FontId::proportional(10.0),
+                    theme.text_secondary,
+                );
+            }
         }
 
         // Click to open
@@ -1121,6 +1212,63 @@ fn build_meta_string(rp: &RecentProject) -> String {
         parts.push(format_size_compact(size));
     }
     parts.join(" \u{00B7} ")
+}
+
+/// Build a secondary metadata line with clip/track counts.
+fn build_counts_string(rp: &RecentProject) -> String {
+    let mut parts = Vec::new();
+    if let Some(clips) = rp.clip_count {
+        parts.push(format!("{clips} clip{}", if clips == 1 { "" } else { "s" }));
+    }
+    if let Some(tracks) = rp.track_count {
+        parts.push(format!("{tracks} track{}", if tracks == 1 { "" } else { "s" }));
+    }
+    parts.join(", ")
+}
+
+/// Draw a small warning triangle icon for missing media.
+fn draw_missing_media_badge(ui: &egui::Ui, top_right: egui::Pos2) {
+    let size = 18.0;
+    let margin = 6.0;
+    let center = egui::pos2(top_right.x - margin - size / 2.0, top_right.y + margin + size / 2.0);
+
+    // Triangle background
+    let tri_top = egui::pos2(center.x, center.y - size / 2.0);
+    let tri_bl = egui::pos2(center.x - size / 2.0, center.y + size / 2.0);
+    let tri_br = egui::pos2(center.x + size / 2.0, center.y + size / 2.0);
+
+    let painter = ui.painter();
+    painter.add(egui::Shape::convex_polygon(
+        vec![tri_top, tri_bl, tri_br],
+        egui::Color32::from_rgb(220, 160, 40),
+        egui::Stroke::NONE,
+    ));
+
+    // Exclamation mark
+    painter.text(
+        egui::pos2(center.x, center.y + 1.5),
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(11.0),
+        egui::Color32::from_rgb(30, 25, 10),
+    );
+}
+
+/// Draw a small clock icon using painter calls.
+fn draw_clock_icon(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
+    let r = size / 2.0;
+    // Circle outline
+    painter.circle_stroke(center, r, egui::Stroke::new(1.0, color));
+    // Hour hand (pointing up-right, ~2 o'clock)
+    painter.line_segment(
+        [center, egui::pos2(center.x + r * 0.4, center.y - r * 0.35)],
+        egui::Stroke::new(1.0, color),
+    );
+    // Minute hand (pointing up)
+    painter.line_segment(
+        [center, egui::pos2(center.x, center.y - r * 0.55)],
+        egui::Stroke::new(1.0, color),
+    );
 }
 
 /// Generate a deterministic color from a project name.
@@ -1283,18 +1431,23 @@ fn draw_dashed_rect(
 
 /// Parse ISO 8601 datetime string and return a human-friendly relative time.
 fn relative_time(iso: &str) -> String {
-    use chrono::{NaiveDateTime, Utc};
+    use chrono::NaiveDateTime;
 
-    let parsed = NaiveDateTime::parse_from_str(iso, "%Y-%m-%dT%H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(iso, "%Y-%m-%dT%H:%M:%S"))
-        .or_else(|_| NaiveDateTime::parse_from_str(&format!("{iso}T00:00:00"), "%Y-%m-%dT%H:%M:%S"));
+    // Strip trailing 'Z' (legacy UTC marker)
+    let cleaned = iso.trim_end_matches('Z');
+
+    let parsed = NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S%.f"))
+        .or_else(|_| NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S"))
+        .or_else(|_| NaiveDateTime::parse_from_str(&format!("{cleaned} 00:00:00"), "%Y-%m-%d %H:%M:%S"));
 
     let dt = match parsed {
         Ok(dt) => dt,
         Err(_) => return String::new(),
     };
 
-    let now = Utc::now().naive_utc();
+    // Compare against local time (timestamps are stored in local time)
+    let now = chrono::Local::now().naive_local();
     let diff = now.signed_duration_since(dt);
     let time_str = dt.format("%H:%M").to_string();
 

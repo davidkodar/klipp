@@ -326,8 +326,7 @@ impl ToolbarPanel {
             if !recent.is_empty() {
                 ui.menu_button("Open Recent", |ui| {
                     for rp in recent {
-                        let suffix = rp.last_saved.as_deref().unwrap_or("");
-                        let label = if suffix.is_empty() { rp.name.clone() } else { format!("{}  {}", rp.name, suffix) };
+                        let label = rp.name.clone();
                         if ui.button(&label).clicked() { cmds.push(AppCommand::OpenProject { path: rp.path.clone() }); ui.close_menu(); }
                     }
                 });
@@ -362,6 +361,7 @@ impl ToolbarPanel {
             if ui.button("Export EDL...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() { cmds.push(AppCommand::ExportEdl { path }); } }
             if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
             ui.separator();
+            if ui.add(egui::Button::new("Close Project").shortcut_text("Ctrl+W")).clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
             if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
             let has_offline = !state.offline_media_ids.is_empty();
             if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_menu(); }

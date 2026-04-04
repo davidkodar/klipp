@@ -308,12 +308,22 @@ fn render_list_view(
                 egui::vec2(80.0, 45.0),
             );
             if let Some(tex) = state.thumbnail_textures.get(&item.id) {
-                ui.painter().image(
-                    tex.id(),
-                    thumb_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                let src_aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
+                let dst_aspect = thumb_rect.width() / thumb_rect.height();
+                let uv_rect = if (src_aspect - dst_aspect).abs() < 0.01 {
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                } else if src_aspect > dst_aspect {
+                    // Source is wider — crop sides
+                    let visible_frac = dst_aspect / src_aspect;
+                    let offset = (1.0 - visible_frac) / 2.0;
+                    egui::Rect::from_min_max(egui::pos2(offset, 0.0), egui::pos2(1.0 - offset, 1.0))
+                } else {
+                    // Source is taller — crop top/bottom
+                    let visible_frac = src_aspect / dst_aspect;
+                    let offset = (1.0 - visible_frac) / 2.0;
+                    egui::Rect::from_min_max(egui::pos2(0.0, offset), egui::pos2(1.0, 1.0 - offset))
+                };
+                ui.painter().image(tex.id(), thumb_rect, uv_rect, egui::Color32::WHITE);
             } else {
                 ui.painter().rect_filled(thumb_rect, 3.0, theme.bg_raised);
             }

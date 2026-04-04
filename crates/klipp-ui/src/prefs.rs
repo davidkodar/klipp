@@ -53,6 +53,15 @@ pub struct RecentProject {
     /// Total media size in bytes (cached for display).
     #[serde(default)]
     pub total_size_bytes: Option<u64>,
+    /// Number of clips across all tracks.
+    #[serde(default)]
+    pub clip_count: Option<u32>,
+    /// Number of tracks.
+    #[serde(default)]
+    pub track_count: Option<u32>,
+    /// True if any media item is offline (file missing).
+    #[serde(default)]
+    pub missing_media: Option<bool>,
 }
 
 impl RecentProject {
@@ -71,6 +80,9 @@ impl RecentProject {
             resolution: None,
             thumbnail_path: None,
             total_size_bytes: None,
+            clip_count: None,
+            track_count: None,
+            missing_media: None,
         }
     }
 }
@@ -519,17 +531,41 @@ impl Preferences {
     pub fn enrich_recent_projects(&mut self) -> bool {
         let mut changed = false;
         for rp in &mut self.general.recent_projects {
-            if rp.total_size_bytes.is_some() && rp.duration_secs.is_some() && rp.fps.is_some() {
+            if rp.total_size_bytes.is_some()
+                && rp.duration_secs.is_some()
+                && rp.fps.is_some()
+                && rp.clip_count.is_some()
+                && rp.missing_media.is_some()
+            {
                 continue; // already has data
             }
             if !rp.path.exists() {
                 continue;
             }
+
+            // Populate last_saved from project.json mtime if not set
+            if rp.last_saved.is_none() {
+                let project_json = rp.path.join("project.json");
+                if let Ok(meta) = std::fs::metadata(&project_json) {
+                    if let Ok(mtime) = meta.modified() {
+                        let dt: chrono::DateTime<chrono::Local> = mtime.into();
+                        rp.last_saved = Some(dt.format("%Y-%m-%d %H:%M:%S").to_string());
+                        changed = true;
+                    }
+                }
+            }
+
             // Try to load project metadata from disk
             match klipp_project::load_project(&rp.path) {
                 Ok((sequences, media_pool, _color, _active_id, _created_at)) => {
                     if rp.total_size_bytes.is_none() {
                         rp.total_size_bytes = Some(media_pool.all().map(|m| m.file_size_bytes).sum());
+                        changed = true;
+                    }
+                    // Missing media detection
+                    if rp.missing_media.is_none() {
+                        let has_offline = media_pool.all().any(|m| m.offline || !m.path.exists());
+                        rp.missing_media = Some(has_offline);
                         changed = true;
                     }
                     if let Some(seq) = sequences.first() {
@@ -550,6 +586,18 @@ impl Preferences {
                                 "{}x{}",
                                 seq.resolution.width, seq.resolution.height
                             ));
+                            changed = true;
+                        }
+                        // Clip and track counts
+                        if rp.clip_count.is_none() {
+                            let total: u32 = seq.tracks.iter()
+                                .map(|t| t.clips.len() as u32)
+                                .sum();
+                            rp.clip_count = Some(total);
+                            changed = true;
+                        }
+                        if rp.track_count.is_none() {
+                            rp.track_count = Some(seq.tracks.len() as u32);
                             changed = true;
                         }
                         if rp.name.is_empty() || rp.name == rp.path.file_stem()
