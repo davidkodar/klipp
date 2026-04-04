@@ -216,55 +216,71 @@ pub fn show_scopes(
     let mi = mode_index(mode);
 
     // ── Check for GPU-rendered scope texture from engine ──────────────────
+    // Minimize mutex hold time: snapshot data, drop lock, then render CPU scopes outside lock
     let scope_result = {
-        let fb = frame_buffer.lock().unwrap();
-        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
-            None
-        } else {
-            let gen = fb.generation;
-            let stale = state.textures[mi].is_none()
-                || state.frame_generations[mi] != gen
-                || state.render_sizes[mi] != (fb.width as usize, render_h)
-                || state.last_settings_generation != state.settings_generation;
-
-            // Throttle during playback: max one update per 80ms
-            let throttled = is_playing && state.last_render_time
-                .map_or(false, |t| t.elapsed().as_millis() < 80);
-            if stale && !throttled {
-                // Use GPU-rendered scope texture from engine if available and mode matches
-                let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
-                    && fb.scope_texture_mode == mi as u8;
-                tracing::trace!("Scope update: gen={} mode={} gpu_tex={} tex_mode={} tex_size={}x{}",
-                    gen, mi, has_gpu_tex, fb.scope_texture_mode, fb.scope_texture_w, fb.scope_texture_h);
-                if has_gpu_tex {
-                    let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
-                        .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
-                        .collect();
-                    let image = egui::ColorImage {
-                        size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
-                        pixels,
-                    };
-                    Some((ScopeImage::Ready(image), gen))
-                } else {
-                    let (src, w, h) = (&fb.data[..], fb.width, fb.height);
-                    let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
-                    // Internal render width = source video width (downscale to display = thin traces)
-                    let render_w = w as usize;
-
-                    // Direct accumulation rendering (DaVinci technique)
-                    let image = match mode {
-                        ScopeMode::Waveform => render_waveform_direct(src, w, h, render_w, render_h),
-                        ScopeMode::Parade => render_parade_direct(src, w, h, render_w, render_h),
-                        ScopeMode::Histogram => {
-                            let hist = klipp_color::scopes::compute_histogram_sampled(src, w, h, step);
-                            render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
-                        }
-                        ScopeMode::Vectorscope => render_vectorscope(src, w, h, step, render_w, render_h, skin_tone_angle),
-                    };
-                    Some((ScopeImage::Ready(image), gen))
-                }
+        // Phase 1: under lock — check staleness, grab GPU tex or snapshot frame data
+        enum ScopeAction {
+            None,
+            GpuReady(egui::ColorImage, u64),
+            CpuRender(Vec<u8>, u32, u32, u64),
+        }
+        let action = {
+            let fb = frame_buffer.lock().unwrap();
+            if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+                ScopeAction::None
             } else {
-                None
+                let gen = fb.generation;
+                let stale = state.textures[mi].is_none()
+                    || state.frame_generations[mi] != gen
+                    || state.render_sizes[mi] != (fb.width as usize, render_h)
+                    || state.last_settings_generation != state.settings_generation;
+
+                let throttled = is_playing && state.last_render_time
+                    .map_or(false, |t| t.elapsed().as_millis() < 80);
+                if stale && !throttled {
+                    let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
+                        && fb.scope_texture_mode == mi as u8;
+                    if has_gpu_tex {
+                        let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                            .collect();
+                        let image = egui::ColorImage {
+                            size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
+                            pixels,
+                        };
+                        ScopeAction::GpuReady(image, gen)
+                    } else {
+                        // Snapshot frame data — drop lock before CPU render
+                        let (data, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
+                            (fb.scope_preview.clone(), fb.scope_preview_w, fb.scope_preview_h)
+                        } else {
+                            (fb.data.clone(), fb.width, fb.height)
+                        };
+                        ScopeAction::CpuRender(data, w, h, gen)
+                    }
+                } else {
+                    ScopeAction::None
+                }
+            }
+        }; // lock dropped here
+
+        // Phase 2: outside lock — CPU scope rendering (no mutex contention)
+        match action {
+            ScopeAction::None => None,
+            ScopeAction::GpuReady(image, gen) => Some((ScopeImage::Ready(image), gen)),
+            ScopeAction::CpuRender(src, w, h, gen) => {
+                let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
+                let render_w = w as usize;
+                let image = match mode {
+                    ScopeMode::Waveform => render_waveform_direct(&src, w, h, render_w, render_h),
+                    ScopeMode::Parade => render_parade_direct(&src, w, h, render_w, render_h),
+                    ScopeMode::Histogram => {
+                        let hist = klipp_color::scopes::compute_histogram_sampled(&src, w, h, step);
+                        render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
+                    }
+                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle),
+                };
+                Some((ScopeImage::Ready(image), gen))
             }
         }
     };

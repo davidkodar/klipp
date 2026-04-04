@@ -172,118 +172,123 @@ pub struct NodeParams {
 impl NodeParams {
     /// Check if all params are at their default (identity) values — no grading applied.
     pub fn is_default(&self) -> bool {
-        self.exposure.is_none()
-            && self.contrast.is_none()
-            && self.clarity.is_none()
-            && self.saturation.is_none()
-            && self.vibrance.is_none()
-            && self.temperature.is_none()
-            && self.tint.is_none()
-            && self.hue.is_none()
-            && self.highlights.is_none()
-            && self.shadows.is_none()
-            && self.whites.is_none()
-            && self.blacks.is_none()
-            && self.lift_x.is_none()
-            && self.lift_y.is_none()
-            && self.lift_master.is_none()
-            && self.gamma_x.is_none()
-            && self.gamma_y.is_none()
-            && self.gamma_master.is_none()
-            && self.gain_x.is_none()
-            && self.gain_y.is_none()
-            && self.gain_master.is_none()
-            && self.offset_x.is_none()
-            && self.offset_y.is_none()
-            && self.offset_master.is_none()
-            && self.log_low_x.is_none()
-            && self.log_low_y.is_none()
-            && self.log_low_master.is_none()
-            && self.log_mid_x.is_none()
-            && self.log_mid_y.is_none()
-            && self.log_mid_master.is_none()
-            && self.log_high_x.is_none()
-            && self.log_high_y.is_none()
-            && self.log_high_master.is_none()
+        // Treat both None and Some(~0.0) as default for numeric fields
+        let z = |f: &Option<f32>| f.map_or(true, |v| v.abs() < 0.0001);
+        z(&self.exposure)
+            && z(&self.contrast)
+            && z(&self.clarity)
+            && self.saturation.map_or(true, |v| (v - 1.0).abs() < 0.0001) // default is 1.0
+            && z(&self.vibrance)
+            && z(&self.temperature)
+            && z(&self.tint)
+            && z(&self.hue)
+            && z(&self.highlights)
+            && z(&self.shadows)
+            && z(&self.whites)
+            && z(&self.blacks)
+            && z(&self.lift_x)
+            && z(&self.lift_y)
+            && z(&self.lift_master)
+            && z(&self.gamma_x)
+            && z(&self.gamma_y)
+            && z(&self.gamma_master)
+            && z(&self.gain_x)
+            && z(&self.gain_y)
+            && z(&self.gain_master)
+            && z(&self.offset_x)
+            && z(&self.offset_y)
+            && z(&self.offset_master)
+            && z(&self.log_low_x)
+            && z(&self.log_low_y)
+            && z(&self.log_low_master)
+            && z(&self.log_mid_x)
+            && z(&self.log_mid_y)
+            && z(&self.log_mid_master)
+            && z(&self.log_high_x)
+            && z(&self.log_high_y)
+            && z(&self.log_high_master)
             && self.wheels_log_mode.is_none()
-            && self.lift_sat.is_none()
-            && self.lift_bri.is_none()
-            && self.gamma_sat.is_none()
-            && self.gamma_bri.is_none()
-            && self.gain_sat.is_none()
-            && self.gain_bri.is_none()
-            && self.offset_sat.is_none()
-            && self.offset_bri.is_none()
-            && self.global_mix.is_none()
+            && z(&self.lift_sat)
+            && z(&self.lift_bri)
+            && z(&self.gamma_sat)
+            && z(&self.gamma_bri)
+            && z(&self.gain_sat)
+            && z(&self.gain_bri)
+            && z(&self.offset_sat)
+            && z(&self.offset_bri)
+            && z(&self.global_mix)
             && self.curves.is_none()
             && self.curves_preserve_luma.is_none()
-            && self.curves_mix.is_none()
+            && z(&self.curves_mix)
             && self.huesat.is_none()
-            && self.huesat_mix.is_none()
+            && z(&self.huesat_mix)
             && self.log_format.is_none()
             && self.qualifier.is_none()
             && self.masks.is_none()
             && self.lut_path.is_none()
-            && self.lut_opacity.is_none()
+            && z(&self.lut_opacity)
             && self.grain.is_none()
             && self.warper_params.is_none()
-            && self.denoise_luma.is_none()
-            && self.denoise_chroma.is_none()
+            && z(&self.denoise_luma)
+            && z(&self.denoise_chroma)
             && self.denoise_radius.is_none()
-            && self.mix.is_none()
+            && z(&self.mix)
     }
 
     /// Apply a keyframe override by param name.
+    /// Values near 0.0 are stored as None (neutral) to keep is_default() correct.
     pub fn apply_override(&mut self, param_name: &str, value: f32) {
+        // For most params, near-zero means neutral → store None
+        let n = if value.abs() < 0.0001 { None } else { Some(value) };
         match param_name {
-            "exposure" => self.exposure = Some(value),
-            "contrast" => self.contrast = Some(value),
-            "clarity" => self.clarity = Some(value),
-            "saturation" => self.saturation = Some(value),
-            "vibrance" => self.vibrance = Some(value),
-            "temperature" => self.temperature = Some(value),
-            "tint" => self.tint = Some(value),
-            "highlights" => self.highlights = Some(value),
-            "shadows" => self.shadows = Some(value),
-            "whites" => self.whites = Some(value),
-            "blacks" => self.blacks = Some(value),
-            "lift_x" => self.lift_x = Some(value),
-            "lift_y" => self.lift_y = Some(value),
-            "lift_master" => self.lift_master = Some(value),
-            "gamma_x" => self.gamma_x = Some(value),
-            "gamma_y" => self.gamma_y = Some(value),
-            "gamma_master" => self.gamma_master = Some(value),
-            "gain_x" => self.gain_x = Some(value),
-            "gain_y" => self.gain_y = Some(value),
-            "gain_master" => self.gain_master = Some(value),
-            "offset_x" => self.offset_x = Some(value),
-            "offset_y" => self.offset_y = Some(value),
-            "offset_master" => self.offset_master = Some(value),
-            "log_low_x" => self.log_low_x = Some(value),
-            "log_low_y" => self.log_low_y = Some(value),
-            "log_low_master" => self.log_low_master = Some(value),
-            "log_mid_x" => self.log_mid_x = Some(value),
-            "log_mid_y" => self.log_mid_y = Some(value),
-            "log_mid_master" => self.log_mid_master = Some(value),
-            "log_high_x" => self.log_high_x = Some(value),
-            "log_high_y" => self.log_high_y = Some(value),
-            "log_high_master" => self.log_high_master = Some(value),
+            "exposure" => self.exposure = n,
+            "contrast" => self.contrast = n,
+            "clarity" => self.clarity = n,
+            "saturation" => self.saturation = Some(value), // default is 1.0, not 0.0
+            "vibrance" => self.vibrance = n,
+            "temperature" => self.temperature = n,
+            "tint" => self.tint = n,
+            "highlights" => self.highlights = n,
+            "shadows" => self.shadows = n,
+            "whites" => self.whites = n,
+            "blacks" => self.blacks = n,
+            "lift_x" => self.lift_x = n,
+            "lift_y" => self.lift_y = n,
+            "lift_master" => self.lift_master = n,
+            "gamma_x" => self.gamma_x = n,
+            "gamma_y" => self.gamma_y = n,
+            "gamma_master" => self.gamma_master = n,
+            "gain_x" => self.gain_x = n,
+            "gain_y" => self.gain_y = n,
+            "gain_master" => self.gain_master = n,
+            "offset_x" => self.offset_x = n,
+            "offset_y" => self.offset_y = n,
+            "offset_master" => self.offset_master = n,
+            "log_low_x" => self.log_low_x = n,
+            "log_low_y" => self.log_low_y = n,
+            "log_low_master" => self.log_low_master = n,
+            "log_mid_x" => self.log_mid_x = n,
+            "log_mid_y" => self.log_mid_y = n,
+            "log_mid_master" => self.log_mid_master = n,
+            "log_high_x" => self.log_high_x = n,
+            "log_high_y" => self.log_high_y = n,
+            "log_high_master" => self.log_high_master = n,
             "wheels_log_mode" => self.wheels_log_mode = Some(value > 0.5),
-            "lift_sat" => self.lift_sat = Some(value),
-            "lift_bri" => self.lift_bri = Some(value),
-            "gamma_sat" => self.gamma_sat = Some(value),
-            "gamma_bri" => self.gamma_bri = Some(value),
-            "gain_sat" => self.gain_sat = Some(value),
-            "gain_bri" => self.gain_bri = Some(value),
-            "offset_sat" => self.offset_sat = Some(value),
-            "offset_bri" => self.offset_bri = Some(value),
-            "hue" => self.hue = Some(value),
-            "global_mix" => self.global_mix = Some(value),
-            "curves_mix" => self.curves_mix = Some(value),
+            "lift_sat" => self.lift_sat = n,
+            "lift_bri" => self.lift_bri = n,
+            "gamma_sat" => self.gamma_sat = n,
+            "gamma_bri" => self.gamma_bri = n,
+            "gain_sat" => self.gain_sat = n,
+            "gain_bri" => self.gain_bri = n,
+            "offset_sat" => self.offset_sat = n,
+            "offset_bri" => self.offset_bri = n,
+            "hue" => self.hue = n,
+            "global_mix" => self.global_mix = n,
+            "curves_mix" => self.curves_mix = n,
             "curves_preserve_luma" => self.curves_preserve_luma = Some(value > 0.5),
-            "huesat_mix" => self.huesat_mix = Some(value),
-            "lut_opacity" => self.lut_opacity = Some(value),
-            "mix" => self.mix = Some(value),
+            "huesat_mix" => self.huesat_mix = n,
+            "lut_opacity" => self.lut_opacity = n,
+            "mix" => self.mix = n,
             p if p.starts_with("warper_hue_") => {
                 if let Ok(idx) = p["warper_hue_".len()..].parse::<usize>() {
                     if idx < 12 {

@@ -137,6 +137,7 @@ pub fn color_wheel_sized(
     if wheel_resp.double_clicked() {
         offset[0] = 0.0;
         offset[1] = 0.0;
+        *master = 0.0;
         changed = true;
     }
 

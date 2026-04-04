@@ -1622,7 +1622,7 @@ impl NodeInspectorPanel {
                 let tangent_x = -base_angle.sin();
                 let tangent_y = base_angle.cos();
                 let tangent_proj = dx * tangent_x + dy * tangent_y;
-                let new_hue_shift = (tangent_proj / radius * 90.0).clamp(-180.0, 180.0);
+                let new_hue_shift = (tangent_proj / radius * 180.0).clamp(-180.0, 180.0);
 
                 // Radial component = sat shift
                 let new_sat_shift = ((dist - neutral_r) / (radius * 0.25)).clamp(-1.0, 1.0);

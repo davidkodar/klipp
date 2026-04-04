@@ -103,6 +103,34 @@ impl Default for ExportDialogState {
     }
 }
 
+/// Lightweight playback frame timing diagnostics.
+struct FrameTimings {
+    last_frame_time: std::time::Instant,
+    last_report: std::time::Instant,
+    swap_pending_us: u64,
+    texture_upload_us: u64,
+    ui_render_us: u64,
+    frame_intervals: Vec<f32>,
+    missed_frames: u64,
+    total_frames: u64,
+}
+
+impl Default for FrameTimings {
+    fn default() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            last_frame_time: now,
+            last_report: now,
+            swap_pending_us: 0,
+            texture_upload_us: 0,
+            ui_render_us: 0,
+            frame_intervals: Vec::new(),
+            missed_frames: 0,
+            total_frames: 0,
+        }
+    }
+}
+
 pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
@@ -172,6 +200,8 @@ pub struct KlippApp {
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)
     scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
+    // Playback frame timing diagnostics
+    frame_timings: FrameTimings,
 }
 
 impl KlippApp {
@@ -261,6 +291,7 @@ impl KlippApp {
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
+            frame_timings: FrameTimings::default(),
         };
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
@@ -1341,54 +1372,80 @@ impl KlippApp {
 
     fn upload_frame_to_egui(&mut self, ctx: &egui::Context) {
         let t_total = std::time::Instant::now();
-        let mut fb = self.frame_buffer.lock().unwrap();
-        // Sync render cache ranges for timeline visualization
-        self.state.render_cache_ranges = fb.render_cache_ranges.clone();
-        if !fb.dirty {
-            return;
+
+        // ── Phase 1: minimal lock — take data, release immediately (~5µs) ──
+        let t_swap = std::time::Instant::now();
+        let frame_data = {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.swap_pending();
+            self.state.render_cache_ranges = fb.render_cache_ranges.clone();
+            if !fb.dirty {
+                return;
+            }
+            let w = fb.width as usize;
+            let h = fb.height as usize;
+            if fb.data.len() != w * h * 4 {
+                fb.dirty = false;
+                return;
+            }
+            fb.scope_preview.clear();
+            fb.scope_preview_w = 0;
+            fb.scope_preview_h = 0;
+            fb.dirty = false;
+            let fw = fb.width;
+            let fh = fb.height;
+            // Take ownership — zero copy, ~0µs
+            let rgba = std::mem::take(&mut fb.data);
+            let original = std::mem::take(&mut fb.original_data);
+            (rgba, original, fw, fh, w, h)
+            // lock released immediately — fb.data is now empty
+        };
+        let swap_us = t_swap.elapsed().as_micros() as u64;
+        let (mut rgba_bytes, original_bytes, fb_width, fb_height, w, h) = frame_data;
+
+        // Track frame timing
+        if self.state.playback == PlaybackState::Playing {
+            let now = std::time::Instant::now();
+            let interval = now.duration_since(self.frame_timings.last_frame_time).as_secs_f32() * 1000.0;
+            self.frame_timings.last_frame_time = now;
+            self.frame_timings.frame_intervals.push(interval);
+            self.frame_timings.total_frames += 1;
+            self.frame_timings.swap_pending_us += swap_us;
+            if interval > 62.5 { self.frame_timings.missed_frames += 1; }
         }
+
         // Full-res frame arrived — clear preview flags
         self.state.showing_thumbnail_preview = false;
         self.state.awaiting_seek_frame = false;
 
-        let w = fb.width as usize;
-        let h = fb.height as usize;
+        // ── Phase 2: all expensive work outside lock ──
 
-        if fb.data.len() != w * h * 4 {
-            fb.dirty = false;
-            return;
-        }
-
-        // Capture reference frame for effect thumbnails (before we take ownership).
-        // Skip all-black frames (common at clip start) — check a few sample pixels.
-        let has_content = fb.data.len() >= 64 && {
-            let mid = fb.data.len() / 2;
-            let q1 = fb.data.len() / 4;
-            let q3 = 3 * fb.data.len() / 4;
-            // Check R channel at several points
-            fb.data[q1] > 0 || fb.data[mid] > 0 || fb.data[q3] > 0
+        // Capture reference frame for effect thumbnails
+        let has_content = rgba_bytes.len() >= 64 && {
+            let mid = rgba_bytes.len() / 2;
+            let q1 = rgba_bytes.len() / 4;
+            let q3 = 3 * rgba_bytes.len() / 4;
+            rgba_bytes[q1] > 0 || rgba_bytes[mid] > 0 || rgba_bytes[q3] > 0
         };
         if has_content {
-            self.state.effect_registry.set_reference_frame(&fb.data, fb.width, fb.height);
+            self.state.effect_registry.set_reference_frame(&rgba_bytes, fb_width, fb_height);
         }
 
-        // Compute curve histograms for the color panel (throttled)
+        // Compute curve histograms for the color panel
         if self.state.show_color_panel {
-            let hist = klipp_color::scopes::compute_histogram(&fb.data, fb.width, fb.height);
+            let hist = klipp_color::scopes::compute_histogram(&rgba_bytes, fb_width, fb_height);
             self.state.curve_histograms = Some(hist);
         }
 
         // Process white balance eyedropper sample
         if let Some((nx, ny)) = self.state.wb_sample_request.take() {
-            let px = (nx * (fb.width - 1) as f32) as usize;
-            let py = (ny * (fb.height - 1) as f32) as usize;
-            let idx = (py * fb.width as usize + px) * 4;
-            if idx + 2 < fb.data.len() {
-                let r = fb.data[idx] as f32 / 255.0;
-                let g = fb.data[idx + 1] as f32 / 255.0;
-                let b = fb.data[idx + 2] as f32 / 255.0;
-                // Compute correction to neutralize the sampled color
-                // Temperature controls R-B balance, Tint controls G vs (R+B)/2
+            let px = (nx * (fb_width - 1) as f32) as usize;
+            let py = (ny * (fb_height - 1) as f32) as usize;
+            let idx = (py * fb_width as usize + px) * 4;
+            if idx + 2 < rgba_bytes.len() {
+                let r = rgba_bytes[idx] as f32 / 255.0;
+                let g = rgba_bytes[idx + 1] as f32 / 255.0;
+                let b = rgba_bytes[idx + 2] as f32 / 255.0;
                 let temp = -(r - b) * 200.0;
                 let tint = -(g - (r + b) / 2.0) * 200.0;
                 if let Some(clip_id) = self.state.selected_clip {
@@ -1407,14 +1464,13 @@ impl KlippApp {
 
         // Process qualifier eyedropper sample
         if let Some((nx, ny)) = self.state.qualifier_sample_request.take() {
-            let px = (nx * (fb.width - 1) as f32) as usize;
-            let py = (ny * (fb.height - 1) as f32) as usize;
-            let idx = (py * fb.width as usize + px) * 4;
-            if idx + 2 < fb.data.len() {
-                let r = fb.data[idx] as f32 / 255.0;
-                let g = fb.data[idx + 1] as f32 / 255.0;
-                let b = fb.data[idx + 2] as f32 / 255.0;
-                // RGB → HSL
+            let px = (nx * (fb_width - 1) as f32) as usize;
+            let py = (ny * (fb_height - 1) as f32) as usize;
+            let idx = (py * fb_width as usize + px) * 4;
+            if idx + 2 < rgba_bytes.len() {
+                let r = rgba_bytes[idx] as f32 / 255.0;
+                let g = rgba_bytes[idx + 1] as f32 / 255.0;
+                let b = rgba_bytes[idx + 2] as f32 / 255.0;
                 let max_c = r.max(g).max(b);
                 let min_c = r.min(g).min(b);
                 let delta = max_c - min_c;
@@ -1424,7 +1480,7 @@ impl KlippApp {
                 } else {
                     (delta / (1.0 - (2.0 * l - 1.0).abs())).clamp(0.0, 1.0)
                 };
-                let h = if delta < 0.0001 {
+                let h_val = if delta < 0.0001 {
                     0.0
                 } else if max_c == r {
                     ((g - b) / delta).rem_euclid(6.0) / 6.0
@@ -1433,10 +1489,9 @@ impl KlippApp {
                 } else {
                     ((r - g) / delta + 4.0) / 6.0
                 };
-                let hue_degrees = h * 360.0;
+                let hue_degrees = h_val * 360.0;
 
                 if let Some(clip_id) = self.state.selected_clip {
-                    // Build qualifier with sampled values + sensible defaults
                     let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::Qualifier);
                     let mut qual = klipp_core::QualifierSettings::default();
                     qual.enabled = true;
@@ -1450,12 +1505,6 @@ impl KlippApp {
                 }
             }
         }
-
-        // Take ownership of frame data
-        let mut rgba_bytes = std::mem::take(&mut fb.data);
-        let original_bytes = std::mem::take(&mut fb.original_data);
-        fb.dirty = false;
-        drop(fb);
 
         // Before/After split compositing: left = original, right = graded
         if self.state.before_after_active && !original_bytes.is_empty()
@@ -1535,7 +1584,7 @@ impl KlippApp {
         // Safety: Color32 is repr(C) [u8; 4], same as our RGBA layout.
         // Vec reinterpret: same alignment (1), element size (4), length and capacity divide evenly.
         let pixels = {
-            let mut bytes = std::mem::ManuallyDrop::new(rgba_bytes);
+            let mut bytes = std::mem::ManuallyDrop::new(rgba_bytes.clone());
             let ptr = bytes.as_mut_ptr() as *mut egui::Color32;
             let len = bytes.len() / 4;
             let cap = bytes.capacity() / 4;
@@ -1566,6 +1615,21 @@ impl KlippApp {
             tracing::info!(
                 "PERF upload_frame: {w}x{h} total={total_ms:.1}ms (convert={convert_ms:.1}ms texture={texture_ms:.1}ms)"
             );
+        }
+
+        // Collect texture upload timing
+        if self.state.playback == PlaybackState::Playing {
+            self.frame_timings.texture_upload_us += (texture_ms * 1000.0) as u64;
+        }
+
+        // Put frame data back so scopes can read it (~5µs pointer move)
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            // Only put back if engine hasn't written a newer frame
+            if fb.data.is_empty() {
+                fb.data = rgba_bytes;
+                fb.original_data = original_bytes;
+            }
         }
     }
 
@@ -1753,7 +1817,8 @@ impl KlippApp {
             if fb.pregrade_data.is_empty() || fb.width == 0 {
                 None
             } else {
-                Some((fb.pregrade_data.clone(), fb.width, fb.height))
+                // Arc::clone — near-zero cost, no frame data copy
+                Some((std::sync::Arc::clone(&fb.pregrade_data), fb.width, fb.height))
             }
         };
 
@@ -11668,9 +11733,10 @@ impl eframe::App for KlippApp {
             self.last_autosave = std::time::Instant::now();
         }
 
-        // Continuous repaint during playback (must be AFTER drain_events so Playing state is set)
+        // Frame-rate-aware repaint during playback (must be AFTER drain_events so Playing state is set)
         if self.state.playback == PlaybackState::Playing {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(8));
+
         }
 
         // VU meter peak decay (~10dB/sec at 60fps → ~0.016 per frame)

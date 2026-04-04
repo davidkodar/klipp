@@ -131,7 +131,7 @@ struct FrameCache {
 
 struct FrameCacheEntry {
     frame_number: i64,       // playhead.value at this frame
-    rgba: Vec<u8>,           // pre-grade RGBA
+    rgba: Arc<Vec<u8>>,      // pre-grade RGBA (shared via Arc)
     width: u32,
     height: u32,
 }
@@ -145,17 +145,17 @@ impl FrameCache {
     }
 
     /// Insert a frame into the cache. Uses frame_number as hash key.
-    fn insert(&mut self, frame_number: i64, rgba: Vec<u8>, width: u32, height: u32) {
+    fn insert(&mut self, frame_number: i64, rgba: Arc<Vec<u8>>, width: u32, height: u32) {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
         self.entries[slot] = Some(FrameCacheEntry { frame_number, rgba, width, height });
     }
 
-    /// Look up a frame by number. Returns (rgba, width, height) if found.
-    fn get(&self, frame_number: i64) -> Option<(&[u8], u32, u32)> {
+    /// Look up a frame by number. Returns (Arc<rgba>, width, height) if found.
+    fn get(&self, frame_number: i64) -> Option<(Arc<Vec<u8>>, u32, u32)> {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
         self.entries[slot].as_ref()
             .filter(|e| e.frame_number == frame_number)
-            .map(|e| (e.rgba.as_slice(), e.width, e.height))
+            .map(|e| (Arc::clone(&e.rgba), e.width, e.height))
     }
 
     /// Clear the entire cache (on clip change, seek, etc.)
@@ -225,7 +225,7 @@ pub struct PlaybackEngine {
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
-    cached_pregrade_frame: Option<(Vec<u8>, u32, u32)>, // (rgba, width, height)
+    cached_pregrade_frame: Option<(Arc<Vec<u8>>, u32, u32)>, // (rgba, width, height)
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -240,6 +240,8 @@ pub struct PlaybackEngine {
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
     gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
+    /// True if GPU effects init was attempted and failed — prevents retrying every frame.
+    gpu_effects_failed: bool,
     // Rolling shutter correction motion cache
     rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
     // Transition decoder — secondary decoder for the partner clip during transitions
@@ -370,6 +372,7 @@ impl PlaybackEngine {
                 h
             },
             gpu_effects: None, // lazily initialized on first use
+            gpu_effects_failed: false,
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
@@ -1719,10 +1722,10 @@ impl PlaybackEngine {
         // Periodic playback status (every 2 seconds)
         if self.last_playback_log.elapsed().as_secs() >= 2 {
             let elapsed = self.last_playback_log.elapsed().as_secs_f64();
+            let fps = self.frames_consumed as f64 / elapsed.max(0.001);
             debug!(
                 "PLAYBACK: clock={:.3}s consumed={} ({:.1}fps) drops={} q_len={}",
-                current_source_secs, self.frames_consumed,
-                self.frames_consumed as f64 / elapsed.max(0.001),
+                current_source_secs, self.frames_consumed, fps,
                 self.dropped_frames, q_len
             );
             self.frames_consumed = 0;
@@ -2918,8 +2921,8 @@ impl PlaybackEngine {
         let target_frame = self.playhead.value + direction;
 
         // Check frame cache first (works for both forward AND backward)
-        if let Some((rgba, w, h)) = self.frame_cache.get(target_frame) {
-            let rgba = rgba.to_vec();
+        if let Some((rgba_arc, w, h)) = self.frame_cache.get(target_frame) {
+            let rgba = rgba_arc.as_ref().clone();
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             let rgba = self.post_process_rgba(rgba, w, h);
             let mut fb = self.frame_buffer.lock().unwrap();
@@ -2959,7 +2962,7 @@ impl PlaybackEngine {
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
                 // Cache pre-grade frame for backward stepping
-                self.frame_cache.insert(self.playhead.value, rgba.clone(), w, h);
+                self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
                 let rgba = self.post_process_rgba(rgba, w, h);
                 let mut fb = self.frame_buffer.lock().unwrap();
                 fb.write_frame(rgba, w, h);
@@ -3013,7 +3016,7 @@ impl PlaybackEngine {
                     let (w, h) = (frame.width, frame.height);
                     let rgba = frame.to_rgba();
                     // Cache pre-grade frame for backward stepping
-                    self.frame_cache.insert(self.playhead.value, rgba.clone(), w, h);
+                    self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
                     let rgba = self.post_process_rgba(rgba, w, h);
                     let mut fb = self.frame_buffer.lock().unwrap();
                     fb.write_frame(rgba, w, h);
@@ -3085,7 +3088,7 @@ impl PlaybackEngine {
                     };
 
                     // Cache the pre-grade frame
-                    self.frame_cache.insert(frame_num, rgba.clone(), w, h);
+                    self.frame_cache.insert(frame_num, Arc::new(rgba.clone()), w, h);
 
                     // When we reach the target frame, display it
                     if frame_num >= target_frame && !found_target {
@@ -3194,8 +3197,8 @@ impl PlaybackEngine {
             if self.render_cache_disk.get(&key).is_some() { continue; }
 
             // Check if we have the pre-grade frame in the decode cache
-            if let Some((rgba, w, h)) = self.frame_cache.get(frame_num) {
-                let rgba = rgba.to_vec();
+            if let Some((rgba_arc, w, h)) = self.frame_cache.get(frame_num) {
+                let rgba = rgba_arc.as_ref().clone();
                 // Save/restore playhead so grading evaluates at the right time
                 let saved_playhead = self.playhead;
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
@@ -3276,7 +3279,7 @@ impl PlaybackEngine {
                     continue;
                 };
                 drop(seq);
-                self.frame_cache.insert(frame_num, rgba, w, h);
+                self.frame_cache.insert(frame_num, Arc::new(rgba), w, h);
             }
         }
 
@@ -3320,7 +3323,7 @@ impl PlaybackEngine {
                             (clip.timeline_in + elapsed_tc).value
                         } else { break; }
                     };
-                    self.frame_cache.insert(frame_num, rgba, w, h);
+                    self.frame_cache.insert(frame_num, Arc::new(rgba), w, h);
                     // Stop a few frames past current (forward will be handled by decoder resume)
                     if frame_num > current + 5 { break; }
                     continue;
@@ -3485,26 +3488,28 @@ impl PlaybackEngine {
     /// This defers the ~1-2s shader compilation cost from startup to the first frame
     /// that actually needs GPU processing.
     fn ensure_gpu_effects(&mut self) {
-        if self.gpu_effects.is_none() {
+        if self.gpu_effects.is_none() && !self.gpu_effects_failed {
             let t = std::time::Instant::now();
             self.gpu_effects = klipp_effects::gpu::GpuEffectsPipeline::new();
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
             if self.gpu_effects.is_some() {
-                info!("PlaybackEngine: GPU effects pipeline initialized lazily in {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
+                info!("PlaybackEngine: GPU effects pipeline initialized in {ms:.0}ms");
+            } else {
+                self.gpu_effects_failed = true;
+                info!("GPU effects pipeline unavailable — running without GPU effects");
+                warn!("GPU effects pipeline init failed ({ms:.0}ms) — will not retry");
             }
         }
     }
 
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
-        // Lazily initialize GPU on first frame
         self.ensure_gpu_effects();
-        // Cache the pre-grade frame for instant re-grading when paused
-        self.cached_pregrade_frame = Some((rgba.clone(), width, height));
-        // Also insert into bidirectional frame cache for instant backward stepping
-        self.frame_cache.insert(self.playhead.value, rgba.clone(), width, height);
-        // Also store in shared frame buffer so UI thread can re-grade directly
+        let rgba_arc = Arc::new(rgba.clone());
+        self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
+        self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
         {
             let mut fb = self.frame_buffer.lock().unwrap();
-            fb.pregrade_data = rgba.clone();
+            fb.pregrade_data = rgba_arc;
         }
 
         // ── Smart render cache: check for cached graded frame ──
@@ -3547,9 +3552,7 @@ impl PlaybackEngine {
                 });
 
             if let Some((cached, _w, _h)) = cached_result {
-                // Promote to hot cache if it came from disk
                 self.render_cache_hot.insert(key.clone(), cached.clone(), width, height);
-                // Still render scope texture for the cached frame
                 if let Some(gpu) = &mut self.gpu_effects {
                     let scope_w = 720u32;
                     let scope_h = 256u32;
@@ -3577,7 +3580,7 @@ impl PlaybackEngine {
             self.render_cache_disk.put(&key, &result, width, height);
         }
 
-        // Render GPU scope texture from the graded frame (same as regrade_cached_frame)
+        // Render GPU scope texture from the graded frame
         if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
             let scope_h = 256u32;
@@ -3766,8 +3769,8 @@ impl PlaybackEngine {
     fn regrade_cached_frame(&mut self) {
         self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with V2 overlay
-        if let Some((ref rgba, w, h)) = self.cached_pregrade_frame.clone() {
-            let v1_result = self.post_process_rgba_inner(rgba.clone(), w, h);
+        if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {
+            let v1_result = self.post_process_rgba_inner(rgba_arc.as_ref().clone(), w, h);
 
             // Composite V2 overlay (title clips) directly over V1
             let final_result = if let Some(v2_frame) = &self.v2_frame_cache {
