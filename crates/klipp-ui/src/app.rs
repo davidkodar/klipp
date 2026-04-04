@@ -11727,45 +11727,7 @@ impl eframe::App for KlippApp {
         let transport_cmds = self.transport.handle_keyboard(ctx, &self.state);
         all_cmds.extend(transport_cmds);
 
-        // 3b. Scope cursor: sample pixel under pointer from frame buffer
-        // (runs after viewer sets viewer_image_rect on previous frame)
-        self.state.scope_cursor = None;
-        self.scope_window_runtime.pointer_over = false; // reset before sampling
-        if let Some(image_rect) = self.state.viewer_image_rect {
-            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
-                if image_rect.contains(pos) {
-                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
-                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
-                    let fb = self.frame_buffer.lock().unwrap();
-                    if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
-                        let px = ((nx * fb.width as f32) as u32).min(fb.width - 1);
-                        let py = ((ny * fb.height as f32) as u32).min(fb.height - 1);
-                        let idx = ((py * fb.width + px) * 4) as usize;
-                        if idx + 2 < fb.data.len() {
-                            let sr = fb.data[idx] as f32 / 255.0;
-                            let sg = fb.data[idx + 1] as f32 / 255.0;
-                            let sb = fb.data[idx + 2] as f32 / 255.0;
-                            self.state.scope_cursor = Some(
-                                crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb)
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3c. Floating scope window (disabled in fullscreen — clean playback like DaVinci/FCP)
-        if !self.state.fullscreen_viewer {
-            crate::widgets::scope_window::show_scope_window(
-                ctx,
-                &mut self.state.scope_window,
-                &mut self.scope_window_runtime,
-                &self.frame_buffer,
-                self.prefs.color.vectorscope_skin_angle,
-                self.state.playback == PlaybackState::Playing,
-                self.state.scope_cursor,
-            );
-        }
+        self.scope_window_runtime.pointer_over = false;
 
         // 4. Unsaved changes dialog
         let dialog_cmds = self.show_unsaved_dialog(ctx);
@@ -13349,6 +13311,20 @@ impl eframe::App for KlippApp {
         // Ensure continuous repaint during playback (especially in fullscreen)
         if self.state.playback == PlaybackState::Playing {
             ctx.request_repaint();
+        }
+
+        // 9b. Floating scope window — runs AFTER CentralPanel so viewer_image_rect is current-frame
+        if !self.state.fullscreen_viewer {
+            crate::widgets::scope_window::show_scope_window(
+                ctx,
+                &mut self.state.scope_window,
+                &mut self.scope_window_runtime,
+                &self.frame_buffer,
+                self.prefs.color.vectorscope_skin_angle,
+                self.state.playback == PlaybackState::Playing,
+                self.state.viewer_image_rect,
+                self.state.viewer_pointer_pos,
+            );
         }
 
         // 10. Process quit

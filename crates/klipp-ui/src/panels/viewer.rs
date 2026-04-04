@@ -306,6 +306,9 @@ impl ViewerPanel {
         // Store viewer image rect for scope cursor sampling
         state.viewer_image_rect = Some(image_rect);
 
+        // Scope cursor: will be set at end of function
+        state.viewer_pointer_pos = None;
+
         // Grade still split-view comparison (takes priority over before/after)
         let grade_still_active = state.grade_still_compare
             && state.active_grade_still.is_some()
@@ -900,6 +903,23 @@ impl ViewerPanel {
         // Performance overlay
         if state.show_perf_overlay {
             self.draw_perf_overlay(ui, state, image_rect);
+        }
+
+        // Scope cursor: read pointer position from raw input events (most reliable on Wayland)
+        for event in &ui.ctx().input(|i| i.events.clone()) {
+            if let egui::Event::PointerMoved(pos) = event {
+                if image_rect.contains(*pos) {
+                    state.viewer_pointer_pos = Some(*pos);
+                }
+            }
+        }
+        // Fallback: also check egui's pointer state
+        if state.viewer_pointer_pos.is_none() {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.latest_pos())) {
+                if image_rect.contains(pos) {
+                    state.viewer_pointer_pos = Some(pos);
+                }
+            }
         }
     }
 

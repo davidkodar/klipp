@@ -45,11 +45,31 @@ pub fn show_scope_window(
     frame_buffer: &SharedFrameBuffer,
     skin_tone_angle: f32,
     is_playing: bool,
-    scope_cursor: Option<crate::state::ScopeCursorData>,
+    viewer_image_rect: Option<egui::Rect>,
+    viewer_pointer_pos: Option<egui::Pos2>,
 ) {
     if !state.open {
         return;
     }
+
+    // Sample scope cursor from frame buffer using viewer-reported pointer position
+    let scope_cursor = viewer_pointer_pos.and_then(|pos| {
+        let image_rect = viewer_image_rect?;
+        if !image_rect.contains(pos) { return None; }
+        let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+        let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+        let fb = frame_buffer.lock().unwrap();
+        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() { return None; }
+        let px = ((nx * fb.width as f32) as u32).min(fb.width - 1);
+        let py = ((ny * fb.height as f32) as u32).min(fb.height - 1);
+        let idx = ((py * fb.width + px) * 4) as usize;
+        if idx + 2 >= fb.data.len() { return None; }
+        let sr = fb.data[idx] as f32 / 255.0;
+        let sg = fb.data[idx + 1] as f32 / 255.0;
+        let sb = fb.data[idx + 2] as f32 / 255.0;
+        ctx.request_repaint();
+        Some(crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb))
+    });
 
     // Ensure pane count matches layout
     let needed = state.layout.pane_count();
@@ -57,161 +77,100 @@ pub fn show_scope_window(
         state.panes = PaneConfig::default_for_layout(state.layout);
     }
 
-    let mut open = state.open;
+    let area_id = egui::Id::new("scope_area_v1");
 
-    // Use a unique ID so stale persisted state from old versions is discarded
-    let screen = ctx.screen_rect();
-    let max_w = (screen.width() * 0.85).min(1400.0);
-    let max_h = (screen.height() * 0.85).min(900.0);
-
-    let win_resp = egui::Window::new("Scopes")
-        .id(egui::Id::new("scope_floating_v2"))
-        .open(&mut open)
-        .resizable(true)
-        .default_size([720.0, 520.0])
-        .min_size([300.0, 220.0])
-        .max_size([max_w, max_h])
-        .scroll(false)
+    let area_resp = egui::Area::new(area_id)
+        .movable(true)
+        .order(egui::Order::Middle)
+        .default_pos([100.0, 60.0])
         .show(ctx, |ui| {
-            // Toolbar row: layout buttons + ··· menu
-            draw_toolbar(ui, state, runtime);
+            let panel_frame = egui::Frame::none()
+                .fill(egui::Color32::from_rgb(0x1c, 0x1c, 0x20))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x3a, 0x40)))
+                .rounding(4.0)
+                .inner_margin(0.0)
+                .shadow(egui::Shadow { offset: egui::vec2(0.0, 2.0), blur: 12.0, spread: 0.0, color: egui::Color32::from_black_alpha(100) });
 
-            // Pane grid — use bounded available size, never exceed max_w/max_h
-            let (cols, rows) = state.layout.grid();
-            let cursor = ui.cursor().min;
-            let avail = ui.available_size();
-            // Clamp to prevent runaway during resize drag
-            let grid_w = avail.x.clamp(100.0, max_w);
-            let grid_h = avail.y.clamp(80.0, max_h);
+            panel_frame.show(ui, |ui| {
+                egui::Resize::default()
+                    .id(area_id.with("resize"))
+                    .default_size([700.0, 500.0])
+                    .min_size([300.0, 220.0])
+                    .show(ui, |ui| {
+                        // ── Header bar ──
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            // Scopes label
+                            ui.label(egui::RichText::new("Scopes").size(11.0).color(egui::Color32::from_rgb(0x90, 0x90, 0x98)));
+                            ui.separator();
+                            // Layout buttons
+                            for (layout, label) in [(ScopeLayout::OnePane, "1"), (ScopeLayout::TwoPane, "2"),
+                                (ScopeLayout::FourPane, "4"), (ScopeLayout::NinePane, "9")] {
+                                let active = state.layout == layout;
+                                let color = if active { egui::Color32::from_rgb(0xf5, 0xb4, 0x3c) } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                                if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
+                                    .fill(if active { egui::Color32::from_rgb(0x2a, 0x25, 0x18) } else { egui::Color32::TRANSPARENT })
+                                    .min_size(egui::vec2(16.0, 14.0))).clicked() {
+                                    state.layout = layout;
+                                    state.panes = PaneConfig::default_for_layout(layout);
+                                    *runtime = ScopeWindowRuntime::default();
+                                }
+                            }
+                            // Right-aligned: close button
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new(
+                                    egui::RichText::new("\u{2715}").size(11.0).color(egui::Color32::from_rgb(0x80, 0x80, 0x88))
+                                ).frame(false)).clicked() {
+                                    state.open = false;
+                                }
+                                // ··· menu
+                                let dot_color = if runtime.dot_menu_open { egui::Color32::from_rgb(0xf5, 0xb4, 0x3c) } else { egui::Color32::from_rgb(0x70, 0x70, 0x78) };
+                                if ui.add(egui::Button::new(
+                                    egui::RichText::new("\u{2022}\u{2022}\u{2022}").size(10.0).color(dot_color)
+                                ).frame(false)).clicked() {
+                                    runtime.dot_menu_open = !runtime.dot_menu_open;
+                                }
+                            });
+                        });
 
-            let gap = 2.0;
-            let total_gap_x = (cols.saturating_sub(1)) as f32 * gap;
-            let total_gap_y = (rows.saturating_sub(1)) as f32 * gap;
-            let pane_w = ((grid_w - total_gap_x) / cols as f32).max(40.0);
-            let pane_h = ((grid_h - total_gap_y) / rows as f32).max(30.0);
+                        // ── Pane grid ──
+                        let (cols, rows) = state.layout.grid();
+                        let cursor = ui.cursor().min;
+                        let avail = ui.available_size();
+                        let grid_w = avail.x.max(100.0);
+                        let grid_h = avail.y.max(80.0);
+                        let gap = 2.0;
+                        let pane_w = ((grid_w - (cols.saturating_sub(1)) as f32 * gap) / cols as f32).max(40.0);
+                        let pane_h = ((grid_h - (rows.saturating_sub(1)) as f32 * gap) / rows as f32).max(30.0);
 
-            for row in 0..rows {
-                for col in 0..cols {
-                    let pane_idx = row * cols + col;
-                    if pane_idx >= state.panes.len() { break; }
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                let pane_idx = row * cols + col;
+                                if pane_idx >= state.panes.len() { break; }
+                                let x = cursor.x + col as f32 * (pane_w + gap);
+                                let y = cursor.y + row as f32 * (pane_h + gap);
+                                let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
+                                ui.painter().rect_stroke(pane_rect, 0.0,
+                                    egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
+                                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor);
+                            }
+                        }
 
-                    let x = cursor.x + col as f32 * (pane_w + gap);
-                    let y = cursor.y + row as f32 * (pane_h + gap);
-                    let pane_rect = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(pane_w, pane_h),
-                    );
-
-                    // Pane border
-                    ui.painter().rect_stroke(
-                        pane_rect, 0.0,
-                        egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)),
-                    );
-
-                    // Pane content via child UI
-                    let mut child = ui.new_child(
-                        egui::UiBuilder::new().max_rect(pane_rect),
-                    );
-                    draw_pane(
-                        &mut child,
-                        pane_idx,
-                        state,
-                        runtime,
-                        frame_buffer,
-                        skin_tone_angle,
-                        is_playing,
-                        scope_cursor,
-                    );
-                }
-            }
-
-            // ··· menu popup
-            if runtime.dot_menu_open {
-                draw_dot_menu(ui, state, runtime);
-            }
+                        // ··· menu popup
+                        if runtime.dot_menu_open {
+                            draw_dot_menu(ui, state, runtime);
+                        }
+                    });
+            });
         });
 
-    // Check if pointer is over the scope window — blocks background interaction
-    if let Some(ref resp) = win_resp {
-        if let Some(hover_pos) = ctx.input(|i| i.pointer.hover_pos()) {
-            if resp.response.rect.contains(hover_pos) {
-                runtime.pointer_over = true;
-            }
+    // Block background interaction when pointer is over scope window
+    if let Some(hover_pos) = ctx.input(|i| i.pointer.hover_pos()) {
+        if area_resp.response.rect.contains(hover_pos) {
+            runtime.pointer_over = true;
         }
     }
-    state.open = open;
-}
-
-// ── Toolbar (inside window, below egui title bar) ────────────────────────
-
-fn draw_toolbar(
-    ui: &mut egui::Ui,
-    state: &mut ScopeWindowState,
-    runtime: &mut ScopeWindowRuntime,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-
-        // Layout buttons
-        let layouts = [
-            (ScopeLayout::OnePane, "1"),
-            (ScopeLayout::TwoPane, "2"),
-            (ScopeLayout::FourPane, "4"),
-            (ScopeLayout::NinePane, "9"),
-        ];
-        for (layout, label) in &layouts {
-            let is_active = state.layout == *layout;
-            let color = if is_active {
-                egui::Color32::from_rgb(0xf5, 0xb4, 0x3c)
-            } else {
-                egui::Color32::from_rgb(0x80, 0x80, 0x88)
-            };
-            let btn = egui::Button::new(
-                egui::RichText::new(*label).size(11.0).color(color).strong()
-            ).min_size(egui::vec2(22.0, 18.0))
-             .fill(if is_active {
-                 egui::Color32::from_rgb(0x30, 0x2a, 0x1a)
-             } else {
-                 egui::Color32::TRANSPARENT
-             });
-            if ui.add(btn).on_hover_text(format!("{} pane(s)", layout.pane_count())).clicked() {
-                state.layout = *layout;
-                state.panes = PaneConfig::default_for_layout(*layout);
-                *runtime = ScopeWindowRuntime::default();
-            }
-        }
-
-        ui.separator();
-
-        // Global Low Pass Filter
-        let lp_color = if state.global_low_pass {
-            egui::Color32::from_rgb(0xf5, 0xb4, 0x3c)
-        } else {
-            egui::Color32::from_rgb(0x60, 0x60, 0x68)
-        };
-        if ui.add(egui::Button::new(
-            egui::RichText::new("LP").size(9.0).color(lp_color)
-        ).frame(false)).on_hover_text("Low Pass Filter").clicked() {
-            state.global_low_pass = !state.global_low_pass;
-            for pane in &mut state.panes {
-                pane.settings.low_pass = state.global_low_pass;
-            }
-        }
-
-        // Right-aligned: ··· menu button
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let dot_color = if runtime.dot_menu_open {
-                egui::Color32::from_rgb(0xf5, 0xb4, 0x3c)
-            } else {
-                egui::Color32::from_rgb(0x90, 0x90, 0x98)
-            };
-            if ui.add(egui::Button::new(
-                egui::RichText::new("\u{2022}\u{2022}\u{2022}").size(12.0).color(dot_color)
-            ).frame(false)).clicked() {
-                runtime.dot_menu_open = !runtime.dot_menu_open;
-            }
-        });
-    });
 }
 
 // ── Per-pane rendering ───────────────────────────────────────────────────

@@ -451,11 +451,10 @@ pub struct AppState {
     /// Floating scope window state.
     pub scope_window: ScopeWindowState,
 
-    /// Scope cursor: pixel color under the viewer mouse pointer (for scope overlay indicators).
-    /// Computed each frame from the frame buffer when pointer is over the viewer image.
-    pub scope_cursor: Option<ScopeCursorData>,
     /// Viewer image rect (set by viewer each frame for scope cursor sampling).
     pub viewer_image_rect: Option<egui::Rect>,
+    /// Pointer position over the viewer image (set by viewer on hover, None when not hovering).
+    pub viewer_pointer_pos: Option<egui::Pos2>,
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
@@ -1340,8 +1339,8 @@ impl Default for AppState {
             scope_bloom: true,
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),
-            scope_cursor: None,
             viewer_image_rect: None,
+            viewer_pointer_pos: None,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
             qualifier_sample_request: None,
