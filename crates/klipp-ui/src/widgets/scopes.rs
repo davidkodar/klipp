@@ -210,6 +210,8 @@ pub fn show_scopes(
     _quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
     is_playing: bool,
+    scope_cursor: Option<crate::state::ScopeCursorData>,
+    show_cursor: bool,
 ) {
     let render_h: usize = 512;
 
@@ -435,6 +437,16 @@ pub fn show_scopes(
             let scale = state.scale;
             let is_parade = mode == ScopeMode::Parade;
             draw_scale(ui, full_rect, scale, is_parade, 3);
+        }
+
+        // ── Scope cursor indicator ──
+        if show_cursor {
+            if let Some(ref cur) = scope_cursor {
+                let scope_type = crate::state::ScopeType::from(mode);
+                super::scope_window::draw_scope_cursor_indicator(
+                    &ui.painter_at(full_rect), scope_type, cur, full_rect,
+                );
+            }
         }
     } else {
         ui.label(egui::RichText::new("No frame data").color(egui::Color32::from_rgb(0x50, 0x50, 0x60)).size(10.0));

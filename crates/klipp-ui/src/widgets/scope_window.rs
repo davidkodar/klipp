@@ -37,6 +37,52 @@ impl Default for ScopeWindowRuntime {
     }
 }
 
+/// Sample a pixel (or box-averaged area) from the frame buffer at a viewer pointer position.
+/// Converts screen coordinates to image pixel coordinates accounting for letterboxing.
+pub fn sample_viewer_pixel(
+    pointer_pos: egui::Pos2,
+    image_rect: egui::Rect,
+    fb: &klipp_engine::FrameBuffer,
+    sample_radius: u32,
+) -> Option<crate::state::ScopeCursorData> {
+    if !image_rect.contains(pointer_pos) {
+        return None;
+    }
+    let nx = ((pointer_pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+    let ny = ((pointer_pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+    if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+        return None;
+    }
+    let px = ((nx * fb.width as f32) as u32).min(fb.width - 1);
+    let py = ((ny * fb.height as f32) as u32).min(fb.height - 1);
+
+    let r = sample_radius as i32;
+    let mut sum_r = 0u32;
+    let mut sum_g = 0u32;
+    let mut sum_b = 0u32;
+    let mut count = 0u32;
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let sx = (px as i32 + dx).clamp(0, fb.width as i32 - 1) as u32;
+            let sy = (py as i32 + dy).clamp(0, fb.height as i32 - 1) as u32;
+            let idx = ((sy * fb.width + sx) * 4) as usize;
+            if idx + 3 <= fb.data.len() {
+                sum_r += fb.data[idx] as u32;
+                sum_g += fb.data[idx + 1] as u32;
+                sum_b += fb.data[idx + 2] as u32;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let sr = (sum_r / count) as f32 / 255.0;
+    let sg = (sum_g / count) as f32 / 255.0;
+    let sb = (sum_b / count) as f32 / 255.0;
+    Some(crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb))
+}
+
 /// Show the floating scope window.
 pub fn show_scope_window(
     ctx: &egui::Context,
@@ -47,29 +93,32 @@ pub fn show_scope_window(
     is_playing: bool,
     viewer_image_rect: Option<egui::Rect>,
     viewer_pointer_pos: Option<egui::Pos2>,
+    locked_cursor_data: Option<crate::state::ScopeCursorData>,
 ) {
     if !state.open {
         return;
     }
 
-    // Sample scope cursor from frame buffer using viewer-reported pointer position
-    let scope_cursor = viewer_pointer_pos.and_then(|pos| {
-        let image_rect = viewer_image_rect?;
-        if !image_rect.contains(pos) { return None; }
-        let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
-        let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
-        let fb = frame_buffer.lock().unwrap();
-        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() { return None; }
-        let px = ((nx * fb.width as f32) as u32).min(fb.width - 1);
-        let py = ((ny * fb.height as f32) as u32).min(fb.height - 1);
-        let idx = ((py * fb.width + px) * 4) as usize;
-        if idx + 2 >= fb.data.len() { return None; }
-        let sr = fb.data[idx] as f32 / 255.0;
-        let sg = fb.data[idx + 1] as f32 / 255.0;
-        let sb = fb.data[idx + 2] as f32 / 255.0;
-        ctx.request_repaint();
-        Some(crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb))
-    });
+    // Sample scope cursor: use locked data if available, otherwise live sample.
+    let scope_cursor = if let Some(locked) = locked_cursor_data {
+        Some(locked)
+    } else {
+        let sample_radius = state.panes.iter()
+            .filter(|p| p.settings.show_scope_cursor)
+            .map(|p| p.settings.scope_cursor_sample_radius)
+            .max()
+            .unwrap_or(2);
+
+        viewer_pointer_pos.and_then(|pos| {
+            let image_rect = viewer_image_rect?;
+            let fb = frame_buffer.lock().unwrap();
+            let result = sample_viewer_pixel(pos, image_rect, &fb, sample_radius);
+            if result.is_some() {
+                ctx.request_repaint();
+            }
+            result
+        })
+    };
 
     // Ensure pane count matches layout
     let needed = state.layout.pane_count();
@@ -533,7 +582,7 @@ fn render_pane_scope(
 }
 
 /// Draw a small circle/crosshair on the scope showing where the hovered pixel maps.
-fn draw_scope_cursor_indicator(
+pub fn draw_scope_cursor_indicator(
     painter: &egui::Painter,
     scope_type: ScopeType,
     cur: &crate::state::ScopeCursorData,
@@ -633,6 +682,23 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
 
     ui.separator();
     ui.checkbox(&mut state.panes[pane_idx].settings.show_scope_cursor, "Show Picker Overlay");
+
+    // Sample box size control
+    if state.panes[pane_idx].settings.show_scope_cursor {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label("Sample:");
+            let r = &mut state.panes[pane_idx].settings.scope_cursor_sample_radius;
+            if ui.small_button("\u{2212}").clicked() && *r > 0 {
+                *r -= 1;
+            }
+            let side = *r * 2 + 1;
+            ui.label(format!("{side}\u{00D7}{side}"));
+            if ui.small_button("+").clicked() && *r < 7 {
+                *r += 1;
+            }
+        });
+    }
 
     ui.add_space(6.0);
     if ui.add(egui::Button::new("Reset View").min_size(egui::vec2(170.0, 22.0))).clicked() {

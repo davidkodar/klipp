@@ -11068,7 +11068,12 @@ impl KlippApp {
 
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
-                if let Some(drag) = self.state.range_drag.take() {
+                // Unlock scope cursor on Escape
+                if self.state.scope_cursor_locked {
+                    self.state.scope_cursor_locked = false;
+                    self.state.scope_cursor_locked_pos = None;
+                    self.state.scope_cursor_locked_data = None;
+                } else if let Some(drag) = self.state.range_drag.take() {
                     self.state.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
                     self.state.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
                 } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
@@ -12652,6 +12657,32 @@ impl eframe::App for KlippApp {
                         all_cmds.extend(cmds);
                     });
 
+                    // Compute bottom-panel scope cursor data (shared by overlay + bottom panel)
+                    // If locked but data not yet computed, compute it now
+                    if self.state.scope_cursor_locked && self.state.scope_cursor_locked_data.is_none() {
+                        if let (Some(pos), Some(rect)) = (self.state.scope_cursor_locked_pos, self.state.viewer_image_rect) {
+                            let fb = self.frame_buffer.lock().unwrap();
+                            self.state.scope_cursor_locked_data = crate::widgets::scope_window::sample_viewer_pixel(
+                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                            );
+                        }
+                    }
+
+                    let bottom_scope_cursor: Option<crate::state::ScopeCursorData> = if self.state.scope_cursor_locked {
+                        self.state.scope_cursor_locked_data
+                    } else if self.state.scope_cursor_show {
+                        if let (Some(pos), Some(rect)) = (self.state.viewer_pointer_pos, self.state.viewer_image_rect) {
+                            let fb = self.frame_buffer.lock().unwrap();
+                            crate::widgets::scope_window::sample_viewer_pixel(
+                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     // Scope overlay on viewer (semi-transparent, bottom-right corner)
                     if self.state.show_scopes && self.state.scope_overlay_mode {
                         let overlay_w = (viewer_rect.width() * 0.3).min(200.0);
@@ -12673,6 +12704,8 @@ impl eframe::App for KlippApp {
                                 self.state.scope_quality,
                                 self.prefs.color.vectorscope_skin_angle,
                                 self.state.playback == PlaybackState::Playing,
+                                bottom_scope_cursor,
+                                self.state.scope_cursor_show,
                             );
                         });
                     }
@@ -12829,6 +12862,37 @@ impl eframe::App for KlippApp {
                                                 self.state.scope_window.open = !self.state.scope_window.open;
                                             }
 
+                                            // Picker toggle (crosshair icon)
+                                            let picker_active = self.state.scope_cursor_show;
+                                            let picker_locked = self.state.scope_cursor_locked;
+                                            let picker_color = if picker_locked {
+                                                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                                            } else if picker_active {
+                                                theme.text_accent
+                                            } else {
+                                                theme.text_dim
+                                            };
+                                            let picker_resp = ui.add(egui::Button::new(
+                                                egui::RichText::new("\u{2295}").size(12.0).color(picker_color),
+                                            ).frame(false));
+                                            if picker_resp.clicked() {
+                                                if picker_locked {
+                                                    // Unlock
+                                                    self.state.scope_cursor_locked = false;
+                                                    self.state.scope_cursor_locked_pos = None;
+                                                    self.state.scope_cursor_locked_data = None;
+                                                } else {
+                                                    self.state.scope_cursor_show = !self.state.scope_cursor_show;
+                                                }
+                                            }
+                                            picker_resp.on_hover_text(if picker_locked {
+                                                "Click to unlock sample point"
+                                            } else if picker_active {
+                                                "Scope picker (click viewer to lock)"
+                                            } else {
+                                                "Enable scope picker"
+                                            });
+
                                             // Overlay toggle
                                             let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
                                             if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
@@ -12931,6 +12995,8 @@ impl eframe::App for KlippApp {
                                     self.state.scope_quality,
                                     self.prefs.color.vectorscope_skin_angle,
                                     self.state.playback == PlaybackState::Playing,
+                                    bottom_scope_cursor,
+                                    self.state.scope_cursor_show,
                                 );
                             });
                             // Force repaint to recalculate layout on next frame
@@ -13398,6 +13464,11 @@ impl eframe::App for KlippApp {
 
         // 9b. Floating scope window — runs AFTER CentralPanel so viewer_image_rect is current-frame
         if !self.state.fullscreen_viewer {
+            let locked_data = if self.state.scope_cursor_locked {
+                self.state.scope_cursor_locked_data
+            } else {
+                None
+            };
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
@@ -13407,6 +13478,7 @@ impl eframe::App for KlippApp {
                 self.state.playback == PlaybackState::Playing,
                 self.state.viewer_image_rect,
                 self.state.viewer_pointer_pos,
+                locked_data,
             );
         }
 

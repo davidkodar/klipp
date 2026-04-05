@@ -921,6 +921,85 @@ impl ViewerPanel {
                 }
             }
         }
+
+        // Click-to-lock scope cursor: Ctrl+Click on viewer image
+        if state.scope_cursor_show || (state.scope_window.open
+            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor))
+        {
+            let clicked = ui.input(|i| i.pointer.primary_clicked() && i.modifiers.ctrl);
+            if clicked {
+                if let Some(pos) = state.viewer_pointer_pos {
+                    // Toggle lock: if already locked at this position, unlock
+                    if state.scope_cursor_locked {
+                        state.scope_cursor_locked = false;
+                        state.scope_cursor_locked_pos = None;
+                        state.scope_cursor_locked_data = None;
+                    } else {
+                        state.scope_cursor_locked = true;
+                        state.scope_cursor_locked_pos = Some(pos);
+                        // Data will be computed by app.rs on next frame
+                    }
+                }
+            }
+        }
+
+        // Draw sample box overlay on viewer when any scope cursor is active
+        let floating_cursor = state.scope_window.open
+            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor);
+        let bottom_cursor = state.scope_cursor_show && state.show_scopes;
+        let any_cursor = floating_cursor || bottom_cursor;
+
+        // Determine the effective sample position (live or locked)
+        let effective_pos = if state.scope_cursor_locked {
+            state.scope_cursor_locked_pos
+        } else {
+            state.viewer_pointer_pos
+        };
+
+        if let Some(pos) = effective_pos {
+            if any_cursor {
+                // Pick the largest sample radius across all active scope cursors
+                let mut sample_radius = if bottom_cursor { state.scope_cursor_sample_radius } else { 0 };
+                if floating_cursor {
+                    let win_r = state.scope_window.panes.iter()
+                        .filter(|p| p.settings.show_scope_cursor)
+                        .map(|p| p.settings.scope_cursor_sample_radius)
+                        .max()
+                        .unwrap_or(0);
+                    sample_radius = sample_radius.max(win_r);
+                }
+                let scale_x = image_rect.width() / video_w;
+                let scale_y = image_rect.height() / video_h;
+                let box_w = (sample_radius as f32 * 2.0 + 1.0) * scale_x;
+                let box_h = (sample_radius as f32 * 2.0 + 1.0) * scale_y;
+                let cursor_color = if state.scope_cursor_locked {
+                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 220)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200)
+                };
+                let box_rect = egui::Rect::from_center_size(pos, egui::vec2(box_w, box_h));
+                ui.painter().rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
+                // Center crosshair
+                ui.painter().line_segment(
+                    [egui::pos2(pos.x - 4.0, pos.y), egui::pos2(pos.x + 4.0, pos.y)],
+                    egui::Stroke::new(1.0, cursor_color),
+                );
+                ui.painter().line_segment(
+                    [egui::pos2(pos.x, pos.y - 4.0), egui::pos2(pos.x, pos.y + 4.0)],
+                    egui::Stroke::new(1.0, cursor_color),
+                );
+                // "LOCKED" label
+                if state.scope_cursor_locked {
+                    ui.painter().text(
+                        egui::pos2(pos.x, pos.y - 10.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        "LOCKED",
+                        egui::FontId::proportional(8.0),
+                        cursor_color,
+                    );
+                }
+            }
+        }
     }
 
     fn draw_scrub_bar(

@@ -469,6 +469,18 @@ pub struct AppState {
     /// Pointer position over the viewer image (set by viewer on hover, None when not hovering).
     pub viewer_pointer_pos: Option<egui::Pos2>,
 
+    // ── Bottom panel scope cursor (lock-capable) ──
+    /// When true, the scope cursor is locked to a fixed position.
+    pub scope_cursor_locked: bool,
+    /// The locked pointer position (screen coords, set on click).
+    pub scope_cursor_locked_pos: Option<egui::Pos2>,
+    /// The locked cursor data (computed at lock time).
+    pub scope_cursor_locked_data: Option<ScopeCursorData>,
+    /// Sample box half-size for the bottom panel scope cursor.
+    pub scope_cursor_sample_radius: u32,
+    /// Whether to show the scope cursor indicator on the bottom panel.
+    pub scope_cursor_show: bool,
+
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
     /// Pixel coordinates to sample for white balance (set by viewer on click, consumed by app)
@@ -809,6 +821,26 @@ impl ScopeCursorData {
         let cr = 0.5000 * sr - 0.4542 * sg - 0.0458 * sb;
         Self { x_frac, r: sr, g: sg, b: sb, luma, cb, cr }
     }
+
+    /// Convert sRGB to HSL.
+    pub fn to_hsl(&self) -> (f32, f32, f32) {
+        let max = self.r.max(self.g).max(self.b);
+        let min = self.r.min(self.g).min(self.b);
+        let l = (max + min) / 2.0;
+        if (max - min).abs() < 1e-6 {
+            return (0.0, 0.0, l);
+        }
+        let d = max - min;
+        let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+        let h = if (max - self.r).abs() < 1e-6 {
+            (self.g - self.b) / d + if self.g < self.b { 6.0 } else { 0.0 }
+        } else if (max - self.g).abs() < 1e-6 {
+            (self.b - self.r) / d + 2.0
+        } else {
+            (self.r - self.g) / d + 4.0
+        };
+        (h * 60.0, s, l)
+    }
 }
 
 // ── Floating scope window types ─────────────────────────────────────────
@@ -822,6 +854,17 @@ pub enum ScopeType {
     Vectorscope,
     Histogram,
     CIEChromaticity,
+}
+
+impl From<ScopeMode> for ScopeType {
+    fn from(m: ScopeMode) -> Self {
+        match m {
+            ScopeMode::Waveform => Self::Waveform,
+            ScopeMode::Parade => Self::Parade,
+            ScopeMode::Vectorscope => Self::Vectorscope,
+            ScopeMode::Histogram => Self::Histogram,
+        }
+    }
 }
 
 impl ScopeType {
@@ -934,6 +977,8 @@ pub struct PaneScopeSettings {
 
     // ── Scope cursor (picker overlay) ──
     pub show_scope_cursor: bool,
+    /// Half-size of the sample box (0 = 1×1 single pixel, 2 = 5×5, up to 7 = 15×15).
+    pub scope_cursor_sample_radius: u32,
 }
 
 impl Default for PaneScopeSettings {
@@ -964,6 +1009,7 @@ impl Default for PaneScopeSettings {
             overlay_on_viewer: false,
             // Scope cursor
             show_scope_cursor: true,
+            scope_cursor_sample_radius: 2,
         }
     }
 }
@@ -1356,6 +1402,11 @@ impl Default for AppState {
             scope_window: ScopeWindowState::default(),
             viewer_image_rect: None,
             viewer_pointer_pos: None,
+            scope_cursor_locked: false,
+            scope_cursor_locked_pos: None,
+            scope_cursor_locked_data: None,
+            scope_cursor_sample_radius: 2,
+            scope_cursor_show: true,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
             qualifier_sample_request: None,
