@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 pub mod chorus;
 pub mod compressor;
 pub mod multiband_compressor;

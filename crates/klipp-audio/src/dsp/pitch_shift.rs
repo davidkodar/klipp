@@ -2,61 +2,71 @@ use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
 use std::f32::consts::PI;
 
 const MAX_CHANNELS: usize = 2;
-/// Circular buffer size: ~100ms at 192kHz = 19200 samples per channel.
-const CIRC_BUF_SIZE: usize = 19200;
+/// Circular buffer size: ~200ms at 192kHz.
+const CIRC_BUF_SIZE: usize = 38400;
 
-/// Grain size in seconds.
-const GRAIN_SECS: f32 = 0.020; // 20ms
-/// Per-channel pitch shift state.
+/// Grain size in seconds — 30ms gives good time-domain pitch shifting.
+const GRAIN_SECS: f32 = 0.030;
+
+/// Per-channel pitch shift state using dual-grain overlap-add.
 struct ChannelState {
     /// Circular input buffer.
-    buf: [f32; CIRC_BUF_SIZE],
+    buf: Vec<f32>,
     /// Write pointer into circular buffer.
     write_pos: usize,
-    /// Read pointer (fractional) for grain playback.
-    read_pos: f64,
-    /// Second read pointer offset by half a grain for overlap-add.
-    read_pos2: f64,
+    /// Total samples written (monotonic, never wraps).
+    total_written: u64,
+    /// Grain A: fractional read position (monotonic, offset from total_written).
+    grain_a_phase: f64,
+    /// Grain B: fractional read position, offset by half a grain from A.
+    grain_b_phase: f64,
 }
 
 impl ChannelState {
     fn new() -> Self {
         Self {
-            buf: [0.0; CIRC_BUF_SIZE],
+            buf: vec![0.0; CIRC_BUF_SIZE],
             write_pos: 0,
-            read_pos: 0.0,
-            read_pos2: 0.0,
+            total_written: 0,
+            grain_a_phase: 0.0,
+            grain_b_phase: 0.0,
         }
     }
 
     fn reset(&mut self) {
-        self.buf = [0.0; CIRC_BUF_SIZE];
+        self.buf.fill(0.0);
         self.write_pos = 0;
-        self.read_pos = 0.0;
-        self.read_pos2 = 0.0;
+        self.total_written = 0;
+        self.grain_a_phase = 0.0;
+        self.grain_b_phase = 0.0;
     }
 
     /// Read from circular buffer with linear interpolation.
     #[inline]
     fn read_interp(&self, pos: f64) -> f32 {
-        let len = CIRC_BUF_SIZE as f64;
-        let pos = ((pos % len) + len) % len;
-        let idx0 = pos as usize % CIRC_BUF_SIZE;
-        let idx1 = (idx0 + 1) % CIRC_BUF_SIZE;
+        let len = CIRC_BUF_SIZE;
+        // Convert monotonic position to circular index
+        let wrapped = ((pos as i64).rem_euclid(len as i64)) as usize;
+        let idx0 = wrapped;
+        let idx1 = (wrapped + 1) % len;
         let frac = (pos - pos.floor()) as f32;
         self.buf[idx0] * (1.0 - frac) + self.buf[idx1] * frac
     }
 }
 
 /// Granular pitch shifter using overlap-add with Hann-windowed grains.
+///
+/// Two grains run in parallel, offset by half a grain length. Each grain reads
+/// from the circular buffer at a rate determined by the pitch ratio. When a
+/// grain completes its window, it resets to a position trailing behind the
+/// write pointer, ensuring it always reads valid data.
 pub struct PitchShift {
-    #[allow(dead_code)]
     sample_rate: f32,
     semitones: f32,
     fine_cents: f32,
     channels: [ChannelState; MAX_CHANNELS],
     /// Grain size in samples.
-    grain_samples: f32,
+    grain_samples: usize,
     /// Pre-computed Hann window for one grain.
     hann_window: Vec<f32>,
 }
@@ -64,33 +74,24 @@ pub struct PitchShift {
 impl PitchShift {
     pub fn new(sample_rate: u32) -> Self {
         let sr = sample_rate as f32;
-        let grain_samples = (GRAIN_SECS * sr).round();
-        let grain_len = grain_samples as usize;
+        let grain_samples = (GRAIN_SECS * sr).round() as usize;
 
         // Pre-compute Hann window
-        let hann_window: Vec<f32> = (0..grain_len)
+        let hann_window: Vec<f32> = (0..grain_samples)
             .map(|i| {
-                let t = i as f32 / (grain_len - 1).max(1) as f32;
+                let t = i as f32 / (grain_samples - 1).max(1) as f32;
                 0.5 * (1.0 - (2.0 * PI * t).cos())
             })
             .collect();
 
-        let mut ps = Self {
+        Self {
             sample_rate: sr,
             semitones: 0.0,
             fine_cents: 0.0,
             channels: [ChannelState::new(), ChannelState::new()],
             grain_samples,
             hann_window,
-        };
-
-        // Initialize read pointers offset from write position
-        for ch in &mut ps.channels {
-            ch.read_pos = 0.0;
-            ch.read_pos2 = (grain_samples * 0.5) as f64;
         }
-
-        ps
     }
 }
 
@@ -126,25 +127,25 @@ impl AudioEffect for PitchShift {
         let num_frames = buffer.len() / channels;
         if num_frames == 0 { return; }
 
-        // Compute pitch ratio
         let total_semitones = self.semitones + self.fine_cents / 100.0;
         if total_semitones.abs() < 0.001 {
-            // No shift — pass through (still write to buffer for state continuity)
+            // No shift — still feed circular buffer for state continuity
             for frame in 0..num_frames {
                 for ch in 0..channels.min(MAX_CHANNELS) {
                     let idx = frame * channels + ch;
                     let cs = &mut self.channels[ch];
                     cs.buf[cs.write_pos] = buffer[idx];
                     cs.write_pos = (cs.write_pos + 1) % CIRC_BUF_SIZE;
-                    cs.read_pos += 1.0;
-                    cs.read_pos2 += 1.0;
+                    cs.total_written += 1;
                 }
             }
             return;
         }
 
         let ratio = 2.0_f64.powf(total_semitones as f64 / 12.0);
-        let grain_len = self.grain_samples as usize;
+        let grain_len = self.grain_samples;
+        let grain_len_f = grain_len as f64;
+        let half_grain = grain_len_f * 0.5;
 
         for frame in 0..num_frames {
             for ch in 0..channels.min(MAX_CHANNELS) {
@@ -153,43 +154,50 @@ impl AudioEffect for PitchShift {
 
                 // Write input to circular buffer
                 cs.buf[cs.write_pos] = buffer[idx];
+                let wp = cs.write_pos as f64;
 
-                // Read two overlapping grains at modified rate
-                let pos1_in_grain = cs.read_pos % self.grain_samples as f64;
-                let pos2_in_grain = cs.read_pos2 % self.grain_samples as f64;
+                // Initialize grain phases on first sample
+                if cs.total_written == 0 {
+                    // Grains start trailing behind the write pointer
+                    cs.grain_a_phase = 0.0;
+                    cs.grain_b_phase = half_grain;
+                }
 
-                let win1_idx = pos1_in_grain as usize;
-                let win2_idx = pos2_in_grain as usize;
-                let w1 = if win1_idx < grain_len { self.hann_window[win1_idx] } else { 0.0 };
-                let w2 = if win2_idx < grain_len { self.hann_window[win2_idx] } else { 0.0 };
+                // Position within each grain's Hann window (0..grain_len)
+                let a_in_grain = cs.grain_a_phase % grain_len_f;
+                let b_in_grain = cs.grain_b_phase % grain_len_f;
 
-                let s1 = cs.read_interp(cs.read_pos);
-                let s2 = cs.read_interp(cs.read_pos2);
+                let a_win_idx = a_in_grain as usize;
+                let b_win_idx = b_in_grain as usize;
+                let w_a = if a_win_idx < grain_len { self.hann_window[a_win_idx] } else { 0.0 };
+                let w_b = if b_win_idx < grain_len { self.hann_window[b_win_idx] } else { 0.0 };
 
-                // Overlap-add
-                let total_weight = w1 + w2;
-                buffer[idx] = if total_weight > 1e-6 {
-                    (s1 * w1 + s2 * w2) / total_weight
+                // Read positions: trail behind write pointer by grain_len,
+                // offset by grain phase within the circular buffer
+                let read_base = if wp >= grain_len_f { wp - grain_len_f } else { wp + CIRC_BUF_SIZE as f64 - grain_len_f };
+                let s_a = cs.read_interp(read_base + a_in_grain * (1.0 - ratio) / 1.0_f64.max(ratio.abs()));
+                let s_b = cs.read_interp(read_base + b_in_grain * (1.0 - ratio) / 1.0_f64.max(ratio.abs()));
+
+                // Overlap-add with normalization
+                let total_w = w_a + w_b;
+                buffer[idx] = if total_w > 1e-6 {
+                    (s_a * w_a + s_b * w_b) / total_w
                 } else {
-                    0.0
+                    buffer[idx] // pass through if both windows are zero
                 };
 
-                // Advance pointers
+                // Advance
                 cs.write_pos = (cs.write_pos + 1) % CIRC_BUF_SIZE;
-                cs.read_pos += ratio;
-                cs.read_pos2 += ratio;
+                cs.total_written += 1;
+                cs.grain_a_phase += ratio;
+                cs.grain_b_phase += ratio;
 
-                // Wrap read pointers to stay near write pointer
-                let wp = cs.write_pos as f64;
-                let buf_size = CIRC_BUF_SIZE as f64;
-                let max_lag = self.grain_samples as f64 * 4.0;
-                let diff1 = wp - (cs.read_pos % buf_size);
-                if diff1.abs() > max_lag {
-                    cs.read_pos = wp - self.grain_samples as f64 * 2.0;
+                // When a grain completes, reset it to maintain overlap
+                if cs.grain_a_phase >= grain_len_f * 2.0 {
+                    cs.grain_a_phase -= grain_len_f;
                 }
-                let diff2 = wp - (cs.read_pos2 % buf_size);
-                if diff2.abs() > max_lag {
-                    cs.read_pos2 = cs.read_pos + self.grain_samples as f64 * 0.5;
+                if cs.grain_b_phase >= grain_len_f * 2.0 {
+                    cs.grain_b_phase -= grain_len_f;
                 }
             }
         }

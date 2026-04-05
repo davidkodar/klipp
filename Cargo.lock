@@ -2249,6 +2249,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "ffmpeg-next",
+ "klipp-audio",
  "klipp-color",
  "klipp-core",
  "klipp-effects",

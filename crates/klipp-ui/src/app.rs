@@ -5347,6 +5347,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.audio_effects.push(instance.clone());
+                            tracing::debug!("audio_fx: added effect '{}' to clip {:?}, total: {}", effect_type, clip.id, clip.audio_effects.len());
                             break;
                         }
                     }
@@ -5384,6 +5385,8 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
+                    // Note: does not send SequenceUpdated — param changes take effect
+                    // on next play/seek to avoid audio glitches from pipeline restart.
                     continue;
                 }
                 AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
@@ -5397,6 +5400,7 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     continue;
                 }
                 AppCommand::SetAudioEffectWetDry { clip_id, effect_index, wet_dry } => {
@@ -5426,6 +5430,7 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     continue;
                 }
 

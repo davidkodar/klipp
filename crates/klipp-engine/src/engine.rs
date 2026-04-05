@@ -800,6 +800,18 @@ impl PlaybackEngine {
                 self.current_grade_hash = 0;
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
+                // Restart audio sources to pick up changes (audio effects, clip edits).
+                // This tears down existing feeders and opens new ones with current clip data.
+                if !self.audio_sources.is_empty() {
+                    let tc = self.playhead;
+                    self.start_all_audio(tc);
+                    // Resume immediately if playing
+                    if self.state == PlaybackState::Playing {
+                        for active in &self.audio_sources {
+                            active.source.resume();
+                        }
+                    }
+                }
                 // Re-read clip speed in case SpeedRamp changed it during playback
                 if self.state == PlaybackState::Playing {
                     let seq = self.sequence.read().unwrap();
@@ -1077,7 +1089,7 @@ impl PlaybackEngine {
         self.stop_all_audio();
 
         // Collect (track_index, media_id, path, source_secs) for every track with audio at tc
-        let track_audio: Vec<(usize, MediaId, PathBuf, f64)> = {
+        let track_audio: Vec<(usize, MediaId, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = {
             let seq = self.sequence.read().unwrap();
             let pool = self.media_pool.read().unwrap();
             seq.tracks
@@ -1114,14 +1126,15 @@ impl PlaybackEngine {
                     } else {
                         item.path.clone()
                     };
-                    Some((track_idx, media_id, decode_path, source_secs))
+                    Some((track_idx, media_id, decode_path, source_secs, clip.audio_effects.clone()))
                 })
                 .collect()
         };
 
         debug!("start_all_audio: {} tracks with audio at {:.3}s", track_audio.len(), tc.to_secs_f64());
-        for (track_idx, media_id, path, source_secs) in track_audio {
-            self.open_audio_source(track_idx, media_id, &path, source_secs);
+        for (track_idx, media_id, path, source_secs, audio_effects) in track_audio {
+            debug!("start_all_audio: track {} has {} audio effects", track_idx, audio_effects.len());
+            self.open_audio_source(track_idx, media_id, &path, source_secs, audio_effects);
         }
         // Apply per-clip volume from sequence data
         self.sync_clip_volumes();
@@ -1252,12 +1265,13 @@ impl PlaybackEngine {
         media_id: MediaId,
         path: &std::path::Path,
         source_secs: f64,
+        audio_effects: Vec<klipp_core::AudioEffectInstance>,
     ) {
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
         if let Some(ref pcm) = pcm_path {
             if pcm.exists() {
-                match PcmAudioFeeder::open(pcm, self.cpal_sample_rate) {
+                match PcmAudioFeeder::open(pcm, self.cpal_sample_rate, audio_effects.clone()) {
                     Ok((feeder, consumer)) => {
                         if source_secs > 0.01 {
                             feeder.seek(source_secs);
@@ -1279,7 +1293,7 @@ impl PlaybackEngine {
         }
 
         // Fallback: real-time ffmpeg decode
-        match AudioDecoder::open(path, self.cpal_sample_rate) {
+        match AudioDecoder::open(path, self.cpal_sample_rate, audio_effects) {
             Ok((adec, consumer)) => {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);
@@ -2323,7 +2337,7 @@ impl PlaybackEngine {
             };
 
             // Collect audio track info at target position
-            let track_audio: Vec<(usize, PathBuf, f64)> = seq
+            let track_audio: Vec<(usize, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = seq
                 .tracks
                 .iter()
                 .enumerate()
@@ -2368,7 +2382,7 @@ impl PlaybackEngine {
                         .filter(|p| p.exists())
                         .unwrap_or(decode_path);
 
-                    Some((track_idx, path, source_secs))
+                    Some((track_idx, path, source_secs, clip.audio_effects.clone()))
                 })
                 .collect();
             drop(pool);
@@ -2376,9 +2390,9 @@ impl PlaybackEngine {
 
             // Open and seek audio sources
             let mut sources = Vec::new();
-            for (track_idx, path, source_secs) in track_audio {
+            for (track_idx, path, source_secs, audio_effects) in track_audio {
                 // Try PCM cache
-                if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate) {
+                if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone()) {
                     if source_secs > 0.01 {
                         feeder.seek(source_secs);
                     }
@@ -2390,7 +2404,7 @@ impl PlaybackEngine {
                     continue;
                 }
                 // Fallback: ffmpeg decode
-                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate) {
+                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate, audio_effects) {
                     if source_secs > 0.01 {
                         adec.seek(source_secs);
                     }

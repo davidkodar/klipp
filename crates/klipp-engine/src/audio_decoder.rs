@@ -1,4 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
+use klipp_audio::dsp::{AudioEffectChain, AudioProcessContext};
+use klipp_core::AudioEffectInstance;
 use ringbuf::traits::{Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::path::{Path, PathBuf};
@@ -32,7 +34,8 @@ impl AudioDecoder {
     /// Open a file's audio stream for decoding.
     /// Returns the decoder and a consumer for reading samples.
     /// `output_rate` is the cpal device's sample rate.
-    pub fn open(path: &Path, output_rate: u32) -> Result<(Self, AudioConsumer), AudioDecoderError> {
+    /// `audio_effects` are the per-clip DSP effects to apply after decode/resample.
+    pub fn open(path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>) -> Result<(Self, AudioConsumer), AudioDecoderError> {
         // Validate that file has an audio stream
         {
             let ctx = ffmpeg_next::format::input(path)
@@ -62,7 +65,7 @@ impl AudioDecoder {
         let thread = std::thread::Builder::new()
             .name("klipp-adec".into())
             .spawn(move || {
-                audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone);
+                audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects);
             })
             .map_err(|e| AudioDecoderError::Open(format!("spawn thread: {e}")))?;
 
@@ -137,6 +140,7 @@ fn audio_decode_thread(
     muted: Arc<AtomicBool>,
     post_seek_pts_us: Arc<AtomicU64>,
     seek_generation: Arc<AtomicU64>,
+    audio_effects: Vec<AudioEffectInstance>,
 ) {
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
         Ok(ctx) => ctx,
@@ -198,6 +202,15 @@ fn audio_decode_thread(
     let tb_den = time_base.denominator() as f64;
     let tb_f64 = if tb_den != 0.0 { tb_num / tb_den } else { 1.0 / 48000.0 };
 
+    // Build audio effect chain from per-clip effects
+    let mut effect_chain = if !audio_effects.is_empty() {
+        let chain = AudioEffectChain::from_instances(&audio_effects, output_rate);
+        debug!("audio_decode_thread: {} audio effects active", chain.slot_count());
+        Some(chain)
+    } else {
+        None
+    };
+
     debug!(
         "audio_decode_thread: started, stream={stream_index}, src={src_rate}Hz {:?} → {output_rate}Hz stereo f32",
         src_format
@@ -213,6 +226,11 @@ fn audio_decode_thread(
 
     // Temporary buffer for samples that couldn't fit in the ring buffer
     let mut overflow_buf: Vec<f32> = Vec::new();
+
+    // Accumulation buffer for batching small decoded frames before effect processing.
+    // 2048 stereo frames ≈ 42ms at 48kHz — matches pcm_reader chunk size.
+    let fx_batch_target = if effect_chain.is_some() { 2048 * 2 } else { 0 };
+    let mut fx_accum: Vec<f32> = Vec::new();
 
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
@@ -243,6 +261,11 @@ fn audio_decode_thread(
                     eof_from_demuxer = false;
                     pending_packet = None;
                     overflow_buf.clear();
+                    fx_accum.clear();
+                    // Reset effect chain state to avoid stale audio bleeding across seeks
+                    if let Some(ref mut chain) = effect_chain {
+                        chain.reset();
+                    }
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -317,6 +340,49 @@ fn audio_decode_thread(
 
             let floats: &[f32] = bytemuck::cast_slice(&data[..actual_floats * 4]);
 
+            // When effects are active, accumulate small decoded frames into
+            // larger batches (≈42ms) so DSP algorithms with internal state
+            // (pitch shift, reverb, delay) get enough samples to work correctly.
+            if effect_chain.is_some() && fx_batch_target > 0 {
+                fx_accum.extend_from_slice(floats);
+                if fx_accum.len() < fx_batch_target {
+                    continue; // keep accumulating
+                }
+                // Process the accumulated batch
+                let chain = effect_chain.as_mut().unwrap();
+                let ctx = AudioProcessContext {
+                    sample_rate: output_rate,
+                    channels: 2,
+                    clip_time_secs: 0.0,
+                };
+                chain.process(&mut fx_accum, &ctx);
+
+                let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
+                let is_muted = muted.load(Ordering::Relaxed);
+                let samples: Vec<f32> = if is_muted {
+                    vec![0.0f32; fx_accum.len()]
+                } else if (vol - 1.0).abs() < 0.01 {
+                    std::mem::take(&mut fx_accum)
+                } else {
+                    fx_accum.iter().map(|s| s * vol).collect()
+                };
+                if !samples.is_empty() {
+                    fx_accum.clear();
+                    let vacant = producer.vacant_len();
+                    if samples.len() <= vacant {
+                        producer.push_slice(&samples);
+                    } else {
+                        if vacant > 0 {
+                            producer.push_slice(&samples[..vacant]);
+                        }
+                        overflow_buf.extend_from_slice(&samples[vacant..]);
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            // No effects — process each frame directly (no batching needed)
             let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
             let is_muted = muted.load(Ordering::Relaxed);
 
@@ -340,6 +406,36 @@ fn audio_decode_thread(
                 }
                 overflow_buf.extend_from_slice(&samples[vacant..]);
                 break; // ring buffer full, stop draining
+            }
+        }
+
+        // Flush any remaining accumulated effect samples when no more frames drained
+        if !fx_accum.is_empty() && !drained_any {
+            if let Some(ref mut chain) = effect_chain {
+                let ctx = AudioProcessContext {
+                    sample_rate: output_rate,
+                    channels: 2,
+                    clip_time_secs: 0.0,
+                };
+                chain.process(&mut fx_accum, &ctx);
+                let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
+                let is_muted = muted.load(Ordering::Relaxed);
+                let samples: Vec<f32> = if is_muted {
+                    vec![0.0f32; fx_accum.len()]
+                } else if (vol - 1.0).abs() < 0.01 {
+                    std::mem::take(&mut fx_accum)
+                } else {
+                    fx_accum.iter().map(|s| s * vol).collect()
+                };
+                fx_accum.clear();
+                let vacant = producer.vacant_len();
+                let to_push = samples.len().min(vacant);
+                if to_push > 0 {
+                    producer.push_slice(&samples[..to_push]);
+                }
+                if to_push < samples.len() {
+                    overflow_buf.extend_from_slice(&samples[to_push..]);
+                }
             }
         }
 

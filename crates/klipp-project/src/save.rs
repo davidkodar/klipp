@@ -5,6 +5,17 @@ use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
 use tracing::info;
 
+/// Write data to a file atomically: write to a temp file in the same directory
+/// (ensuring same filesystem), then rename over the target. This guarantees the
+/// file is either fully written or left untouched — a crash mid-write only
+/// leaves an orphaned `.tmp` file, never a corrupt project file.
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let temp_path = path.with_extension("tmp");
+    std::fs::write(&temp_path, data)?;
+    std::fs::rename(&temp_path, path)?;
+    Ok(())
+}
+
 /// Project-level settings persisted alongside sequence data.
 pub struct ColorSettings {
     pub global_lut_path: Option<std::path::PathBuf>,
@@ -86,7 +97,7 @@ pub fn save_project_with_color_and_backups(
         rotate_backups(&project_file, backup_count);
     }
 
-    std::fs::write(&project_file, project_json)
+    atomic_write(&project_file, project_json.as_bytes())
         .map_err(|e| format!("Failed to write project.json: {e}"))?;
 
     // Build media/manifest.json — store paths relative to project dir
@@ -102,7 +113,7 @@ pub fn save_project_with_color_and_backups(
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
-    std::fs::write(dir.join("media").join("manifest.json"), manifest_json)
+    atomic_write(&dir.join("media").join("manifest.json"), manifest_json.as_bytes())
         .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
 
     info!("Project saved to {:?}", dir);
@@ -390,7 +401,9 @@ fn rotate_backups(path: &Path, max_backups: u32) {
         }
     }
 
-    // Copy current file to .bak.1
+    // Copy current file to .bak.1 atomically (read + atomic_write)
     let bak1 = path.with_extension("json.bak.1");
-    let _ = std::fs::copy(path, &bak1);
+    if let Ok(data) = std::fs::read(path) {
+        let _ = atomic_write(&bak1, &data);
+    }
 }

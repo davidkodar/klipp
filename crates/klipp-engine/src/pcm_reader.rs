@@ -1,3 +1,5 @@
+use klipp_audio::dsp::{AudioEffectChain, AudioProcessContext};
+use klipp_core::AudioEffectInstance;
 use ringbuf::traits::{Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::path::Path;
@@ -114,7 +116,8 @@ pub struct PcmAudioFeeder {
 impl PcmAudioFeeder {
     /// Open a PCM cache file and create a feeder + ring buffer consumer.
     /// The PCM file must be 48kHz stereo f32 interleaved (as produced by conform_audio).
-    pub fn open(pcm_path: &Path, output_rate: u32) -> Result<(Self, AudioConsumer), PcmFeederError> {
+    /// `audio_effects` are the per-clip DSP effects to apply before ring buffer push.
+    pub fn open(pcm_path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>) -> Result<(Self, AudioConsumer), PcmFeederError> {
         let pcm_data = std::fs::read(pcm_path)
             .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
 
@@ -186,6 +189,7 @@ impl PcmAudioFeeder {
                     foc,
                     fg,
                     ac,
+                    audio_effects,
                 );
             })
             .map_err(|e| PcmFeederError::Open(format!("spawn thread: {e}")))?;
@@ -299,10 +303,25 @@ fn pcm_feed_thread(
     fade_out_curve: Arc<AtomicU32>,
     _fade_gain: Arc<AtomicU32>,
     anti_click: Arc<AtomicBool>,
+    audio_effects: Vec<AudioEffectInstance>,
 ) {
     // Interpret raw bytes as f32 samples
     let samples: &[f32] = bytemuck::cast_slice(&pcm_data);
     let total_floats = samples.len();
+
+    // Build audio effect chain from per-clip effects
+    let mut effect_chain = if !audio_effects.is_empty() {
+        let chain = AudioEffectChain::from_instances(&audio_effects, output_rate);
+        debug!("pcm_feed: {} audio effects active", chain.slot_count());
+        Some(chain)
+    } else {
+        None
+    };
+    let fx_ctx = AudioProcessContext {
+        sample_rate: output_rate,
+        channels: CHANNELS as u32,
+        clip_time_secs: 0.0,
+    };
 
     let mut paused = true;
     let mut eof = false;
@@ -314,8 +333,15 @@ fn pcm_feed_thread(
     // For most systems output_rate == 48000, so this is a rare path.
     let rate_ratio = SAMPLE_RATE as f64 / output_rate as f64;
 
-    // How many output stereo frames to produce per iteration (target ~10ms chunks)
-    let chunk_frames = (output_rate as usize / 100).max(64);
+    // How many output stereo frames to produce per iteration.
+    // 2048 frames ≈ 42ms at 48kHz — large enough for DSP effects with internal
+    // state (pitch shift, reverb, delay, chorus) while staying well within the
+    // ring buffer capacity (~2s).
+    let chunk_frames = if effect_chain.is_some() {
+        2048
+    } else {
+        (output_rate as usize / 100).max(64) // ~10ms when no effects
+    };
     let chunk_floats = chunk_frames * CHANNELS;
 
     loop {
@@ -331,6 +357,11 @@ fn pcm_feed_thread(
                     let actual_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
                     post_seek_pts_us.store((actual_secs * 1_000_000.0) as u64, Ordering::Release);
                     seek_generation.fetch_add(1, Ordering::Release);
+
+                    // Reset effect chain state on seek
+                    if let Some(ref mut chain) = effect_chain {
+                        chain.reset();
+                    }
 
                     debug!("pcm_feed: seek to {secs:.3}s → pos={read_pos} ({actual_secs:.3}s)");
                 }
@@ -427,10 +458,10 @@ fn pcm_feed_thread(
             if is_muted {
                 let zeros = vec![0.0f32; to_push];
                 producer.push_slice(&zeros);
-            } else if !has_fade && (vol - 1.0).abs() < 0.01 {
+            } else if effect_chain.is_none() && !has_fade && (vol - 1.0).abs() < 0.01 {
                 producer.push_slice(&samples[read_pos..read_pos + to_push]);
             } else {
-                let scaled: Vec<f32> = samples[read_pos..read_pos + to_push]
+                let mut scaled: Vec<f32> = samples[read_pos..read_pos + to_push]
                     .chunks(CHANNELS)
                     .enumerate()
                     .flat_map(|(i, pair)| {
@@ -441,6 +472,10 @@ fn pcm_feed_thread(
                         pair.iter().map(move |s| s * mult)
                     })
                     .collect();
+                // Apply audio effects chain after volume/fade
+                if let Some(ref mut chain) = effect_chain {
+                    chain.process(&mut scaled, &fx_ctx);
+                }
                 producer.push_slice(&scaled);
             }
             read_pos += to_push;
@@ -470,6 +505,10 @@ fn pcm_feed_thread(
             }
 
             if !buf.is_empty() {
+                // Apply audio effects chain after resample + volume/fade
+                if let Some(ref mut chain) = effect_chain {
+                    chain.process(&mut buf, &fx_ctx);
+                }
                 producer.push_slice(&buf);
                 // Advance read_pos by the source frames consumed
                 let source_frames_consumed = (buf.len() / CHANNELS) as f64 * rate_ratio;

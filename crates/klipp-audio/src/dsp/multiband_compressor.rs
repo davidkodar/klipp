@@ -41,21 +41,30 @@ impl MultibandCompressor {
         }
     }
 
-    fn compress_sample(&self, sample: f32, band: usize) -> f32 {
-        let db = if sample.abs() > 0.0001 {
-            20.0 * sample.abs().log10()
+    /// Compute gain for a band using envelope-followed level detection.
+    fn compute_band_gain(&mut self, level: f32, band: usize, attack_coeff: f32, release_coeff: f32) -> f32 {
+        // Envelope follower with attack/release
+        let abs_level = level.abs();
+        let coeff = if abs_level > self.envelope[band] {
+            attack_coeff
+        } else {
+            release_coeff
+        };
+        self.envelope[band] = coeff * self.envelope[band] + (1.0 - coeff) * abs_level;
+
+        // Convert envelope to dB and compute gain reduction
+        let db = if self.envelope[band] > 0.0001 {
+            20.0 * self.envelope[band].log10()
         } else {
             -80.0
         };
         let over = db - self.threshold[band];
+        let makeup_gain = 10.0f32.powf(self.makeup[band] / 20.0);
         if over > 0.0 {
             let gain_reduction = over - over / self.ratio[band];
-            let gain = 10.0f32.powf(-gain_reduction / 20.0);
-            let makeup_gain = 10.0f32.powf(self.makeup[band] / 20.0);
-            sample * gain * makeup_gain
+            10.0f32.powf(-gain_reduction / 20.0) * makeup_gain
         } else {
-            let makeup_gain = 10.0f32.powf(self.makeup[band] / 20.0);
-            sample * makeup_gain
+            makeup_gain
         }
     }
 
@@ -140,27 +149,58 @@ impl AudioEffect for MultibandCompressor {
         }
     }
 
-    fn process(&mut self, buffer: &mut [f32], _ctx: &AudioProcessContext) {
+    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
+        let channels = ctx.channels as usize;
+        if channels == 0 { return; }
+        let num_frames = buffer.len() / channels;
+        if num_frames == 0 { return; }
+
         let sr = self.sample_rate;
-        for pair in buffer.chunks_exact_mut(2) {
-            for ch in 0..2 {
-                let input = pair[ch];
-                // Band splitting using cascaded low-pass filters
-                let low = Self::lp_filter(input, &mut self.lp_state[ch][0], self.xover_low, sr);
+
+        // Pre-compute attack/release coefficients from ms parameters
+        let attack_coeff = (-1.0 / (self.attack * 0.001 * sr)).exp();
+        let release_coeff = (-1.0 / (self.release * 0.001 * sr)).exp();
+
+        for frame in 0..num_frames {
+            // Compute per-band levels from channel 0 for envelope detection,
+            // then apply the same gain to all channels
+            let ch0_idx = frame * channels;
+            let input_ch0 = buffer[ch0_idx];
+
+            // Band splitting on channel 0 for level detection
+            let low_det = Self::lp_filter(input_ch0, &mut self.lp_state[0][0], self.xover_low, sr);
+            let mid_det = Self::lp_filter(input_ch0 - low_det, &mut self.lp_state[0][1], self.xover_mid, sr);
+            let high_input_det = input_ch0 - low_det - mid_det;
+            let midhigh_det = Self::lp_filter(high_input_det, &mut self.lp_state[0][2], self.xover_high, sr);
+            let high_det = high_input_det - midhigh_det;
+
+            // Compute per-band gains using envelope followers
+            let g0 = self.compute_band_gain(low_det, 0, attack_coeff, release_coeff);
+            let g1 = self.compute_band_gain(mid_det, 1, attack_coeff, release_coeff);
+            let g2 = self.compute_band_gain(midhigh_det, 2, attack_coeff, release_coeff);
+            let g3 = self.compute_band_gain(high_det, 3, attack_coeff, release_coeff);
+
+            // Apply to all channels
+            for ch in 0..channels.min(2) {
+                let idx = frame * channels + ch;
+                let input = buffer[idx];
+
+                // Band split (reuse ch0 filter state for ch0, separate for ch1)
+                let low = if ch == 0 { low_det } else {
+                    Self::lp_filter(input, &mut self.lp_state[1][0], self.xover_low, sr)
+                };
                 let mid_input = input - low;
-                let low_mid = Self::lp_filter(mid_input, &mut self.lp_state[ch][1], self.xover_mid, sr);
+                let low_mid = if ch == 0 { mid_det } else {
+                    Self::lp_filter(mid_input, &mut self.lp_state[1][1], self.xover_mid, sr)
+                };
                 let high_input = mid_input - low_mid;
-                let mid_high = Self::lp_filter(high_input, &mut self.lp_state[ch][2], self.xover_high, sr);
+                let mid_high = if ch == 0 { midhigh_det } else {
+                    Self::lp_filter(high_input, &mut self.lp_state[1][2], self.xover_high, sr)
+                };
                 let high = high_input - mid_high;
 
-                // Compress each band
-                let b0 = self.compress_sample(low, 0);
-                let b1 = self.compress_sample(low_mid, 1);
-                let b2 = self.compress_sample(mid_high, 2);
-                let b3 = self.compress_sample(high, 3);
-
-                // Sum bands
-                pair[ch] = (b0 + b1 + b2 + b3).clamp(-1.0, 1.0);
+                // Apply per-band gain and sum
+                buffer[idx] = (low * g0 + low_mid * g1 + mid_high * g2 + high * g3).clamp(-1.0, 1.0);
             }
         }
     }

@@ -45,6 +45,7 @@ pub struct NoiseReduction {
     smoothing: f32,
     bands: [BandState; NUM_BANDS],
     /// Pre-allocated scratch buffer to hold a copy of the input signal.
+    /// Sized for 2048-frame stereo chunks (matches DSP batch size).
     input_copy: Vec<f32>,
 }
 
@@ -98,7 +99,7 @@ impl NoiseReduction {
             sensitivity: 50.0,
             smoothing: 50.0,
             bands,
-            input_copy: Vec::new(),
+            input_copy: vec![0.0; 2048 * 2],
         }
     }
 }

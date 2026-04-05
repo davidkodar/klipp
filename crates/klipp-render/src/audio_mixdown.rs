@@ -1,5 +1,6 @@
 use crate::error::RenderError;
 use crate::snapshot::{AudioClipSnapshot, SequenceSnapshot};
+use klipp_audio::dsp::{AudioEffectChain, AudioProcessContext};
 use tracing::{debug, warn};
 
 /// Synchronous audio mixdown for export.
@@ -175,7 +176,17 @@ fn get_track_samples(
     if state.current_clip_idx != clip_idx {
         let clip = &state.clips[clip_idx];
         match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
-            Ok(buf) => {
+            Ok(mut buf) => {
+                // Apply per-clip audio effects (EQ, compressor, reverb, etc.)
+                if !clip.audio_effects.is_empty() {
+                    let mut chain = AudioEffectChain::from_instances(&clip.audio_effects, sample_rate);
+                    let ctx = AudioProcessContext {
+                        sample_rate,
+                        channels: 2,
+                        clip_time_secs: 0.0,
+                    };
+                    chain.process(&mut buf, &ctx);
+                }
                 state.buffer = buf;
                 state.buffer_pos = 0;
                 state.current_clip_idx = clip_idx;
@@ -429,6 +440,7 @@ mod tests {
             timeline_end_frame: 60,
             source_start_secs: 0.0,
             path,
+            audio_effects: vec![],
         });
 
         let mut mixdown = AudioMixdown::new(&snapshot).unwrap();

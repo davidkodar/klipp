@@ -356,6 +356,7 @@ fn export_real_media_h264() {
                 timeline_end_frame: 30,
                 source_start_secs: 0.0,
                 path: media_path.clone(),
+                audio_effects: vec![],
             }],
         }],
         global_lut_path: None,

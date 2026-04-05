@@ -95,6 +95,8 @@ pub struct AudioClipSnapshot {
     pub timeline_end_frame: u64,
     pub source_start_secs: f64,
     pub path: PathBuf,
+    /// Per-clip audio DSP effects (EQ, compressor, reverb, etc.)
+    pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
 }
 
 #[derive(Clone)]
@@ -501,6 +503,7 @@ fn snapshot_audio_track(
                         timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
                         source_start_secs: clip.source_in.to_secs_f64(),
                         path: media.path.clone(),
+                        audio_effects: clip.audio_effects.clone(),
                     });
                 }
             }
@@ -577,6 +580,7 @@ fn flatten_compound_audio_clips(
                             timeline_end_frame: (parent_out_secs * fps).round() as u64,
                             source_start_secs: inner_clip.source_in.to_secs_f64() + source_in_offset,
                             path: media.path.clone(),
+                            audio_effects: inner_clip.audio_effects.clone(),
                         });
                     }
                 }
@@ -650,6 +654,7 @@ fn flatten_multicam_audio_clips(
             timeline_end_frame: (parent_out_secs * fps).round() as u64,
             source_start_secs,
             path: media.path.clone(),
+            audio_effects: angle_clip.audio_effects.clone(),
         });
     }
 
