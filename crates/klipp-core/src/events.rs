@@ -501,6 +501,8 @@ pub enum AppCommand {
     ClearKeyframes { clip_id: ClipId, node_id: uuid::Uuid, param: String },
     SetKeyframeInterpolation { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, interpolation: crate::keyframe::Interpolation },
     SetKeyframeTangents { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, tangent_in: (f64, f32), tangent_out: (f64, f32) },
+    /// Trigger a grade refresh without changing any params (used after bulk preset apply).
+    RefreshGrade,
     ToggleColorPanel,
     ShowEffectsBrowser,
     ToggleBeforeAfter,

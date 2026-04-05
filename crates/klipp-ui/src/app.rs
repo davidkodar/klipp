@@ -2869,6 +2869,11 @@ impl KlippApp {
                     // Scope tap is forwarded to engine
                     continue;
                 }
+                AppCommand::RefreshGrade => {
+                    needs_refresh = true;
+                    self.state.dirty = true;
+                    continue;
+                }
                 AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {

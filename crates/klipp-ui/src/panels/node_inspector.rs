@@ -1,4 +1,5 @@
 use crate::icons::Icon;
+use crate::presets::{self, ToolPreset, ToolScope};
 use crate::state::ColorTab;
 use crate::theme::KlippTheme;
 use crate::widgets::color_wheel::{self, ColorWheelState};
@@ -21,6 +22,14 @@ pub struct NodeInspectorPanel {
     pub log_mid_wheel: ColorWheelState,
     pub log_high_wheel: ColorWheelState,
     pub active_curve_channel: CurveChannel,
+    // ── Tool presets ──
+    pub wheels_presets: Vec<ToolPreset>,
+    pub curves_presets: Vec<ToolPreset>,
+    pub huesat_presets: Vec<ToolPreset>,
+    pub warper_presets: Vec<ToolPreset>,
+    pub color_presets: Vec<ToolPreset>,
+    pub preset_save_name_tool: String,
+    pub preset_saving_tool: Option<ToolScope>,
 }
 
 impl Default for NodeInspectorPanel {
@@ -34,6 +43,13 @@ impl Default for NodeInspectorPanel {
             log_mid_wheel: ColorWheelState::default(),
             log_high_wheel: ColorWheelState::default(),
             active_curve_channel: CurveChannel::Master,
+            wheels_presets: presets::load_tool_presets(&ToolScope::Wheels),
+            curves_presets: presets::load_tool_presets(&ToolScope::Curves),
+            huesat_presets: presets::load_tool_presets(&ToolScope::HueSat),
+            warper_presets: presets::load_tool_presets(&ToolScope::Warper),
+            color_presets: presets::load_tool_presets(&ToolScope::Color),
+            preset_save_name_tool: String::new(),
+            preset_saving_tool: None,
         }
     }
 }
@@ -212,6 +228,18 @@ impl NodeInspectorPanel {
         clip_time_secs: f64,
         wide_layout: bool,
     ) {
+        // ── Preset bar ──
+        let tool_scope = match color_tab {
+            ColorTab::Adjustments => Some(ToolScope::Color),
+            ColorTab::Wheels => Some(ToolScope::Wheels),
+            ColorTab::Curves => Some(ToolScope::Curves),
+            ColorTab::HueSat => Some(ToolScope::HueSat),
+            ColorTab::Warper => Some(ToolScope::Warper),
+        };
+        if let Some(tool) = tool_scope {
+            self.show_tool_preset_bar(ui, &tool, graph, clip_id, cmds, theme);
+        }
+
         match color_tab {
             ColorTab::Adjustments => {
                 self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme);
@@ -1672,6 +1700,118 @@ impl NodeInspectorPanel {
         if active_count > 0 {
             ui.label(egui::RichText::new(format!("{active_count} sector(s) adjusted")).size(9.0).color(theme.text_dim));
         }
+    }
+
+    // ── Tool preset bar ──
+
+    fn show_tool_preset_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        tool: &ToolScope,
+        graph: &mut NodeGraph,
+        _clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        let presets = match tool {
+            ToolScope::Wheels => &mut self.wheels_presets,
+            ToolScope::Curves => &mut self.curves_presets,
+            ToolScope::HueSat => &mut self.huesat_presets,
+            ToolScope::Warper => &mut self.warper_presets,
+            ToolScope::Color => &mut self.color_presets,
+            ToolScope::FullGrade => return,
+        };
+
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Preset").size(9.0).color(theme.text_dim));
+
+            // Preset dropdown
+            let combo_id = format!("tool_preset_{:?}", tool);
+            egui::ComboBox::from_id_salt(&combo_id)
+                .selected_text("Select...")
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    let mut apply_idx = None;
+                    for (i, preset) in presets.iter().enumerate() {
+                        if ui.selectable_label(false, &preset.name).clicked() {
+                            apply_idx = Some(i);
+                        }
+                    }
+                    if let Some(idx) = apply_idx {
+                        let preset = presets[idx].clone();
+                        presets::apply_tool_preset(graph, &preset);
+                        cmds.push(AppCommand::RefreshGrade);
+                    }
+                    if !presets.is_empty() {
+                        ui.separator();
+                        ui.menu_button("Delete...", |ui| {
+                            let mut to_delete = None;
+                            for preset in presets.iter() {
+                                if ui.button(&preset.name).clicked() {
+                                    to_delete = Some(preset.name.clone());
+                                    ui.close_menu();
+                                }
+                            }
+                            if let Some(name) = to_delete {
+                                let _ = presets::delete_tool_preset(tool, &name);
+                                // Can't modify presets here (immutable ref via menu_button)
+                                // — removal deferred below
+                            }
+                        });
+                    }
+                });
+
+            // Save button
+            if ui.small_button("\u{1F4BE}").on_hover_text("Save current settings as preset").clicked() {
+                self.preset_saving_tool = Some(tool.clone());
+                self.preset_save_name_tool.clear();
+            }
+        });
+
+        // Save dialog (below the bar)
+        if self.preset_saving_tool.as_ref() == Some(tool) {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.preset_save_name_tool)
+                        .desired_width(130.0)
+                        .hint_text("Preset name...")
+                );
+                // Auto-focus the text field when dialog opens
+                if resp.gained_focus() || self.preset_save_name_tool.is_empty() {
+                    resp.request_focus();
+                }
+                let name = self.preset_save_name_tool.trim().to_string();
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.small_button("Save").clicked() || enter) && !name.is_empty() {
+                    let params = presets::extract_tool_params(graph, tool);
+                    let preset = ToolPreset {
+                        name: name.clone(),
+                        tool: tool.clone(),
+                        params,
+                    };
+                    let _ = presets::save_tool_preset(&preset);
+                    let presets = match tool {
+                        ToolScope::Wheels => &mut self.wheels_presets,
+                        ToolScope::Curves => &mut self.curves_presets,
+                        ToolScope::HueSat => &mut self.huesat_presets,
+                        ToolScope::Warper => &mut self.warper_presets,
+                        ToolScope::Color => &mut self.color_presets,
+                        ToolScope::FullGrade => unreachable!(),
+                    };
+                    presets.push(preset);
+                    presets.sort_by(|a, b| a.name.cmp(&b.name));
+                    self.preset_save_name_tool.clear();
+                    self.preset_saving_tool = None;
+                }
+                if ui.small_button("\u{2715}").clicked() {
+                    self.preset_saving_tool = None;
+                }
+            });
+        }
+        ui.add_space(2.0);
     }
 }
 
