@@ -353,6 +353,8 @@ pub struct AppState {
     pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32)>,
     /// True while a skim decode thread is running (prevents spawning more threads)
     pub skim_decode_in_flight: bool,
+    /// When the current skim decode was started (for watchdog timeout reset)
+    pub skim_decode_started_at: Option<std::time::Instant>,
     /// Latest skim request queued while a decode was in flight (media_id, time_secs)
     pub skim_queued_request: Option<(MediaId, f64)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
@@ -1361,6 +1363,7 @@ impl Default for AppState {
             skim_transcode_done_at: None,
             browser_skim_pending: None,
             skim_decode_in_flight: false,
+            skim_decode_started_at: None,
             skim_queued_request: None,
             browser_skim_active_this_frame: false,
             pending_skim_transcodes: Vec::new(),

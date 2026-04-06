@@ -850,76 +850,7 @@ impl TimelinePanel {
         // Restore clip rect for marquee selection and other post-track rendering
         ui.set_clip_rect(saved_clip);
 
-        // ── Marquee selection (drag on empty track space with Select tool) ──
-        let m_zoom = state.timeline_zoom;
-        let m_scroll = state.timeline_scroll_x;
-        if !self.embedded && state.active_tool == Tool::Select {
-            let pointer = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
-            let (pressed, down, released) = pointer;
-            let cur_pos = ui.input(|i| i.pointer.latest_pos());
-
-            // Start marquee: primary press with no existing drag operation
-            if pressed && self.marquee_start.is_none()
-                && self.dragging_clip.is_none() && self.trimming_clip.is_none()
-                && self.roll_trimming.is_none() && self.slipping_clip.is_none()
-                && self.sliding_clip.is_none() && self.resizing_track.is_none()
-            {
-                if let Some(pos) = cur_pos {
-                    // Only start if in the content area (not header) and not on a clip
-                    if pos.x > content_rect.left() && pos.y >= tracks_start_y - scroll_y {
-                        let on_clip = self.frame_cache.track_rects.iter().any(|(ti, _, tr)| {
-                            let clips = &state.sequence().tracks[*ti].clips;
-                            self.hit_test_clip_body(clips, &content_rect, tr, m_zoom, m_scroll,
-                                tr.height(), pos).is_some()
-                        });
-                        if !on_clip {
-                            self.marquee_start = Some(pos);
-                        }
-                    }
-                }
-            }
-
-            // Draw and update marquee during drag
-            if let Some(start) = self.marquee_start {
-                if down {
-                    if let Some(cur) = cur_pos {
-                        let marquee_rect = egui::Rect::from_two_pos(start, cur);
-                        // Draw selection rectangle
-                        ui.painter().rect_filled(
-                            marquee_rect, 2.0,
-                            egui::Color32::from_rgba_premultiplied(80, 130, 220, 30),
-                        );
-                        ui.painter().rect_stroke(
-                            marquee_rect, 2.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 220)),
-                        );
-
-                        // Collect clips intersecting the marquee
-                        let mut selected = Vec::new();
-                        for (ti, _, track_rect) in &self.frame_cache.track_rects {
-                            if marquee_rect.max.y < track_rect.top() || marquee_rect.min.y > track_rect.bottom() {
-                                continue; // marquee doesn't overlap this track
-                            }
-                            let th = track_rect.height();
-                            for clip in &state.sequence().tracks[*ti].clips {
-                                if clip.kind.is_gap() { continue; }
-                                let cr = Self::clip_screen_rect(clip, &content_rect, track_rect, m_zoom, m_scroll, th);
-                                if marquee_rect.intersects(cr) {
-                                    selected.push(clip.id);
-                                }
-                            }
-                        }
-                        state.selected_clips = selected;
-                        if let Some(first) = state.selected_clips.first().copied() {
-                            cmds.push(AppCommand::SelectClip(Some(first)));
-                        }
-                    }
-                }
-                if released {
-                    self.marquee_start = None;
-                }
-            }
-        }
+        self.draw_marquee(ui, state, &mut cmds, content_rect, tracks_start_y, scroll_y);
 
         // ── Empty area below tracks: right-click to add new track ──
         if !self.embedded {
@@ -969,52 +900,7 @@ impl TimelinePanel {
             }
         }
 
-        // ── Linked clip connection lines ──────────────────────────────
-        // Draw subtle vertical lines between linked video+audio clip pairs
-        {
-            let connection_color = egui::Color32::from_rgba_premultiplied(150, 150, 160, 60);
-            let connection_stroke = egui::Stroke::new(1.0, connection_color);
-            // Collect linked pairs to avoid double-drawing (only draw from video -> audio)
-            let mut drawn_pairs = std::collections::HashSet::new();
-            for track in &state.sequence().tracks {
-                for clip in &track.clips {
-                    if let Some(linked_id) = clip.linked_clip_id {
-                        // Only draw once per pair
-                        let pair_key = if clip.id.0 < linked_id.0 {
-                            (clip.id, linked_id)
-                        } else {
-                            (linked_id, clip.id)
-                        };
-                        if drawn_pairs.contains(&pair_key) {
-                            continue;
-                        }
-                        drawn_pairs.insert(pair_key);
-
-                        if let (Some(rect_a), Some(rect_b)) = (
-                            self.frame_cache.clip_screen_rects.get(&clip.id),
-                            self.frame_cache.clip_screen_rects.get(&linked_id),
-                        ) {
-                            // Only draw if clips are on different tracks (vertically separated)
-                            if (rect_a.top() - rect_b.top()).abs() > 1.0 {
-                                let (upper, lower) = if rect_a.top() < rect_b.top() {
-                                    (rect_a, rect_b)
-                                } else {
-                                    (rect_b, rect_a)
-                                };
-                                let x = upper.left() + 4.0;
-                                // Only draw if x is in visible area
-                                if x >= content_rect.left() && x <= content_rect.right() {
-                                    painter.line_segment(
-                                        [egui::pos2(x, upper.bottom()), egui::pos2(x, lower.top())],
-                                        connection_stroke,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.draw_connection_lines(state, &painter, content_rect);
 
         // Media drag released outside any track — auto-create track if enabled
         if let Some(drag_media_id) = state.dragging_media {
@@ -1093,78 +979,7 @@ impl TimelinePanel {
             }
         }
 
-        // Draw media drag ghost — a translucent clip preview following the cursor
-        if let Some(drag_media_id) = state.dragging_media {
-            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let item_name = state.media_pool.get(&drag_media_id)
-                    .map(|m| m.filename.clone())
-                    .unwrap_or_default();
-                let item_dur = state.media_pool.get(&drag_media_id)
-                    .map(|m| m.duration.to_secs_f64() as f32)
-                    .unwrap_or(1.0);
-
-                let ghost_w = (item_dur * state.timeline_zoom).clamp(60.0, 300.0);
-                let ghost_h = 36.0;
-                let ghost_rect = egui::Rect::from_min_size(
-                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
-                    egui::vec2(ghost_w, ghost_h),
-                );
-
-                // Use a top-level painter so the ghost draws above everything
-                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    ui.id().with("drag_ghost"),
-                ));
-
-                // Clip background
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)));
-
-                // Thumbnail if available
-                if let Some(tex) = state.thumbnail_textures.get(&drag_media_id) {
-                    let thumb_rect = egui::Rect::from_min_size(
-                        ghost_rect.min + egui::vec2(3.0, 3.0),
-                        egui::vec2(ghost_h - 6.0, ghost_h - 6.0),
-                    );
-                    ghost_painter.image(
-                        tex.id(),
-                        thumb_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-
-                // Filename label
-                let label_x = ghost_rect.left() + ghost_h + 2.0;
-                let truncated = if item_name.len() > 20 {
-                    format!("{}...", &item_name[..17])
-                } else {
-                    item_name
-                };
-                ghost_painter.text(
-                    egui::pos2(label_x, ghost_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &truncated,
-                    egui::FontId::proportional(11.0),
-                    egui::Color32::WHITE,
-                );
-
-                // Duration label
-                let dur_label = format!("{:.1}s", item_dur);
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.right() - 4.0, ghost_rect.center().y),
-                    egui::Align2::RIGHT_CENTER,
-                    &dur_label,
-                    egui::FontId::monospace(9.0),
-                    egui::Color32::from_rgb(180, 180, 200),
-                );
-
-                // Request repaint during drag for smooth following
-                ui.ctx().request_repaint();
-            }
-        }
+        self.draw_drag_ghosts(ui, state);
 
         // Title template drag released outside any track — auto-create text track
         if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
@@ -1210,137 +1025,6 @@ impl TimelinePanel {
             }
         }
 
-        // Draw title drag ghost — a translucent title preview following the cursor
-        if let Some(crate::drag_drop::DragPayload::Title { ref template_name, .. }) = state.drag_drop.payload
-        {
-            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let ghost_w = 140.0;
-                let ghost_h = 32.0;
-                let ghost_rect = egui::Rect::from_min_size(
-                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
-                    egui::vec2(ghost_w, ghost_h),
-                );
-
-                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    ui.id().with("title_drag_ghost"),
-                ));
-
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220)));
-
-                // "T" icon
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
-                    egui::Align2::CENTER_CENTER,
-                    "T",
-                    egui::FontId::proportional(14.0),
-                    egui::Color32::WHITE,
-                );
-
-                // Template name
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    template_name,
-                    egui::FontId::proportional(11.0),
-                    egui::Color32::WHITE,
-                );
-
-                ui.ctx().request_repaint();
-            }
-        }
-
-        // Draw effect drag ghost — a translucent pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) = state.drag_drop.payload
-        {
-            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let ghost_w = 120.0;
-                let ghost_h = 28.0;
-                let ghost_rect = egui::Rect::from_min_size(
-                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
-                    egui::vec2(ghost_w, ghost_h),
-                );
-
-                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    ui.id().with("effect_drag_ghost"),
-                ));
-
-                ghost_painter.rect_filled(ghost_rect, 6.0,
-                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210));
-                ghost_painter.rect_stroke(ghost_rect, 6.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230)));
-
-                // "FX" icon
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 16.0, ghost_rect.center().y),
-                    egui::Align2::CENTER_CENTER,
-                    "FX",
-                    egui::FontId::monospace(10.0),
-                    egui::Color32::WHITE,
-                );
-
-                // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 32.0, ghost_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &truncated,
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::WHITE,
-                );
-
-                ui.ctx().request_repaint();
-            }
-        }
-
-        // Draw audio effect drag ghost — teal pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::AudioEffect { ref name, .. }) = state.drag_drop.payload
-        {
-            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let ghost_w = 130.0;
-                let ghost_h = 28.0;
-                let ghost_rect = egui::Rect::from_min_size(
-                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
-                    egui::vec2(ghost_w, ghost_h),
-                );
-
-                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    ui.id().with("audio_effect_drag_ghost"),
-                ));
-
-                ghost_painter.rect_filled(ghost_rect, 6.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210));
-                ghost_painter.rect_stroke(ghost_rect, 6.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230)));
-
-                // Audio icon
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{266B}", // musical note
-                    egui::FontId::proportional(12.0),
-                    egui::Color32::WHITE,
-                );
-
-                // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
-                ghost_painter.text(
-                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &truncated,
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::WHITE,
-                );
-
-                ui.ctx().request_repaint();
-            }
-        }
-
         // Global drag cleanup — if mouse released anywhere (not on a valid target), end the drag
         {
             let any_down = ui.input(|i| i.pointer.any_down());
@@ -1370,100 +1054,8 @@ impl TimelinePanel {
             }
         }
 
-        // Playhead line + follow mode
-        let seq_dur = state.sequence_duration();
-        if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
-            let playhead_secs = state.playhead_smooth_secs as f32;
-            let view_width = content_rect.width();
-
-            // Auto-scroll based on follow mode — only during playback, not on user clicks
-            if state.playback == PlaybackState::Playing {
-                match state.playhead_follow {
-                    PlayheadFollow::Page => {
-                        // Direct mutation intentional — smooth playhead follow requires
-                        // per-frame interpolation with frame-timing sensitivity.
-                        // Converting to a command would introduce one-frame lag that
-                        // breaks smooth follow. This is pure viewport state with no
-                        // undo value.
-                        let playhead_x_abs = playhead_secs * state.timeline_zoom;
-                        let view_end = state.timeline_scroll_x + view_width;
-                        if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
-                            // Jump one page so playhead is at ~10% from left
-                            state.timeline_scroll_x =
-                                (playhead_x_abs - view_width * 0.1).max(0.0);
-                        }
-                    }
-                    PlayheadFollow::Smooth => {
-                        // Keep playhead at ~25% from left edge during playback
-                        let target_scroll =
-                            (playhead_secs * state.timeline_zoom - view_width * 0.25).max(0.0);
-                        // Smooth lerp to avoid jarring jumps
-                        state.timeline_scroll_x +=
-                            (target_scroll - state.timeline_scroll_x) * 0.15;
-                    }
-                    PlayheadFollow::Off => {}
-                }
-            }
-
-            let playhead_x =
-                content_rect.left() + playhead_secs * state.timeline_zoom - state.timeline_scroll_x;
-
-            if playhead_x >= content_rect.left() && playhead_x <= content_rect.right() {
-                painter.line_segment(
-                    [
-                        egui::pos2(playhead_x, content_rect.top()),
-                        egui::pos2(playhead_x, content_rect.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 80, 80)),
-                );
-            }
-        }
-
-        // Snap indicator line (amber, full height, with timecode label)
-        if let Some(snap_x) = self.frame_cache.snap_line_x {
-            if snap_x >= content_rect.left() && snap_x <= content_rect.right() {
-                let snap_color = egui::Color32::from_rgb(232, 160, 32);
-                // Thick amber line spanning full track area
-                painter.line_segment(
-                    [
-                        egui::pos2(snap_x, tracks_start_y),
-                        egui::pos2(snap_x, content_rect.bottom()),
-                    ],
-                    egui::Stroke::new(2.0, snap_color),
-                );
-                // Glow effect — wider translucent line behind
-                painter.line_segment(
-                    [
-                        egui::pos2(snap_x, tracks_start_y),
-                        egui::pos2(snap_x, content_rect.bottom()),
-                    ],
-                    egui::Stroke::new(6.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 50)),
-                );
-                // Timecode label with background pill at top of snap line
-                let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom;
-                let snap_tc = RationalTime::from_secs_f64(snap_secs as f64, state.fps.rate());
-                let label = snap_tc.to_timecode_string();
-                let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
-                // Background pill for readability
-                let text_galley = painter.layout_no_wrap(
-                    label.clone(),
-                    egui::FontId::monospace(9.0),
-                    snap_color,
-                );
-                let pill_rect = egui::Rect::from_min_size(
-                    egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
-                    egui::vec2(text_galley.size().x + 4.0, text_galley.size().y + 2.0),
-                );
-                painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
-                painter.text(
-                    label_pos,
-                    egui::Align2::LEFT_TOP,
-                    &label,
-                    egui::FontId::monospace(9.0),
-                    snap_color,
-                );
-            }
-        }
+        self.draw_playhead(state, &painter, content_rect);
+        self.draw_snap_line(state, &painter, content_rect, tracks_start_y);
 
         // --- Status bar --- (skip when embedded)
         if self.embedded { return cmds; }
@@ -2419,6 +2011,434 @@ impl TimelinePanel {
 
     /// Draw a single track's header: name, lock/visibility/mute/solo buttons, controls, context menu.
     #[allow(clippy::too_many_arguments)]
+    fn draw_drag_ghosts(&self, ui: &mut egui::Ui, state: &AppState) {
+        // Draw media drag ghost — a translucent clip preview following the cursor
+        if let Some(drag_media_id) = state.dragging_media {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let item_name = state.media_pool.get(&drag_media_id)
+                    .map(|m| m.filename.clone())
+                    .unwrap_or_default();
+                let item_dur = state.media_pool.get(&drag_media_id)
+                    .map(|m| m.duration.to_secs_f64() as f32)
+                    .unwrap_or(1.0);
+
+                let ghost_w = (item_dur * state.timeline_zoom).clamp(60.0, 300.0);
+                let ghost_h = 36.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                // Use a top-level painter so the ghost draws above everything
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("drag_ghost"),
+                ));
+
+                // Clip background
+                ghost_painter.rect_filled(ghost_rect, 4.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
+                ghost_painter.rect_stroke(ghost_rect, 4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)));
+
+                // Thumbnail if available
+                if let Some(tex) = state.thumbnail_textures.get(&drag_media_id) {
+                    let thumb_rect = egui::Rect::from_min_size(
+                        ghost_rect.min + egui::vec2(3.0, 3.0),
+                        egui::vec2(ghost_h - 6.0, ghost_h - 6.0),
+                    );
+                    ghost_painter.image(
+                        tex.id(),
+                        thumb_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // Filename label
+                let label_x = ghost_rect.left() + ghost_h + 2.0;
+                let truncated = if item_name.len() > 20 {
+                    format!("{}...", &item_name[..17])
+                } else {
+                    item_name
+                };
+                ghost_painter.text(
+                    egui::pos2(label_x, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Duration label
+                let dur_label = format!("{:.1}s", item_dur);
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.right() - 4.0, ghost_rect.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &dur_label,
+                    egui::FontId::monospace(9.0),
+                    egui::Color32::from_rgb(180, 180, 200),
+                );
+
+                // Request repaint during drag for smooth following
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw title drag ghost — a translucent title preview following the cursor
+        if let Some(crate::drag_drop::DragPayload::Title { ref template_name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 140.0;
+                let ghost_h = 32.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("title_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 4.0,
+                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200));
+                ghost_painter.rect_stroke(ghost_rect, 4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220)));
+
+                // "T" icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "T",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Template name
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    template_name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw effect drag ghost — a translucent pill following the cursor
+        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 120.0;
+                let ghost_h = 28.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("effect_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 6.0,
+                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210));
+                ghost_painter.rect_stroke(ghost_rect, 6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230)));
+
+                // "FX" icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 16.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "FX",
+                    egui::FontId::monospace(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Effect name
+                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 32.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw audio effect drag ghost — teal pill following the cursor
+        if let Some(crate::drag_drop::DragPayload::AudioEffect { ref name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 130.0;
+                let ghost_h = 28.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("audio_effect_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 6.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210));
+                ghost_painter.rect_stroke(ghost_rect, 6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230)));
+
+                // Audio icon
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "\u{266B}", // musical note
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::WHITE,
+                );
+
+                // Effect name
+                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    fn draw_marquee(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        content_rect: egui::Rect,
+        tracks_start_y: f32,
+        scroll_y: f32,
+    ) {
+        let m_zoom = state.timeline_zoom;
+        let m_scroll = state.timeline_scroll_x;
+        if !self.embedded && state.active_tool == Tool::Select {
+            let pointer = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
+            let (pressed, down, released) = pointer;
+            let cur_pos = ui.input(|i| i.pointer.latest_pos());
+
+            // Start marquee: primary press with no existing drag operation
+            if pressed && self.marquee_start.is_none()
+                && self.dragging_clip.is_none() && self.trimming_clip.is_none()
+                && self.roll_trimming.is_none() && self.slipping_clip.is_none()
+                && self.sliding_clip.is_none() && self.resizing_track.is_none()
+            {
+                if let Some(pos) = cur_pos {
+                    // Only start if in the content area (not header) and not on a clip
+                    if pos.x > content_rect.left() && pos.y >= tracks_start_y - scroll_y {
+                        let on_clip = self.frame_cache.track_rects.iter().any(|(ti, _, tr)| {
+                            let clips = &state.sequence().tracks[*ti].clips;
+                            self.hit_test_clip_body(clips, &content_rect, tr, m_zoom, m_scroll,
+                                tr.height(), pos).is_some()
+                        });
+                        if !on_clip {
+                            self.marquee_start = Some(pos);
+                        }
+                    }
+                }
+            }
+
+            // Draw and update marquee during drag
+            if let Some(start) = self.marquee_start {
+                if down {
+                    if let Some(cur) = cur_pos {
+                        let marquee_rect = egui::Rect::from_two_pos(start, cur);
+                        // Draw selection rectangle
+                        ui.painter().rect_filled(
+                            marquee_rect, 2.0,
+                            egui::Color32::from_rgba_premultiplied(80, 130, 220, 30),
+                        );
+                        ui.painter().rect_stroke(
+                            marquee_rect, 2.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 220)),
+                        );
+
+                        // Collect clips intersecting the marquee
+                        let mut selected = Vec::new();
+                        for (ti, _, track_rect) in &self.frame_cache.track_rects {
+                            if marquee_rect.max.y < track_rect.top() || marquee_rect.min.y > track_rect.bottom() {
+                                continue; // marquee doesn't overlap this track
+                            }
+                            let th = track_rect.height();
+                            for clip in &state.sequence().tracks[*ti].clips {
+                                if clip.kind.is_gap() { continue; }
+                                let cr = Self::clip_screen_rect(clip, &content_rect, track_rect, m_zoom, m_scroll, th);
+                                if marquee_rect.intersects(cr) {
+                                    selected.push(clip.id);
+                                }
+                            }
+                        }
+                        state.selected_clips = selected;
+                        if let Some(first) = state.selected_clips.first().copied() {
+                            cmds.push(AppCommand::SelectClip(Some(first)));
+                        }
+                    }
+                }
+                if released {
+                    self.marquee_start = None;
+                }
+            }
+        }
+    }
+
+    fn draw_playhead(&self, state: &mut AppState, painter: &egui::Painter, content_rect: egui::Rect) {
+        let seq_dur = state.sequence_duration();
+        if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
+            let playhead_secs = state.playhead_smooth_secs as f32;
+            let view_width = content_rect.width();
+
+            // Auto-scroll based on follow mode — only during playback, not on user clicks
+            if state.playback == PlaybackState::Playing {
+                match state.playhead_follow {
+                    PlayheadFollow::Page => {
+                        // Direct mutation intentional — smooth playhead follow requires
+                        // per-frame interpolation with frame-timing sensitivity.
+                        // Converting to a command would introduce one-frame lag that
+                        // breaks smooth follow. This is pure viewport state with no
+                        // undo value.
+                        let playhead_x_abs = playhead_secs * state.timeline_zoom;
+                        let view_end = state.timeline_scroll_x + view_width;
+                        if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
+                            // Jump one page so playhead is at ~10% from left
+                            state.timeline_scroll_x =
+                                (playhead_x_abs - view_width * 0.1).max(0.0);
+                        }
+                    }
+                    PlayheadFollow::Smooth => {
+                        // Keep playhead at ~25% from left edge during playback
+                        let target_scroll =
+                            (playhead_secs * state.timeline_zoom - view_width * 0.25).max(0.0);
+                        // Smooth lerp to avoid jarring jumps
+                        state.timeline_scroll_x +=
+                            (target_scroll - state.timeline_scroll_x) * 0.15;
+                    }
+                    PlayheadFollow::Off => {}
+                }
+            }
+
+            let playhead_x =
+                content_rect.left() + playhead_secs * state.timeline_zoom - state.timeline_scroll_x;
+
+            if playhead_x >= content_rect.left() && playhead_x <= content_rect.right() {
+                painter.line_segment(
+                    [
+                        egui::pos2(playhead_x, content_rect.top()),
+                        egui::pos2(playhead_x, content_rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 80, 80)),
+                );
+            }
+        }
+    }
+
+    fn draw_snap_line(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
+        if let Some(snap_x) = self.frame_cache.snap_line_x {
+            if snap_x >= content_rect.left() && snap_x <= content_rect.right() {
+                let snap_color = egui::Color32::from_rgb(232, 160, 32);
+                // Thick amber line spanning full track area
+                painter.line_segment(
+                    [
+                        egui::pos2(snap_x, tracks_start_y),
+                        egui::pos2(snap_x, content_rect.bottom()),
+                    ],
+                    egui::Stroke::new(2.0, snap_color),
+                );
+                // Glow effect — wider translucent line behind
+                painter.line_segment(
+                    [
+                        egui::pos2(snap_x, tracks_start_y),
+                        egui::pos2(snap_x, content_rect.bottom()),
+                    ],
+                    egui::Stroke::new(6.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 50)),
+                );
+                // Timecode label with background pill at top of snap line
+                let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom;
+                let snap_tc = RationalTime::from_secs_f64(snap_secs as f64, state.fps.rate());
+                let label = snap_tc.to_timecode_string();
+                let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
+                // Background pill for readability
+                let text_galley = painter.layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(9.0),
+                    snap_color,
+                );
+                let pill_rect = egui::Rect::from_min_size(
+                    egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
+                    egui::vec2(text_galley.size().x + 4.0, text_galley.size().y + 2.0),
+                );
+                painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.text(
+                    label_pos,
+                    egui::Align2::LEFT_TOP,
+                    &label,
+                    egui::FontId::monospace(9.0),
+                    snap_color,
+                );
+            }
+        }
+    }
+
+    fn draw_connection_lines(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect) {
+        let connection_color = egui::Color32::from_rgba_premultiplied(150, 150, 160, 60);
+        let connection_stroke = egui::Stroke::new(1.0, connection_color);
+        // Collect linked pairs to avoid double-drawing (only draw from video -> audio)
+        let mut drawn_pairs = std::collections::HashSet::new();
+        for track in &state.sequence().tracks {
+            for clip in &track.clips {
+                if let Some(linked_id) = clip.linked_clip_id {
+                    // Only draw once per pair
+                    let pair_key = if clip.id.0 < linked_id.0 {
+                        (clip.id, linked_id)
+                    } else {
+                        (linked_id, clip.id)
+                    };
+                    if drawn_pairs.contains(&pair_key) {
+                        continue;
+                    }
+                    drawn_pairs.insert(pair_key);
+
+                    if let (Some(rect_a), Some(rect_b)) = (
+                        self.frame_cache.clip_screen_rects.get(&clip.id),
+                        self.frame_cache.clip_screen_rects.get(&linked_id),
+                    ) {
+                        // Only draw if clips are on different tracks (vertically separated)
+                        if (rect_a.top() - rect_b.top()).abs() > 1.0 {
+                            let (upper, lower) = if rect_a.top() < rect_b.top() {
+                                (rect_a, rect_b)
+                            } else {
+                                (rect_b, rect_a)
+                            };
+                            let x = upper.left() + 4.0;
+                            // Only draw if x is in visible area
+                            if x >= content_rect.left() && x <= content_rect.right() {
+                                painter.line_segment(
+                                    [egui::pos2(x, upper.bottom()), egui::pos2(x, lower.top())],
+                                    connection_stroke,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn draw_single_track_header(
         &self,
         ui: &mut egui::Ui,
@@ -2865,16 +2885,13 @@ impl TimelinePanel {
     /// Handle scroll (vertical/horizontal) and zoom (Ctrl+wheel) input.
     fn handle_scroll_zoom(&mut self, ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
         let avail_rect = ui.available_rect_before_wrap();
-        let approx_tracks_y = avail_rect.top()
-            + (if state.show_overview_bar && !self.embedded { OVERVIEW_BAR_HEIGHT } else { 0.0 })
-            + RULER_HEIGHT
-            + (if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT });
         if ui.rect_contains_pointer(avail_rect) {
             let (zoom_factor, pointer_pos) = ui.input(|i| {
                 (i.zoom_delta(), i.pointer.interact_pos())
             });
 
             if (zoom_factor - 1.0).abs() > 0.001 {
+                // Ctrl+scroll (or pinch): zoom anywhere in the timeline panel
                 let old_zoom = state.timeline_zoom;
                 let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 2000.0);
                 let content_left = avail_rect.left() + state.track_header_width;
@@ -2895,21 +2912,34 @@ impl TimelinePanel {
                     i.smooth_scroll_delta = egui::Vec2::ZERO;
                     (s.x, s.y)
                 });
-                let shift = ui.input(|i| i.modifiers.shift);
-                let pointer_in_tracks = pointer_pos.is_some_and(|p| p.y >= approx_tracks_y - 40.0);
+                if smooth_sx.abs() <= 0.1 && smooth_sy.abs() <= 0.1 {
+                    return;
+                }
 
-                if pointer_in_tracks && !shift {
-                    if smooth_sy.abs() > 0.1 {
+                // DaVinci/Premiere-style context-aware scroll routing:
+                //   * Mouse over track headers (x < content_left) → scroll Y = vertical track scroll
+                //   * Mouse over clip content (x >= content_left) → scroll Y = horizontal timeline pan
+                //   * Shift+scroll in content area → vertical track scroll (opt-in)
+                //   * Native horizontal scroll (trackpad) → always horizontal timeline pan
+                let shift = ui.input(|i| i.modifiers.shift);
+                let content_left = avail_rect.left() + state.track_header_width;
+                let pointer_in_header = pointer_pos
+                    .is_some_and(|p| p.x < content_left);
+
+                // Native horizontal trackpad scroll → always horizontal timeline pan
+                if smooth_sx.abs() > 0.1 {
+                    state.timeline_scroll_x =
+                        (state.timeline_scroll_x - smooth_sx).max(0.0);
+                    state.playhead_follow = PlayheadFollow::Off;
+                }
+
+                // Vertical scroll routing depends on pointer position + shift
+                if smooth_sy.abs() > 0.1 {
+                    let route_vertical = pointer_in_header || shift;
+                    if route_vertical {
                         state.timeline_scroll_y =
                             (state.timeline_scroll_y - smooth_sy).max(0.0);
-                    }
-                    if smooth_sx.abs() > 0.1 {
-                        state.timeline_scroll_x =
-                            (state.timeline_scroll_x - smooth_sx).max(0.0);
-                        state.playhead_follow = PlayheadFollow::Off;
-                    }
-                } else {
-                    if smooth_sy.abs() > 0.1 {
+                    } else {
                         state.timeline_scroll_x =
                             (state.timeline_scroll_x - smooth_sy).max(0.0);
                         state.playhead_follow = PlayheadFollow::Off;
@@ -3352,6 +3382,20 @@ impl TimelinePanel {
                             } else {
                                 state.skim_queued_request = Some((media_id, skim_time));
                             }
+                        }
+
+                        // Auto-restart video skim if texture was cleared but hover is still active.
+                        // Mirrors the audio skim auto-restart pattern — protects against texture
+                        // clearing during single-frame hover misses (e.g. after zoom changes the
+                        // clip's screen rect).
+                        if state.browser_skim_texture.is_none()
+                            && has_skim_file
+                            && !state.skim_decode_in_flight
+                        {
+                            cmds.push(AppCommand::BrowserSkimFrame {
+                                media_id,
+                                time_secs: skim_time,
+                            });
                         }
 
                         // Fallback: poster thumbnail

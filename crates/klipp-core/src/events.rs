@@ -278,6 +278,11 @@ pub enum AppCommand {
     Stop,
     SeekTo(Timecode),
     SeekRelative(i64),
+    SetPlayheadFromTimecode { input: String },
+    RequestWhiteBalanceSample { nx: f32, ny: f32 },
+    RequestQualifierSample { nx: f32, ny: f32 },
+    BeginTitleEdit { clip_id: ClipId },
+    EndTitleEdit,
 
     // Media
     LoadMediaFile { path: PathBuf, media_id: MediaId },
@@ -374,6 +379,7 @@ pub enum AppCommand {
     SetTrackSolo { track_index: usize, solo: bool },
     SetTrackPan { track_index: usize, pan: f32 },
     SetMasterVolume(f32),
+    SetMasterMute(bool),
     /// Reset the BS.1770-4 LUFS meter in the mix thread.
     ResetLufsMeter,
     SetClipVolume(f32),

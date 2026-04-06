@@ -405,6 +405,10 @@ impl TransportBar {
     }
 }
 
+pub fn parse_timecode_input_pub(input: &str, fps: Fps) -> Option<RationalTime> {
+    parse_timecode_input(input, fps)
+}
+
 fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {
     let input = input.trim();
     // Try HH:MM:SS:FF format

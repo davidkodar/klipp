@@ -42,7 +42,7 @@ impl NewTimelinePanel {
                 toolbar_rect.max.y,
                 egui::Stroke::new(1.0, theme.border),
             );
-            toolbar::show(ui, state, theme);
+            toolbar::show(ui, state, theme, &mut cmds);
         });
 
         // ── Sequence tabs (24px) ──

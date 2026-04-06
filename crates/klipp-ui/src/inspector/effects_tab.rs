@@ -102,23 +102,7 @@ pub fn show(
     let total_effects = clip.builtin_effects.len() + clip.effects.len();
 
     // ── "Drag to reorder" hint ──
-    if total_effects > 1 {
-        let hint_w = ui.available_width();
-        let (hint_rect, _) = ui.allocate_exact_size(egui::vec2(hint_w, 20.0), egui::Sense::hover());
-        let center = hint_rect.center();
-        // Up/down arrows + text
-        Icon::CaretUp.image(6.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
-            egui::pos2(center.x - 52.0, center.y - 4.0), egui::vec2(8.0, 8.0),
-        ));
-        Icon::CaretDown.image(6.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
-            egui::pos2(center.x - 52.0, center.y + 4.0), egui::vec2(8.0, 8.0),
-        ));
-        ui.painter().text(
-            center, egui::Align2::CENTER_CENTER,
-            "Drag to reorder", egui::FontId::proportional(10.0), theme.text_dim,
-        );
-        ui.add_space(2.0);
-    }
+    show_drag_hint(ui, theme, total_effects);
 
     // ── Built-in effects ──
     let mut builtin_remove = None;
@@ -601,66 +585,22 @@ pub fn show(
     }
 
     // ── Add Effect button (dashed border, accent "+", "E" shortcut badge) ──
-    ui.add_space(8.0);
-
-    ui.horizontal(|ui| {
-        let total_w = ui.available_width();
-        let btn_w = total_w - 36.0;
-        ui.add_space(4.0);
-
-        let mut job = egui::text::LayoutJob::default();
-        job.append("+  ", 0.0, egui::TextFormat {
-            font_id: egui::FontId::proportional(13.0),
-            color: theme.accent,
-            ..Default::default()
-        });
-        job.append("Add Effect\u{2026}", 0.0, egui::TextFormat {
-            font_id: egui::FontId::proportional(12.0),
-            color: theme.text_secondary,
-            ..Default::default()
-        });
-
-        // Dashed border effect: transparent fill + dashed stroke (egui doesn't do dashed natively,
-        // so we use a dotted-looking light stroke)
-        let btn = egui::Button::new(job)
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme.border_light))
-            .rounding(6.0);
-
-        let resp = ui.add_sized(egui::vec2(btn_w, 32.0), btn);
-
-        // Draw dashed overlay on the button rect
-        let btn_rect = resp.rect;
-        let dash_color = theme.border_light;
-        // Horizontal dashes (top and bottom)
-        let dash_len = 6.0;
-        let gap_len = 4.0;
-        for &y in &[btn_rect.min.y, btn_rect.max.y] {
-            let mut x = btn_rect.min.x + card_rounding;
-            while x < btn_rect.max.x - card_rounding {
-                let end_x = (x + dash_len).min(btn_rect.max.x - card_rounding);
-                ui.painter().line_segment(
-                    [egui::pos2(x, y), egui::pos2(end_x, y)],
-                    egui::Stroke::new(1.0, dash_color),
-                );
-                x += dash_len + gap_len;
-            }
-        }
-
-        if resp.clicked() {
-            cmds.push(AppCommand::ShowEffectsBrowser);
-        }
-
-        // "E" shortcut badge
-        let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-        ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
-        ui.painter().text(
-            badge_rect.center(), egui::Align2::CENTER_CENTER,
-            "E", egui::FontId::monospace(10.0), theme.text_dim,
-        );
-    });
+    show_add_effect_button(ui, theme, clip, cmds);
 
     // Inline add menus (kept for compatibility)
+    show_preset_selectors(ui, theme, state, clip, show_add_builtin, show_add_ofx, cmds);
+}
+
+fn show_preset_selectors(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    state: &AppState,
+    clip: &Clip,
+    show_add_builtin: &mut bool,
+    show_add_ofx: &mut bool,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let clip_id = clip.id;
     if *show_add_builtin {
         ui.add_space(4.0);
         let effects = [
@@ -723,6 +663,88 @@ pub fn show(
         if ui.small_button("Cancel").clicked() {
             *show_add_ofx = false;
         }
+    }
+}
+
+fn show_add_effect_button(ui: &mut egui::Ui, theme: &KlippTheme, _clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let card_rounding = 6.0;
+    ui.add_space(8.0);
+
+    ui.horizontal(|ui| {
+        let total_w = ui.available_width();
+        let btn_w = total_w - 36.0;
+        ui.add_space(4.0);
+
+        let mut job = egui::text::LayoutJob::default();
+        job.append("+  ", 0.0, egui::TextFormat {
+            font_id: egui::FontId::proportional(13.0),
+            color: theme.accent,
+            ..Default::default()
+        });
+        job.append("Add Effect\u{2026}", 0.0, egui::TextFormat {
+            font_id: egui::FontId::proportional(12.0),
+            color: theme.text_secondary,
+            ..Default::default()
+        });
+
+        // Dashed border effect: transparent fill + dashed stroke (egui doesn't do dashed natively,
+        // so we use a dotted-looking light stroke)
+        let btn = egui::Button::new(job)
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, theme.border_light))
+            .rounding(6.0);
+
+        let resp = ui.add_sized(egui::vec2(btn_w, 32.0), btn);
+
+        // Draw dashed overlay on the button rect
+        let btn_rect = resp.rect;
+        let dash_color = theme.border_light;
+        // Horizontal dashes (top and bottom)
+        let dash_len = 6.0;
+        let gap_len = 4.0;
+        for &y in &[btn_rect.min.y, btn_rect.max.y] {
+            let mut x = btn_rect.min.x + card_rounding;
+            while x < btn_rect.max.x - card_rounding {
+                let end_x = (x + dash_len).min(btn_rect.max.x - card_rounding);
+                ui.painter().line_segment(
+                    [egui::pos2(x, y), egui::pos2(end_x, y)],
+                    egui::Stroke::new(1.0, dash_color),
+                );
+                x += dash_len + gap_len;
+            }
+        }
+
+        if resp.clicked() {
+            cmds.push(AppCommand::ShowEffectsBrowser);
+        }
+
+        // "E" shortcut badge
+        let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+        ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
+        ui.painter().text(
+            badge_rect.center(), egui::Align2::CENTER_CENTER,
+            "E", egui::FontId::monospace(10.0), theme.text_dim,
+        );
+    });
+}
+
+fn show_drag_hint(ui: &mut egui::Ui, theme: &KlippTheme, total_effects: usize) {
+    if total_effects > 1 {
+        let hint_w = ui.available_width();
+        let (hint_rect, _) = ui.allocate_exact_size(egui::vec2(hint_w, 20.0), egui::Sense::hover());
+        let center = hint_rect.center();
+        // Up/down arrows + text
+        Icon::CaretUp.image(6.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
+            egui::pos2(center.x - 52.0, center.y - 4.0), egui::vec2(8.0, 8.0),
+        ));
+        Icon::CaretDown.image(6.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
+            egui::pos2(center.x - 52.0, center.y + 4.0), egui::vec2(8.0, 8.0),
+        ));
+        ui.painter().text(
+            center, egui::Align2::CENTER_CENTER,
+            "Drag to reorder", egui::FontId::proportional(10.0), theme.text_dim,
+        );
+        ui.add_space(2.0);
     }
 }
 

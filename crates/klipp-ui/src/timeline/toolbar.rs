@@ -1,9 +1,10 @@
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
+use klipp_core::AppCommand;
 
 /// 34px timeline toolbar: edit tools, snap/skimming/marker toggles, role dots, zoom slider.
-pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.add_space(8.0);
@@ -111,7 +112,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) {
             let slider = egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false);
             let resp = ui.add_sized([70.0, 16.0], slider);
             if resp.changed() {
-                state.timeline_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
+                let new_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
+                cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
             }
             ui.label(egui::RichText::new("\u{2212}").size(9.0).color(theme.text_dim));
         });

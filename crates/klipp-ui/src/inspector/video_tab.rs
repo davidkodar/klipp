@@ -214,27 +214,7 @@ fn show_clip_video(
     let pad = 14.0;
 
     // ── ROLE ──
-    section_card(ui, "ROLE", theme, |ui| {
-        ui.add_space(8.0);
-        egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for &role in ClipRole::all() {
-                        let color = theme.clip_role_color(role);
-                        let is_active = clip.role == role;
-                        if role_pill::role_pill(ui, theme, role.label(), color, is_active) {
-                            cmds.push(AppCommand::SetClipRole { clip_id, role });
-                        }
-                    }
-                });
-            });
-        ui.add_space(8.0);
-    });
+    show_role_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
 
@@ -736,149 +716,17 @@ fn show_clip_video(
     ui.add_space(8.0);
 
     // ── KEN BURNS ──
-    section_card(ui, "KEN BURNS", theme, |ui| {
-        let has_transform_kfs = !clip.transform_scale_keyframes.is_empty()
-            || !clip.transform_pos_x_keyframes.is_empty()
-            || !clip.transform_pos_y_keyframes.is_empty();
-
-        egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 8.0))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
-                    if ui.add(egui::Button::new(btn_text("Zoom In"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                    ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
-                        cmds.push(AppCommand::ApplyKenBurns {
-                            clip_id, start_scale: 1.0, end_scale: 1.3,
-                            start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
-                        });
-                    }
-                    if ui.add(egui::Button::new(btn_text("Zoom Out"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                    ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
-                        cmds.push(AppCommand::ApplyKenBurns {
-                            clip_id, start_scale: 1.3, end_scale: 1.0,
-                            start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
-                        });
-                    }
-                    if ui.add(egui::Button::new(btn_text("Pan L>R"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                    ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
-                        cmds.push(AppCommand::ApplyKenBurns {
-                            clip_id, start_scale: 1.2, end_scale: 1.2,
-                            start_pos_x: -100.0, start_pos_y: 0.0, end_pos_x: 100.0, end_pos_y: 0.0,
-                        });
-                    }
-                    if ui.add(egui::Button::new(btn_text("Pan R>L"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                    ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
-                        cmds.push(AppCommand::ApplyKenBurns {
-                            clip_id, start_scale: 1.2, end_scale: 1.2,
-                            start_pos_x: 100.0, start_pos_y: 0.0, end_pos_x: -100.0, end_pos_y: 0.0,
-                        });
-                    }
-                    if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
-                        .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                    ).on_hover_text("Clear all transform keyframes").clicked() {
-                        cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
-                    }
-                });
-            });
-    });
+    show_ken_burns_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
 
     // ── BEHAVIORS ──
-    section_card(ui, "BEHAVIORS", theme, |ui| {
-        ui.add_space(4.0);
-        egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE)
-            .show(ui, |ui| {
-                use klipp_core::ParamId;
-                let video_params = [
-                    ParamId::Opacity,
-                    ParamId::PositionX,
-                    ParamId::PositionY,
-                    ParamId::Scale,
-                    ParamId::Rotation,
-                ];
-                super::modifier_ui::show_behaviors_content(ui, theme, clip, &video_params, cmds);
-            });
-        ui.add_space(4.0);
-    });
+    show_behaviors_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
 
     // ── SPEED ──
-    section_card(ui, "SPEED", theme, |ui| {
-        egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 6.0))
-            .show(ui, |ui| {
-                let mut rate = (clip.speed * 100.0) as f32;
-                let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
-                if r_rate.changed {
-                    let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0);
-                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
-                }
-
-                ui.add_space(4.0);
-
-                // Direction row
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Direction")
-                            .size(11.0)
-                            .color(theme.text_secondary),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new("Forward")
-                                .size(11.0)
-                                .monospace()
-                                .color(theme.text_primary),
-                        );
-                    });
-                });
-
-                // Separator
-                ui.add_space(4.0);
-                let sep_w = ui.available_width();
-                let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
-                ui.add_space(4.0);
-
-                // Speed preset buttons
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
-                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
-                    for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
-                        let is_active = (clip.speed - speed_val).abs() < 0.001;
-                        let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
-                        let stroke = if is_active {
-                            egui::Stroke::new(1.0, theme.accent)
-                        } else {
-                            egui::Stroke::new(0.5, theme.border)
-                        };
-                        if ui.add(egui::Button::new(btn_text(label))
-                            .fill(fill).stroke(stroke)
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
-                        ).clicked() {
-                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val });
-                        }
-                    }
-                });
-            });
-    });
+    show_speed_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
 
@@ -1217,6 +1065,163 @@ fn show_clip_video(
     ui.add_space(8.0);
 
     // ── TRACKING ──
+    show_tracking_section(ui, theme, state, clip, cmds);
+
+    ui.add_space(8.0);
+
+    // ── COLOR ──
+    show_color_section(ui, theme, state, clip, cmds);
+
+    // ── SPEED RAMP (timeline only) ──
+    if is_timeline {
+        ui.add_space(8.0);
+        // SPEED RAMP section (timeline clips only)
+        {
+            let w = ui.available_width();
+            let collapsed_key = egui::Id::new("klipp_collapsed_sections");
+            let title = "SPEED RAMP";
+            let is_collapsed: bool = ui.ctx().data_mut(|d| {
+                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+                set.contains(title)
+            });
+
+            let id = ui.id().with(title).with("video_section");
+            let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
+
+            let header_h = 30.0;
+            let (header_rect, header_resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
+            let is_open = col_state.is_open();
+            let rounding = if is_open {
+                egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
+            } else {
+                egui::Rounding::same(6.0)
+            };
+            ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
+            // Left accent
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(header_rect.min, egui::vec2(3.0, header_h)),
+                if is_open { egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 } } else { egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 } },
+                theme.border,
+            );
+            // Title
+            ui.painter().text(
+                egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                title, egui::FontId::proportional(11.0), theme.text_dim,
+            );
+            // Collapse icon
+            let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
+            icon.image(12.0).tint(theme.text_dim).paint_at(ui,
+                egui::Rect::from_center_size(
+                    egui::pos2(header_rect.max.x - 20.0, header_rect.center().y),
+                    egui::vec2(12.0, 12.0),
+                ),
+            );
+
+            if header_resp.clicked() {
+                col_state.toggle(ui);
+                let now_open = col_state.is_open();
+                ui.ctx().data_mut(|d| {
+                    let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+                    if now_open { set.remove(title); } else { set.insert(title.to_string()); }
+                });
+            }
+
+            if col_state.is_open() {
+                let body_start = ui.cursor().min;
+                let frame = egui::Frame::default()
+                    .fill(theme.bg_panel)
+                    .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 })
+                    .stroke(egui::Stroke::NONE)
+                    .shadow(egui::Shadow::NONE);
+                frame.show(ui, |ui| {
+                    let w = ui.available_width();
+                    let pad = 14.0;
+                    let row_h = 30.0;
+
+                    // In speed
+                    info_row(ui, theme, pad, row_h, w, "In speed", |ui, rx, cy| {
+                        // Value box
+                        let input_w = 60.0;
+                        let input_rect = egui::Rect::from_min_size(
+                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
+                        );
+                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().text(
+                            input_rect.center(), egui::Align2::CENTER_CENTER,
+                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
+                        );
+                        // Keyframe diamond
+                        let diamond_x = rx - 5.0;
+                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
+                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
+                    });
+
+                    // Out speed
+                    info_row(ui, theme, pad, row_h, w, "Out speed", |ui, rx, cy| {
+                        let input_w = 60.0;
+                        let input_rect = egui::Rect::from_min_size(
+                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
+                        );
+                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().text(
+                            input_rect.center(), egui::Align2::CENTER_CENTER,
+                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
+                        );
+                        let diamond_x = rx - 5.0;
+                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
+                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
+                    });
+
+                    // Ease dropdown
+                    {
+                        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
+                        ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5, theme.border));
+                        ui.painter().text(
+                            egui::pos2(row_rect.min.x + pad, row_rect.center().y),
+                            egui::Align2::LEFT_CENTER, "Ease",
+                            egui::FontId::proportional(13.0), theme.text_secondary,
+                        );
+                        let combo_w = 110.0;
+                        let combo_rect = egui::Rect::from_min_size(
+                            egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
+                            egui::vec2(combo_w, 26.0),
+                        );
+                        ui.painter().rect(combo_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().text(
+                            egui::pos2(combo_rect.min.x + 10.0, combo_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "Linear", egui::FontId::proportional(12.0), theme.text_primary,
+                        );
+                        ui.painter().text(
+                            egui::pos2(combo_rect.max.x - 10.0, combo_rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
+                        );
+                    }
+                    ui.add_space(4.0);
+                });
+
+                let body_end_y = ui.cursor().min.y;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
+                    0.0, theme.border,
+                );
+                let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
+                ui.painter().rect_stroke(full_rect, 6.0, egui::Stroke::new(0.5, theme.border));
+            } else {
+                ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, theme.border));
+            }
+            col_state.store(ui.ctx());
+        }
+    }
+
+    ui.add_space(8.0);
+}
+
+fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    let pad = 14.0;
     section_card(ui, "TRACKING", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
@@ -1374,10 +1379,9 @@ fn show_clip_video(
                 }
             });
     });
+}
 
-    ui.add_space(8.0);
-
-    // ── COLOR ──
+fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
     section_card(ui, "COLOR", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
@@ -1446,152 +1450,179 @@ fn show_clip_video(
             });
         ui.add_space(8.0);
     });
+}
 
-    // ── SPEED RAMP (timeline only) ──
-    if is_timeline {
-        ui.add_space(8.0);
-        // SPEED RAMP section (timeline clips only)
-        {
-            let w = ui.available_width();
-            let collapsed_key = egui::Id::new("klipp_collapsed_sections");
-            let title = "SPEED RAMP";
-            let is_collapsed: bool = ui.ctx().data_mut(|d| {
-                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-                set.contains(title)
-            });
+fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+    section_card(ui, "KEN BURNS", theme, |ui| {
+        let has_transform_kfs = !clip.transform_scale_keyframes.is_empty()
+            || !clip.transform_pos_x_keyframes.is_empty()
+            || !clip.transform_pos_y_keyframes.is_empty();
 
-            let id = ui.id().with(title).with("video_section");
-            let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
-
-            let header_h = 30.0;
-            let (header_rect, header_resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
-            let is_open = col_state.is_open();
-            let rounding = if is_open {
-                egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
-            } else {
-                egui::Rounding::same(6.0)
-            };
-            ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
-            // Left accent
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(header_rect.min, egui::vec2(3.0, header_h)),
-                if is_open { egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 } } else { egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 } },
-                theme.border,
-            );
-            // Title
-            ui.painter().text(
-                egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                title, egui::FontId::proportional(11.0), theme.text_dim,
-            );
-            // Collapse icon
-            let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
-            icon.image(12.0).tint(theme.text_dim).paint_at(ui,
-                egui::Rect::from_center_size(
-                    egui::pos2(header_rect.max.x - 20.0, header_rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                ),
-            );
-
-            if header_resp.clicked() {
-                col_state.toggle(ui);
-                let now_open = col_state.is_open();
-                ui.ctx().data_mut(|d| {
-                    let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-                    if now_open { set.remove(title); } else { set.insert(title.to_string()); }
-                });
-            }
-
-            if col_state.is_open() {
-                let body_start = ui.cursor().min;
-                let frame = egui::Frame::default()
-                    .fill(theme.bg_panel)
-                    .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 })
-                    .stroke(egui::Stroke::NONE)
-                    .shadow(egui::Shadow::NONE);
-                frame.show(ui, |ui| {
-                    let w = ui.available_width();
-                    let pad = 14.0;
-                    let row_h = 30.0;
-
-                    // In speed
-                    info_row(ui, theme, pad, row_h, w, "In speed", |ui, rx, cy| {
-                        // Value box
-                        let input_w = 60.0;
-                        let input_rect = egui::Rect::from_min_size(
-                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
-                        );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
-                        ui.painter().text(
-                            input_rect.center(), egui::Align2::CENTER_CENTER,
-                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
-                        );
-                        // Keyframe diamond
-                        let diamond_x = rx - 5.0;
-                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
-                    });
-
-                    // Out speed
-                    info_row(ui, theme, pad, row_h, w, "Out speed", |ui, rx, cy| {
-                        let input_w = 60.0;
-                        let input_rect = egui::Rect::from_min_size(
-                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
-                        );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
-                        ui.painter().text(
-                            input_rect.center(), egui::Align2::CENTER_CENTER,
-                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
-                        );
-                        let diamond_x = rx - 5.0;
-                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
-                    });
-
-                    // Ease dropdown
-                    {
-                        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                        ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5, theme.border));
-                        ui.painter().text(
-                            egui::pos2(row_rect.min.x + pad, row_rect.center().y),
-                            egui::Align2::LEFT_CENTER, "Ease",
-                            egui::FontId::proportional(13.0), theme.text_secondary,
-                        );
-                        let combo_w = 110.0;
-                        let combo_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
-                            egui::vec2(combo_w, 26.0),
-                        );
-                        ui.painter().rect(combo_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
-                        ui.painter().text(
-                            egui::pos2(combo_rect.min.x + 10.0, combo_rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            "Linear", egui::FontId::proportional(12.0), theme.text_primary,
-                        );
-                        ui.painter().text(
-                            egui::pos2(combo_rect.max.x - 10.0, combo_rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
-                        );
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(pad, 8.0))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+                    if ui.add(egui::Button::new(btn_text("Zoom In"))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                    ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
+                        cmds.push(AppCommand::ApplyKenBurns {
+                            clip_id, start_scale: 1.0, end_scale: 1.3,
+                            start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
+                        });
                     }
-                    ui.add_space(4.0);
+                    if ui.add(egui::Button::new(btn_text("Zoom Out"))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                    ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
+                        cmds.push(AppCommand::ApplyKenBurns {
+                            clip_id, start_scale: 1.3, end_scale: 1.0,
+                            start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 0.0, end_pos_y: 0.0,
+                        });
+                    }
+                    if ui.add(egui::Button::new(btn_text("Pan L>R"))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                    ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
+                        cmds.push(AppCommand::ApplyKenBurns {
+                            clip_id, start_scale: 1.2, end_scale: 1.2,
+                            start_pos_x: -100.0, start_pos_y: 0.0, end_pos_x: 100.0, end_pos_y: 0.0,
+                        });
+                    }
+                    if ui.add(egui::Button::new(btn_text("Pan R>L"))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                    ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
+                        cmds.push(AppCommand::ApplyKenBurns {
+                            clip_id, start_scale: 1.2, end_scale: 1.2,
+                            start_pos_x: 100.0, start_pos_y: 0.0, end_pos_x: -100.0, end_pos_y: 0.0,
+                        });
+                    }
+                    if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
+                        .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5, theme.border))
+                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                    ).on_hover_text("Clear all transform keyframes").clicked() {
+                        cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
+                    }
+                });
+            });
+    });
+}
+
+fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+    section_card(ui, "SPEED", theme, |ui| {
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .show(ui, |ui| {
+                let mut rate = (clip.speed * 100.0) as f32;
+                let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
+                if r_rate.changed {
+                    let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0);
+                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
+                }
+
+                ui.add_space(4.0);
+
+                // Direction row
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Direction")
+                            .size(11.0)
+                            .color(theme.text_secondary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new("Forward")
+                                .size(11.0)
+                                .monospace()
+                                .color(theme.text_primary),
+                        );
+                    });
                 });
 
-                let body_end_y = ui.cursor().min.y;
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
-                    0.0, theme.border,
-                );
-                let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-                ui.painter().rect_stroke(full_rect, 6.0, egui::Stroke::new(0.5, theme.border));
-            } else {
-                ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, theme.border));
-            }
-            col_state.store(ui.ctx());
-        }
-    }
+                // Separator
+                ui.add_space(4.0);
+                let sep_w = ui.available_width();
+                let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
+                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
+                ui.add_space(4.0);
 
-    ui.add_space(8.0);
+                // Speed preset buttons
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+                    for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
+                        let is_active = (clip.speed - speed_val).abs() < 0.001;
+                        let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
+                        let stroke = if is_active {
+                            egui::Stroke::new(1.0, theme.accent)
+                        } else {
+                            egui::Stroke::new(0.5, theme.border)
+                        };
+                        if ui.add(egui::Button::new(btn_text(label))
+                            .fill(fill).stroke(stroke)
+                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        ).clicked() {
+                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val });
+                        }
+                    }
+                });
+            });
+    });
+}
+
+fn show_behaviors_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    section_card(ui, "BEHAVIORS", theme, |ui| {
+        ui.add_space(4.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .shadow(egui::Shadow::NONE)
+            .show(ui, |ui| {
+                use klipp_core::ParamId;
+                let video_params = [
+                    ParamId::Opacity,
+                    ParamId::PositionX,
+                    ParamId::PositionY,
+                    ParamId::Scale,
+                    ParamId::Rotation,
+                ];
+                super::modifier_ui::show_behaviors_content(ui, theme, clip, &video_params, cmds);
+            });
+        ui.add_space(4.0);
+    });
+}
+
+fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    section_card(ui, "ROLE", theme, |ui| {
+        ui.add_space(8.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .shadow(egui::Shadow::NONE)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                    for &role in ClipRole::all() {
+                        let color = theme.clip_role_color(role);
+                        let is_active = clip.role == role;
+                        if role_pill::role_pill(ui, theme, role.label(), color, is_active) {
+                            cmds.push(AppCommand::SetClipRole { clip_id, role });
+                        }
+                    }
+                });
+            });
+        ui.add_space(8.0);
+    });
 }
 
 /// Emit an UpdateBuiltinEffect or AddBuiltinEffect for a Transform.

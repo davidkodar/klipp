@@ -5,6 +5,19 @@ use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
+/// Per-frame state computed once at the top of `show_program_viewer`.
+/// Passed by reference to extracted helper functions. All fields are `Copy`.
+#[derive(Debug, Clone, Copy)]
+struct ViewerFrameState {
+    image_rect: egui::Rect,
+    viewer_rect: egui::Rect,
+    video_w: f32,
+    video_h: f32,
+    grade_still_active: bool,
+    /// `(width, height, proxy_ready)` of the media item under the playhead, if any.
+    current_media_info: Option<(u32, u32, bool)>,
+}
+
 #[derive(Default)]
 pub struct ViewerPanel {
     pub video_texture: Option<egui::TextureHandle>,
@@ -206,16 +219,111 @@ impl ViewerPanel {
         cmds
     }
 
-    fn show_program_viewer(
+    fn handle_eyedropper_click(
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
-        theme: &KlippTheme,
-        viewer_rect: egui::Rect,
+        image_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let _ = cmds;
+        // ── Eyedropper interaction (White Balance or Qualifier) ──
+        if state.eyedropper_mode != crate::state::EyedropperMode::None {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            let eyedropper_resp = ui.allocate_rect(image_rect, egui::Sense::click());
+            if eyedropper_resp.clicked() {
+                if let Some(pos) = eyedropper_resp.interact_pointer_pos() {
+                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                    match state.eyedropper_mode {
+                        crate::state::EyedropperMode::WhiteBalance => {
+                            cmds.push(AppCommand::RequestWhiteBalanceSample { nx, ny });
+                        }
+                        crate::state::EyedropperMode::Qualifier => {
+                            cmds.push(AppCommand::RequestQualifierSample { nx, ny });
+                        }
+                        crate::state::EyedropperMode::None => {}
+                    }
+                    state.eyedropper_mode = crate::state::EyedropperMode::None;
+                }
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                state.eyedropper_mode = crate::state::EyedropperMode::None;
+            }
+        }
+    }
 
+    fn draw_letterbox(&self, ui: &egui::Ui, viewer_rect: egui::Rect, lb_h: f32) {
+        // ── Letterbox bars (drawn ON TOP of video frame) ──
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(viewer_rect.min, egui::vec2(viewer_rect.width(), lb_h)),
+            0.0, egui::Color32::BLACK,
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(viewer_rect.min.x, viewer_rect.max.y - lb_h),
+                egui::vec2(viewer_rect.width(), lb_h),
+            ),
+            0.0, egui::Color32::BLACK,
+        );
+    }
+
+    fn draw_empty_state(&mut self, ui: &mut egui::Ui, viewer_rect: egui::Rect) {
+        // Empty state: Klipp logo at 40% opacity
+        let center = viewer_rect.center();
+        let logo_tex = self.logo_texture.get_or_insert_with(|| {
+            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
+            let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+            let mut reader = decoder.read_info().expect("viewer logo PNG decode");
+            let mut buf = vec![0u8; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buf).expect("viewer logo PNG frame");
+            let bytes = &buf[..info.buffer_size()];
+            let pixels: Vec<egui::Color32> = match info.color_type {
+                png::ColorType::Rgba => bytes
+                    .chunks_exact(4)
+                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                    .collect(),
+                png::ColorType::Rgb => bytes
+                    .chunks_exact(3)
+                    .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                    .collect(),
+                _ => panic!("Unsupported viewer logo PNG color type"),
+            };
+            let image = egui::ColorImage {
+                size: [info.width as usize, info.height as usize],
+                pixels,
+            };
+            ui.ctx().load_texture("klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
+        });
+        let logo_size = 48.0;
+        let logo_rect = egui::Rect::from_center_size(
+            egui::pos2(center.x, center.y - 8.0),
+            egui::vec2(logo_size, logo_size),
+        );
+        ui.painter().image(
+            logo_tex.id(),
+            logo_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::from_white_alpha(102),
+        );
+        let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
+        ui.painter().text(
+            egui::pos2(center.x, center.y + logo_size * 0.5),
+            egui::Align2::CENTER_CENTER,
+            "Klipp",
+            egui::FontId::proportional(16.0),
+            logo_color,
+        );
+    }
+
+    /// Compute per-frame layout state for the program viewer.
+    /// Returns `None` if there's no content to draw (caller should early-return).
+    /// Also draws the empty state and stores bookkeeping on `state` as a side effect.
+    fn compute_video_layout(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        viewer_rect: egui::Rect,
+    ) -> Option<ViewerFrameState> {
         // Extract media info up-front so the borrow is short-lived
         let current_media_info: Option<(u32, u32, bool)> = state.sequence().tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -224,55 +332,10 @@ impl ViewerPanel {
             .map(|m| (m.resolution.width, m.resolution.height, m.proxy_ready));
 
         let has_content = state.playback != PlaybackState::Idle || current_media_info.is_some();
-        let lb_h = viewer_rect.height() * 0.08;
 
         if !has_content {
-            // Empty state: Klipp logo at 40% opacity
-            let center = viewer_rect.center();
-            let logo_tex = self.logo_texture.get_or_insert_with(|| {
-                let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
-                let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
-                let mut reader = decoder.read_info().expect("viewer logo PNG decode");
-                let mut buf = vec![0u8; reader.output_buffer_size()];
-                let info = reader.next_frame(&mut buf).expect("viewer logo PNG frame");
-                let bytes = &buf[..info.buffer_size()];
-                let pixels: Vec<egui::Color32> = match info.color_type {
-                    png::ColorType::Rgba => bytes
-                        .chunks_exact(4)
-                        .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
-                        .collect(),
-                    png::ColorType::Rgb => bytes
-                        .chunks_exact(3)
-                        .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
-                        .collect(),
-                    _ => panic!("Unsupported viewer logo PNG color type"),
-                };
-                let image = egui::ColorImage {
-                    size: [info.width as usize, info.height as usize],
-                    pixels,
-                };
-                ui.ctx().load_texture("klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
-            });
-            let logo_size = 48.0;
-            let logo_rect = egui::Rect::from_center_size(
-                egui::pos2(center.x, center.y - 8.0),
-                egui::vec2(logo_size, logo_size),
-            );
-            ui.painter().image(
-                logo_tex.id(),
-                logo_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::from_white_alpha(102),
-            );
-            let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
-            ui.painter().text(
-                egui::pos2(center.x, center.y + logo_size * 0.5),
-                egui::Align2::CENTER_CENTER,
-                "Klipp",
-                egui::FontId::proportional(16.0),
-                logo_color,
-            );
-            return;
+            self.draw_empty_state(ui, viewer_rect);
+            return None;
         }
 
         // Use the actual video texture dimensions for aspect ratio — this matches what's
@@ -287,7 +350,7 @@ impl ViewerPanel {
             .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
             .unwrap_or((1920.0, 1080.0));
 
-        if video_w == 0.0 || video_h == 0.0 { return; }
+        if video_w == 0.0 || video_h == 0.0 { return None; }
 
         let video_aspect = video_w / video_h;
         let panel_aspect = viewer_rect.width() / viewer_rect.height();
@@ -314,74 +377,484 @@ impl ViewerPanel {
             && state.active_grade_still.is_some()
             && state.active_grade_still.unwrap() < state.grade_stills.len();
 
-        if grade_still_active {
-            let split_frac = state.split_position;
-            let split_x = image_rect.min.x + split_frac * image_rect.width();
+        Some(ViewerFrameState {
+            image_rect,
+            viewer_rect,
+            video_w,
+            video_h,
+            grade_still_active,
+            current_media_info,
+        })
+    }
 
-            // Left side: grade still reference
-            let still_idx = state.active_grade_still.unwrap();
-            let still = &mut state.grade_stills[still_idx];
-            // Lazily upload texture
-            if still.texture.is_none() && !still.rgba.is_empty() {
-                let sw = still.width as usize;
-                let sh = still.height as usize;
-                let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
-                    .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
-                    .collect();
-                let image = egui::ColorImage { size: [sw, sh], pixels };
-                still.texture = Some(ui.ctx().load_texture(
-                    format!("grade_still_{}", still_idx),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
-            }
-            if let Some(tex) = &still.texture {
-                let left_rect = egui::Rect::from_min_max(image_rect.min, egui::pos2(split_x, image_rect.max.y));
-                let uv_right = split_frac;
-                ui.painter().image(
-                    tex.id(),
-                    left_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(uv_right, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+    fn draw_grade_still_split(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let split_frac = state.split_position;
+        let split_x = image_rect.min.x + split_frac * image_rect.width();
 
-            // Right side: current graded frame
-            if let Some(tex) = &self.video_texture {
-                let right_rect = egui::Rect::from_min_max(egui::pos2(split_x, image_rect.min.y), image_rect.max);
-                let uv_left = split_frac;
-                ui.painter().image(
-                    tex.id(),
-                    right_rect,
-                    egui::Rect::from_min_max(egui::pos2(uv_left, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+        // Left side: grade still reference
+        let still_idx = state.active_grade_still.unwrap();
+        let still = &mut state.grade_stills[still_idx];
+        // Lazily upload texture
+        if still.texture.is_none() && !still.rgba.is_empty() {
+            let sw = still.width as usize;
+            let sh = still.height as usize;
+            let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
+                .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
+                .collect();
+            let image = egui::ColorImage { size: [sw, sh], pixels };
+            still.texture = Some(ui.ctx().load_texture(
+                format!("grade_still_{}", still_idx),
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+        if let Some(tex) = &still.texture {
+            let left_rect = egui::Rect::from_min_max(image_rect.min, egui::pos2(split_x, image_rect.max.y));
+            let uv_right = split_frac;
+            ui.painter().image(
+                tex.id(),
+                left_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(uv_right, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+
+        // Right side: current graded frame
+        if let Some(tex) = &self.video_texture {
+            let right_rect = egui::Rect::from_min_max(egui::pos2(split_x, image_rect.min.y), image_rect.max);
+            let uv_left = split_frac;
+            ui.painter().image(
+                tex.id(),
+                right_rect,
+                egui::Rect::from_min_max(egui::pos2(uv_left, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+
+    fn draw_split_divider(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let grade_still_active = frame.grade_still_active;
+        let split_x = image_rect.min.x + state.split_position * image_rect.width();
+        let divider_color = if grade_still_active {
+            egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
         } else {
-            // Normal: draw full video frame
-            if let Some(tex) = &self.video_texture {
-                ui.painter().image(
-                    tex.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
+            egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+        };
+
+        // Vertical divider line
+        ui.painter().vline(
+            split_x,
+            image_rect.y_range(),
+            egui::Stroke::new(2.0, divider_color),
+        );
+
+        // Labels
+        let label_font = egui::FontId::proportional(10.0);
+        let label_y = image_rect.min.y + 14.0;
+        let left_label = if grade_still_active {
+            let idx = state.active_grade_still.unwrap();
+            state.grade_stills[idx].name.as_str()
+        } else {
+            "Original"
+        };
+        ui.painter().text(
+            egui::pos2(split_x - 8.0, label_y),
+            egui::Align2::RIGHT_CENTER,
+            left_label,
+            label_font.clone(),
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
+        );
+        ui.painter().text(
+            egui::pos2(split_x + 8.0, label_y),
+            egui::Align2::LEFT_CENTER,
+            "Graded",
+            label_font,
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
+        );
+
+        // Small triangle arrows on the divider
+        let arrow_y = image_rect.center().y;
+        let tri_size = 6.0;
+        // Left arrow
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(split_x - 2.0, arrow_y - tri_size),
+                egui::pos2(split_x - 2.0 - tri_size, arrow_y),
+                egui::pos2(split_x - 2.0, arrow_y + tri_size),
+            ],
+            divider_color,
+            egui::Stroke::NONE,
+        ));
+        // Right arrow
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(split_x + 2.0, arrow_y - tri_size),
+                egui::pos2(split_x + 2.0 + tri_size, arrow_y),
+                egui::pos2(split_x + 2.0, arrow_y + tri_size),
+            ],
+            divider_color,
+            egui::Stroke::NONE,
+        ));
+
+        // Drag interaction on divider
+        let drag_rect = egui::Rect::from_center_size(
+            egui::pos2(split_x, image_rect.center().y),
+            egui::vec2(16.0, image_rect.height()),
+        );
+        let drag_resp = ui.allocate_rect(drag_rect, egui::Sense::drag());
+        if drag_resp.dragged() {
+            if let Some(pos) = drag_resp.interact_pointer_pos() {
+                state.split_position = ((pos.x - image_rect.min.x) / image_rect.width())
+                    .clamp(0.05, 0.95);
+            }
+        }
+        if drag_resp.hovered() || drag_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+    }
+
+    fn draw_overlay_badges(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        frame: &ViewerFrameState,
+    ) {
+        use crate::state::ViewerOverlay;
+        let image_rect = frame.image_rect;
+        let overlay_label = match state.viewer_overlay {
+            ViewerOverlay::Zebra => Some("ZEBRA"),
+            ViewerOverlay::FalseColor => Some("FALSE COLOR"),
+            ViewerOverlay::SafeAreas => Some("SAFE AREAS"),
+            ViewerOverlay::Grid => Some("GRID"),
+            ViewerOverlay::Checkerboard => None, // no badge for checkerboard
+            ViewerOverlay::None => None,
+        };
+        if let Some(label) = overlay_label {
+            let badge_pos = egui::pos2(image_rect.max.x - 8.0, image_rect.min.y + 12.0);
+            let badge_color = egui::Color32::from_rgb(0xff, 0x40, 0x40);
+            // Shadow
+            painter.text(
+                egui::pos2(badge_pos.x + 0.5, badge_pos.y + 0.5),
+                egui::Align2::RIGHT_CENTER,
+                label,
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgb(0x00, 0x00, 0x00),
+            );
+            painter.text(
+                badge_pos,
+                egui::Align2::RIGHT_CENTER,
+                label,
+                egui::FontId::proportional(10.0),
+                badge_color,
+            );
+        }
+    }
+
+    fn draw_safe_area_overlay(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let center = image_rect.center();
+        let w = image_rect.width();
+        let h = image_rect.height();
+        // 90% action safe
+        let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.action_safe_pct, h * state.viewer_prefs.action_safe_pct));
+        painter.rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
+        painter.text(
+            egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
+            egui::Align2::LEFT_TOP, "Action Safe",
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_rgba_premultiplied(255, 200, 0, 140),
+        );
+        // 80% title safe
+        let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.title_safe_pct, h * state.viewer_prefs.title_safe_pct));
+        painter.rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
+        painter.text(
+            egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
+            egui::Align2::LEFT_TOP, "Title Safe",
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_rgba_premultiplied(0, 180, 255, 140),
+        );
+    }
+
+    fn draw_grid_overlay(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let w = image_rect.width();
+        let h = image_rect.height();
+        let gc = state.viewer_prefs.grid_color;
+        let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], gc[3]));
+        // Rule of thirds: vertical lines
+        for i in 1..=2 {
+            let x = image_rect.left() + w * i as f32 / 3.0;
+            painter.line_segment([egui::pos2(x, image_rect.top()), egui::pos2(x, image_rect.bottom())], stroke);
+        }
+        // Rule of thirds: horizontal lines
+        for i in 1..=2 {
+            let y = image_rect.top() + h * i as f32 / 3.0;
+            painter.line_segment([egui::pos2(image_rect.left(), y), egui::pos2(image_rect.right(), y)], stroke);
+        }
+        // Center crosshair
+        let cx = image_rect.center().x;
+        let cy = image_rect.center().y;
+        let cross = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 100, 100, 100));
+        painter.line_segment([egui::pos2(cx - 12.0, cy), egui::pos2(cx + 12.0, cy)], cross);
+        painter.line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
+    }
+
+    fn draw_checkerboard_overlay(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let tile: f32 = state.viewer_prefs.checkerboard_tile_size;
+        let c1 = egui::Color32::from_rgb(80, 80, 80);
+        let c2 = egui::Color32::from_rgb(120, 120, 120);
+        let x0 = image_rect.left();
+        let y0 = image_rect.top();
+        let mut y = y0;
+        let mut row = 0;
+        while y < image_rect.bottom() {
+            let mut x = x0;
+            let mut col = 0;
+            while x < image_rect.right() {
+                let color = if (row + col) % 2 == 0 { c1 } else { c2 };
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x, y),
+                    egui::vec2(tile.min(image_rect.right() - x), tile.min(image_rect.bottom() - y)),
                 );
+                painter.rect_filled(r, 0.0, color);
+                x += tile;
+                col += 1;
+            }
+            y += tile;
+            row += 1;
+        }
+    }
+
+    fn draw_proxy_badge(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        theme: &KlippTheme,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        if state.showing_thumbnail_preview {
+            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
+            painter.text(
+                badge_pos,
+                egui::Align2::RIGHT_TOP,
+                "PREVIEW",
+                egui::FontId::monospace(9.0),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
+            );
+        } else if state.use_proxies && frame.current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
+            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
+            painter.text(
+                badge_pos,
+                egui::Align2::RIGHT_TOP,
+                "PROXY",
+                egui::FontId::monospace(9.0),
+                theme.accent,
+            );
+        }
+    }
+
+    fn draw_multicam_angle_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let bar_h = 32.0;
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(image_rect.left(), image_rect.bottom() + 4.0),
+            egui::vec2(image_rect.width(), bar_h),
+        );
+
+        let btn_w = (bar_rect.width() / state.multicam_angle_count as f32).min(80.0);
+        for i in 0..state.multicam_angle_count {
+            let is_active = i as u8 == state.multicam_active_angle;
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(bar_rect.left() + i as f32 * btn_w, bar_rect.top()),
+                egui::vec2(btn_w - 2.0, bar_h),
+            );
+            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let bg = if is_active {
+                egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber for active
+            } else if resp.hovered() {
+                egui::Color32::from_rgb(0x30, 0x30, 0x38)
+            } else {
+                egui::Color32::from_rgb(0x22, 0x22, 0x28)
+            };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            // CONTRAST RULE: dark text on amber background
+            let text_color = if is_active {
+                egui::Color32::from_rgb(0x1a, 0x1a, 0x1e)
+            } else {
+                egui::Color32::WHITE
+            };
+            ui.painter().text(
+                btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Angle {}", i + 1),
+                egui::FontId::proportional(12.0),
+                text_color,
+            );
+
+            if resp.clicked() {
+                cmds.push(AppCommand::SwitchMulticamAngle { angle: i + 1 });
+            }
+        }
+    }
+
+    fn handle_scope_cursor_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        // Scope cursor: read pointer position from raw input events (most reliable on Wayland)
+        for event in &ui.ctx().input(|i| i.events.clone()) {
+            if let egui::Event::PointerMoved(pos) = event {
+                if image_rect.contains(*pos) {
+                    state.viewer_pointer_pos = Some(*pos);
+                }
+            }
+        }
+        // Fallback: also check egui's pointer state
+        if state.viewer_pointer_pos.is_none() {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.latest_pos())) {
+                if image_rect.contains(pos) {
+                    state.viewer_pointer_pos = Some(pos);
+                }
             }
         }
 
-        // Draw title overlay (separate texture, alpha-blended on top of video)
-        // Show it even during text edit mode so style changes are visible in real-time
+        // Click-to-lock scope cursor: Ctrl+Click on viewer image
+        if state.scope_cursor_show || (state.scope_window.open
+            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor))
         {
-            if let Some(tex) = &self.title_overlay_texture {
-                ui.painter().image(
-                    tex.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+            let clicked = ui.input(|i| i.pointer.primary_clicked() && i.modifiers.ctrl);
+            if clicked {
+                if let Some(pos) = state.viewer_pointer_pos {
+                    // Toggle lock: if already locked at this position, unlock
+                    if state.scope_cursor_locked {
+                        state.scope_cursor_locked = false;
+                        state.scope_cursor_locked_pos = None;
+                        state.scope_cursor_locked_data = None;
+                    } else {
+                        state.scope_cursor_locked = true;
+                        state.scope_cursor_locked_pos = Some(pos);
+                        // Data will be computed by app.rs on next frame
+                    }
+                }
             }
         }
+    }
 
+    fn draw_scope_cursor(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        frame: &ViewerFrameState,
+    ) {
+        let image_rect = frame.image_rect;
+        let video_w = frame.video_w;
+        let video_h = frame.video_h;
+
+        // Draw sample box overlay on viewer when any scope cursor is active
+        let floating_cursor = state.scope_window.open
+            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor);
+        let bottom_cursor = state.scope_cursor_show && state.show_scopes;
+        let any_cursor = floating_cursor || bottom_cursor;
+
+        // Determine the effective sample position (live or locked)
+        let effective_pos = if state.scope_cursor_locked {
+            state.scope_cursor_locked_pos
+        } else {
+            state.viewer_pointer_pos
+        };
+
+        if let Some(pos) = effective_pos {
+            if any_cursor {
+                // Pick the largest sample radius across all active scope cursors
+                let mut sample_radius = if bottom_cursor { state.scope_cursor_sample_radius } else { 0 };
+                if floating_cursor {
+                    let win_r = state.scope_window.panes.iter()
+                        .filter(|p| p.settings.show_scope_cursor)
+                        .map(|p| p.settings.scope_cursor_sample_radius)
+                        .max()
+                        .unwrap_or(0);
+                    sample_radius = sample_radius.max(win_r);
+                }
+                let scale_x = image_rect.width() / video_w;
+                let scale_y = image_rect.height() / video_h;
+                let box_w = (sample_radius as f32 * 2.0 + 1.0) * scale_x;
+                let box_h = (sample_radius as f32 * 2.0 + 1.0) * scale_y;
+                let cursor_color = if state.scope_cursor_locked {
+                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 220)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200)
+                };
+                let box_rect = egui::Rect::from_center_size(pos, egui::vec2(box_w, box_h));
+                painter.rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
+                // Center crosshair
+                painter.line_segment(
+                    [egui::pos2(pos.x - 4.0, pos.y), egui::pos2(pos.x + 4.0, pos.y)],
+                    egui::Stroke::new(1.0, cursor_color),
+                );
+                painter.line_segment(
+                    [egui::pos2(pos.x, pos.y - 4.0), egui::pos2(pos.x, pos.y + 4.0)],
+                    egui::Stroke::new(1.0, cursor_color),
+                );
+                // "LOCKED" label
+                if state.scope_cursor_locked {
+                    painter.text(
+                        egui::pos2(pos.x, pos.y - 10.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        "LOCKED",
+                        egui::FontId::proportional(8.0),
+                        cursor_color,
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_text_edit_entry(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        frame: &ViewerFrameState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let image_rect = frame.image_rect;
         // ── Viewer text edit mode ──
         // Double-click on viewer while a title clip is selected → enter text edit mode
         if !state.viewer_text_edit {
@@ -391,8 +864,7 @@ impl ViewerPanel {
                 if is_title && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                     if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                         if image_rect.contains(pos) {
-                            state.viewer_text_edit = true;
-                            state.viewer_text_edit_clip = Some(clip_id);
+                            cmds.push(AppCommand::BeginTitleEdit { clip_id });
                             state.viewer_text_edit_request_focus = true;
                             state.viewer_char_positions.clear(); // trigger recompute
                             state.viewer_text_cursor = 0;
@@ -409,14 +881,21 @@ impl ViewerPanel {
                 }
             }
         }
+    }
 
+    fn handle_text_edit_exit(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let _ = ui;
         // Auto-exit text edit if the clip was deselected or changed
         if state.viewer_text_edit {
             let still_selected = state.viewer_text_edit_clip
                 .is_some_and(|cid| state.selected_clip == Some(cid));
             if !still_selected {
-                state.viewer_text_edit = false;
-                state.viewer_text_edit_clip = None;
+                cmds.push(AppCommand::EndTitleEdit);
                 state.viewer_text_edit_buffer.clear();
                 state.viewer_text_selection = None;
                 state.viewer_text_selection_locked = None;
@@ -425,7 +904,18 @@ impl ViewerPanel {
                 state.viewer_text_select_anchor = None;
             }
         }
+    }
 
+    fn draw_text_edit_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        frame: &ViewerFrameState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let image_rect = frame.image_rect;
+        let video_h = frame.video_h;
+        let viewer_rect = frame.viewer_rect;
         // ── Text editor: visible egui TextEdit overlaid on the viewer ──
         // Uses egui's native TextEdit for ALL text operations (typing, cursor,
         // selection, copy/paste, undo) — no custom event handling needed.
@@ -581,8 +1071,7 @@ impl ViewerPanel {
                 && ui.input(|i| i.pointer.interact_pos())
                     .is_some_and(|pos| !image_rect.contains(pos) && viewer_rect.contains(pos));
             if exit_escape || click_outside_in_viewer {
-                state.viewer_text_edit = false;
-                state.viewer_text_edit_clip = None;
+                cmds.push(AppCommand::EndTitleEdit);
                 state.viewer_text_edit_buffer.clear();
                 state.viewer_text_selection = None;
                 state.viewer_text_selection_locked = None;
@@ -591,6 +1080,57 @@ impl ViewerPanel {
                 state.viewer_text_select_anchor = None;
             }
         }
+    }
+
+    fn show_program_viewer(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        viewer_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let _ = cmds;
+
+        let lb_h = viewer_rect.height() * 0.08;
+        let frame = match self.compute_video_layout(ui, state, viewer_rect) {
+            Some(f) => f,
+            None => return,
+        };
+        let image_rect = frame.image_rect;
+        let video_w = frame.video_w;
+        let video_h = frame.video_h;
+
+        if frame.grade_still_active {
+            self.draw_grade_still_split(ui, state, &frame);
+        } else {
+            // Normal: draw full video frame
+            if let Some(tex) = &self.video_texture {
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+
+        // Draw title overlay (separate texture, alpha-blended on top of video)
+        // Show it even during text edit mode so style changes are visible in real-time
+        {
+            if let Some(tex) = &self.title_overlay_texture {
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+
+        self.handle_text_edit_entry(ui, state, &frame, cmds);
+        self.handle_text_edit_exit(ui, state, cmds);
+        self.draw_text_edit_widget(ui, state, &frame, cmds);
 
         // ── On-screen transform controls ──
         // Suppress transform controls during text edit mode
@@ -599,124 +1139,14 @@ impl ViewerPanel {
         }
 
         // ── Before/After or Grade Still split divider ──
-        let show_split_divider = state.before_after_active || grade_still_active;
+        let show_split_divider = state.before_after_active || frame.grade_still_active;
         if show_split_divider {
-            let split_x = image_rect.min.x + state.split_position * image_rect.width();
-            let divider_color = if grade_still_active {
-                egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
-            } else {
-                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
-            };
-
-            // Vertical divider line
-            ui.painter().vline(
-                split_x,
-                image_rect.y_range(),
-                egui::Stroke::new(2.0, divider_color),
-            );
-
-            // Labels
-            let label_font = egui::FontId::proportional(10.0);
-            let label_y = image_rect.min.y + 14.0;
-            let left_label = if grade_still_active {
-                let idx = state.active_grade_still.unwrap();
-                state.grade_stills[idx].name.as_str()
-            } else {
-                "Original"
-            };
-            ui.painter().text(
-                egui::pos2(split_x - 8.0, label_y),
-                egui::Align2::RIGHT_CENTER,
-                left_label,
-                label_font.clone(),
-                egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
-            );
-            ui.painter().text(
-                egui::pos2(split_x + 8.0, label_y),
-                egui::Align2::LEFT_CENTER,
-                "Graded",
-                label_font,
-                egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
-            );
-
-            // Small triangle arrows on the divider
-            let arrow_y = image_rect.center().y;
-            let tri_size = 6.0;
-            // Left arrow
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(split_x - 2.0, arrow_y - tri_size),
-                    egui::pos2(split_x - 2.0 - tri_size, arrow_y),
-                    egui::pos2(split_x - 2.0, arrow_y + tri_size),
-                ],
-                divider_color,
-                egui::Stroke::NONE,
-            ));
-            // Right arrow
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(split_x + 2.0, arrow_y - tri_size),
-                    egui::pos2(split_x + 2.0 + tri_size, arrow_y),
-                    egui::pos2(split_x + 2.0, arrow_y + tri_size),
-                ],
-                divider_color,
-                egui::Stroke::NONE,
-            ));
-
-            // Drag interaction on divider
-            let drag_rect = egui::Rect::from_center_size(
-                egui::pos2(split_x, image_rect.center().y),
-                egui::vec2(16.0, image_rect.height()),
-            );
-            let drag_resp = ui.allocate_rect(drag_rect, egui::Sense::drag());
-            if drag_resp.dragged() {
-                if let Some(pos) = drag_resp.interact_pointer_pos() {
-                    state.split_position = ((pos.x - image_rect.min.x) / image_rect.width())
-                        .clamp(0.05, 0.95);
-                }
-            }
-            if drag_resp.hovered() || drag_resp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
+            self.draw_split_divider(ui, state, &frame);
         }
 
-        // ── Letterbox bars (drawn ON TOP of video frame) ──
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(viewer_rect.min, egui::vec2(viewer_rect.width(), lb_h)),
-            0.0, egui::Color32::BLACK,
-        );
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(viewer_rect.min.x, viewer_rect.max.y - lb_h),
-                egui::vec2(viewer_rect.width(), lb_h),
-            ),
-            0.0, egui::Color32::BLACK,
-        );
+        self.draw_letterbox(ui, viewer_rect, lb_h);
 
-        // ── Eyedropper interaction (White Balance or Qualifier) ──
-        if state.eyedropper_mode != crate::state::EyedropperMode::None {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-            let eyedropper_resp = ui.allocate_rect(image_rect, egui::Sense::click());
-            if eyedropper_resp.clicked() {
-                if let Some(pos) = eyedropper_resp.interact_pointer_pos() {
-                    let nx = ((pos.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
-                    let ny = ((pos.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
-                    match state.eyedropper_mode {
-                        crate::state::EyedropperMode::WhiteBalance => {
-                            state.wb_sample_request = Some((nx, ny));
-                        }
-                        crate::state::EyedropperMode::Qualifier => {
-                            state.qualifier_sample_request = Some((nx, ny));
-                        }
-                        crate::state::EyedropperMode::None => {}
-                    }
-                    state.eyedropper_mode = crate::state::EyedropperMode::None;
-                }
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                state.eyedropper_mode = crate::state::EyedropperMode::None;
-            }
-        }
+        self.handle_eyedropper_click(ui, state, image_rect, cmds);
 
         // ── Interactive mask handles on viewer ──
         // Draw and interact with masks from the selected node in the clip's node graph.
@@ -726,178 +1156,31 @@ impl ViewerPanel {
         self.draw_track_points(ui, state, image_rect, cmds);
 
         // ── Overlay mode badge (top-right of video) ──
-        {
-            use crate::state::ViewerOverlay;
-            let overlay_label = match state.viewer_overlay {
-                ViewerOverlay::Zebra => Some("ZEBRA"),
-                ViewerOverlay::FalseColor => Some("FALSE COLOR"),
-                ViewerOverlay::SafeAreas => Some("SAFE AREAS"),
-                ViewerOverlay::Grid => Some("GRID"),
-                ViewerOverlay::Checkerboard => None, // no badge for checkerboard
-                ViewerOverlay::None => None,
-            };
-            if let Some(label) = overlay_label {
-                let badge_pos = egui::pos2(image_rect.max.x - 8.0, image_rect.min.y + 12.0);
-                let badge_color = egui::Color32::from_rgb(0xff, 0x40, 0x40);
-                // Shadow
-                ui.painter().text(
-                    egui::pos2(badge_pos.x + 0.5, badge_pos.y + 0.5),
-                    egui::Align2::RIGHT_CENTER,
-                    label,
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::from_rgb(0x00, 0x00, 0x00),
-                );
-                ui.painter().text(
-                    badge_pos,
-                    egui::Align2::RIGHT_CENTER,
-                    label,
-                    egui::FontId::proportional(10.0),
-                    badge_color,
-                );
-            }
-        }
+        self.draw_overlay_badges(ui.painter(), state, &frame);
 
         // Safe area overlay: title safe (80%) and action safe (90%)
         if matches!(state.viewer_overlay, crate::state::ViewerOverlay::SafeAreas) {
-            let center = image_rect.center();
-            let w = image_rect.width();
-            let h = image_rect.height();
-            // 90% action safe
-            let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.action_safe_pct, h * state.viewer_prefs.action_safe_pct));
-            ui.painter().rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
-            ui.painter().text(
-                egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
-                egui::Align2::LEFT_TOP, "Action Safe",
-                egui::FontId::proportional(9.0),
-                egui::Color32::from_rgba_premultiplied(255, 200, 0, 140),
-            );
-            // 80% title safe
-            let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.title_safe_pct, h * state.viewer_prefs.title_safe_pct));
-            ui.painter().rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
-            ui.painter().text(
-                egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
-                egui::Align2::LEFT_TOP, "Title Safe",
-                egui::FontId::proportional(9.0),
-                egui::Color32::from_rgba_premultiplied(0, 180, 255, 140),
-            );
+            self.draw_safe_area_overlay(ui.painter(), state, &frame);
         }
 
         // Grid overlay: rule of thirds + center crosshair
         if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Grid) {
-            let w = image_rect.width();
-            let h = image_rect.height();
-            let gc = state.viewer_prefs.grid_color;
-            let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], gc[3]));
-            // Rule of thirds: vertical lines
-            for i in 1..=2 {
-                let x = image_rect.left() + w * i as f32 / 3.0;
-                ui.painter().line_segment([egui::pos2(x, image_rect.top()), egui::pos2(x, image_rect.bottom())], stroke);
-            }
-            // Rule of thirds: horizontal lines
-            for i in 1..=2 {
-                let y = image_rect.top() + h * i as f32 / 3.0;
-                ui.painter().line_segment([egui::pos2(image_rect.left(), y), egui::pos2(image_rect.right(), y)], stroke);
-            }
-            // Center crosshair
-            let cx = image_rect.center().x;
-            let cy = image_rect.center().y;
-            let cross = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 100, 100, 100));
-            ui.painter().line_segment([egui::pos2(cx - 12.0, cy), egui::pos2(cx + 12.0, cy)], cross);
-            ui.painter().line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
+            self.draw_grid_overlay(ui.painter(), state, &frame);
         }
 
         // Checkerboard transparency overlay (drawn behind video, replaces black background)
         if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Checkerboard) {
-            let tile: f32 = state.viewer_prefs.checkerboard_tile_size;
-            let c1 = egui::Color32::from_rgb(80, 80, 80);
-            let c2 = egui::Color32::from_rgb(120, 120, 120);
-            let x0 = image_rect.left();
-            let y0 = image_rect.top();
-            let mut y = y0;
-            let mut row = 0;
-            while y < image_rect.bottom() {
-                let mut x = x0;
-                let mut col = 0;
-                while x < image_rect.right() {
-                    let color = if (row + col) % 2 == 0 { c1 } else { c2 };
-                    let r = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(tile.min(image_rect.right() - x), tile.min(image_rect.bottom() - y)),
-                    );
-                    ui.painter().rect_filled(r, 0.0, color);
-                    x += tile;
-                    col += 1;
-                }
-                y += tile;
-                row += 1;
-            }
+            self.draw_checkerboard_overlay(ui.painter(), state, &frame);
         }
 
         // Timecode + zoom now shown in playbar below scrub bar
 
         // Proxy badge
-        if state.showing_thumbnail_preview {
-            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
-            ui.painter().text(
-                badge_pos,
-                egui::Align2::RIGHT_TOP,
-                "PREVIEW",
-                egui::FontId::monospace(9.0),
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
-            );
-        } else if state.use_proxies && current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
-            let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
-            ui.painter().text(
-                badge_pos,
-                egui::Align2::RIGHT_TOP,
-                "PROXY",
-                egui::FontId::monospace(9.0),
-                theme.accent,
-            );
-        }
+        self.draw_proxy_badge(ui.painter(), state, theme, &frame);
 
         // ── Multicam angle bar (shown below the viewer when multicam is active) ──
         if state.multicam_viewer_active && state.multicam_angle_count > 0 {
-            let bar_h = 32.0;
-            let bar_rect = egui::Rect::from_min_size(
-                egui::pos2(image_rect.left(), image_rect.bottom() + 4.0),
-                egui::vec2(image_rect.width(), bar_h),
-            );
-
-            let btn_w = (bar_rect.width() / state.multicam_angle_count as f32).min(80.0);
-            for i in 0..state.multicam_angle_count {
-                let is_active = i as u8 == state.multicam_active_angle;
-                let btn_rect = egui::Rect::from_min_size(
-                    egui::pos2(bar_rect.left() + i as f32 * btn_w, bar_rect.top()),
-                    egui::vec2(btn_w - 2.0, bar_h),
-                );
-                let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-                let bg = if is_active {
-                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber for active
-                } else if resp.hovered() {
-                    egui::Color32::from_rgb(0x30, 0x30, 0x38)
-                } else {
-                    egui::Color32::from_rgb(0x22, 0x22, 0x28)
-                };
-                ui.painter().rect_filled(btn_rect, 4.0, bg);
-                // CONTRAST RULE: dark text on amber background
-                let text_color = if is_active {
-                    egui::Color32::from_rgb(0x1a, 0x1a, 0x1e)
-                } else {
-                    egui::Color32::WHITE
-                };
-                ui.painter().text(
-                    btn_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("Angle {}", i + 1),
-                    egui::FontId::proportional(12.0),
-                    text_color,
-                );
-
-                if resp.clicked() {
-                    cmds.push(AppCommand::SwitchMulticamAngle { angle: i + 1 });
-                }
-            }
+            self.draw_multicam_angle_bar(ui, state, cmds, &frame);
         }
 
         // Performance overlay
@@ -905,101 +1188,8 @@ impl ViewerPanel {
             self.draw_perf_overlay(ui, state, image_rect);
         }
 
-        // Scope cursor: read pointer position from raw input events (most reliable on Wayland)
-        for event in &ui.ctx().input(|i| i.events.clone()) {
-            if let egui::Event::PointerMoved(pos) = event {
-                if image_rect.contains(*pos) {
-                    state.viewer_pointer_pos = Some(*pos);
-                }
-            }
-        }
-        // Fallback: also check egui's pointer state
-        if state.viewer_pointer_pos.is_none() {
-            if let Some(pos) = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.latest_pos())) {
-                if image_rect.contains(pos) {
-                    state.viewer_pointer_pos = Some(pos);
-                }
-            }
-        }
-
-        // Click-to-lock scope cursor: Ctrl+Click on viewer image
-        if state.scope_cursor_show || (state.scope_window.open
-            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor))
-        {
-            let clicked = ui.input(|i| i.pointer.primary_clicked() && i.modifiers.ctrl);
-            if clicked {
-                if let Some(pos) = state.viewer_pointer_pos {
-                    // Toggle lock: if already locked at this position, unlock
-                    if state.scope_cursor_locked {
-                        state.scope_cursor_locked = false;
-                        state.scope_cursor_locked_pos = None;
-                        state.scope_cursor_locked_data = None;
-                    } else {
-                        state.scope_cursor_locked = true;
-                        state.scope_cursor_locked_pos = Some(pos);
-                        // Data will be computed by app.rs on next frame
-                    }
-                }
-            }
-        }
-
-        // Draw sample box overlay on viewer when any scope cursor is active
-        let floating_cursor = state.scope_window.open
-            && state.scope_window.panes.iter().any(|p| p.settings.show_scope_cursor);
-        let bottom_cursor = state.scope_cursor_show && state.show_scopes;
-        let any_cursor = floating_cursor || bottom_cursor;
-
-        // Determine the effective sample position (live or locked)
-        let effective_pos = if state.scope_cursor_locked {
-            state.scope_cursor_locked_pos
-        } else {
-            state.viewer_pointer_pos
-        };
-
-        if let Some(pos) = effective_pos {
-            if any_cursor {
-                // Pick the largest sample radius across all active scope cursors
-                let mut sample_radius = if bottom_cursor { state.scope_cursor_sample_radius } else { 0 };
-                if floating_cursor {
-                    let win_r = state.scope_window.panes.iter()
-                        .filter(|p| p.settings.show_scope_cursor)
-                        .map(|p| p.settings.scope_cursor_sample_radius)
-                        .max()
-                        .unwrap_or(0);
-                    sample_radius = sample_radius.max(win_r);
-                }
-                let scale_x = image_rect.width() / video_w;
-                let scale_y = image_rect.height() / video_h;
-                let box_w = (sample_radius as f32 * 2.0 + 1.0) * scale_x;
-                let box_h = (sample_radius as f32 * 2.0 + 1.0) * scale_y;
-                let cursor_color = if state.scope_cursor_locked {
-                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 220)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200)
-                };
-                let box_rect = egui::Rect::from_center_size(pos, egui::vec2(box_w, box_h));
-                ui.painter().rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
-                // Center crosshair
-                ui.painter().line_segment(
-                    [egui::pos2(pos.x - 4.0, pos.y), egui::pos2(pos.x + 4.0, pos.y)],
-                    egui::Stroke::new(1.0, cursor_color),
-                );
-                ui.painter().line_segment(
-                    [egui::pos2(pos.x, pos.y - 4.0), egui::pos2(pos.x, pos.y + 4.0)],
-                    egui::Stroke::new(1.0, cursor_color),
-                );
-                // "LOCKED" label
-                if state.scope_cursor_locked {
-                    ui.painter().text(
-                        egui::pos2(pos.x, pos.y - 10.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        "LOCKED",
-                        egui::FontId::proportional(8.0),
-                        cursor_color,
-                    );
-                }
-            }
-        }
+        self.handle_scope_cursor_input(ui, state, &frame);
+        self.draw_scope_cursor(ui.painter(), state, &frame);
     }
 
     fn draw_scrub_bar(
@@ -1223,9 +1413,7 @@ impl ViewerPanel {
         let mut slider_ui = ui.new_child(egui::UiBuilder::new().max_rect(slider_rect));
         let slider = egui::Slider::new(&mut vol, 0.0..=1.3).show_value(false);
         if slider_ui.add(slider).changed() {
-            state.master_volume = vol;
-            let effective = if state.master_muted { 0.0 } else { vol };
-            cmds.push(AppCommand::SetMasterVolume(effective));
+            cmds.push(AppCommand::SetMasterVolume(vol));
         }
 
         // Mute button
@@ -1244,9 +1432,8 @@ impl ViewerPanel {
         let mute_icon_rect = egui::Rect::from_center_size(mute_rect.center(), egui::vec2(14.0, 14.0));
         mute_icon.image(14.0).tint(mute_color).paint_at(ui, mute_icon_rect);
         if mute_resp.clicked() {
-            state.master_muted = !state.master_muted;
-            let effective = if state.master_muted { 0.0 } else { state.master_volume };
-            cmds.push(AppCommand::SetMasterVolume(effective));
+            let old = state.master_muted;
+            cmds.push(AppCommand::SetMasterMute(!old));
         }
 
         // Transform controls toggle button
