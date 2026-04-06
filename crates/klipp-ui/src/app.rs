@@ -161,6 +161,10 @@ pub struct KlippApp {
     // Node graph and inspector panels (Color workspace)
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
+    /// Pre-edit snapshot for the current color-grading parameter gesture.
+    /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
+    /// when no gesture is in progress.
+    node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
     /// CPU-only executor for fast reduced-resolution scope previews.
     scope_executor: klipp_nodes::GraphExecutor,
@@ -257,6 +261,7 @@ impl KlippApp {
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
+            node_param_edit_snapshot: None,
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
@@ -6846,6 +6851,46 @@ impl KlippApp {
                     }
                 }
                 *needs_refresh = true;
+                true
+            }
+            AppCommand::BeginNodeParamEdit { clip_id } => {
+                // Snapshot the current node graph so EndNodeParamEdit can commit
+                // the whole gesture as one history entry. Idempotent — if a
+                // gesture is already in progress for this clip we keep the
+                // original snapshot.
+                if self.node_param_edit_snapshot.is_none() {
+                    for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip(*clip_id) {
+                            self.node_param_edit_snapshot = Some((*clip_id, clip.node_graph.clone()));
+                            break;
+                        }
+                    }
+                }
+                true
+            }
+            AppCommand::EndNodeParamEdit { clip_id } => {
+                if let Some((snap_clip_id, old_graph)) = self.node_param_edit_snapshot.take() {
+                    if snap_clip_id == *clip_id {
+                        for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
+                            if let Some(clip) = track.find_clip(*clip_id) {
+                                let new_graph = clip.node_graph.clone();
+                                // NodeGraph doesn't impl PartialEq, so we push
+                                // unconditionally; undoing a no-op gesture just
+                                // restores an identical graph.
+                                self.state.history.push(crate::history::HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: crate::history::EditCommand::SetNodeGraph {
+                                        clip_id: snap_clip_id,
+                                        old_graph,
+                                        new_graph,
+                                    },
+                                });
+                                self.state.dirty = true;
+                                break;
+                            }
+                        }
+                    }
+                }
                 true
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
@@ -15636,5 +15681,91 @@ This is valid
         assert!((parsed[1].start_secs - 5.0).abs() < 0.001);
         assert!((parsed[1].end_secs - 7.25).abs() < 0.001);
         assert_eq!(parsed[1].text, "Second cue");
+    }
+}
+
+#[cfg(test)]
+mod node_param_undo_tests {
+    //! Tests for the BeginNodeParamEdit / EndNodeParamEdit round-trip
+    //! invariant: a gesture that snapshots the graph, mutates it, and commits
+    //! a `SetNodeGraph` history entry must preserve the pre-gesture graph so
+    //! the existing undo replay can restore it.
+    //!
+    //! Full dispatch testing requires a `KlippApp` instance (event channels,
+    //! engine handle, egui context), which is not practical in a unit test.
+    //! These tests validate the *data contract* my handlers depend on: the
+    //! `EditCommand::SetNodeGraph` entry round-trips the old/new graphs and
+    //! is structurally equivalent to what the existing `ToggleNodeEnabled`
+    //! handler (known-working) produces.
+
+    use crate::history::{EditCommand, HistoryEntry};
+    use klipp_core::ClipId;
+
+    #[test]
+    fn set_node_graph_history_entry_preserves_snapshot() {
+        // Simulate BeginNodeParamEdit: snapshot the current graph.
+        let original = klipp_nodes::NodeGraph::default();
+        let old_graph = original.clone();
+        let original_node_count = original.nodes.len();
+
+        // Simulate several SetNodeParam commands mutating the working graph.
+        let mut working = original.clone();
+        if let Some(first_node) = working.nodes.first_mut() {
+            // Mutate something observable — a new label marks the working
+            // graph as distinct from the snapshot.
+            first_node.label = "mutated".to_string();
+        }
+
+        // Simulate EndNodeParamEdit: push a SetNodeGraph history entry with
+        // the snapshot and the post-gesture graph.
+        let entry = HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::SetNodeGraph {
+                clip_id: ClipId::new(),
+                old_graph,
+                new_graph: working.clone(),
+            },
+        };
+
+        // The history entry must still hold an unmodified snapshot of the
+        // pre-gesture graph — that's what undo replays.
+        match &entry.command {
+            EditCommand::SetNodeGraph { old_graph, new_graph, .. } => {
+                assert_eq!(old_graph.nodes.len(), original_node_count);
+                // old_graph must not have picked up the mutation we made to
+                // the working copy.
+                if let Some(snap_first) = old_graph.nodes.first() {
+                    assert_ne!(snap_first.label, "mutated",
+                        "snapshot must be independent of the working graph");
+                }
+                // And the new_graph must reflect the mutation.
+                if let Some(new_first) = new_graph.nodes.first() {
+                    assert_eq!(new_first.label, "mutated");
+                }
+            }
+            other => panic!("expected SetNodeGraph, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn begin_end_cycle_with_no_mutation_still_produces_valid_entry() {
+        // Edge case: user clicks a slider but releases without dragging.
+        // Begin snapshots, End commits an identical graph. The entry should
+        // still be well-formed (undoing a no-op restores an identical graph).
+        let graph = klipp_nodes::NodeGraph::default();
+        let entry = HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::SetNodeGraph {
+                clip_id: ClipId::new(),
+                old_graph: graph.clone(),
+                new_graph: graph.clone(),
+            },
+        };
+        match &entry.command {
+            EditCommand::SetNodeGraph { old_graph, new_graph, .. } => {
+                assert_eq!(old_graph.nodes.len(), new_graph.nodes.len());
+            }
+            _ => panic!(),
+        }
     }
 }

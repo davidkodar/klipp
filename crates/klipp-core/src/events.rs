@@ -501,6 +501,14 @@ pub enum AppCommand {
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
     SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
+    /// Called when the user starts dragging a color-grading parameter
+    /// (color wheel, sat/bri slider, scrubby slider, etc.). Snapshots the
+    /// current node graph so the gesture can be committed as one undo entry.
+    BeginNodeParamEdit { clip_id: ClipId },
+    /// Called when the user releases a color-grading parameter drag. Commits
+    /// the snapshot taken at the matching BeginNodeParamEdit as a single
+    /// `SetNodeGraph` history entry covering the whole gesture.
+    EndNodeParamEdit { clip_id: ClipId },
     SetNodeCurves { clip_id: ClipId, node_id: uuid::Uuid, curves: crate::color_grade::CurveSet },
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
