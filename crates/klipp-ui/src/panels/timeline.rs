@@ -6706,1231 +6706,27 @@ impl TimelinePanel {
 
             let is_selected = state.selected_clip == Some(clip.id);
             let is_multi_selected = state.selected_clips.contains(&clip.id);
-            let is_hovered = state.hovered_clip == Some(clip.id);
             let is_title = clip.title_data().is_some();
-            let is_disabled = !clip.enabled;
             let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
             let is_being_dragged = self.dragging_clip.as_ref()
                 .is_some_and(|d| d.clip_id == clip.id);
 
-            // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
-            let theme_colors = crate::theme::KlippTheme::default();
-            let role_color = theme_colors.clip_role_color(clip.role);
-            let use_role_color = match track_kind {
-                TrackKind::Audio => true,
-                _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
-            };
-            let base_color = if is_title {
-                egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
-            } else if is_offline {
-                egui::Color32::from_rgb(58, 32, 32)
-            } else if use_role_color {
-                egui::Color32::from_rgb(
-                    role_color.r().saturating_sub(10),
-                    role_color.g().saturating_sub(10),
-                    role_color.b().saturating_sub(10),
-                )
-            } else {
-                clip_color(clip_index)
-            };
-            let bright_color = if is_title {
-                egui::Color32::from_rgb(90, 65, 130)
-            } else if is_offline {
-                egui::Color32::from_rgb(80, 45, 45)
-            } else if use_role_color {
-                egui::Color32::from_rgb(
-                    role_color.r().saturating_add(20),
-                    role_color.g().saturating_add(20),
-                    role_color.b().saturating_add(20),
-                )
-            } else {
-                clip_color_bright(clip_index)
-            };
-
-            let (fill, border_color, border_width) = if is_being_dragged {
-                // Semi-transparent when being dragged so clips underneath are visible
-                let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
-                (f, egui::Color32::from_rgb(232, 160, 32), 2.0)
-            } else if is_selected {
-                (bright_color, egui::Color32::from_rgb(120, 160, 240), 2.0)
-            } else if is_multi_selected {
-                (bright_color, egui::Color32::from_rgb(80, 130, 220), 1.5)
-            } else if is_hovered {
-                (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
-            } else {
-                (base_color, bright_color, 1.0)
-            };
-
-            // Dim disabled clips
-            let (fill, border_color) = if is_disabled {
-                let dim = |c: egui::Color32| {
-                    egui::Color32::from_rgba_unmultiplied(
-                        c.r() / 2, c.g() / 2, c.b() / 2, 160,
-                    )
-                };
-                (dim(fill), dim(border_color))
-            } else {
-                (fill, border_color)
-            };
+            let (fill, border_color, border_width, bright_color) =
+                self.compute_clip_colors(clip, clip_index, track_kind, state);
 
             self.draw_filmstrip_background(painter, clip_rect, clip, state, cmds, track_kind, content_rect, fill, is_being_dragged, clip_index);
 
             self.draw_audio_waveform(painter, clip_rect, clip, state, track_kind, bright_color);
 
-            // ── Audio parameter rubber band overlay ──────────────────────
-            // Drawn on audio track clips. Displays the parameter selected by rubber_band_param.
-            // For linked audio clips, reads keyframes from the linked video clip.
-            if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() && state.audio_show_rubber_band {
-                let rb_param = state.rubber_band_param;
-
-                // Resolve the clip that holds the keyframes (may be linked video clip)
-                // Clone keyframes to avoid borrow conflict with state mutation for drag interaction
-                let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve, klipp_timeline::ChannelConfig) {
-                    let (static_val, kfs) = match rb_param {
-                        klipp_core::AudioParam::Volume => (c.volume, c.volume_keyframes.clone()),
-                        klipp_core::AudioParam::Pan => (c.pan, c.pan_keyframes.clone()),
-                        klipp_core::AudioParam::Gain => (c.gain, c.gain_keyframes.clone()),
-                    };
-                    (static_val, kfs, c.id, c.gain, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config)
-                };
-
-                let (kf_static_val, kf_keyframes, kf_clip_id, kf_gain, kf_pan, kf_fade_in, kf_fade_out, kf_fade_in_curve, kf_fade_out_curve, kf_channel_config) = if let Some(linked_id) = clip.linked_clip_id {
-                    let mut found = resolve_clip(clip);
-                    for t in &state.sequence().tracks {
-                        if let Some(vc) = t.find_clip(linked_id) {
-                            found = resolve_clip(vc);
-                            break;
-                        }
-                    }
-                    found
-                } else {
-                    resolve_clip(clip)
-                };
-                // Also capture static volume for the flat-line drag command (always volume)
-                let kf_volume = if let Some(linked_id) = clip.linked_clip_id {
-                    let mut v = clip.volume;
-                    for t in &state.sequence().tracks {
-                        if let Some(vc) = t.find_clip(linked_id) { v = vc.volume; break; }
-                    }
-                    v
-                } else {
-                    clip.volume
-                };
-                let kf_keyframes = &kf_keyframes[..];
-
-
-                // Auto-scale Y axis to actual keyframe values (with padding),
-                // matching the video rubber band approach so small changes are visible.
-                let mut val_min = kf_static_val;
-                let mut val_max = kf_static_val;
-                for kf in kf_keyframes.iter() {
-                    if kf.value < val_min { val_min = kf.value; }
-                    if kf.value > val_max { val_max = kf.value; }
-                }
-                // Add 20% padding on each side so curves don't touch edges
-                let val_span = (val_max - val_min).max(0.01);
-                let val_padding = val_span * 0.2;
-                let param_min = val_min - val_padding;
-                let param_range = val_span + val_padding * 2.0;
-
-                let clip_dur_secs = clip.duration().to_secs_f64();
-                let clip_painter = painter.with_clip_rect(clip_rect);
-
-                // Map param value to Y position within clip rect
-                // min = bottom, max = top
-                let value_to_y = |val: f32| -> f32 {
-                    let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
-                    clip_rect.bottom() - normalized * clip_rect.height()
-                };
-
-                // Map time (relative to clip start) to X position
-                let time_to_x = |t: f64| -> f32 {
-                    let frac = if clip_dur_secs > 0.0 { (t / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                    clip_rect.left() + frac as f32 * clip_rect.width()
-                };
-
-                // Color per param: amber=Volume, cyan=Pan, green=Gain
-                let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, _diamond_stroke_color) = match rb_param {
-                    klipp_core::AudioParam::Volume => (
-                        egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
-                        egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140),
-                        egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
-                        egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
-                        egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240),
-                    ),
-                    klipp_core::AudioParam::Pan => (
-                        egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
-                        egui::Color32::from_rgba_unmultiplied(50, 180, 240, 140),
-                        egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
-                        egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
-                        egui::Color32::from_rgba_unmultiplied(30, 150, 200, 240),
-                    ),
-                    klipp_core::AudioParam::Gain => (
-                        egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
-                        egui::Color32::from_rgba_unmultiplied(50, 200, 90, 140),
-                        egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
-                        egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
-                        egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
-                    ),
-                };
-                let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
-                let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
-                let _diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
-                let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
-                let rb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
-                let rb_shadow_width = rb_line_width + 1.0;
-
-                // Draw param pill badge at top-left of clip (below clip name area)
-                let param_label = match rb_param {
-                    klipp_core::AudioParam::Volume => "Vol",
-                    klipp_core::AudioParam::Pan => "Pan",
-                    klipp_core::AudioParam::Gain => "Gain",
-                };
-                // Measure text width to size the pill dynamically
-                let pill_font = egui::FontId::proportional(9.0);
-                let pill_text_galley = ui.painter().layout_no_wrap(param_label.to_string(), pill_font.clone(), egui::Color32::WHITE);
-                let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
-                let pill_h = 14.0;
-                let pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0);
-                let pill_rect = egui::Rect::from_min_size(pill_pos, egui::vec2(pill_w, pill_h));
-                // Only draw and handle clicks if clip is wide enough
-                if clip_rect.width() > 30.0 {
-                    // Background: rubber band color at ~40% opacity
-                    let pill_bg = match rb_param {
-                        klipp_core::AudioParam::Volume => egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100),
-                        klipp_core::AudioParam::Pan => egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100),
-                        klipp_core::AudioParam::Gain => egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100),
-                    };
-                    clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
-                    clip_painter.text(
-                        pill_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        param_label,
-                        pill_font,
-                        egui::Color32::WHITE,
-                    );
-                    // Click pill to cycle param
-                    if interactive {
-                        if let Some(pos) = pointer_pos {
-                            if pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
-                                state.rubber_band_param = match rb_param {
-                                    klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
-                                    klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
-                                    klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
-                                };
-                            }
-                        }
-                    }
-                }
-
-                if kf_keyframes.is_empty() {
-                    // No keyframes: draw a single horizontal line at the static value
-                    let y = value_to_y(kf_static_val);
-                    // Shadow line behind for contrast
-                    clip_painter.line_segment(
-                        [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(rb_shadow_width, shadow_color),
-                    );
-                    clip_painter.line_segment(
-                        [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                        egui::Stroke::new(rb_line_width, active_line_color),
-                    );
-                } else {
-                    // Draw curve by densely sampling evaluate() — correctly renders
-                    // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
-                    let clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
-
-                    // Dense sampling: evaluate the keyframe curve at many points across the clip
-                    let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
-                    let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
-                    for si in 0..=num_samples {
-                        let t_frac = si as f64 / num_samples as f64;
-                        let t_secs = t_frac * clip_time_range;
-                        let val = klipp_core::keyframe::evaluate(kf_keyframes, t_secs, kf_static_val);
-                        let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
-                        let y = value_to_y(val);
-                        curve_pts.push(egui::pos2(x, y));
-                    }
-
-                    // Draw shadow pass then color pass
-                    for i in 0..curve_pts.len().saturating_sub(1) {
-                        clip_painter.line_segment(
-                            [curve_pts[i], curve_pts[i + 1]],
-                            egui::Stroke::new(rb_shadow_width, shadow_color),
-                        );
-                    }
-                    for i in 0..curve_pts.len().saturating_sub(1) {
-                        clip_painter.line_segment(
-                            [curve_pts[i], curve_pts[i + 1]],
-                            egui::Stroke::new(rb_line_width, active_line_color),
-                        );
-                    }
-
-                    // Draw diamond markers at each keyframe
-                    // Check if pointer is near any keyframe for hover effect
-                    let hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
-                        if !clip_rect.contains(pos) { return None; }
-                        let mut best: Option<(usize, f32)> = None;
-                        for (ki, kf) in kf_keyframes.iter().enumerate() {
-                            if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
-                                let kx = time_to_x(kf.time_secs);
-                                let ky = value_to_y(kf.value);
-                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                if dist < 10.0
-                                    && best.is_none_or(|(_, bd)| dist < bd) {
-                                        best = Some((ki, dist));
-                                    }
-                            }
-                        }
-                        best.map(|(i, _)| i)
-                    });
-
-                    for (ki, kf) in kf_keyframes.iter().enumerate() {
-                        if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
-                            let cx = time_to_x(kf.time_secs);
-                            let cy = value_to_y(kf.value);
-                            let is_hovered = hovered_kf_idx == Some(ki);
-                            let is_kf_selected = state.selected_keyframe.as_ref().is_some_and(|sk| {
-                                sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param) && sk.keyframe_index == ki
-                            });
-                            let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
-                            // Dark outline diamond behind for contrast
-                            let outline_d = d + 1.5;
-                            let outline_diamond = vec![
-                                egui::pos2(cx, cy - outline_d),
-                                egui::pos2(cx + outline_d, cy),
-                                egui::pos2(cx, cy + outline_d),
-                                egui::pos2(cx - outline_d, cy),
-                            ];
-                            clip_painter.add(egui::Shape::convex_polygon(
-                                outline_diamond,
-                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
-                                egui::Stroke::NONE,
-                            ));
-                            // Brighten fill on hover
-                            let fill = if is_hovered {
-                                egui::Color32::from_rgba_unmultiplied(
-                                    diamond_fill.r().saturating_add(30),
-                                    diamond_fill.g().saturating_add(30),
-                                    diamond_fill.b().saturating_add(30),
-                                    255,
-                                )
-                            } else {
-                                diamond_fill
-                            };
-                            let diamond = vec![
-                                egui::pos2(cx, cy - d),
-                                egui::pos2(cx + d, cy),
-                                egui::pos2(cx, cy + d),
-                                egui::pos2(cx - d, cy),
-                            ];
-                            let stroke = if is_kf_selected {
-                                egui::Stroke::new(2.0, egui::Color32::WHITE)
-                            } else {
-                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
-                            };
-                            clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
-
-                            // ── Bezier tangent handles (only when clip is selected) ──
-                            if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
-                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                                let value_scale = clip_rect.height() / param_range;
-                                let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
-                                    active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
-                                );
-                                let handle_radius = 4.0_f32;
-
-                                // Tangent out handle (right)
-                                let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
-                                let tout_y = cy - kf.tangent_out.1 * value_scale;
-                                clip_painter.line_segment(
-                                    [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
-                                    egui::Stroke::new(1.0, tangent_line_color),
-                                );
-                                clip_painter.circle(
-                                    egui::pos2(tout_x, tout_y),
-                                    handle_radius,
-                                    active_line_color,
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                );
-
-                                // Tangent in handle (left)
-                                let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
-                                let tin_y = cy - kf.tangent_in.1 * value_scale;
-                                clip_painter.line_segment(
-                                    [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
-                                    egui::Stroke::new(1.0, tangent_line_color),
-                                );
-                                clip_painter.circle(
-                                    egui::pos2(tin_x, tin_y),
-                                    handle_radius,
-                                    active_line_color,
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // ── Rubber band interaction ──────────────────────────────────
-                if interactive {
-                    if let Some(pos) = pointer_pos {
-                        if clip_rect.contains(pos) && content_rect.contains(pos) {
-                            let alt_held = ui.input(|i| i.modifiers.alt);
-                            let src_in_secs = clip.source_in.to_secs_f64();
-                            let src_out_secs = clip.source_out.to_secs_f64();
-
-                            // Helper: X position to time (relative to source_in)
-                            let x_to_time = |x: f32| -> f64 {
-                                let frac = ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
-                                frac * clip_dur_secs
-                            };
-                            // Helper: Y position to param value
-                            let y_to_value = |y: f32| -> f32 {
-                                let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
-                                param_min + normalized * param_range
-                            };
-
-                            // Check if hovering near a bezier tangent handle
-                            let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
-                            if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none() {
-                                let pixels_per_sec_h = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                                let value_scale_h = clip_rect.height() / param_range;
-                                for (ki, kf) in kf_keyframes.iter().enumerate() {
-                                    if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
-                                    if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) { continue; }
-                                    let cx_h = time_to_x(kf.time_secs);
-                                    let cy_h = value_to_y(kf.value);
-                                    // Tangent out handle
-                                    let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
-                                    let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
-                                    let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                    if dist_out < 8.0
-                                        && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
-                                            nearest_bezier_handle = Some((ki, true, dist_out));
-                                        }
-                                    // Tangent in handle
-                                    let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
-                                    let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
-                                    let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                    if dist_in < 8.0
-                                        && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
-                                            nearest_bezier_handle = Some((ki, false, dist_in));
-                                        }
-                                }
-                            }
-
-                            // Check if hovering near a keyframe diamond (for drag start)
-                            let mut nearest_kf_idx: Option<usize> = None;
-                            let mut nearest_kf_dist = f32::MAX;
-                            for (ki, kf) in kf_keyframes.iter().enumerate() {
-                                if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
-                                    let kx = time_to_x(kf.time_secs);
-                                    let ky = value_to_y(kf.value);
-                                    let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                    if dist < 10.0 && dist < nearest_kf_dist {
-                                        nearest_kf_dist = dist;
-                                        nearest_kf_idx = Some(ki);
-                                    }
-                                }
-                            }
-
-                            // Check if hovering near the rubber band line
-                            let rubber_band_y = if kf_keyframes.is_empty() {
-                                value_to_y(kf_static_val)
-                            } else {
-                                let t = x_to_time(pos.x);
-                                value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_static_val))
-                            };
-                            let near_line = (pos.y - rubber_band_y).abs() < 6.0;
-
-                            // ── Cursor feedback ──
-                            let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
-                            let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
-                            let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
-                            if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                            } else if nearest_bezier_handle.is_some() {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                            } else if nearest_kf_idx.is_some() {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                            } else if near_line {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                            }
-
-                            // ── Double-click diamond to delete keyframe ──
-                            if let Some(ki) = nearest_kf_idx {
-                                if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                                    let kf = &kf_keyframes[ki];
-                                    cmds.push(AppCommand::RemoveAudioKeyframe {
-                                        clip_id: kf_clip_id,
-                                        param: rb_param,
-                                        time_secs: kf.time_secs,
-                                    });
-                                }
-                            }
-
-                            // ── Click keyframe diamond to SELECT it ──
-                            if let Some(ki) = nearest_kf_idx {
-                                if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
-                                    state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                        clip_id: kf_clip_id,
-                                        param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
-                                        keyframe_index: ki,
-                                    });
-                                }
-                            }
-
-                            // ── Right-click: open context menu for selected keyframe or nearest diamond ──
-                            if ui.input(|i| i.pointer.secondary_released()) {
-                                let target_ki = nearest_kf_idx.or_else(|| {
-                                    // If no diamond nearby, use the selected keyframe if it's on this clip
-                                    state.selected_keyframe.as_ref()
-                                        .filter(|sk| sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param))
-                                        .map(|sk| sk.keyframe_index)
-                                });
-                                if let Some(ki) = target_ki {
-                                    if ki < kf_keyframes.len() {
-                                        state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
-                                            clip_id: kf_clip_id,
-                                            param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
-                                            keyframe_index: ki,
-                                            screen_pos: pos,
-                                        });
-                                        self.suppress_clip_context_menu = true;
-                                    }
-                                }
-                            }
-
-                            // ── Click empty area to deselect keyframe ──
-                            if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
-                                && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
-                                    state.selected_keyframe = None;
-                                }
-
-                            // ── Start bezier tangent handle drag ──
-                            if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
-                                if pointer_down && state.dragging_bezier_handle.is_none()
-                                    && state.dragging_audio_keyframe.is_none()
-                                    && state.dragging_fade_handle.is_none()
-                                {
-                                    let drag_key = format!("kf:tangent:{}:{:?}:{}", kf_clip_id.0, rb_param, bh_ki);
-                                    cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
-                                    state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
-                                        clip_id: kf_clip_id,
-                                        param: rb_param,
-                                        keyframe_index: bh_ki,
-                                        is_out: bh_is_out,
-                                    });
-                                }
-                            }
-
-                            // Start keyframe drag only after mouse moves beyond threshold (3px)
-                            // This allows click-to-select without immediately starting a drag
-                            if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none()
-                                && pointer_down && state.dragging_audio_keyframe.is_none()
-                                && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none()
-                                && !alt_held
-                            {
-                                let dragged_far_enough = ui.input(|i| {
-                                    i.pointer.is_decidedly_dragging()
-                                });
-                                if dragged_far_enough {
-                                    if let Some(ki) = nearest_kf_idx {
-                                        let drag_key = format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
-                                        cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
-                                        state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
-                                            clip_id: kf_clip_id,
-                                            param: rb_param,
-                                            keyframe_index: ki,
-                                        });
-                                    }
-                                }
-                            }
-
-                            // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
-                            if kf_keyframes.is_empty() && near_line && pointer_down
-                                && state.dragging_audio_keyframe.is_none()
-                                && state.dragging_rubber_band.is_none()
-                                && state.dragging_fade_handle.is_none()
-                                && !state.drag_drop.is_active() // don't start rubber band during drag-and-drop
-                                && !alt_held
-                            {
-                                state.dragging_rubber_band = Some(kf_clip_id);
-                            }
-
-                            // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
-                            if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
-                                && pointer_down {
-                                    let new_val = y_to_value(pos.y);
-                                    let (drag_gain, drag_volume, drag_pan) = match rb_param {
-                                        klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
-                                        klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
-                                        klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
-                                    };
-                                    cmds.push(AppCommand::UpdateClipAudio {
-                                        clip_id: kf_clip_id,
-                                        gain: drag_gain,
-                                        volume: drag_volume,
-                                        pan: drag_pan,
-                                        fade_in_secs: kf_fade_in,
-                                        fade_out_secs: kf_fade_out,
-                                        fade_in_curve: kf_fade_in_curve,
-                                        fade_out_curve: kf_fade_out_curve,
-                                        channel_config: kf_channel_config,
-                                    });
-                                    // Show tooltip with param-appropriate format
-                                    let tooltip_text = match rb_param {
-                                        klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
-                                        klipp_core::AudioParam::Pan => {
-                                            if new_val.abs() < 0.01 { "C".to_string() }
-                                            else if new_val < 0.0 { format!("L{:.0}", -new_val * 100.0) }
-                                            else { format!("R{:.0}", new_val * 100.0) }
-                                        }
-                                        klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
-                                    };
-                                    clip_painter.text(
-                                        egui::pos2(pos.x, pos.y - 14.0),
-                                        egui::Align2::CENTER_BOTTOM,
-                                        tooltip_text,
-                                        egui::FontId::proportional(10.0),
-                                        active_line_color,
-                                    );
-                                }
-
-                            // Alt+click on line to add keyframe (blocked during fade drag)
-                            if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
-                                let t = x_to_time(pos.x);
-                                let v = y_to_value(pos.y);
-                                cmds.push(AppCommand::AddAudioKeyframe {
-                                    clip_id: kf_clip_id,
-                                    param: rb_param,
-                                    time_secs: t,
-                                    value: v,
-                                });
-                            }
-
-                            // Show value tooltip when hovering near a keyframe
-                            if let Some(ki) = nearest_kf_idx {
-                                let kf = &kf_keyframes[ki];
-                                let tooltip_text = match rb_param {
-                                    klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
-                                    klipp_core::AudioParam::Pan => {
-                                        if kf.value.abs() < 0.01 { "C".to_string() }
-                                        else if kf.value < 0.0 { format!("L{:.0}", -kf.value * 100.0) }
-                                        else { format!("R{:.0}", kf.value * 100.0) }
-                                    }
-                                    klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
-                                };
-                                let kx = time_to_x(kf.time_secs);
-                                let ky = value_to_y(kf.value);
-                                clip_painter.text(
-                                    egui::pos2(kx, ky - 14.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    tooltip_text,
-                                    egui::FontId::proportional(9.0),
-                                    active_line_color,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            self.draw_audio_rubber_band(ui, painter, clip_rect, clip, state, cmds, track_kind, content_rect, interactive, pointer_pos, pointer_down, is_selected, is_multi_selected);
 
             self.draw_audio_fade_overlay(painter, clip_rect, clip, state, track_kind);
 
-            // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
-            // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
-            let clip_has_audio = track_kind == TrackKind::Audio
-                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
-            let is_pointer_over_clip = pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
-            let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
-            let is_dragging_this_fade = state.dragging_fade_handle.is_some_and(|(id, _, _)| id == clip.id);
-            if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
-                && (is_hovered_or_selected || is_dragging_this_fade)
-            {
-                let handle_size = 6.0_f32;
-                let handle_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220);
-                let handle_hover_color = egui::Color32::from_rgb(255, 220, 80);
+            self.draw_fade_drag_handles(ui, painter, clip_rect, clip, state, track_kind, content_rect, pointer_pos);
 
-                // Resolve current fade values for visual positioning
-                let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
-                    let mut fi = clip.fade_in_secs;
-                    let mut fo = clip.fade_out_secs;
-                    for t in &state.sequence().tracks {
-                        if let Some(vc) = t.find_clip(linked_id) {
-                            fi = vc.fade_in_secs;
-                            fo = vc.fade_out_secs;
-                            break;
-                        }
-                    }
-                    (fi, fo)
-                } else {
-                    (clip.fade_in_secs, clip.fade_out_secs)
-                };
-                let clip_dur_secs = clip.duration().to_secs_f64() as f32;
-
-                // Fade-in handle position: at the fade boundary (or clip left if no fade)
-                let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * clip_rect.width() } else { 0.0 };
-                let fi_x = clip_rect.left() + fi_offset_px;
-                // Fade-out handle position: at the fade boundary (or clip right if no fade)
-                let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * clip_rect.width() } else { 0.0 };
-                let fo_x = clip_rect.right() - fo_offset_px;
-
-                // Check if pointer is near a handle for hover highlight
-                let near_fi = pointer_pos.is_some_and(|p| {
-                    (p.x - fi_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
-                        && clip_rect.contains(p) && content_rect.contains(p)
-                });
-                let near_fo = pointer_pos.is_some_and(|p| {
-                    (p.x - fo_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
-                        && clip_rect.contains(p) && content_rect.contains(p)
-                });
-                let dragging_fi = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && is_in);
-                let dragging_fo = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && !is_in);
-
-                // Draw fade-in handle (triangle pointing right at top-left area)
-                let fi_color = if near_fi || dragging_fi { handle_hover_color } else { handle_color };
-                let fi_tri = vec![
-                    egui::pos2(fi_x, clip_rect.top()),
-                    egui::pos2(fi_x + handle_size, clip_rect.top()),
-                    egui::pos2(fi_x, clip_rect.top() + handle_size),
-                ];
-                painter.add(egui::Shape::convex_polygon(fi_tri, fi_color, egui::Stroke::NONE));
-
-                // Draw fade-out handle (triangle pointing left at top-right area)
-                let fo_color = if near_fo || dragging_fo { handle_hover_color } else { handle_color };
-                let fo_tri = vec![
-                    egui::pos2(fo_x, clip_rect.top()),
-                    egui::pos2(fo_x - handle_size, clip_rect.top()),
-                    egui::pos2(fo_x, clip_rect.top() + handle_size),
-                ];
-                painter.add(egui::Shape::convex_polygon(fo_tri, fo_color, egui::Stroke::NONE));
-
-                // Cursor feedback when hovering handles
-                if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                }
-
-                // Hover tooltip labels for fade handles (only when not dragging)
-                if !dragging_fi && !dragging_fo && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
-                    let tip_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 180);
-                    let tip_font = egui::FontId::proportional(8.0);
-                    if near_fi {
-                        painter.text(
-                            egui::pos2(fi_x + 10.0, clip_rect.top() + 6.0),
-                            egui::Align2::LEFT_CENTER,
-                            "Drag to set fade in",
-                            tip_font,
-                            tip_color,
-                        );
-                    } else if near_fo {
-                        painter.text(
-                            egui::pos2(fo_x - 10.0, clip_rect.top() + 6.0),
-                            egui::Align2::RIGHT_CENTER,
-                            "Drag to set fade out",
-                            tip_font,
-                            tip_color,
-                        );
-                    }
-                }
-
-                // Draw visual feedback during fade handle drag
-                if dragging_fi || dragging_fo {
-                    if let Some(pos) = pointer_pos {
-                        let boundary_x = if dragging_fi {
-                            pos.x.clamp(clip_rect.left(), clip_rect.right())
-                        } else {
-                            pos.x.clamp(clip_rect.left(), clip_rect.right())
-                        };
-                        // Vertical line at current drag position
-                        painter.line_segment(
-                            [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],
-                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 195, 50, 160)),
-                        );
-                        // Tooltip with duration
-                        let frac = if dragging_fi {
-                            ((boundary_x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0)
-                        } else {
-                            ((clip_rect.right() - boundary_x) / clip_rect.width()).clamp(0.0, 1.0)
-                        };
-                        let fade_dur = frac * clip_dur_secs;
-                        let label = if dragging_fi {
-                            format!("Fade In: {:.2}s", fade_dur)
-                        } else {
-                            format!("Fade Out: {:.2}s", fade_dur)
-                        };
-                        egui::show_tooltip_at_pointer(
-                            ui.ctx(), ui.layer_id(), ui.id().with("fade_handle_tooltip"),
-                            |ui: &mut egui::Ui| { ui.label(label); },
-                        );
-                    }
-                }
-            }
-
-            // ── Video parameter rubber band overlay ──────────────────────
-            // Drawn on video track clips that have keyframes for the selected video param.
-            // Mirrors the audio rubber band pattern with cyan/blue color scheme.
-            if track_kind != TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
-                let vrb_param = state.video_rubber_band_param;
-
-                // Read static values from builtin effects
-                let vrb_opacity_static = clip.builtin_effects.iter()
-                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                    .unwrap_or(1.0);
-                let vrb_transform = clip.builtin_effects.iter()
-                    .find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                            Some((*position_x, *position_y, *scale_x, *rotation)),
-                        _ => None,
-                    })
-                    .unwrap_or((0.0, 0.0, 1.0, 0.0));
-
-                // Read keyframes for the selected video parameter
-                let (vrb_static_val, vrb_keyframes) = match vrb_param {
-                    klipp_core::VideoParam::Opacity => (vrb_opacity_static, clip.opacity_keyframes.clone()),
-                    klipp_core::VideoParam::PositionX => (vrb_transform.0, clip.transform_pos_x_keyframes.clone()),
-                    klipp_core::VideoParam::PositionY => (vrb_transform.1, clip.transform_pos_y_keyframes.clone()),
-                    klipp_core::VideoParam::Scale => (vrb_transform.2, clip.transform_scale_keyframes.clone()),
-                    klipp_core::VideoParam::Rotation => (vrb_transform.3, clip.transform_rotation_keyframes.clone()),
-                };
-
-                // Check if ANY video param has keyframes (for deciding whether to draw anything)
-                let has_any_video_kf = !clip.opacity_keyframes.is_empty()
-                    || !clip.transform_pos_x_keyframes.is_empty()
-                    || !clip.transform_pos_y_keyframes.is_empty()
-                    || !clip.transform_scale_keyframes.is_empty()
-                    || !clip.transform_rotation_keyframes.is_empty();
-
-                // Only draw when at least one video param has keyframes
-                if has_any_video_kf {
-                    let vrb_keyframes = &vrb_keyframes[..];
-
-                    // Auto-scale Y axis to actual keyframe values (with padding)
-                    // so small value changes are clearly visible on the timeline
-                    let mut vrb_val_min = vrb_static_val;
-                    let mut vrb_val_max = vrb_static_val;
-                    for kf in vrb_keyframes.iter() {
-                        if kf.value < vrb_val_min { vrb_val_min = kf.value; }
-                        if kf.value > vrb_val_max { vrb_val_max = kf.value; }
-                    }
-                    // Add 20% padding on each side so curves don't touch edges
-                    let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
-                    let vrb_padding = vrb_val_span * 0.2;
-                    let vrb_param_min = vrb_val_min - vrb_padding;
-                    let vrb_param_range = vrb_val_span + vrb_padding * 2.0;
-
-                    let vrb_clip_dur_secs = clip.duration().to_secs_f64();
-                    let vrb_clip_painter = painter.with_clip_rect(clip_rect);
-
-                    // Map param value to Y position within clip rect (min=bottom, max=top)
-                    let vrb_value_to_y = |val: f32| -> f32 {
-                        let normalized = ((val - vrb_param_min) / vrb_param_range).clamp(0.0, 1.0);
-                        clip_rect.bottom() - normalized * clip_rect.height()
-                    };
-
-                    // Map time (relative to clip start) to X position
-                    let vrb_time_to_x = |t: f64| -> f32 {
-                        let frac = if vrb_clip_dur_secs > 0.0 { (t / vrb_clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                        clip_rect.left() + frac as f32 * clip_rect.width()
-                    };
-
-                    // Cyan/blue color scheme for video (distinct from audio amber)
-                    let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) = match vrb_param {
-                        klipp_core::VideoParam::Opacity => (
-                            egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220),
-                            egui::Color32::from_rgba_unmultiplied(70, 160, 230, 140),
-                            egui::Color32::from_rgba_unmultiplied(90, 200, 255, 250),
-                            egui::Color32::from_rgba_unmultiplied(80, 180, 255, 200),
-                        ),
-                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => (
-                            egui::Color32::from_rgba_unmultiplied(100, 220, 200, 220),
-                            egui::Color32::from_rgba_unmultiplied(90, 200, 180, 140),
-                            egui::Color32::from_rgba_unmultiplied(110, 240, 220, 250),
-                            egui::Color32::from_rgba_unmultiplied(100, 220, 200, 200),
-                        ),
-                        klipp_core::VideoParam::Scale => (
-                            egui::Color32::from_rgba_unmultiplied(140, 160, 255, 220),
-                            egui::Color32::from_rgba_unmultiplied(120, 140, 230, 140),
-                            egui::Color32::from_rgba_unmultiplied(160, 180, 255, 250),
-                            egui::Color32::from_rgba_unmultiplied(140, 160, 255, 200),
-                        ),
-                        klipp_core::VideoParam::Rotation => (
-                            egui::Color32::from_rgba_unmultiplied(180, 130, 255, 220),
-                            egui::Color32::from_rgba_unmultiplied(160, 110, 230, 140),
-                            egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
-                            egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
-                        ),
-                    };
-                    let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
-                    let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
-                    let vrb_active_line_color = if is_selected || is_multi_selected { vrb_line_color } else { vrb_line_color_dim };
-                    let vrb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
-                    let vrb_shadow_width = vrb_line_width + 1.0;
-
-                    // Draw param pill badge at bottom-left of clip
-                    let vrb_param_label = match vrb_param {
-                        klipp_core::VideoParam::Opacity => "Opa",
-                        klipp_core::VideoParam::PositionX => "PosX",
-                        klipp_core::VideoParam::PositionY => "PosY",
-                        klipp_core::VideoParam::Scale => "Scl",
-                        klipp_core::VideoParam::Rotation => "Rot",
-                    };
-                    let vrb_pill_font = egui::FontId::proportional(9.0);
-                    let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
-                    let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
-                    let vrb_pill_h = 14.0;
-                    let vrb_pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - vrb_pill_h - 4.0);
-                    let vrb_pill_rect = egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
-                    if clip_rect.width() > 30.0 {
-                        let vrb_pill_bg = match vrb_param {
-                            klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
-                            klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
-                            klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
-                            klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
-                        };
-                        vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
-                        vrb_clip_painter.text(
-                            vrb_pill_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            vrb_param_label,
-                            vrb_pill_font,
-                            egui::Color32::WHITE,
-                        );
-                        // Click pill to cycle video param
-                        if interactive {
-                            if let Some(pos) = pointer_pos {
-                                if vrb_pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
-                                    state.video_rubber_band_param = match vrb_param {
-                                        klipp_core::VideoParam::Opacity => klipp_core::VideoParam::PositionX,
-                                        klipp_core::VideoParam::PositionX => klipp_core::VideoParam::PositionY,
-                                        klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
-                                        klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
-                                        klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
-                                    };
-                                }
-                            }
-                        }
-                    }
-
-                    if vrb_keyframes.is_empty() {
-                        // Selected param has no keyframes — draw flat line at static value
-                        let vy = vrb_value_to_y(vrb_static_val);
-                        vrb_clip_painter.line_segment(
-                            [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
-                            egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
-                        );
-                        vrb_clip_painter.line_segment(
-                            [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
-                            egui::Stroke::new(vrb_line_width, vrb_active_line_color),
-                        );
-                    } else {
-                        // Draw curve by densely sampling evaluate() — this correctly renders
-                        // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
-                        let vrb_clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
-
-                        // Dense sampling: evaluate the keyframe curve at many points across the clip
-                        let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
-                        let mut vrb_curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
-                        for si in 0..=num_samples {
-                            let t_frac = si as f64 / num_samples as f64;
-                            let t_secs = t_frac * vrb_clip_time_range;
-                            let val = klipp_core::keyframe::evaluate(vrb_keyframes, t_secs, vrb_static_val);
-                            let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
-                            let y = vrb_value_to_y(val);
-                            vrb_curve_pts.push(egui::pos2(x, y));
-                        }
-
-                        // Draw shadow pass then color pass
-                        for i in 0..vrb_curve_pts.len().saturating_sub(1) {
-                            vrb_clip_painter.line_segment(
-                                [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
-                                egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
-                            );
-                        }
-                        for i in 0..vrb_curve_pts.len().saturating_sub(1) {
-                            vrb_clip_painter.line_segment(
-                                [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
-                                egui::Stroke::new(vrb_line_width, vrb_active_line_color),
-                            );
-                        }
-
-                        // Draw diamond markers at each keyframe
-                        let vrb_hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
-                            if !clip_rect.contains(pos) { return None; }
-                            let mut best: Option<(usize, f32)> = None;
-                            for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                                if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
-                                    let kx = vrb_time_to_x(kf.time_secs);
-                                    let ky = vrb_value_to_y(kf.value);
-                                    let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                    if dist < 10.0
-                                        && best.is_none_or(|(_, bd)| dist < bd) {
-                                            best = Some((ki, dist));
-                                        }
-                                }
-                            }
-                            best.map(|(i, _)| i)
-                        });
-
-                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                            if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
-                                let cx = vrb_time_to_x(kf.time_secs);
-                                let cy = vrb_value_to_y(kf.value);
-                                let is_hovered = vrb_hovered_kf_idx == Some(ki);
-                                let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
-                                // Dark outline diamond behind for contrast
-                                let outline_d = d + 1.5;
-                                let outline_diamond = vec![
-                                    egui::pos2(cx, cy - outline_d),
-                                    egui::pos2(cx + outline_d, cy),
-                                    egui::pos2(cx, cy + outline_d),
-                                    egui::pos2(cx - outline_d, cy),
-                                ];
-                                vrb_clip_painter.add(egui::Shape::convex_polygon(
-                                    outline_diamond,
-                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
-                                    egui::Stroke::NONE,
-                                ));
-                                let fill = if is_hovered {
-                                    egui::Color32::from_rgba_unmultiplied(
-                                        vrb_diamond_fill.r().saturating_add(30),
-                                        vrb_diamond_fill.g().saturating_add(30),
-                                        vrb_diamond_fill.b().saturating_add(30),
-                                        255,
-                                    )
-                                } else {
-                                    vrb_diamond_fill
-                                };
-                                let diamond = vec![
-                                    egui::pos2(cx, cy - d),
-                                    egui::pos2(cx + d, cy),
-                                    egui::pos2(cx, cy + d),
-                                    egui::pos2(cx - d, cy),
-                                ];
-                                let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
-                                vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
-
-                                // Show value tooltip on hover
-                                if is_hovered {
-                                    let tooltip_text = match vrb_param {
-                                        klipp_core::VideoParam::Opacity => format!("{:.0}%", kf.value * 100.0),
-                                        klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
-                                        klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
-                                        klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
-                                        klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
-                                    };
-                                    vrb_clip_painter.text(
-                                        egui::pos2(cx, cy - 14.0),
-                                        egui::Align2::CENTER_BOTTOM,
-                                        tooltip_text,
-                                        egui::FontId::proportional(9.0),
-                                        vrb_active_line_color,
-                                    );
-                                }
-
-                                // ── Bezier tangent handles (only when clip is selected) ──
-                                if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
-                                    let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
-                                    let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
-                                    let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
-                                        vrb_active_line_color.r(), vrb_active_line_color.g(), vrb_active_line_color.b(), 120,
-                                    );
-                                    let vrb_handle_radius = 4.0_f32;
-
-                                    // Tangent out handle (right)
-                                    let vrb_tout_x = cx + kf.tangent_out.0 as f32 * vrb_pixels_per_sec;
-                                    let vrb_tout_y = cy - kf.tangent_out.1 * vrb_bz_value_scale;
-                                    vrb_clip_painter.line_segment(
-                                        [egui::pos2(cx, cy), egui::pos2(vrb_tout_x, vrb_tout_y)],
-                                        egui::Stroke::new(1.0, vrb_tangent_line_color),
-                                    );
-                                    vrb_clip_painter.circle(
-                                        egui::pos2(vrb_tout_x, vrb_tout_y),
-                                        vrb_handle_radius,
-                                        vrb_active_line_color,
-                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                    );
-
-                                    // Tangent in handle (left)
-                                    let vrb_tin_x = cx + kf.tangent_in.0 as f32 * vrb_pixels_per_sec;
-                                    let vrb_tin_y = cy - kf.tangent_in.1 * vrb_bz_value_scale;
-                                    vrb_clip_painter.line_segment(
-                                        [egui::pos2(cx, cy), egui::pos2(vrb_tin_x, vrb_tin_y)],
-                                        egui::Stroke::new(1.0, vrb_tangent_line_color),
-                                    );
-                                    vrb_clip_painter.circle(
-                                        egui::pos2(vrb_tin_x, vrb_tin_y),
-                                        vrb_handle_radius,
-                                        vrb_active_line_color,
-                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                    );
-                                }
-                            }
-                        }
-
-                        // ── Video keyframe interaction ───────────────────────
-                        if interactive {
-                            if let Some(pos) = pointer_pos {
-                                if clip_rect.contains(pos) {
-                                    let vrb_clip_id = clip.id;
-                                    let vrb_clip_time_range_i = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
-
-                                    // Check if hovering near a video bezier tangent handle
-                                    let mut vrb_nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
-                                    if (is_selected || is_multi_selected) && state.dragging_video_bezier_handle.is_none() {
-                                        let vrb_pps_h = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
-                                        let vrb_vs_h = clip_rect.height() / vrb_param_range;
-                                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                                            if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
-                                            if kf.time_secs < 0.0 || kf.time_secs > vrb_clip_time_range_i { continue; }
-                                            let cx_h = vrb_time_to_x(kf.time_secs);
-                                            let cy_h = vrb_value_to_y(kf.value);
-                                            // Tangent out handle
-                                            let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
-                                            let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
-                                            let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                            if dist_out < 8.0
-                                                && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
-                                                    vrb_nearest_bezier_handle = Some((ki, true, dist_out));
-                                                }
-                                            // Tangent in handle
-                                            let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
-                                            let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
-                                            let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                            if dist_in < 8.0
-                                                && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
-                                                    vrb_nearest_bezier_handle = Some((ki, false, dist_in));
-                                                }
-                                        }
-                                    }
-
-                                    // Cursor feedback
-                                    let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
-                                    let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
-                                    if is_dragging_vrb_kf || is_dragging_vrb_bezier {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                    } else if vrb_nearest_bezier_handle.is_some() {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                                    } else if vrb_hovered_kf_idx.is_some() {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                                    }
-
-                                    // Double-click diamond to delete keyframe
-                                    if let Some(ki) = vrb_hovered_kf_idx {
-                                        if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                                            let kf = &vrb_keyframes[ki];
-                                            cmds.push(AppCommand::RemoveVideoKeyframe {
-                                                clip_id: vrb_clip_id,
-                                                param: vrb_param,
-                                                time_secs: kf.time_secs,
-                                            });
-                                        }
-                                    }
-
-                                    // Click diamond to select
-                                    if let Some(ki) = vrb_hovered_kf_idx {
-                                        if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() {
-                                            state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                                clip_id: vrb_clip_id,
-                                                param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
-                                                keyframe_index: ki,
-                                            });
-                                        }
-                                    }
-
-                                    // Right-click: open interpolation context menu
-                                    if ui.input(|i| i.pointer.secondary_released()) {
-                                        let target_ki = vrb_hovered_kf_idx.or_else(|| {
-                                            state.selected_keyframe.as_ref()
-                                                .filter(|sk| sk.clip_id == vrb_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Video(vrb_param))
-                                                .map(|sk| sk.keyframe_index)
-                                        });
-                                        if let Some(ki) = target_ki {
-                                            if ki < vrb_keyframes.len() {
-                                                state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
-                                                    clip_id: vrb_clip_id,
-                                                    param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
-                                                    keyframe_index: ki,
-                                                    screen_pos: pos,
-                                                });
-                                                self.suppress_clip_context_menu = true;
-                                            }
-                                        }
-                                    }
-
-                                    // Click empty area to deselect
-                                    if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
-                                        && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
-                                            state.selected_keyframe = None;
-                                        }
-
-                                    // ── Start video bezier tangent handle drag ──
-                                    if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
-                                        if pointer_down && state.dragging_video_bezier_handle.is_none()
-                                            && state.dragging_video_keyframe.is_none()
-                                            && state.dragging_fade_handle.is_none()
-                                        {
-                                            let drag_key = format!("kf:vtangent:{}:{:?}:{}", vrb_clip_id.0, vrb_param, vbh_ki);
-                                            cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
-                                            state.dragging_video_bezier_handle = Some(crate::state::BezierVideoHandleDrag {
-                                                clip_id: vrb_clip_id,
-                                                param: vrb_param,
-                                                keyframe_index: vbh_ki,
-                                                is_out: vbh_is_out,
-                                            });
-                                        }
-                                    }
-
-                                    // Start drag on keyframe diamond
-                                    let vrb_alt_held = ui.input(|i| i.modifiers.alt);
-                                    if vrb_hovered_kf_idx.is_some() && vrb_nearest_bezier_handle.is_none()
-                                        && pointer_down && state.dragging_video_keyframe.is_none()
-                                        && state.dragging_audio_keyframe.is_none()
-                                        && state.dragging_video_bezier_handle.is_none()
-                                        && state.dragging_fade_handle.is_none()
-                                        && !vrb_alt_held
-                                        && ui.input(|i| i.pointer.is_decidedly_dragging()) {
-                                            if let Some(ki) = vrb_hovered_kf_idx {
-                                                let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
-                                                cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
-                                                state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
-                                                    clip_id: vrb_clip_id,
-                                                    param: vrb_param,
-                                                    keyframe_index: ki,
-                                                });
-                                            }
-                                        }
-
-                                    // Alt+click on rubber band line to add video keyframe
-                                    if vrb_alt_held && vrb_hovered_kf_idx.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
-                                        // Compute Y of curve at pointer X
-                                        let vrb_x_frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
-                                        let vrb_hover_t = vrb_x_frac * vrb_clip_time_range;
-                                        let vrb_curve_y_at_ptr = vrb_value_to_y(
-                                            klipp_core::keyframe::evaluate(vrb_keyframes, vrb_hover_t, vrb_static_val),
-                                        );
-                                        let vrb_near_line = (pos.y - vrb_curve_y_at_ptr).abs() < 6.0;
-                                        if vrb_near_line {
-                                            // Inverse Y-to-value: normalized = (clip_rect.bottom() - y) / clip_rect.height()
-                                            let vrb_normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
-                                            let vrb_click_val = vrb_param_min + vrb_normalized * vrb_param_range;
-                                            cmds.push(AppCommand::AddVideoKeyframe {
-                                                clip_id: vrb_clip_id,
-                                                param: vrb_param,
-                                                time_secs: vrb_hover_t,
-                                                value: vrb_click_val,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            self.draw_video_rubber_band(ui, painter, clip_rect, clip, state, cmds, track_kind, interactive, pointer_pos, pointer_down, is_selected, is_multi_selected);
 
             // ── Per-clip markers ──
             self.draw_clip_markers(painter, clip_rect, clip);
@@ -7947,149 +6743,11 @@ impl TimelinePanel {
         // Draw transition indicators between clips
         self.draw_transition_overlays(painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
 
-        // Draw audio crossfade indicators at adjacent clip boundaries
-        if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
-            let frame_dur = 1.0 / fps.rate() as f64;
-            for i in 0..clips.len().saturating_sub(1) {
-                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
-                let end_secs = clips[i].timeline_out.to_secs_f64();
-                let start_secs = clips[i + 1].timeline_in.to_secs_f64();
-                // Adjacent within 1 frame tolerance
-                if (end_secs - start_secs).abs() <= frame_dur * 1.5 {
-                    let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;
-                    // Only draw if visible
-                    if boundary_x >= content_rect.left() - 10.0 && boundary_x <= content_rect.right() + 10.0 {
-                        let cy = track_rect.center().y;
-                        let s = 5.0_f32; // half-size of the X
-                        let xf_color = egui::Color32::from_rgba_unmultiplied(180, 220, 255, 140);
-                        // Draw "X" crossfade indicator
-                        painter.line_segment(
-                            [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
-                            egui::Stroke::new(1.5, xf_color),
-                        );
-                        painter.line_segment(
-                            [egui::pos2(boundary_x - s, cy + s), egui::pos2(boundary_x + s, cy - s)],
-                            egui::Stroke::new(1.5, xf_color),
-                        );
-                        // Small overlapping fade triangles
-                        let tri_h = 4.0_f32;
-                        let tri_w = 6.0_f32;
-                        let top_y = cy - s - 4.0;
-                        // Left fade-out triangle (filled)
-                        let tri_out = vec![
-                            egui::pos2(boundary_x - tri_w, top_y),
-                            egui::pos2(boundary_x, top_y),
-                            egui::pos2(boundary_x - tri_w, top_y + tri_h),
-                        ];
-                        painter.add(egui::Shape::convex_polygon(
-                            tri_out, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
-                        ));
-                        // Right fade-in triangle (filled)
-                        let tri_in = vec![
-                            egui::pos2(boundary_x, top_y),
-                            egui::pos2(boundary_x + tri_w, top_y),
-                            egui::pos2(boundary_x + tri_w, top_y + tri_h),
-                        ];
-                        painter.add(egui::Shape::convex_polygon(
-                            tri_in, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
-                        ));
-                    }
-                }
-            }
-        }
+        self.draw_audio_crossfade_indicators(painter, &clips, content_rect, track_rect, state, track_kind, fps, zoom, scroll);
 
-        // Draw anchor connection lines for connected clips
-        for clip in &clips {
-            if let Some(ref anchor) = clip.magnetic_anchor {
-                if let Some(primary_idx) = state.sequence().primary_track_index() {
-                    let anchor_clip = state.sequence().tracks[primary_idx].clips.iter()
-                        .find(|c| c.id == anchor.anchor_clip_id);
-                    if let Some(ac) = anchor_clip {
-                        let anchor_x = content_rect.left()
-                            + (ac.timeline_in.to_secs_f64() as f32 + anchor.offset.to_secs_f64() as f32) * zoom
-                            - scroll;
+        self.draw_anchor_connection_lines(painter, &clips, content_rect, track_rect, state, zoom, scroll);
 
-                        // Only draw if visible
-                        if anchor_x >= content_rect.left() - 10.0 && anchor_x <= content_rect.right() + 10.0 {
-                            let _clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                            let clip_top = track_rect.top();
-
-                            // Find primary track rect for the bottom of the line
-                            let primary_bottom = self.frame_cache.track_rects.iter()
-                                .find(|(idx, _, _)| *idx == primary_idx)
-                                .map(|(_, _, r)| r.bottom())
-                                .unwrap_or(track_rect.bottom());
-
-                            let line_color = egui::Color32::from_rgba_unmultiplied(232, 160, 32, 160);
-
-                            // Dashed vertical line
-                            let dash_len = 5.0_f32;
-                            let gap_len = 3.0_f32;
-                            let start_y = clip_top.min(primary_bottom);
-                            let end_y = clip_top.max(primary_bottom);
-                            let mut y = start_y;
-                            while y < end_y {
-                                let dash_end = (y + dash_len).min(end_y);
-                                painter.line_segment(
-                                    [egui::pos2(anchor_x, y), egui::pos2(anchor_x, dash_end)],
-                                    egui::Stroke::new(1.0, line_color),
-                                );
-                                y += dash_len + gap_len;
-                            }
-
-                            // Anchor dot on the primary track
-                            painter.circle_filled(
-                                egui::pos2(anchor_x, primary_bottom),
-                                3.0,
-                                line_color,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Draw collision indicators for overlapping clips on connected tracks
-        if state.sequence().tracks.get(track_idx).is_some_and(|t| {
-            t.magnetic_role == klipp_timeline::TrackRole::Connected
-                || t.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline
-        }) {
-            for (ci, clip) in clips.iter().enumerate() {
-                if clip.kind.is_gap() { continue; }
-                for (oi, other) in clips.iter().enumerate() {
-                    if ci >= oi { continue; }
-                    if other.kind.is_gap() { continue; }
-                    // Check overlap
-                    if clip.timeline_in < other.timeline_out && clip.timeline_out > other.timeline_in {
-                        let overlap_start = if clip.timeline_in > other.timeline_in { clip.timeline_in } else { other.timeline_in };
-                        let overlap_end = if clip.timeline_out < other.timeline_out { clip.timeline_out } else { other.timeline_out };
-                        let ox = content_rect.left() + overlap_start.to_secs_f64() as f32 * zoom - scroll;
-                        let ow = (overlap_end - overlap_start).to_secs_f64() as f32 * zoom;
-                        let overlap_rect = egui::Rect::from_min_size(
-                            egui::pos2(ox, track_rect.top() + 2.0),
-                            egui::vec2(ow, track_rect.height() - 4.0),
-                        );
-                        if overlap_rect.right() < content_rect.left() || overlap_rect.left() > content_rect.right() {
-                            continue;
-                        }
-                        // Amber striped overlay
-                        let stripe_color = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 80);
-                        let stripe_spacing = 6.0_f32;
-                        let clip_painter = painter.with_clip_rect(overlap_rect);
-                        let mut sx = overlap_rect.min.x - overlap_rect.height();
-                        while sx < overlap_rect.max.x {
-                            let p1 = egui::pos2(sx, overlap_rect.max.y);
-                            let p2 = egui::pos2(sx + overlap_rect.height(), overlap_rect.min.y);
-                            clip_painter.line_segment([p1, p2], egui::Stroke::new(1.5, stripe_color));
-                            sx += stripe_spacing;
-                        }
-                        // Amber border
-                        painter.rect_stroke(overlap_rect, 2.0,
-                            egui::Stroke::new(1.5, egui::Color32::from_rgb(0xff, 0xc8, 0x00)));
-                    }
-                }
-            }
-        }
+        self.draw_collision_indicators(painter, &clips, content_rect, track_rect, state, track_idx, zoom, scroll);
 
         self.handle_trim_hover(painter, ui, state, track_idx, &clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, track_kind, interactive);
 
@@ -8227,6 +6885,1465 @@ impl TimelinePanel {
         self.process_slide_drag(ui, painter, state, cmds, track_idx, &clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
         self.process_clip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, track_height, pointer_pos, pointer_down, pointer_released);
+    }
+
+    fn compute_clip_colors(
+        &self,
+        clip: &klipp_timeline::Clip,
+        clip_index: usize,
+        track_kind: TrackKind,
+        state: &AppState,
+    ) -> (egui::Color32, egui::Color32, f32, egui::Color32) {
+        let is_selected = state.selected_clip == Some(clip.id);
+        let is_multi_selected = state.selected_clips.contains(&clip.id);
+        let is_hovered = state.hovered_clip == Some(clip.id);
+        let is_title = clip.title_data().is_some();
+        let is_disabled = !clip.enabled;
+        let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
+            .map(|m| m.offline)
+            .unwrap_or(false);
+        let is_being_dragged = self.dragging_clip.as_ref()
+            .is_some_and(|d| d.clip_id == clip.id);
+
+        // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
+        let theme_colors = crate::theme::KlippTheme::default();
+        let role_color = theme_colors.clip_role_color(clip.role);
+        let use_role_color = match track_kind {
+            TrackKind::Audio => true,
+            _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
+        };
+        let base_color = if is_title {
+            egui::Color32::from_rgb(60, 45, 90) // purple tint for title clips
+        } else if is_offline {
+            egui::Color32::from_rgb(58, 32, 32)
+        } else if use_role_color {
+            egui::Color32::from_rgb(
+                role_color.r().saturating_sub(10),
+                role_color.g().saturating_sub(10),
+                role_color.b().saturating_sub(10),
+            )
+        } else {
+            clip_color(clip_index)
+        };
+        let bright_color = if is_title {
+            egui::Color32::from_rgb(90, 65, 130)
+        } else if is_offline {
+            egui::Color32::from_rgb(80, 45, 45)
+        } else if use_role_color {
+            egui::Color32::from_rgb(
+                role_color.r().saturating_add(20),
+                role_color.g().saturating_add(20),
+                role_color.b().saturating_add(20),
+            )
+        } else {
+            clip_color_bright(clip_index)
+        };
+
+        let (fill, border_color, border_width) = if is_being_dragged {
+            // Semi-transparent when being dragged so clips underneath are visible
+            let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
+            (f, egui::Color32::from_rgb(232, 160, 32), 2.0)
+        } else if is_selected {
+            (bright_color, egui::Color32::from_rgb(120, 160, 240), 2.0)
+        } else if is_multi_selected {
+            (bright_color, egui::Color32::from_rgb(80, 130, 220), 1.5)
+        } else if is_hovered {
+            (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
+        } else {
+            (base_color, bright_color, 1.0)
+        };
+
+        // Dim disabled clips
+        let (fill, border_color) = if is_disabled {
+            let dim = |c: egui::Color32| {
+                egui::Color32::from_rgba_unmultiplied(
+                    c.r() / 2, c.g() / 2, c.b() / 2, 160,
+                )
+            };
+            (dim(fill), dim(border_color))
+        } else {
+            (fill, border_color)
+        };
+
+        (fill, border_color, border_width, bright_color)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_video_rubber_band(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        track_kind: TrackKind,
+        interactive: bool,
+        pointer_pos: Option<egui::Pos2>,
+        pointer_down: bool,
+        is_selected: bool,
+        is_multi_selected: bool,
+    ) {
+        // ── Video parameter rubber band overlay ──────────────────────
+        // Drawn on video track clips that have keyframes for the selected video param.
+        // Mirrors the audio rubber band pattern with cyan/blue color scheme.
+        if track_kind != TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
+            let vrb_param = state.video_rubber_band_param;
+
+            // Read static values from builtin effects
+            let vrb_opacity_static = clip.builtin_effects.iter()
+                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                .unwrap_or(1.0);
+            let vrb_transform = clip.builtin_effects.iter()
+                .find_map(|e| match e {
+                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                        Some((*position_x, *position_y, *scale_x, *rotation)),
+                    _ => None,
+                })
+                .unwrap_or((0.0, 0.0, 1.0, 0.0));
+
+            // Read keyframes for the selected video parameter
+            let (vrb_static_val, vrb_keyframes) = match vrb_param {
+                klipp_core::VideoParam::Opacity => (vrb_opacity_static, clip.opacity_keyframes.clone()),
+                klipp_core::VideoParam::PositionX => (vrb_transform.0, clip.transform_pos_x_keyframes.clone()),
+                klipp_core::VideoParam::PositionY => (vrb_transform.1, clip.transform_pos_y_keyframes.clone()),
+                klipp_core::VideoParam::Scale => (vrb_transform.2, clip.transform_scale_keyframes.clone()),
+                klipp_core::VideoParam::Rotation => (vrb_transform.3, clip.transform_rotation_keyframes.clone()),
+            };
+
+            // Check if ANY video param has keyframes (for deciding whether to draw anything)
+            let has_any_video_kf = !clip.opacity_keyframes.is_empty()
+                || !clip.transform_pos_x_keyframes.is_empty()
+                || !clip.transform_pos_y_keyframes.is_empty()
+                || !clip.transform_scale_keyframes.is_empty()
+                || !clip.transform_rotation_keyframes.is_empty();
+
+            // Only draw when at least one video param has keyframes
+            if has_any_video_kf {
+                let vrb_keyframes = &vrb_keyframes[..];
+
+                // Auto-scale Y axis to actual keyframe values (with padding)
+                // so small value changes are clearly visible on the timeline
+                let mut vrb_val_min = vrb_static_val;
+                let mut vrb_val_max = vrb_static_val;
+                for kf in vrb_keyframes.iter() {
+                    if kf.value < vrb_val_min { vrb_val_min = kf.value; }
+                    if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+                }
+                // Add 20% padding on each side so curves don't touch edges
+                let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
+                let vrb_padding = vrb_val_span * 0.2;
+                let vrb_param_min = vrb_val_min - vrb_padding;
+                let vrb_param_range = vrb_val_span + vrb_padding * 2.0;
+
+                let vrb_clip_dur_secs = clip.duration().to_secs_f64();
+                let vrb_clip_painter = painter.with_clip_rect(clip_rect);
+
+                // Map param value to Y position within clip rect (min=bottom, max=top)
+                let vrb_value_to_y = |val: f32| -> f32 {
+                    let normalized = ((val - vrb_param_min) / vrb_param_range).clamp(0.0, 1.0);
+                    clip_rect.bottom() - normalized * clip_rect.height()
+                };
+
+                // Map time (relative to clip start) to X position
+                let vrb_time_to_x = |t: f64| -> f32 {
+                    let frac = if vrb_clip_dur_secs > 0.0 { (t / vrb_clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                    clip_rect.left() + frac as f32 * clip_rect.width()
+                };
+
+                // Cyan/blue color scheme for video (distinct from audio amber)
+                let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) = match vrb_param {
+                    klipp_core::VideoParam::Opacity => (
+                        egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220),
+                        egui::Color32::from_rgba_unmultiplied(70, 160, 230, 140),
+                        egui::Color32::from_rgba_unmultiplied(90, 200, 255, 250),
+                        egui::Color32::from_rgba_unmultiplied(80, 180, 255, 200),
+                    ),
+                    klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => (
+                        egui::Color32::from_rgba_unmultiplied(100, 220, 200, 220),
+                        egui::Color32::from_rgba_unmultiplied(90, 200, 180, 140),
+                        egui::Color32::from_rgba_unmultiplied(110, 240, 220, 250),
+                        egui::Color32::from_rgba_unmultiplied(100, 220, 200, 200),
+                    ),
+                    klipp_core::VideoParam::Scale => (
+                        egui::Color32::from_rgba_unmultiplied(140, 160, 255, 220),
+                        egui::Color32::from_rgba_unmultiplied(120, 140, 230, 140),
+                        egui::Color32::from_rgba_unmultiplied(160, 180, 255, 250),
+                        egui::Color32::from_rgba_unmultiplied(140, 160, 255, 200),
+                    ),
+                    klipp_core::VideoParam::Rotation => (
+                        egui::Color32::from_rgba_unmultiplied(180, 130, 255, 220),
+                        egui::Color32::from_rgba_unmultiplied(160, 110, 230, 140),
+                        egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
+                        egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
+                    ),
+                };
+                let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+                let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
+                let vrb_active_line_color = if is_selected || is_multi_selected { vrb_line_color } else { vrb_line_color_dim };
+                let vrb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
+                let vrb_shadow_width = vrb_line_width + 1.0;
+
+                // Draw param pill badge at bottom-left of clip
+                let vrb_param_label = match vrb_param {
+                    klipp_core::VideoParam::Opacity => "Opa",
+                    klipp_core::VideoParam::PositionX => "PosX",
+                    klipp_core::VideoParam::PositionY => "PosY",
+                    klipp_core::VideoParam::Scale => "Scl",
+                    klipp_core::VideoParam::Rotation => "Rot",
+                };
+                let vrb_pill_font = egui::FontId::proportional(9.0);
+                let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
+                let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
+                let vrb_pill_h = 14.0;
+                let vrb_pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - vrb_pill_h - 4.0);
+                let vrb_pill_rect = egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
+                if clip_rect.width() > 30.0 {
+                    let vrb_pill_bg = match vrb_param {
+                        klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
+                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
+                        klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
+                        klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
+                    };
+                    vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
+                    vrb_clip_painter.text(
+                        vrb_pill_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        vrb_param_label,
+                        vrb_pill_font,
+                        egui::Color32::WHITE,
+                    );
+                    // Click pill to cycle video param
+                    if interactive {
+                        if let Some(pos) = pointer_pos {
+                            if vrb_pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
+                                state.video_rubber_band_param = match vrb_param {
+                                    klipp_core::VideoParam::Opacity => klipp_core::VideoParam::PositionX,
+                                    klipp_core::VideoParam::PositionX => klipp_core::VideoParam::PositionY,
+                                    klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
+                                    klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
+                                    klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
+                                };
+                            }
+                        }
+                    }
+                }
+
+                if vrb_keyframes.is_empty() {
+                    // Selected param has no keyframes — draw flat line at static value
+                    let vy = vrb_value_to_y(vrb_static_val);
+                    vrb_clip_painter.line_segment(
+                        [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
+                        egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                    );
+                    vrb_clip_painter.line_segment(
+                        [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
+                        egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                    );
+                } else {
+                    // Draw curve by densely sampling evaluate() — this correctly renders
+                    // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
+                    let vrb_clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+
+                    // Dense sampling: evaluate the keyframe curve at many points across the clip
+                    let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
+                    let mut vrb_curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+                    for si in 0..=num_samples {
+                        let t_frac = si as f64 / num_samples as f64;
+                        let t_secs = t_frac * vrb_clip_time_range;
+                        let val = klipp_core::keyframe::evaluate(vrb_keyframes, t_secs, vrb_static_val);
+                        let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
+                        let y = vrb_value_to_y(val);
+                        vrb_curve_pts.push(egui::pos2(x, y));
+                    }
+
+                    // Draw shadow pass then color pass
+                    for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                        vrb_clip_painter.line_segment(
+                            [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                            egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                        );
+                    }
+                    for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                        vrb_clip_painter.line_segment(
+                            [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                            egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                        );
+                    }
+
+                    // Draw diamond markers at each keyframe
+                    let vrb_hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
+                        if !clip_rect.contains(pos) { return None; }
+                        let mut best: Option<(usize, f32)> = None;
+                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                                let kx = vrb_time_to_x(kf.time_secs);
+                                let ky = vrb_value_to_y(kf.value);
+                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                                if dist < 10.0
+                                    && best.is_none_or(|(_, bd)| dist < bd) {
+                                        best = Some((ki, dist));
+                                    }
+                            }
+                        }
+                        best.map(|(i, _)| i)
+                    });
+
+                    for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                            let cx = vrb_time_to_x(kf.time_secs);
+                            let cy = vrb_value_to_y(kf.value);
+                            let is_hovered = vrb_hovered_kf_idx == Some(ki);
+                            let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
+                            // Dark outline diamond behind for contrast
+                            let outline_d = d + 1.5;
+                            let outline_diamond = vec![
+                                egui::pos2(cx, cy - outline_d),
+                                egui::pos2(cx + outline_d, cy),
+                                egui::pos2(cx, cy + outline_d),
+                                egui::pos2(cx - outline_d, cy),
+                            ];
+                            vrb_clip_painter.add(egui::Shape::convex_polygon(
+                                outline_diamond,
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                                egui::Stroke::NONE,
+                            ));
+                            let fill = if is_hovered {
+                                egui::Color32::from_rgba_unmultiplied(
+                                    vrb_diamond_fill.r().saturating_add(30),
+                                    vrb_diamond_fill.g().saturating_add(30),
+                                    vrb_diamond_fill.b().saturating_add(30),
+                                    255,
+                                )
+                            } else {
+                                vrb_diamond_fill
+                            };
+                            let diamond = vec![
+                                egui::pos2(cx, cy - d),
+                                egui::pos2(cx + d, cy),
+                                egui::pos2(cx, cy + d),
+                                egui::pos2(cx - d, cy),
+                            ];
+                            let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
+                            vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
+
+                            // Show value tooltip on hover
+                            if is_hovered {
+                                let tooltip_text = match vrb_param {
+                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", kf.value * 100.0),
+                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
+                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
+                                    klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
+                                    klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
+                                };
+                                vrb_clip_painter.text(
+                                    egui::pos2(cx, cy - 14.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    tooltip_text,
+                                    egui::FontId::proportional(9.0),
+                                    vrb_active_line_color,
+                                );
+                            }
+
+                            // ── Bezier tangent handles (only when clip is selected) ──
+                            if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+                                let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
+                                let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
+                                let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                    vrb_active_line_color.r(), vrb_active_line_color.g(), vrb_active_line_color.b(), 120,
+                                );
+                                let vrb_handle_radius = 4.0_f32;
+
+                                // Tangent out handle (right)
+                                let vrb_tout_x = cx + kf.tangent_out.0 as f32 * vrb_pixels_per_sec;
+                                let vrb_tout_y = cy - kf.tangent_out.1 * vrb_bz_value_scale;
+                                vrb_clip_painter.line_segment(
+                                    [egui::pos2(cx, cy), egui::pos2(vrb_tout_x, vrb_tout_y)],
+                                    egui::Stroke::new(1.0, vrb_tangent_line_color),
+                                );
+                                vrb_clip_painter.circle(
+                                    egui::pos2(vrb_tout_x, vrb_tout_y),
+                                    vrb_handle_radius,
+                                    vrb_active_line_color,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                );
+
+                                // Tangent in handle (left)
+                                let vrb_tin_x = cx + kf.tangent_in.0 as f32 * vrb_pixels_per_sec;
+                                let vrb_tin_y = cy - kf.tangent_in.1 * vrb_bz_value_scale;
+                                vrb_clip_painter.line_segment(
+                                    [egui::pos2(cx, cy), egui::pos2(vrb_tin_x, vrb_tin_y)],
+                                    egui::Stroke::new(1.0, vrb_tangent_line_color),
+                                );
+                                vrb_clip_painter.circle(
+                                    egui::pos2(vrb_tin_x, vrb_tin_y),
+                                    vrb_handle_radius,
+                                    vrb_active_line_color,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                );
+                            }
+                        }
+                    }
+
+                    // ── Video keyframe interaction ───────────────────────
+                    if interactive {
+                        if let Some(pos) = pointer_pos {
+                            if clip_rect.contains(pos) {
+                                let vrb_clip_id = clip.id;
+                                let vrb_clip_time_range_i = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+
+                                // Check if hovering near a video bezier tangent handle
+                                let mut vrb_nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                                if (is_selected || is_multi_selected) && state.dragging_video_bezier_handle.is_none() {
+                                    let vrb_pps_h = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
+                                    let vrb_vs_h = clip_rect.height() / vrb_param_range;
+                                    for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                                        if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                                        if kf.time_secs < 0.0 || kf.time_secs > vrb_clip_time_range_i { continue; }
+                                        let cx_h = vrb_time_to_x(kf.time_secs);
+                                        let cy_h = vrb_value_to_y(kf.value);
+                                        // Tangent out handle
+                                        let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
+                                        let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
+                                        let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                                        if dist_out < 8.0
+                                            && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
+                                                vrb_nearest_bezier_handle = Some((ki, true, dist_out));
+                                            }
+                                        // Tangent in handle
+                                        let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
+                                        let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
+                                        let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                                        if dist_in < 8.0
+                                            && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
+                                                vrb_nearest_bezier_handle = Some((ki, false, dist_in));
+                                            }
+                                    }
+                                }
+
+                                // Cursor feedback
+                                let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
+                                let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
+                                if is_dragging_vrb_kf || is_dragging_vrb_bezier {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                } else if vrb_nearest_bezier_handle.is_some() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                } else if vrb_hovered_kf_idx.is_some() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                }
+
+                                // Double-click diamond to delete keyframe
+                                if let Some(ki) = vrb_hovered_kf_idx {
+                                    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                                        let kf = &vrb_keyframes[ki];
+                                        cmds.push(AppCommand::RemoveVideoKeyframe {
+                                            clip_id: vrb_clip_id,
+                                            param: vrb_param,
+                                            time_secs: kf.time_secs,
+                                        });
+                                    }
+                                }
+
+                                // Click diamond to select
+                                if let Some(ki) = vrb_hovered_kf_idx {
+                                    if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() {
+                                        state.selected_keyframe = Some(crate::state::SelectedKeyframe {
+                                            clip_id: vrb_clip_id,
+                                            param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                            keyframe_index: ki,
+                                        });
+                                    }
+                                }
+
+                                // Right-click: open interpolation context menu
+                                if ui.input(|i| i.pointer.secondary_released()) {
+                                    let target_ki = vrb_hovered_kf_idx.or_else(|| {
+                                        state.selected_keyframe.as_ref()
+                                            .filter(|sk| sk.clip_id == vrb_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Video(vrb_param))
+                                            .map(|sk| sk.keyframe_index)
+                                    });
+                                    if let Some(ki) = target_ki {
+                                        if ki < vrb_keyframes.len() {
+                                            state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                                clip_id: vrb_clip_id,
+                                                param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                                keyframe_index: ki,
+                                                screen_pos: pos,
+                                            });
+                                            self.suppress_clip_context_menu = true;
+                                        }
+                                    }
+                                }
+
+                                // Click empty area to deselect
+                                if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
+                                    && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
+                                        state.selected_keyframe = None;
+                                    }
+
+                                // ── Start video bezier tangent handle drag ──
+                                if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
+                                    if pointer_down && state.dragging_video_bezier_handle.is_none()
+                                        && state.dragging_video_keyframe.is_none()
+                                        && state.dragging_fade_handle.is_none()
+                                    {
+                                        let drag_key = format!("kf:vtangent:{}:{:?}:{}", vrb_clip_id.0, vrb_param, vbh_ki);
+                                        cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
+                                        state.dragging_video_bezier_handle = Some(crate::state::BezierVideoHandleDrag {
+                                            clip_id: vrb_clip_id,
+                                            param: vrb_param,
+                                            keyframe_index: vbh_ki,
+                                            is_out: vbh_is_out,
+                                        });
+                                    }
+                                }
+
+                                // Start drag on keyframe diamond
+                                let vrb_alt_held = ui.input(|i| i.modifiers.alt);
+                                if vrb_hovered_kf_idx.is_some() && vrb_nearest_bezier_handle.is_none()
+                                    && pointer_down && state.dragging_video_keyframe.is_none()
+                                    && state.dragging_audio_keyframe.is_none()
+                                    && state.dragging_video_bezier_handle.is_none()
+                                    && state.dragging_fade_handle.is_none()
+                                    && !vrb_alt_held
+                                    && ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                                        if let Some(ki) = vrb_hovered_kf_idx {
+                                            let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
+                                            cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
+                                            state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
+                                                clip_id: vrb_clip_id,
+                                                param: vrb_param,
+                                                keyframe_index: ki,
+                                            });
+                                        }
+                                    }
+
+                                // Alt+click on rubber band line to add video keyframe
+                                if vrb_alt_held && vrb_hovered_kf_idx.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
+                                    // Compute Y of curve at pointer X
+                                    let vrb_x_frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                                    let vrb_hover_t = vrb_x_frac * vrb_clip_time_range;
+                                    let vrb_curve_y_at_ptr = vrb_value_to_y(
+                                        klipp_core::keyframe::evaluate(vrb_keyframes, vrb_hover_t, vrb_static_val),
+                                    );
+                                    let vrb_near_line = (pos.y - vrb_curve_y_at_ptr).abs() < 6.0;
+                                    if vrb_near_line {
+                                        // Inverse Y-to-value: normalized = (clip_rect.bottom() - y) / clip_rect.height()
+                                        let vrb_normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+                                        let vrb_click_val = vrb_param_min + vrb_normalized * vrb_param_range;
+                                        cmds.push(AppCommand::AddVideoKeyframe {
+                                            clip_id: vrb_clip_id,
+                                            param: vrb_param,
+                                            time_secs: vrb_hover_t,
+                                            value: vrb_click_val,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_audio_rubber_band(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        track_kind: TrackKind,
+        content_rect: &egui::Rect,
+        interactive: bool,
+        pointer_pos: Option<egui::Pos2>,
+        pointer_down: bool,
+        is_selected: bool,
+        is_multi_selected: bool,
+    ) {
+        // ── Audio parameter rubber band overlay ──────────────────────
+        // Drawn on audio track clips. Displays the parameter selected by rubber_band_param.
+        // For linked audio clips, reads keyframes from the linked video clip.
+        if track_kind == TrackKind::Audio && clip_rect.width() > 8.0 && !clip.kind.is_gap() && state.audio_show_rubber_band {
+            let rb_param = state.rubber_band_param;
+
+            // Resolve the clip that holds the keyframes (may be linked video clip)
+            // Clone keyframes to avoid borrow conflict with state mutation for drag interaction
+            let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve, klipp_timeline::ChannelConfig) {
+                let (static_val, kfs) = match rb_param {
+                    klipp_core::AudioParam::Volume => (c.volume, c.volume_keyframes.clone()),
+                    klipp_core::AudioParam::Pan => (c.pan, c.pan_keyframes.clone()),
+                    klipp_core::AudioParam::Gain => (c.gain, c.gain_keyframes.clone()),
+                };
+                (static_val, kfs, c.id, c.gain, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config)
+            };
+
+            let (kf_static_val, kf_keyframes, kf_clip_id, kf_gain, kf_pan, kf_fade_in, kf_fade_out, kf_fade_in_curve, kf_fade_out_curve, kf_channel_config) = if let Some(linked_id) = clip.linked_clip_id {
+                let mut found = resolve_clip(clip);
+                for t in &state.sequence().tracks {
+                    if let Some(vc) = t.find_clip(linked_id) {
+                        found = resolve_clip(vc);
+                        break;
+                    }
+                }
+                found
+            } else {
+                resolve_clip(clip)
+            };
+            // Also capture static volume for the flat-line drag command (always volume)
+            let kf_volume = if let Some(linked_id) = clip.linked_clip_id {
+                let mut v = clip.volume;
+                for t in &state.sequence().tracks {
+                    if let Some(vc) = t.find_clip(linked_id) { v = vc.volume; break; }
+                }
+                v
+            } else {
+                clip.volume
+            };
+            let kf_keyframes = &kf_keyframes[..];
+
+
+            // Auto-scale Y axis to actual keyframe values (with padding),
+            // matching the video rubber band approach so small changes are visible.
+            let mut val_min = kf_static_val;
+            let mut val_max = kf_static_val;
+            for kf in kf_keyframes.iter() {
+                if kf.value < val_min { val_min = kf.value; }
+                if kf.value > val_max { val_max = kf.value; }
+            }
+            // Add 20% padding on each side so curves don't touch edges
+            let val_span = (val_max - val_min).max(0.01);
+            let val_padding = val_span * 0.2;
+            let param_min = val_min - val_padding;
+            let param_range = val_span + val_padding * 2.0;
+
+            let clip_dur_secs = clip.duration().to_secs_f64();
+            let clip_painter = painter.with_clip_rect(clip_rect);
+
+            // Map param value to Y position within clip rect
+            // min = bottom, max = top
+            let value_to_y = |val: f32| -> f32 {
+                let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
+                clip_rect.bottom() - normalized * clip_rect.height()
+            };
+
+            // Map time (relative to clip start) to X position
+            let time_to_x = |t: f64| -> f32 {
+                let frac = if clip_dur_secs > 0.0 { (t / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                clip_rect.left() + frac as f32 * clip_rect.width()
+            };
+
+            // Color per param: amber=Volume, cyan=Pan, green=Gain
+            let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, _diamond_stroke_color) = match rb_param {
+                klipp_core::AudioParam::Volume => (
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
+                    egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140),
+                    egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
+                    egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240),
+                ),
+                klipp_core::AudioParam::Pan => (
+                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
+                    egui::Color32::from_rgba_unmultiplied(50, 180, 240, 140),
+                    egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
+                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
+                    egui::Color32::from_rgba_unmultiplied(30, 150, 200, 240),
+                ),
+                klipp_core::AudioParam::Gain => (
+                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
+                    egui::Color32::from_rgba_unmultiplied(50, 200, 90, 140),
+                    egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
+                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
+                    egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
+                ),
+            };
+            let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+            let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
+            let _diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
+            let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
+            let rb_line_width = if is_selected || is_multi_selected { 2.5 } else { 2.0 };
+            let rb_shadow_width = rb_line_width + 1.0;
+
+            // Draw param pill badge at top-left of clip (below clip name area)
+            let param_label = match rb_param {
+                klipp_core::AudioParam::Volume => "Vol",
+                klipp_core::AudioParam::Pan => "Pan",
+                klipp_core::AudioParam::Gain => "Gain",
+            };
+            // Measure text width to size the pill dynamically
+            let pill_font = egui::FontId::proportional(9.0);
+            let pill_text_galley = ui.painter().layout_no_wrap(param_label.to_string(), pill_font.clone(), egui::Color32::WHITE);
+            let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
+            let pill_h = 14.0;
+            let pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0);
+            let pill_rect = egui::Rect::from_min_size(pill_pos, egui::vec2(pill_w, pill_h));
+            // Only draw and handle clicks if clip is wide enough
+            if clip_rect.width() > 30.0 {
+                // Background: rubber band color at ~40% opacity
+                let pill_bg = match rb_param {
+                    klipp_core::AudioParam::Volume => egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100),
+                    klipp_core::AudioParam::Pan => egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100),
+                    klipp_core::AudioParam::Gain => egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100),
+                };
+                clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
+                clip_painter.text(
+                    pill_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    param_label,
+                    pill_font,
+                    egui::Color32::WHITE,
+                );
+                // Click pill to cycle param
+                if interactive {
+                    if let Some(pos) = pointer_pos {
+                        if pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
+                            state.rubber_band_param = match rb_param {
+                                klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
+                                klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
+                                klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
+                            };
+                        }
+                    }
+                }
+            }
+
+            if kf_keyframes.is_empty() {
+                // No keyframes: draw a single horizontal line at the static value
+                let y = value_to_y(kf_static_val);
+                // Shadow line behind for contrast
+                clip_painter.line_segment(
+                    [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
+                    egui::Stroke::new(rb_shadow_width, shadow_color),
+                );
+                clip_painter.line_segment(
+                    [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
+                    egui::Stroke::new(rb_line_width, active_line_color),
+                );
+            } else {
+                // Draw curve by densely sampling evaluate() — correctly renders
+                // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
+                let clip_time_range = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+
+                // Dense sampling: evaluate the keyframe curve at many points across the clip
+                let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
+                let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+                for si in 0..=num_samples {
+                    let t_frac = si as f64 / num_samples as f64;
+                    let t_secs = t_frac * clip_time_range;
+                    let val = klipp_core::keyframe::evaluate(kf_keyframes, t_secs, kf_static_val);
+                    let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
+                    let y = value_to_y(val);
+                    curve_pts.push(egui::pos2(x, y));
+                }
+
+                // Draw shadow pass then color pass
+                for i in 0..curve_pts.len().saturating_sub(1) {
+                    clip_painter.line_segment(
+                        [curve_pts[i], curve_pts[i + 1]],
+                        egui::Stroke::new(rb_shadow_width, shadow_color),
+                    );
+                }
+                for i in 0..curve_pts.len().saturating_sub(1) {
+                    clip_painter.line_segment(
+                        [curve_pts[i], curve_pts[i + 1]],
+                        egui::Stroke::new(rb_line_width, active_line_color),
+                    );
+                }
+
+                // Draw diamond markers at each keyframe
+                // Check if pointer is near any keyframe for hover effect
+                let hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
+                    if !clip_rect.contains(pos) { return None; }
+                    let mut best: Option<(usize, f32)> = None;
+                    for (ki, kf) in kf_keyframes.iter().enumerate() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
+                            let kx = time_to_x(kf.time_secs);
+                            let ky = value_to_y(kf.value);
+                            let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                            if dist < 10.0
+                                && best.is_none_or(|(_, bd)| dist < bd) {
+                                    best = Some((ki, dist));
+                                }
+                        }
+                    }
+                    best.map(|(i, _)| i)
+                });
+
+                for (ki, kf) in kf_keyframes.iter().enumerate() {
+                    if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
+                        let cx = time_to_x(kf.time_secs);
+                        let cy = value_to_y(kf.value);
+                        let is_hovered = hovered_kf_idx == Some(ki);
+                        let is_kf_selected = state.selected_keyframe.as_ref().is_some_and(|sk| {
+                            sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param) && sk.keyframe_index == ki
+                        });
+                        let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
+                        // Dark outline diamond behind for contrast
+                        let outline_d = d + 1.5;
+                        let outline_diamond = vec![
+                            egui::pos2(cx, cy - outline_d),
+                            egui::pos2(cx + outline_d, cy),
+                            egui::pos2(cx, cy + outline_d),
+                            egui::pos2(cx - outline_d, cy),
+                        ];
+                        clip_painter.add(egui::Shape::convex_polygon(
+                            outline_diamond,
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                            egui::Stroke::NONE,
+                        ));
+                        // Brighten fill on hover
+                        let fill = if is_hovered {
+                            egui::Color32::from_rgba_unmultiplied(
+                                diamond_fill.r().saturating_add(30),
+                                diamond_fill.g().saturating_add(30),
+                                diamond_fill.b().saturating_add(30),
+                                255,
+                            )
+                        } else {
+                            diamond_fill
+                        };
+                        let diamond = vec![
+                            egui::pos2(cx, cy - d),
+                            egui::pos2(cx + d, cy),
+                            egui::pos2(cx, cy + d),
+                            egui::pos2(cx - d, cy),
+                        ];
+                        let stroke = if is_kf_selected {
+                            egui::Stroke::new(2.0, egui::Color32::WHITE)
+                        } else {
+                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+                        };
+                        clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
+
+                        // ── Bezier tangent handles (only when clip is selected) ──
+                        if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+                            let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+                            let value_scale = clip_rect.height() / param_range;
+                            let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
+                            );
+                            let handle_radius = 4.0_f32;
+
+                            // Tangent out handle (right)
+                            let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
+                            let tout_y = cy - kf.tangent_out.1 * value_scale;
+                            clip_painter.line_segment(
+                                [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
+                                egui::Stroke::new(1.0, tangent_line_color),
+                            );
+                            clip_painter.circle(
+                                egui::pos2(tout_x, tout_y),
+                                handle_radius,
+                                active_line_color,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                            );
+
+                            // Tangent in handle (left)
+                            let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
+                            let tin_y = cy - kf.tangent_in.1 * value_scale;
+                            clip_painter.line_segment(
+                                [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
+                                egui::Stroke::new(1.0, tangent_line_color),
+                            );
+                            clip_painter.circle(
+                                egui::pos2(tin_x, tin_y),
+                                handle_radius,
+                                active_line_color,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // ── Rubber band interaction ──────────────────────────────────
+            if interactive {
+                if let Some(pos) = pointer_pos {
+                    if clip_rect.contains(pos) && content_rect.contains(pos) {
+                        let alt_held = ui.input(|i| i.modifiers.alt);
+                        let src_in_secs = clip.source_in.to_secs_f64();
+                        let src_out_secs = clip.source_out.to_secs_f64();
+
+                        // Helper: X position to time (relative to source_in)
+                        let x_to_time = |x: f32| -> f64 {
+                            let frac = ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                            frac * clip_dur_secs
+                        };
+                        // Helper: Y position to param value
+                        let y_to_value = |y: f32| -> f32 {
+                            let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
+                            param_min + normalized * param_range
+                        };
+
+                        // Check if hovering near a bezier tangent handle
+                        let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                        if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none() {
+                            let pixels_per_sec_h = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+                            let value_scale_h = clip_rect.height() / param_range;
+                            for (ki, kf) in kf_keyframes.iter().enumerate() {
+                                if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                                if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) { continue; }
+                                let cx_h = time_to_x(kf.time_secs);
+                                let cy_h = value_to_y(kf.value);
+                                // Tangent out handle
+                                let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
+                                let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                                let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                                if dist_out < 8.0
+                                    && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
+                                        nearest_bezier_handle = Some((ki, true, dist_out));
+                                    }
+                                // Tangent in handle
+                                let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
+                                let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                                let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                                if dist_in < 8.0
+                                    && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
+                                        nearest_bezier_handle = Some((ki, false, dist_in));
+                                    }
+                            }
+                        }
+
+                        // Check if hovering near a keyframe diamond (for drag start)
+                        let mut nearest_kf_idx: Option<usize> = None;
+                        let mut nearest_kf_dist = f32::MAX;
+                        for (ki, kf) in kf_keyframes.iter().enumerate() {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                                let kx = time_to_x(kf.time_secs);
+                                let ky = value_to_y(kf.value);
+                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                                if dist < 10.0 && dist < nearest_kf_dist {
+                                    nearest_kf_dist = dist;
+                                    nearest_kf_idx = Some(ki);
+                                }
+                            }
+                        }
+
+                        // Check if hovering near the rubber band line
+                        let rubber_band_y = if kf_keyframes.is_empty() {
+                            value_to_y(kf_static_val)
+                        } else {
+                            let t = x_to_time(pos.x);
+                            value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_static_val))
+                        };
+                        let near_line = (pos.y - rubber_band_y).abs() < 6.0;
+
+                        // ── Cursor feedback ──
+                        let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
+                        let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
+                        let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
+                        if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if nearest_bezier_handle.is_some() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        } else if nearest_kf_idx.is_some() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        } else if near_line {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                        }
+
+                        // ── Double-click diamond to delete keyframe ──
+                        if let Some(ki) = nearest_kf_idx {
+                            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                                let kf = &kf_keyframes[ki];
+                                cmds.push(AppCommand::RemoveAudioKeyframe {
+                                    clip_id: kf_clip_id,
+                                    param: rb_param,
+                                    time_secs: kf.time_secs,
+                                });
+                            }
+                        }
+
+                        // ── Click keyframe diamond to SELECT it ──
+                        if let Some(ki) = nearest_kf_idx {
+                            if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
+                                state.selected_keyframe = Some(crate::state::SelectedKeyframe {
+                                    clip_id: kf_clip_id,
+                                    param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
+                                    keyframe_index: ki,
+                                });
+                            }
+                        }
+
+                        // ── Right-click: open context menu for selected keyframe or nearest diamond ──
+                        if ui.input(|i| i.pointer.secondary_released()) {
+                            let target_ki = nearest_kf_idx.or_else(|| {
+                                // If no diamond nearby, use the selected keyframe if it's on this clip
+                                state.selected_keyframe.as_ref()
+                                    .filter(|sk| sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param))
+                                    .map(|sk| sk.keyframe_index)
+                            });
+                            if let Some(ki) = target_ki {
+                                if ki < kf_keyframes.len() {
+                                    state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                        clip_id: kf_clip_id,
+                                        param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
+                                        keyframe_index: ki,
+                                        screen_pos: pos,
+                                    });
+                                    self.suppress_clip_context_menu = true;
+                                }
+                            }
+                        }
+
+                        // ── Click empty area to deselect keyframe ──
+                        if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
+                            && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
+                                state.selected_keyframe = None;
+                            }
+
+                        // ── Start bezier tangent handle drag ──
+                        if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
+                            if pointer_down && state.dragging_bezier_handle.is_none()
+                                && state.dragging_audio_keyframe.is_none()
+                                && state.dragging_fade_handle.is_none()
+                            {
+                                let drag_key = format!("kf:tangent:{}:{:?}:{}", kf_clip_id.0, rb_param, bh_ki);
+                                cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
+                                state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
+                                    clip_id: kf_clip_id,
+                                    param: rb_param,
+                                    keyframe_index: bh_ki,
+                                    is_out: bh_is_out,
+                                });
+                            }
+                        }
+
+                        // Start keyframe drag only after mouse moves beyond threshold (3px)
+                        // This allows click-to-select without immediately starting a drag
+                        if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none()
+                            && pointer_down && state.dragging_audio_keyframe.is_none()
+                            && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none()
+                            && !alt_held
+                        {
+                            let dragged_far_enough = ui.input(|i| {
+                                i.pointer.is_decidedly_dragging()
+                            });
+                            if dragged_far_enough {
+                                if let Some(ki) = nearest_kf_idx {
+                                    let drag_key = format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
+                                    cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
+                                    state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                                        clip_id: kf_clip_id,
+                                        param: rb_param,
+                                        keyframe_index: ki,
+                                    });
+                                }
+                            }
+                        }
+
+                        // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
+                        if kf_keyframes.is_empty() && near_line && pointer_down
+                            && state.dragging_audio_keyframe.is_none()
+                            && state.dragging_rubber_band.is_none()
+                            && state.dragging_fade_handle.is_none()
+                            && !state.drag_drop.is_active() // don't start rubber band during drag-and-drop
+                            && !alt_held
+                        {
+                            state.dragging_rubber_band = Some(kf_clip_id);
+                        }
+
+                        // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
+                        if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
+                            && pointer_down {
+                                let new_val = y_to_value(pos.y);
+                                let (drag_gain, drag_volume, drag_pan) = match rb_param {
+                                    klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
+                                    klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
+                                    klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
+                                };
+                                cmds.push(AppCommand::UpdateClipAudio {
+                                    clip_id: kf_clip_id,
+                                    gain: drag_gain,
+                                    volume: drag_volume,
+                                    pan: drag_pan,
+                                    fade_in_secs: kf_fade_in,
+                                    fade_out_secs: kf_fade_out,
+                                    fade_in_curve: kf_fade_in_curve,
+                                    fade_out_curve: kf_fade_out_curve,
+                                    channel_config: kf_channel_config,
+                                });
+                                // Show tooltip with param-appropriate format
+                                let tooltip_text = match rb_param {
+                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
+                                    klipp_core::AudioParam::Pan => {
+                                        if new_val.abs() < 0.01 { "C".to_string() }
+                                        else if new_val < 0.0 { format!("L{:.0}", -new_val * 100.0) }
+                                        else { format!("R{:.0}", new_val * 100.0) }
+                                    }
+                                    klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
+                                };
+                                clip_painter.text(
+                                    egui::pos2(pos.x, pos.y - 14.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    tooltip_text,
+                                    egui::FontId::proportional(10.0),
+                                    active_line_color,
+                                );
+                            }
+
+                        // Alt+click on line to add keyframe (blocked during fade drag)
+                        if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
+                            let t = x_to_time(pos.x);
+                            let v = y_to_value(pos.y);
+                            cmds.push(AppCommand::AddAudioKeyframe {
+                                clip_id: kf_clip_id,
+                                param: rb_param,
+                                time_secs: t,
+                                value: v,
+                            });
+                        }
+
+                        // Show value tooltip when hovering near a keyframe
+                        if let Some(ki) = nearest_kf_idx {
+                            let kf = &kf_keyframes[ki];
+                            let tooltip_text = match rb_param {
+                                klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
+                                klipp_core::AudioParam::Pan => {
+                                    if kf.value.abs() < 0.01 { "C".to_string() }
+                                    else if kf.value < 0.0 { format!("L{:.0}", -kf.value * 100.0) }
+                                    else { format!("R{:.0}", kf.value * 100.0) }
+                                }
+                                klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
+                            };
+                            let kx = time_to_x(kf.time_secs);
+                            let ky = value_to_y(kf.value);
+                            clip_painter.text(
+                                egui::pos2(kx, ky - 14.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                tooltip_text,
+                                egui::FontId::proportional(9.0),
+                                active_line_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_fade_drag_handles(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        state: &AppState,
+        track_kind: TrackKind,
+        content_rect: &egui::Rect,
+        pointer_pos: Option<egui::Pos2>,
+    ) {
+        // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
+        // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
+        let clip_has_audio = track_kind == TrackKind::Audio
+            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+        let is_pointer_over_clip = pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
+        let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
+        let is_dragging_this_fade = state.dragging_fade_handle.is_some_and(|(id, _, _)| id == clip.id);
+        if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
+            && (is_hovered_or_selected || is_dragging_this_fade)
+        {
+            let handle_size = 6.0_f32;
+            let handle_color = egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220);
+            let handle_hover_color = egui::Color32::from_rgb(255, 220, 80);
+
+            // Resolve current fade values for visual positioning
+            let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
+                let mut fi = clip.fade_in_secs;
+                let mut fo = clip.fade_out_secs;
+                for t in &state.sequence().tracks {
+                    if let Some(vc) = t.find_clip(linked_id) {
+                        fi = vc.fade_in_secs;
+                        fo = vc.fade_out_secs;
+                        break;
+                    }
+                }
+                (fi, fo)
+            } else {
+                (clip.fade_in_secs, clip.fade_out_secs)
+            };
+            let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+
+            // Fade-in handle position: at the fade boundary (or clip left if no fade)
+            let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+            let fi_x = clip_rect.left() + fi_offset_px;
+            // Fade-out handle position: at the fade boundary (or clip right if no fade)
+            let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+            let fo_x = clip_rect.right() - fo_offset_px;
+
+            // Check if pointer is near a handle for hover highlight
+            let near_fi = pointer_pos.is_some_and(|p| {
+                (p.x - fi_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
+                    && clip_rect.contains(p) && content_rect.contains(p)
+            });
+            let near_fo = pointer_pos.is_some_and(|p| {
+                (p.x - fo_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
+                    && clip_rect.contains(p) && content_rect.contains(p)
+            });
+            let dragging_fi = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && is_in);
+            let dragging_fo = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && !is_in);
+
+            // Draw fade-in handle (triangle pointing right at top-left area)
+            let fi_color = if near_fi || dragging_fi { handle_hover_color } else { handle_color };
+            let fi_tri = vec![
+                egui::pos2(fi_x, clip_rect.top()),
+                egui::pos2(fi_x + handle_size, clip_rect.top()),
+                egui::pos2(fi_x, clip_rect.top() + handle_size),
+            ];
+            painter.add(egui::Shape::convex_polygon(fi_tri, fi_color, egui::Stroke::NONE));
+
+            // Draw fade-out handle (triangle pointing left at top-right area)
+            let fo_color = if near_fo || dragging_fo { handle_hover_color } else { handle_color };
+            let fo_tri = vec![
+                egui::pos2(fo_x, clip_rect.top()),
+                egui::pos2(fo_x - handle_size, clip_rect.top()),
+                egui::pos2(fo_x, clip_rect.top() + handle_size),
+            ];
+            painter.add(egui::Shape::convex_polygon(fo_tri, fo_color, egui::Stroke::NONE));
+
+            // Cursor feedback when hovering handles
+            if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+
+            // Hover tooltip labels for fade handles (only when not dragging)
+            if !dragging_fi && !dragging_fo && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+                let tip_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 180);
+                let tip_font = egui::FontId::proportional(8.0);
+                if near_fi {
+                    painter.text(
+                        egui::pos2(fi_x + 10.0, clip_rect.top() + 6.0),
+                        egui::Align2::LEFT_CENTER,
+                        "Drag to set fade in",
+                        tip_font,
+                        tip_color,
+                    );
+                } else if near_fo {
+                    painter.text(
+                        egui::pos2(fo_x - 10.0, clip_rect.top() + 6.0),
+                        egui::Align2::RIGHT_CENTER,
+                        "Drag to set fade out",
+                        tip_font,
+                        tip_color,
+                    );
+                }
+            }
+
+            // Draw visual feedback during fade handle drag
+            if dragging_fi || dragging_fo {
+                if let Some(pos) = pointer_pos {
+                    let boundary_x = if dragging_fi {
+                        pos.x.clamp(clip_rect.left(), clip_rect.right())
+                    } else {
+                        pos.x.clamp(clip_rect.left(), clip_rect.right())
+                    };
+                    // Vertical line at current drag position
+                    painter.line_segment(
+                        [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],
+                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 195, 50, 160)),
+                    );
+                    // Tooltip with duration
+                    let frac = if dragging_fi {
+                        ((boundary_x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0)
+                    } else {
+                        ((clip_rect.right() - boundary_x) / clip_rect.width()).clamp(0.0, 1.0)
+                    };
+                    let fade_dur = frac * clip_dur_secs;
+                    let label = if dragging_fi {
+                        format!("Fade In: {:.2}s", fade_dur)
+                    } else {
+                        format!("Fade Out: {:.2}s", fade_dur)
+                    };
+                    egui::show_tooltip_at_pointer(
+                        ui.ctx(), ui.layer_id(), ui.id().with("fade_handle_tooltip"),
+                        |ui: &mut egui::Ui| { ui.label(label); },
+                    );
+                }
+            }
+        }
+    }
+
+    fn draw_audio_crossfade_indicators(
+        &self,
+        painter: &egui::Painter,
+        clips: &[klipp_timeline::Clip],
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        state: &AppState,
+        track_kind: TrackKind,
+        fps: klipp_core::Fps,
+        zoom: f32,
+        scroll: f32,
+    ) {
+        // Draw audio crossfade indicators at adjacent clip boundaries
+        if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
+            let frame_dur = 1.0 / fps.rate() as f64;
+            for i in 0..clips.len().saturating_sub(1) {
+                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
+                let end_secs = clips[i].timeline_out.to_secs_f64();
+                let start_secs = clips[i + 1].timeline_in.to_secs_f64();
+                // Adjacent within 1 frame tolerance
+                if (end_secs - start_secs).abs() <= frame_dur * 1.5 {
+                    let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;
+                    // Only draw if visible
+                    if boundary_x >= content_rect.left() - 10.0 && boundary_x <= content_rect.right() + 10.0 {
+                        let cy = track_rect.center().y;
+                        let s = 5.0_f32; // half-size of the X
+                        let xf_color = egui::Color32::from_rgba_unmultiplied(180, 220, 255, 140);
+                        // Draw "X" crossfade indicator
+                        painter.line_segment(
+                            [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
+                            egui::Stroke::new(1.5, xf_color),
+                        );
+                        painter.line_segment(
+                            [egui::pos2(boundary_x - s, cy + s), egui::pos2(boundary_x + s, cy - s)],
+                            egui::Stroke::new(1.5, xf_color),
+                        );
+                        // Small overlapping fade triangles
+                        let tri_h = 4.0_f32;
+                        let tri_w = 6.0_f32;
+                        let top_y = cy - s - 4.0;
+                        // Left fade-out triangle (filled)
+                        let tri_out = vec![
+                            egui::pos2(boundary_x - tri_w, top_y),
+                            egui::pos2(boundary_x, top_y),
+                            egui::pos2(boundary_x - tri_w, top_y + tri_h),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            tri_out, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
+                        ));
+                        // Right fade-in triangle (filled)
+                        let tri_in = vec![
+                            egui::pos2(boundary_x, top_y),
+                            egui::pos2(boundary_x + tri_w, top_y),
+                            egui::pos2(boundary_x + tri_w, top_y + tri_h),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            tri_in, egui::Color32::from_rgba_unmultiplied(180, 220, 255, 80), egui::Stroke::NONE,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_anchor_connection_lines(
+        &self,
+        painter: &egui::Painter,
+        clips: &[klipp_timeline::Clip],
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        state: &AppState,
+        zoom: f32,
+        scroll: f32,
+    ) {
+        // Draw anchor connection lines for connected clips
+        for clip in clips {
+            if let Some(ref anchor) = clip.magnetic_anchor {
+                if let Some(primary_idx) = state.sequence().primary_track_index() {
+                    let anchor_clip = state.sequence().tracks[primary_idx].clips.iter()
+                        .find(|c| c.id == anchor.anchor_clip_id);
+                    if let Some(ac) = anchor_clip {
+                        let anchor_x = content_rect.left()
+                            + (ac.timeline_in.to_secs_f64() as f32 + anchor.offset.to_secs_f64() as f32) * zoom
+                            - scroll;
+
+                        // Only draw if visible
+                        if anchor_x >= content_rect.left() - 10.0 && anchor_x <= content_rect.right() + 10.0 {
+                            let _clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let clip_top = track_rect.top();
+
+                            // Find primary track rect for the bottom of the line
+                            let primary_bottom = self.frame_cache.track_rects.iter()
+                                .find(|(idx, _, _)| *idx == primary_idx)
+                                .map(|(_, _, r)| r.bottom())
+                                .unwrap_or(track_rect.bottom());
+
+                            let line_color = egui::Color32::from_rgba_unmultiplied(232, 160, 32, 160);
+
+                            // Dashed vertical line
+                            let dash_len = 5.0_f32;
+                            let gap_len = 3.0_f32;
+                            let start_y = clip_top.min(primary_bottom);
+                            let end_y = clip_top.max(primary_bottom);
+                            let mut y = start_y;
+                            while y < end_y {
+                                let dash_end = (y + dash_len).min(end_y);
+                                painter.line_segment(
+                                    [egui::pos2(anchor_x, y), egui::pos2(anchor_x, dash_end)],
+                                    egui::Stroke::new(1.0, line_color),
+                                );
+                                y += dash_len + gap_len;
+                            }
+
+                            // Anchor dot on the primary track
+                            painter.circle_filled(
+                                egui::pos2(anchor_x, primary_bottom),
+                                3.0,
+                                line_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_collision_indicators(
+        &self,
+        painter: &egui::Painter,
+        clips: &[klipp_timeline::Clip],
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        state: &AppState,
+        track_idx: usize,
+        zoom: f32,
+        scroll: f32,
+    ) {
+        // Draw collision indicators for overlapping clips on connected tracks
+        if state.sequence().tracks.get(track_idx).is_some_and(|t| {
+            t.magnetic_role == klipp_timeline::TrackRole::Connected
+                || t.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline
+        }) {
+            for (ci, clip) in clips.iter().enumerate() {
+                if clip.kind.is_gap() { continue; }
+                for (oi, other) in clips.iter().enumerate() {
+                    if ci >= oi { continue; }
+                    if other.kind.is_gap() { continue; }
+                    // Check overlap
+                    if clip.timeline_in < other.timeline_out && clip.timeline_out > other.timeline_in {
+                        let overlap_start = if clip.timeline_in > other.timeline_in { clip.timeline_in } else { other.timeline_in };
+                        let overlap_end = if clip.timeline_out < other.timeline_out { clip.timeline_out } else { other.timeline_out };
+                        let ox = content_rect.left() + overlap_start.to_secs_f64() as f32 * zoom - scroll;
+                        let ow = (overlap_end - overlap_start).to_secs_f64() as f32 * zoom;
+                        let overlap_rect = egui::Rect::from_min_size(
+                            egui::pos2(ox, track_rect.top() + 2.0),
+                            egui::vec2(ow, track_rect.height() - 4.0),
+                        );
+                        if overlap_rect.right() < content_rect.left() || overlap_rect.left() > content_rect.right() {
+                            continue;
+                        }
+                        // Amber striped overlay
+                        let stripe_color = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 80);
+                        let stripe_spacing = 6.0_f32;
+                        let clip_painter = painter.with_clip_rect(overlap_rect);
+                        let mut sx = overlap_rect.min.x - overlap_rect.height();
+                        while sx < overlap_rect.max.x {
+                            let p1 = egui::pos2(sx, overlap_rect.max.y);
+                            let p2 = egui::pos2(sx + overlap_rect.height(), overlap_rect.min.y);
+                            clip_painter.line_segment([p1, p2], egui::Stroke::new(1.5, stripe_color));
+                            sx += stripe_spacing;
+                        }
+                        // Amber border
+                        painter.rect_stroke(overlap_rect, 2.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(0xff, 0xc8, 0x00)));
+                    }
+                }
+            }
+        }
     }
 
     /// Compute the visual rect for a clip on screen.

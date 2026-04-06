@@ -1983,7 +1983,101 @@ impl KlippApp {
         }
     }
 
-    fn handle_timeline_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+    fn create_compound_clip_impl(&mut self, name: String) {
+        let mut target_clips: Vec<klipp_core::ClipId> = self.state.selected_clips.clone();
+        if let Some(primary) = self.state.selected_clip {
+            if !target_clips.contains(&primary) {
+                target_clips.push(primary);
+            }
+        }
+        if target_clips.is_empty() {
+            self.state.toast.show("Select clips first".to_string());
+            return;
+        }
+
+        let active_idx = self.state.active_sequence_idx;
+        let fps = self.state.sequences[active_idx].fps;
+        let res = self.state.sequences[active_idx].resolution;
+
+        // Collect the clips and find the time range
+        let seq = &self.state.sequences[active_idx];
+        let mut collected: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
+        for (ti, track) in seq.tracks.iter().enumerate() {
+            for (ci, clip) in track.clips.iter().enumerate() {
+                if target_clips.contains(&clip.id) {
+                    collected.push((ti, ci, clip.clone()));
+                }
+            }
+        }
+        if collected.is_empty() { return; }
+
+        let range_start = collected.iter().map(|(_, _, c)| c.timeline_in).min().unwrap();
+        let range_end = collected.iter().map(|(_, _, c)| c.timeline_out).max().unwrap();
+
+        // Create new sequence with same fps/resolution
+        let mut nested_seq = klipp_timeline::Sequence {
+            id: klipp_core::SequenceId::new(),
+            name: name.clone(),
+            fps,
+            resolution: res,
+            tracks: Vec::new(),
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+        };
+
+        // Reproduce track structure and move clips (offset to start at 0)
+        let parent_seq = &self.state.sequences[active_idx];
+        for (ti, track) in parent_seq.tracks.iter().enumerate() {
+            let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
+            for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
+                let mut c = clip.clone();
+                c.timeline_in -= range_start;
+                c.timeline_out -= range_start;
+                new_track.clips.push(c);
+            }
+            if !new_track.clips.is_empty() {
+                new_track.sort_clips();
+                nested_seq.tracks.push(new_track);
+            }
+        }
+
+        let nested_seq_id = nested_seq.id;
+        self.state.sequences.push(nested_seq);
+
+        // Remove original clips from parent and insert compound clip
+        let parent_seq = &mut self.state.sequences[active_idx];
+        // Find the first track that had selected clips
+        let first_track_idx = collected.first().map(|(ti, _, _)| *ti).unwrap_or(0);
+        for (ti, _, clip) in &collected {
+            if let Some(track) = parent_seq.tracks.get_mut(*ti) {
+                track.clips.retain(|c| c.id != clip.id);
+            }
+        }
+        // Insert compound clip on the first track at the range start
+        let compound_clip = klipp_timeline::Clip::sequence(nested_seq_id, range_start, range_end);
+        let compound_id = compound_clip.id;
+        if let Some(track) = parent_seq.tracks.get_mut(first_track_idx) {
+            track.clips.push(compound_clip);
+            track.sort_clips();
+        }
+
+        self.state.selected_clip = Some(compound_id);
+        self.state.selected_clips.clear();
+        self.state.toast.show(format!("Created compound clip \"{}\"", name));
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
+    }
+
+    fn handle_timeline_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_timeline_track_creation(cmd, needs_refresh) { return true; }
+        if self.handle_timeline_navigation_markers(cmd, needs_refresh) { return true; }
+        if self.handle_timeline_editing(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn handle_timeline_track_creation(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 // Phase 4: Track properties
                 AppCommand::SetTrackOpacity { track_index, opacity } => {
@@ -2108,91 +2202,7 @@ impl KlippApp {
                 }
                 // Create compound clip: move selected clips into a new nested sequence
                 AppCommand::CreateCompoundClip { name } => {
-                    let name = name.clone();
-                    let mut target_clips: Vec<klipp_core::ClipId> = self.state.selected_clips.clone();
-                    if let Some(primary) = self.state.selected_clip {
-                        if !target_clips.contains(&primary) {
-                            target_clips.push(primary);
-                        }
-                    }
-                    if target_clips.is_empty() {
-                        self.state.toast.show("Select clips first".to_string());
-                        return true;
-                    }
-
-                    let active_idx = self.state.active_sequence_idx;
-                    let fps = self.state.sequences[active_idx].fps;
-                    let res = self.state.sequences[active_idx].resolution;
-
-                    // Collect the clips and find the time range
-                    let seq = &self.state.sequences[active_idx];
-                    let mut collected: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
-                    for (ti, track) in seq.tracks.iter().enumerate() {
-                        for (ci, clip) in track.clips.iter().enumerate() {
-                            if target_clips.contains(&clip.id) {
-                                collected.push((ti, ci, clip.clone()));
-                            }
-                        }
-                    }
-                    if collected.is_empty() { return true; }
-
-                    let range_start = collected.iter().map(|(_, _, c)| c.timeline_in).min().unwrap();
-                    let range_end = collected.iter().map(|(_, _, c)| c.timeline_out).max().unwrap();
-
-                    // Create new sequence with same fps/resolution
-                    let mut nested_seq = klipp_timeline::Sequence {
-                        id: klipp_core::SequenceId::new(),
-                        name: name.clone(),
-                        fps,
-                        resolution: res,
-                        tracks: Vec::new(),
-                        in_point: None,
-                        out_point: None,
-                        markers: Vec::new(),
-                        last_playhead: None,
-                    };
-
-                    // Reproduce track structure and move clips (offset to start at 0)
-                    let parent_seq = &self.state.sequences[active_idx];
-                    for (ti, track) in parent_seq.tracks.iter().enumerate() {
-                        let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
-                        for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
-                            let mut c = clip.clone();
-                            c.timeline_in -= range_start;
-                            c.timeline_out -= range_start;
-                            new_track.clips.push(c);
-                        }
-                        if !new_track.clips.is_empty() {
-                            new_track.sort_clips();
-                            nested_seq.tracks.push(new_track);
-                        }
-                    }
-
-                    let nested_seq_id = nested_seq.id;
-                    self.state.sequences.push(nested_seq);
-
-                    // Remove original clips from parent and insert compound clip
-                    let parent_seq = &mut self.state.sequences[active_idx];
-                    // Find the first track that had selected clips
-                    let first_track_idx = collected.first().map(|(ti, _, _)| *ti).unwrap_or(0);
-                    for (ti, _, clip) in &collected {
-                        if let Some(track) = parent_seq.tracks.get_mut(*ti) {
-                            track.clips.retain(|c| c.id != clip.id);
-                        }
-                    }
-                    // Insert compound clip on the first track at the range start
-                    let compound_clip = klipp_timeline::Clip::sequence(nested_seq_id, range_start, range_end);
-                    let compound_id = compound_clip.id;
-                    if let Some(track) = parent_seq.tracks.get_mut(first_track_idx) {
-                        track.clips.push(compound_clip);
-                        track.sort_clips();
-                    }
-
-                    self.state.selected_clip = Some(compound_id);
-                    self.state.selected_clips.clear();
-                    self.state.toast.show(format!("Created compound clip \"{}\"", name));
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
+                    self.create_compound_clip_impl(name.clone());
                     return true;
                 }
                 // Open compound clip: drill into nested sequence
@@ -2298,6 +2308,12 @@ impl KlippApp {
                     return true;
                 }
                 // Fit timeline zoom to show all clips
+                _ => return false,
+        }
+    }
+
+    fn handle_timeline_navigation_markers(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::FitTimelineToWindow => {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let max_secs = seq.tracks.iter()
@@ -2476,6 +2492,12 @@ impl KlippApp {
                     return true;
                 }
                 // Phase 4: Source monitor
+                _ => return false,
+        }
+    }
+
+    fn handle_timeline_editing(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::LoadSourceMedia { media_id } => {
                     // Clear stale source I/O from previous source clip
                     if let Some(old_mid) = self.state.source_media_id {
@@ -2786,79 +2808,196 @@ impl KlippApp {
         }
     }
 
-    fn handle_clip_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+    fn remove_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
+        if self.clip_track_is_locked(&clip_id) { return; }
+
+        // Check if this clip is on a magnetic track
+        let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .position(|t| t.clips.iter().any(|c| c.id == clip_id));
+
+        if let Some(ti) = track_index {
+            if self.is_magnetic_track(ti) {
+                // Magnetic path: ripple delete
+                let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
+                    &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
+                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                if self.state.selected_clip == Some(clip_id) {
+                    self.state.selected_clip = None;
+                }
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+            } else {
+                // Legacy path (existing code)
+                let linked_id = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.linked_clip_id);
+
+                let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti];
+                let pos = track.clips.iter().position(|c| c.id == clip_id);
+                if let Some(pos) = pos {
+                    let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                        .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                        .collect();
+                    if let Some(removed) = track.ripple_remove(clip_id) {
+                        self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyRippleRemove {
+                            removed_clip: removed,
+                            track_index: ti,
+                            position: pos,
+                            shifted_clips: shifted,
+                        } });
+                    }
+                }
+                if self.state.selected_clip == Some(clip_id) {
+                    self.state.selected_clip = None;
+                }
+                // Also remove linked partner
+                if let Some(lid) = linked_id {
+                    let ltrack_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                        .position(|t| t.clips.iter().any(|c| c.id == lid));
+                    if let Some(lti) = ltrack_index {
+                        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[lti];
+                        let pos = track.clips.iter().position(|c| c.id == lid);
+                        if let Some(pos) = pos {
+                            let shifted: Vec<_> = track.clips[pos + 1..].iter()
+                                .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                .collect();
+                            if let Some(removed) = track.ripple_remove(lid) {
+                                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyRippleRemove {
+                                    removed_clip: removed,
+                                    track_index: lti,
+                                    position: pos,
+                                    shifted_clips: shifted,
+                                } });
+                            }
+                        }
+                    }
+                }
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+            }
+        }
+    }
+
+    fn blade_clip_at(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
+        if self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).is_some_and(|t| t.locked) { return; }
+        let ti = track_index;
+        let cid = clip_id;
+        let cut = cut_at;
+
+        // Find linked partner clip info BEFORE the blade modifies the sequence
+        let linked_info = self.state.sequences[self.state.active_sequence_idx].tracks[ti]
+            .find_clip(cid)
+            .and_then(|c| c.linked_clip_id)
+            .and_then(|lid| {
+                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    .enumerate()
+                    .find_map(|(track_i, track)| {
+                        track.find_clip(lid).map(|_| (track_i, lid))
+                    })
+            });
+
+        if self.is_magnetic_track(ti) {
+            // Magnetic blade
+            let result = klipp_timeline::magnetic::MagneticEditor::blade(
+                &mut self.state.sequences[self.state.active_sequence_idx], cid, cut);
+            self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+            self.state.dirty = true;
+        } else {
+            // Legacy blade (existing code)
+            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
+                let original = track.find_clip(cid).cloned();
+                let position = track.clips.iter().position(|c| c.id == cid);
+                if let (Some(original), Some(pos)) = (original, position) {
+                    if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
+                        self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyBladeClip {
+                            track_index: ti,
+                            original_clip: original,
+                            clip_a,
+                            clip_b,
+                            position: pos,
+                        } });
+                        self.state.dirty = true;
+                    }
+                }
+            }
+        }
+
+        // Blade the linked partner clip at the same cut point and re-link
+        if let Some((partner_track_i, partner_id)) = linked_info {
+            // Check partner clip spans the cut point and get track role
+            let partner_spans = self.state.sequences[self.state.active_sequence_idx]
+                .tracks[partner_track_i]
+                .find_clip(partner_id)
+                .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
+            let partner_is_magnetic = self.is_magnetic_track(partner_track_i);
+
+            if partner_spans {
+                if partner_is_magnetic {
+                    let result = klipp_timeline::magnetic::MagneticEditor::blade(
+                        &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut);
+                    self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
+                } else {
+                    let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[partner_track_i];
+                    let original = track.find_clip(partner_id).cloned();
+                    let position = track.clips.iter().position(|c| c.id == partner_id);
+                    if let (Some(original), Some(pos)) = (original, position) {
+                        if let Some((pa, pb)) = track.blade_at(partner_id, cut) {
+                            self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyBladeClip {
+                                track_index: partner_track_i,
+                                original_clip: original,
+                                clip_a: pa,
+                                clip_b: pb,
+                                position: pos,
+                            } });
+                        }
+                    }
+                }
+
+                // Re-link: find the two halves on each track and cross-link them
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let video_halves: Vec<ClipId> = seq.tracks[ti].clips.iter()
+                    .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
+                    .map(|c| c.id)
+                    .collect();
+                let audio_halves: Vec<ClipId> = seq.tracks[partner_track_i].clips.iter()
+                    .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
+                    .map(|c| c.id)
+                    .collect();
+
+                for vid_id in &video_halves {
+                    let vid_out = seq.tracks[ti].find_clip(*vid_id).map(|c| c.timeline_out);
+                    for aud_id in &audio_halves {
+                        let aud_out = seq.tracks[partner_track_i].find_clip(*aud_id).map(|c| c.timeline_out);
+                        if vid_out == aud_out {
+                            if let Some(vc) = seq.tracks[ti].find_clip_mut(*vid_id) {
+                                vc.linked_clip_id = Some(*aud_id);
+                            }
+                            if let Some(ac) = seq.tracks[partner_track_i].find_clip_mut(*aud_id) {
+                                ac.linked_clip_id = Some(*vid_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.sync_sequence_to_engine();
+    }
+
+    fn handle_clip_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_clip_basic_ops(cmd, needs_refresh) { return true; }
+        if self.handle_clip_selection_role(cmd, needs_refresh) { return true; }
+        if self.handle_clip_edit_misc(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn handle_clip_basic_ops(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 // LoadMediaFile, ImportMedia, AppendClip, AppendClipToTrack,
                 // ImportMediaLinked — handled by handle_media_commands
                 AppCommand::RemoveClip { clip_id } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
-
-                    // Check if this clip is on a magnetic track
-                    let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.clips.iter().any(|c| c.id == *clip_id));
-
-                    if let Some(ti) = track_index {
-                        if self.is_magnetic_track(ti) {
-                            // Magnetic path: ripple delete
-                            let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
-                                &mut self.state.sequences[self.state.active_sequence_idx], *clip_id);
-                            self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
-                            if self.state.selected_clip == Some(*clip_id) {
-                                self.state.selected_clip = None;
-                            }
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
-                        } else {
-                            // Legacy path (existing code)
-                            let linked_id = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                .flat_map(|t| t.clips.iter())
-                                .find(|c| c.id == *clip_id)
-                                .and_then(|c| c.linked_clip_id);
-
-                            let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti];
-                            let pos = track.clips.iter().position(|c| c.id == *clip_id);
-                            if let Some(pos) = pos {
-                                let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                    .collect();
-                                if let Some(removed) = track.ripple_remove(*clip_id) {
-                                    self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyRippleRemove {
-                                        removed_clip: removed,
-                                        track_index: ti,
-                                        position: pos,
-                                        shifted_clips: shifted,
-                                    } });
-                                }
-                            }
-                            if self.state.selected_clip == Some(*clip_id) {
-                                self.state.selected_clip = None;
-                            }
-                            // Also remove linked partner
-                            if let Some(lid) = linked_id {
-                                let ltrack_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.clips.iter().any(|c| c.id == lid));
-                                if let Some(lti) = ltrack_index {
-                                    let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[lti];
-                                    let pos = track.clips.iter().position(|c| c.id == lid);
-                                    if let Some(pos) = pos {
-                                        let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                                            .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                            .collect();
-                                        if let Some(removed) = track.ripple_remove(lid) {
-                                            self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyRippleRemove {
-                                                removed_clip: removed,
-                                                track_index: lti,
-                                                position: pos,
-                                                shifted_clips: shifted,
-                                            } });
-                                        }
-                                    }
-                                }
-                            }
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
-                        }
-                    }
+                    self.remove_clip_impl(*clip_id);
                     return true;
                 }
                 AppCommand::MoveClip {
@@ -3162,6 +3301,12 @@ impl KlippApp {
                 // Undo/Redo/RubberBand/SequenceUpdated — handled by handle_playback_commands
                 // Export/RenderQueue/Preferences — handled by handle_export_commands
                 // SetSpeed — handled by handle_playback_commands (forwards to engine)
+                _ => return false,
+        }
+    }
+
+    fn handle_clip_selection_role(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::SelectClip(id) => {
                     self.state.selected_clip = *id;
                     // Show title overlay immediately when selecting a title clip
@@ -3203,111 +3348,15 @@ impl KlippApp {
 
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
-                    if self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index).is_some_and(|t| t.locked) { return true; }
-                    let ti = *track_index;
-                    let cid = *clip_id;
-                    let cut = *cut_at;
-
-                    // Find linked partner clip info BEFORE the blade modifies the sequence
-                    let linked_info = self.state.sequences[self.state.active_sequence_idx].tracks[ti]
-                        .find_clip(cid)
-                        .and_then(|c| c.linked_clip_id)
-                        .and_then(|lid| {
-                            self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                .enumerate()
-                                .find_map(|(track_i, track)| {
-                                    track.find_clip(lid).map(|_| (track_i, lid))
-                                })
-                        });
-
-                    if self.is_magnetic_track(ti) {
-                        // Magnetic blade
-                        let result = klipp_timeline::magnetic::MagneticEditor::blade(
-                            &mut self.state.sequences[self.state.active_sequence_idx], cid, cut);
-                        self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
-                        self.state.dirty = true;
-                    } else {
-                        // Legacy blade (existing code)
-                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
-                            let original = track.find_clip(cid).cloned();
-                            let position = track.clips.iter().position(|c| c.id == cid);
-                            if let (Some(original), Some(pos)) = (original, position) {
-                                if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
-                                    self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyBladeClip {
-                                        track_index: ti,
-                                        original_clip: original,
-                                        clip_a,
-                                        clip_b,
-                                        position: pos,
-                                    } });
-                                    self.state.dirty = true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Blade the linked partner clip at the same cut point and re-link
-                    if let Some((partner_track_i, partner_id)) = linked_info {
-                        // Check partner clip spans the cut point and get track role
-                        let partner_spans = self.state.sequences[self.state.active_sequence_idx]
-                            .tracks[partner_track_i]
-                            .find_clip(partner_id)
-                            .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
-                        let partner_is_magnetic = self.is_magnetic_track(partner_track_i);
-
-                        if partner_spans {
-                            if partner_is_magnetic {
-                                let result = klipp_timeline::magnetic::MagneticEditor::blade(
-                                    &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut);
-                                self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
-                            } else {
-                                let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[partner_track_i];
-                                let original = track.find_clip(partner_id).cloned();
-                                let position = track.clips.iter().position(|c| c.id == partner_id);
-                                if let (Some(original), Some(pos)) = (original, position) {
-                                    if let Some((pa, pb)) = track.blade_at(partner_id, cut) {
-                                        self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyBladeClip {
-                                            track_index: partner_track_i,
-                                            original_clip: original,
-                                            clip_a: pa,
-                                            clip_b: pb,
-                                            position: pos,
-                                        } });
-                                    }
-                                }
-                            }
-
-                            // Re-link: find the two halves on each track and cross-link them
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let video_halves: Vec<ClipId> = seq.tracks[ti].clips.iter()
-                                .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
-                                .map(|c| c.id)
-                                .collect();
-                            let audio_halves: Vec<ClipId> = seq.tracks[partner_track_i].clips.iter()
-                                .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
-                                .map(|c| c.id)
-                                .collect();
-
-                            for vid_id in &video_halves {
-                                let vid_out = seq.tracks[ti].find_clip(*vid_id).map(|c| c.timeline_out);
-                                for aud_id in &audio_halves {
-                                    let aud_out = seq.tracks[partner_track_i].find_clip(*aud_id).map(|c| c.timeline_out);
-                                    if vid_out == aud_out {
-                                        if let Some(vc) = seq.tracks[ti].find_clip_mut(*vid_id) {
-                                            vc.linked_clip_id = Some(*aud_id);
-                                        }
-                                        if let Some(ac) = seq.tracks[partner_track_i].find_clip_mut(*aud_id) {
-                                            ac.linked_clip_id = Some(*vid_id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    self.sync_sequence_to_engine();
+                    self.blade_clip_at(*track_index, *clip_id, *cut_at);
                     return true;
                 }
+                _ => return false,
+        }
+    }
+
+    fn handle_clip_edit_misc(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 // Phase 4: Cut/Copy/Paste
                 AppCommand::CutClip { clip_id } => {
                     let cid = *clip_id;
@@ -3699,7 +3748,7 @@ impl KlippApp {
         self.handle_keyframe_drag_commands(cmd, needs_refresh)
             || self.handle_speed_keyframe_commands(cmd, needs_refresh)
             || self.handle_effect_keyframe_commands(cmd, needs_refresh)
-            || self.handle_audio_keyframe_commands(cmd, needs_refresh)
+            || self.handle_audio_commands(cmd, needs_refresh)
             || self.handle_video_keyframe_commands(cmd, needs_refresh)
     }
 
@@ -3938,7 +3987,7 @@ impl KlippApp {
         self.state.dirty = true;
     }
 
-    fn handle_audio_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+    fn handle_audio_keyframe_curves(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
                     let mut linked_partner_id = None;
@@ -4223,10 +4272,6 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
-                    true
-                }
-                AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
-                    self.auto_duck_audio(target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold);
                     true
                 }
                 AppCommand::CopyAudioKeyframes { clip_id, param } => {
@@ -4514,6 +4559,16 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
+            _ => false,
+        }
+    }
+
+    fn handle_audio_clip_props(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+                AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
+                    self.auto_duck_audio(target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold);
+                    true
+                }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
                     let mut old_vals = None;
                     let mut linked_partner_id = None;
@@ -4582,6 +4637,12 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     true
                 }
+            _ => false,
+        }
+    }
+
+    fn handle_audio_drag_lifecycle(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::BeginAudioDrag { ref key, clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out } => {
                     // Look up current channel_config from the clip (drag commands don't carry it)
                     let cc = self.state.sequences[self.state.active_sequence_idx].all_clips()
@@ -4647,6 +4708,13 @@ impl KlippApp {
                 }
             _ => false,
         }
+    }
+
+    fn handle_audio_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_audio_keyframe_curves(cmd, needs_refresh) { return true; }
+        if self.handle_audio_clip_props(cmd, needs_refresh) { return true; }
+        if self.handle_audio_drag_lifecycle(cmd, needs_refresh) { return true; }
+        false
     }
 
     fn handle_video_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -6021,39 +6089,50 @@ impl KlippApp {
         }
     }
 
-    fn handle_media_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
-        match cmd {
-            AppCommand::LoadMediaFile { ref path, .. } => {
-                    // Duplicate check: if this exact path is already in the pool,
-                    // skip the engine probe and select the existing item.
-                    if let Some(existing) = self.state.media_pool.find_by_path(path) {
-                        let existing_id = existing.id;
-                        self.state.toast.show(format!(
-                            "'{}' is already in the media pool",
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        ));
-                        self.state.source_media_id = Some(existing_id);
-                        return true; // skip engine probe
-                    }
-                    // Content-based duplicate check: same file at different path
-                    if let Some(fp) = compute_media_fingerprint(path) {
-                        if let Some(existing) = self.state.media_pool.find_by_fingerprint(fp) {
-                            let existing_id = existing.id;
-                            let existing_name = existing.filename.clone();
-                            self.state.toast.show(format!(
-                                "'{}' appears to be the same file as '{}'",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                existing_name,
-                            ));
-                            self.state.source_media_id = Some(existing_id);
-                            return true; // skip engine probe
-                        }
-                    }
-                    self.state.pending_media_path = Some(path.clone());
-                    false
+    fn handle_media_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        // INLINE: LoadMediaFile uses two-phase dispatch. It conditionally returns
+        // true (duplicate found, skip engine) or false (stage pending_media_path
+        // and let the dispatch loop's fallthrough forwarder send the command to
+        // the engine for probing).
+        if let AppCommand::LoadMediaFile { ref path, .. } = cmd {
+            if let Some(existing) = self.state.media_pool.find_by_path(path) {
+                let existing_id = existing.id;
+                self.state.toast.show(format!(
+                    "'{}' is already in the media pool",
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ));
+                self.state.source_media_id = Some(existing_id);
+                return true;
+            }
+            if let Some(fp) = compute_media_fingerprint(path) {
+                if let Some(existing) = self.state.media_pool.find_by_fingerprint(fp) {
+                    let existing_id = existing.id;
+                    let existing_name = existing.filename.clone();
+                    self.state.toast.show(format!(
+                        "'{}' appears to be the same file as '{}'",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        existing_name,
+                    ));
+                    self.state.source_media_id = Some(existing_id);
+                    return true;
                 }
+            }
+            self.state.pending_media_path = Some(path.clone());
+            return false;
+        }
+
+        if self.handle_media_loading(cmd, needs_refresh) { return true; }
+        if self.handle_media_pool(cmd, needs_refresh) { return true; }
+        if self.handle_media_proxies(cmd, needs_refresh) { return true; }
+        if self.handle_media_relinking(cmd, needs_refresh) { return true; }
+        if self.handle_media_bins(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn handle_media_loading(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::ImportMedia { ref path } => {
                     // Import media: load file to get metadata, then add to pool
                     let media_id = klipp_core::MediaId::new();
@@ -6271,7 +6350,12 @@ impl KlippApp {
                     }
                     true
                 }
-                // Phase 4: Proxy
+            _ => false,
+        }
+    }
+
+    fn handle_media_proxies(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::GenerateProxy { media_id } => {
                     self.spawn_proxy_generation(*media_id);
                     true
@@ -6307,6 +6391,12 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(cmd.clone());
                     true
                 }
+            _ => false,
+        }
+    }
+
+    fn handle_media_relinking(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::CleanOrphanedCaches => {
                     let cleaned = self.clean_orphaned_caches();
                     self.state.toast.show(cleaned);
@@ -6377,6 +6467,12 @@ impl KlippApp {
                     self.state.show_relink_dialog = true;
                     true
                 }
+            _ => false,
+        }
+    }
+
+    fn handle_media_pool(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::AddMediaTag { media_id, tag } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         if !item.tags.contains(tag) {
@@ -6614,6 +6710,12 @@ impl KlippApp {
                     self.state.toast.show(format!("Imported image sequence: {frame_count} frames at {fps}fps"));
                     true
                 }
+            _ => false,
+        }
+    }
+
+    fn handle_media_bins(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
                 AppCommand::CreateBin { name } => {
                     // Create a root-level bin in the bins collection
                     let _bin_id = self.state.media_pool.find_or_create_bin(name);
@@ -6695,69 +6797,88 @@ impl KlippApp {
     }
 
     fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_color_sampling(cmd, needs_refresh) { return true; }
+        if self.handle_color_node_ops(cmd, needs_refresh) { return true; }
+        if self.handle_color_node_config(cmd, needs_refresh) { return true; }
+        if self.handle_color_keyframes(cmd, needs_refresh) { return true; }
+        if self.handle_color_grade(cmd, needs_refresh) { return true; }
+        if self.handle_color_stills(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, position: (f32, f32), needs_refresh: &mut bool) {
+        let node_kind = match kind {
+            "Exposure" => klipp_nodes::NodeKind::Exposure,
+            "Contrast" => klipp_nodes::NodeKind::Contrast,
+            "Saturation" => klipp_nodes::NodeKind::Saturation,
+            "ToneControls" => klipp_nodes::NodeKind::ToneControls,
+            "ColorWheels" => klipp_nodes::NodeKind::ColorWheels,
+            "WheelSatBri" => klipp_nodes::NodeKind::WheelSatBri,
+            "RGBCurves" => klipp_nodes::NodeKind::RGBCurves,
+            "HueSatCurves" => klipp_nodes::NodeKind::HueSatCurves,
+            "ColorBalance" => klipp_nodes::NodeKind::ColorBalance,
+            "InputTransform" => klipp_nodes::NodeKind::InputTransform,
+            "Qualifier" => klipp_nodes::NodeKind::Qualifier,
+            "Mask" => klipp_nodes::NodeKind::Mask,
+            "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
+            "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
+            "Blend" => klipp_nodes::NodeKind::Blend,
+            "Layer" => klipp_nodes::NodeKind::Layer,
+            "Lut3D" => klipp_nodes::NodeKind::Lut3D,
+            "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
+            "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
+            "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
+            "Denoise" => klipp_nodes::NodeKind::Denoise,
+            _ => { return; }
+        };
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                let old_graph = clip.node_graph.clone();
+                let new_id = klipp_nodes::NodeId::new_v4();
+                clip.node_graph.nodes.push(klipp_nodes::Node {
+                    id: new_id,
+                    kind: node_kind.clone(),
+                    label: node_kind.display_name().to_string(),
+                    enabled: true,
+                    params: klipp_nodes::NodeParams::default(),
+                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                });
+                clip.node_graph.node_positions.insert(
+                    new_id,
+                    klipp_nodes::NodePos { x: position.0, y: position.1 },
+                );
+                self.state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: self.state.active_sequence_idx,
+                    command: crate::history::EditCommand::SetNodeGraph {
+                        clip_id,
+                        old_graph,
+                        new_graph: clip.node_graph.clone(),
+                    },
+                });
+                break;
+            }
+        }
+        *needs_refresh = true;
+    }
+
+    fn handle_color_sampling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RequestWhiteBalanceSample { nx, ny } => {
                 self.state.wb_sample_request = Some((*nx, *ny));
-                return true;
+                true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
                 self.state.qualifier_sample_request = Some((*nx, *ny));
-                return true;
+                true
             }
-            // Node graph structure commands
+            _ => false,
+        }
+    }
+
+    fn handle_color_node_ops(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        match cmd {
             AppCommand::AddNode { clip_id, ref kind, position } => {
-                let node_kind = match kind.as_str() {
-                    "Exposure" => klipp_nodes::NodeKind::Exposure,
-                    "Contrast" => klipp_nodes::NodeKind::Contrast,
-                    "Saturation" => klipp_nodes::NodeKind::Saturation,
-                    "ToneControls" => klipp_nodes::NodeKind::ToneControls,
-                    "ColorWheels" => klipp_nodes::NodeKind::ColorWheels,
-                    "WheelSatBri" => klipp_nodes::NodeKind::WheelSatBri,
-                    "RGBCurves" => klipp_nodes::NodeKind::RGBCurves,
-                    "HueSatCurves" => klipp_nodes::NodeKind::HueSatCurves,
-                    "ColorBalance" => klipp_nodes::NodeKind::ColorBalance,
-                    "InputTransform" => klipp_nodes::NodeKind::InputTransform,
-                    "Qualifier" => klipp_nodes::NodeKind::Qualifier,
-                    "Mask" => klipp_nodes::NodeKind::Mask,
-                    "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
-                    "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
-                    "Blend" => klipp_nodes::NodeKind::Blend,
-                    "Layer" => klipp_nodes::NodeKind::Layer,
-                    "Lut3D" => klipp_nodes::NodeKind::Lut3D,
-                    "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
-                    "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
-                    "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
-                    "Denoise" => klipp_nodes::NodeKind::Denoise,
-                    _ => { return true; }
-                };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        let new_id = klipp_nodes::NodeId::new_v4();
-                        clip.node_graph.nodes.push(klipp_nodes::Node {
-                            id: new_id,
-                            kind: node_kind.clone(),
-                            label: node_kind.display_name().to_string(),
-                            enabled: true,
-                            params: klipp_nodes::NodeParams::default(),
-                            keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-                        });
-                        clip.node_graph.node_positions.insert(
-                            new_id,
-                            klipp_nodes::NodePos { x: position.0, y: position.1 },
-                        );
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
+                self.add_color_node(*clip_id, kind, *position, needs_refresh);
                 true
             }
             AppCommand::RemoveNode { clip_id, node_id } => {
@@ -6865,6 +6986,12 @@ impl KlippApp {
                 *needs_refresh = true;
                 true
             }
+            _ => false,
+        }
+    }
+
+    fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        match cmd {
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -6875,15 +7002,6 @@ impl KlippApp {
                     }
                 }
                 *needs_refresh = true;
-                true
-            }
-            AppCommand::SetScopeTapNode { .. } => {
-                // Scope tap is forwarded to engine
-                true
-            }
-            AppCommand::RefreshGrade => {
-                *needs_refresh = true;
-                self.state.dirty = true;
                 true
             }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
@@ -6990,6 +7108,12 @@ impl KlippApp {
                 *needs_refresh = true;
                 true
             }
+            _ => false,
+        }
+    }
+
+    fn handle_color_keyframes(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        match cmd {
             AppCommand::AddMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs, value } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -7127,6 +7251,18 @@ impl KlippApp {
                 *needs_refresh = true;
                 true
             }
+            _ => false,
+        }
+    }
+
+    fn handle_color_grade(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        match cmd {
+            AppCommand::SetScopeTapNode { .. } => { true }
+            AppCommand::RefreshGrade => {
+                *needs_refresh = true;
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetSourceRotation { clip_id, degrees } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 for track in &mut seq.tracks {
@@ -7221,6 +7357,19 @@ impl KlippApp {
                 true
             }
 
+            _ => false,
+        }
+    }
+
+    fn handle_color_stills(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        // Delegates LUT and grade-version handling to a follow-up pass.
+        if self.handle_color_stills_inner(cmd, needs_refresh) { return true; }
+        if self.handle_color_lut_versions(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn handle_color_stills_inner(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
             // Grade stills (reference frame comparison)
             AppCommand::CaptureGradeStill { ref name } => {
                 let fb = self.frame_buffer.lock().unwrap();
@@ -7279,7 +7428,12 @@ impl KlippApp {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
                 true
             }
+            _ => false,
+        }
+    }
 
+    fn handle_color_lut_versions(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        match cmd {
             // Global LUT — update UI state and forward to engine
             AppCommand::LoadGlobalLut { .. } => {
                 if let AppCommand::LoadGlobalLut { ref path } = cmd {
@@ -7369,7 +7523,17 @@ impl KlippApp {
         }
     }
 
-    fn handle_title_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+    fn handle_title_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_title_lifecycle(cmd, needs_refresh) { return true; }
+        if self.handle_title_content(cmd, needs_refresh) { return true; }
+        if self.handle_title_layout(cmd, needs_refresh) { return true; }
+        if self.handle_title_styling(cmd, needs_refresh) { return true; }
+        if self.handle_title_effects(cmd, needs_refresh) { return true; }
+        if self.handle_title_animation(cmd, needs_refresh) { return true; }
+        false
+    }
+
+    fn handle_title_lifecycle(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::BeginTitleEdit { clip_id } => {
                 self.state.viewer_text_edit_clip = Some(*clip_id);
@@ -7464,6 +7628,16 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::ClearTitleOverlay => {
+                self.viewer.title_overlay_texture = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_title_content(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
             AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
                 let old = self.snapshot_title(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -7496,227 +7670,6 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
-            AppCommand::SetTitleAlignment { clip_id, alignment } => {
-                let old_td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                    .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
-                    .and_then(|c| c.title_data()).cloned();
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.alignment = match alignment {
-                                0 => klipp_timeline::TextAlignment::Left,
-                                2 => klipp_timeline::TextAlignment::Right,
-                                _ => klipp_timeline::TextAlignment::Center,
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old_td {
-                    if let Some(new) = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
-                        .and_then(|c| c.title_data()).cloned()
-                    {
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: EditCommand::EditTitle {
-                                clip_id: *clip_id, description: "Set Alignment",
-                                old_data: old, new_data: new,
-                            },
-                        });
-                    }
-                }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitlePosition { clip_id, x, y } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Move Title", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.background = match bg_kind {
-                                1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0 },
-                                2 => klipp_timeline::TitleBackground::FullFrame { color: *color },
-                                _ => klipp_timeline::TitleBackground::None,
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Background", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if *enabled {
-                                td.shadow = Some(klipp_timeline::TitleShadow {
-                                    color: *color,
-                                    offset_x: *offset_x,
-                                    offset_y: *offset_y,
-                                    blur: *blur,
-                                });
-                            } else {
-                                td.shadow = None;
-                            }
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.outline = if *enabled {
-                                Some(klipp_timeline::TextOutline { color: *color, width: *width })
-                            } else {
-                                None
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.glow = if *enabled {
-                                Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
-                            } else {
-                                None
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.gradient = if *enabled {
-                                Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
-                            } else {
-                                None
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Gradient", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleOutlines { clip_id, outlines } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.outlines = outlines.iter().map(|(color, width)| {
-                                klipp_timeline::TextOutline { color: *color, width: *width }
-                            }).collect();
-                            if !outlines.is_empty() {
-                                td.outline = None;
-                            }
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.inner_shadow = if *enabled {
-                                Some(klipp_timeline::InnerShadow {
-                                    color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
-                                })
-                            } else {
-                                None
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.pattern_fill = match pattern_kind {
-                                1 => Some(klipp_timeline::TextPattern::HorizontalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
-                                2 => Some(klipp_timeline::TextPattern::VerticalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
-                                3 => Some(klipp_timeline::TextPattern::Checkerboard { color_a: *color_a, color_b: *color_b, cell_size: *size }),
-                                4 => Some(klipp_timeline::TextPattern::DiagonalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
-                                _ => None,
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Pattern", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
             AppCommand::SetTitleTracking { clip_id, tracking } => {
                 let old = self.snapshot_title(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -7733,22 +7686,6 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
-            AppCommand::SetTitleWriteOn { clip_id, write_on } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.write_on = *write_on;
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Write-On", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
             AppCommand::SetTitleLineSpacing { clip_id, line_spacing } => {
                 let old = self.snapshot_title(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -7759,123 +7696,6 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Line Spacing", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
-                let old = self.snapshot_title(*clip_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.extrusion = if *enabled {
-                                Some(klipp_timeline::TextExtrusion {
-                                    depth: *depth,
-                                    angle: *angle,
-                                    face_color: *face_color,
-                                    side_color: *side_color,
-                                    lighting: *lighting,
-                                })
-                            } else {
-                                None
-                            };
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Extrusion", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
-                let old = self.snapshot_title(*clip_id);
-                let path = match path_kind {
-                    1 => Some(klipp_timeline::TextPath::Arc { radius: *p1, start_angle: *p2, sweep: *p3 }),
-                    2 => Some(klipp_timeline::TextPath::Circle { radius: *p1 }),
-                    3 => Some(klipp_timeline::TextPath::Wave { amplitude: *p1, frequency: *p2, phase: *p3 }),
-                    _ => None,
-                };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.text_path = path.clone();
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Text Path", old); }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleCharAnimation { clip_id, enabled, stagger, entrance, wave_amplitude, wave_speed } => {
-                let anim = if *enabled {
-                    let ent = match entrance {
-                        1 => klipp_timeline::CharEntrance::FadeIn,
-                        2 => klipp_timeline::CharEntrance::SlideUp,
-                        3 => klipp_timeline::CharEntrance::SlideDown,
-                        4 => klipp_timeline::CharEntrance::ScaleUp,
-                        _ => klipp_timeline::CharEntrance::None,
-                    };
-                    Some(klipp_timeline::CharAnimation {
-                        stagger: *stagger,
-                        entrance: ent,
-                        wave_amplitude: *wave_amplitude,
-                        wave_speed: *wave_speed,
-                    })
-                } else {
-                    None
-                };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.char_animation = anim;
-                        }
-                    }
-                }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleTextureFill { clip_id, path } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.texture_fill_path = path.clone();
-                        }
-                    }
-                }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
-                let old = self.snapshot_title(*clip_id);
-                let mb = if *enabled {
-                    Some(klipp_timeline::MotionBlur {
-                        shutter_angle: *shutter_angle,
-                        samples: *samples,
-                    })
-                } else {
-                    None
-                };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.motion_blur = mb;
-                        }
-                    }
-                }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Motion Blur", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
@@ -7957,17 +7777,392 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
-            AppCommand::SetTitleFadeDuration { duration } => {
-                self.state.title_fade_duration = *duration;
+            _ => false,
+        }
+    }
+
+    fn handle_title_layout(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+            AppCommand::SetTitleAlignment { clip_id, alignment } => {
+                let old_td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
+                    .and_then(|c| c.title_data()).cloned();
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.alignment = match alignment {
+                                0 => klipp_timeline::TextAlignment::Left,
+                                2 => klipp_timeline::TextAlignment::Right,
+                                _ => klipp_timeline::TextAlignment::Center,
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old_td {
+                    if let Some(new) = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                        .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
+                        .and_then(|c| c.title_data()).cloned()
+                    {
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditTitle {
+                                clip_id: *clip_id, description: "Set Alignment",
+                                old_data: old, new_data: new,
+                            },
+                        });
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
                 true
             }
-            AppCommand::ClearTitleOverlay => {
-                self.viewer.title_overlay_texture = None;
+            AppCommand::SetTitlePosition { clip_id, x, y } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Move Title", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
+                let old = self.snapshot_title(*clip_id);
+                let path = match path_kind {
+                    1 => Some(klipp_timeline::TextPath::Arc { radius: *p1, start_angle: *p2, sweep: *p3 }),
+                    2 => Some(klipp_timeline::TextPath::Circle { radius: *p1 }),
+                    3 => Some(klipp_timeline::TextPath::Wave { amplitude: *p1, frequency: *p2, phase: *p3 }),
+                    _ => None,
+                };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.text_path = path.clone();
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Text Path", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
                 true
             }
             _ => false,
         }
     }
+
+    fn handle_title_styling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+            AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.background = match bg_kind {
+                                1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0 },
+                                2 => klipp_timeline::TitleBackground::FullFrame { color: *color },
+                                _ => klipp_timeline::TitleBackground::None,
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Background", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.gradient = if *enabled {
+                                Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Gradient", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.pattern_fill = match pattern_kind {
+                                1 => Some(klipp_timeline::TextPattern::HorizontalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                2 => Some(klipp_timeline::TextPattern::VerticalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                3 => Some(klipp_timeline::TextPattern::Checkerboard { color_a: *color_a, color_b: *color_b, cell_size: *size }),
+                                4 => Some(klipp_timeline::TextPattern::DiagonalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
+                                _ => None,
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Pattern", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleTextureFill { clip_id, path } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.texture_fill_path = path.clone();
+                        }
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_title_effects(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+            AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if *enabled {
+                                td.shadow = Some(klipp_timeline::TitleShadow {
+                                    color: *color,
+                                    offset_x: *offset_x,
+                                    offset_y: *offset_y,
+                                    blur: *blur,
+                                });
+                            } else {
+                                td.shadow = None;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.outline = if *enabled {
+                                Some(klipp_timeline::TextOutline { color: *color, width: *width })
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.glow = if *enabled {
+                                Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleOutlines { clip_id, outlines } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.outlines = outlines.iter().map(|(color, width)| {
+                                klipp_timeline::TextOutline { color: *color, width: *width }
+                            }).collect();
+                            if !outlines.is_empty() {
+                                td.outline = None;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.inner_shadow = if *enabled {
+                                Some(klipp_timeline::InnerShadow {
+                                    color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
+                                })
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.extrusion = if *enabled {
+                                Some(klipp_timeline::TextExtrusion {
+                                    depth: *depth,
+                                    angle: *angle,
+                                    face_color: *face_color,
+                                    side_color: *side_color,
+                                    lighting: *lighting,
+                                })
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Extrusion", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
+                let old = self.snapshot_title(*clip_id);
+                let mb = if *enabled {
+                    Some(klipp_timeline::MotionBlur {
+                        shutter_angle: *shutter_angle,
+                        samples: *samples,
+                    })
+                } else {
+                    None
+                };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.motion_blur = mb;
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Motion Blur", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_title_animation(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+            AppCommand::SetTitleWriteOn { clip_id, write_on } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.write_on = *write_on;
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Write-On", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleCharAnimation { clip_id, enabled, stagger, entrance, wave_amplitude, wave_speed } => {
+                let anim = if *enabled {
+                    let ent = match entrance {
+                        1 => klipp_timeline::CharEntrance::FadeIn,
+                        2 => klipp_timeline::CharEntrance::SlideUp,
+                        3 => klipp_timeline::CharEntrance::SlideDown,
+                        4 => klipp_timeline::CharEntrance::ScaleUp,
+                        _ => klipp_timeline::CharEntrance::None,
+                    };
+                    Some(klipp_timeline::CharAnimation {
+                        stagger: *stagger,
+                        entrance: ent,
+                        wave_amplitude: *wave_amplitude,
+                        wave_speed: *wave_speed,
+                    })
+                } else {
+                    None
+                };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.char_animation = anim;
+                        }
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleFadeDuration { duration } => {
+                self.state.title_fade_duration = *duration;
+                true
+            }
+            _ => false,
+        }
+    }
+
 
     fn handle_project_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
@@ -10838,13 +11033,26 @@ impl KlippApp {
 
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
-
         // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
         // title text editor, timecode entry, rename fields, etc.).
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
         let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
-        let kb = self.key_bindings.clone();
+        self.shortcuts_ctrl_global(ctx, &mut cmds);
+        if text_editing {
+            return cmds;
+        }
+        self.shortcuts_magnetic_skim(ctx, &mut cmds);
+        self.shortcuts_delete(ctx, &mut cmds);
+        self.shortcuts_tools_and_clip_ops(ctx, &mut cmds);
+        self.shortcuts_title_and_tools2(ctx, &mut cmds);
+        self.shortcuts_multicam_and_io(ctx, text_editing, &mut cmds);
+        self.shortcuts_edit_nav(ctx, &mut cmds);
+        self.shortcuts_keyframe_and_zoom(ctx, &mut cmds);
+        cmds
+    }
 
+    fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // Ctrl+S — Save
             if kb.is_action_pressed("save_project", i) {
@@ -10937,11 +11145,11 @@ impl KlippApp {
                 }
             }
 
-            // Skip single-key shortcuts while typing in a text field
-            if text_editing {
-                return;
-            }
+        });
+    }
 
+    fn shortcuts_magnetic_skim(&mut self, ctx: &egui::Context, _cmds: &mut Vec<AppCommand>) {
+        ctx.input(|i| {
             // S (no modifiers) — Toggle skimming
             if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
                 self.state.skimming_enabled = !self.state.skimming_enabled;
@@ -11069,6 +11277,11 @@ impl KlippApp {
                 }
             }
 
+        });
+    }
+
+    fn shortcuts_delete(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        ctx.input(|i| {
             // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
             let mut keyframe_deleted = false;
             if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
@@ -11140,6 +11353,12 @@ impl KlippApp {
                 }
             }
 
+        });
+    }
+
+    fn shortcuts_tools_and_clip_ops(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
             // W — Toggle Insert/Overwrite mode
             if i.key_pressed(egui::Key::W) {
                 self.state.edit_mode = match self.state.edit_mode {
@@ -11319,6 +11538,11 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_loop", i) {
                 cmds.push(AppCommand::ToggleLoopPlayback);
             }
+        });
+    }
+
+    fn shortcuts_title_and_tools2(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        ctx.input(|i| {
             // Ctrl+T — Create title clip at playhead on a free text track (or create new one)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
                 let ph = self.state.playhead;
@@ -11423,6 +11647,12 @@ impl KlippApp {
             if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
+        });
+    }
+
+    fn shortcuts_multicam_and_io(&mut self, ctx: &egui::Context, text_editing: bool, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
             // 1-9 — Switch multicam angle (via keybinding system for remapping support)
             if !text_editing {
                 for angle in 1usize..=9 {
@@ -11515,6 +11745,12 @@ impl KlippApp {
                 }
             }
 
+        });
+    }
+
+    fn shortcuts_edit_nav(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 // Unlock scope cursor on Escape
@@ -11567,6 +11803,11 @@ impl KlippApp {
             if kb.is_action_pressed("extract_edit", i) {
                 cmds.push(AppCommand::ExtractEdit);
             }
+        });
+    }
+
+    fn shortcuts_keyframe_and_zoom(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        ctx.input(|i| {
             // Alt+M — Toggle matte preview
             if i.key_pressed(egui::Key::M) && i.modifiers.alt && !i.modifiers.ctrl {
                 self.state.matte_preview_active = !self.state.matte_preview_active;
@@ -11805,8 +12046,6 @@ impl KlippApp {
                 self.state.timeline_zoom = new_zoom;
             }
         });
-
-        cmds
     }
 }
 
@@ -12254,1272 +12493,9 @@ impl eframe::App for KlippApp {
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
 
-        // 4a0. Paste Attributes dialog
-        if self.state.show_paste_attributes_dialog {
-            let mut open = true;
-            egui::Window::new("Paste Attributes")
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut open)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(260.0);
-                    ui.label("Select which attributes to paste:");
-                    ui.add_space(6.0);
+        self.show_modal_dialogs(ctx, &mut all_cmds);
 
-                    // Persistent checkboxes via egui's data store (no unsafe statics)
-                    let pa_id = egui::Id::new("paste_attributes_checkboxes");
-                    let mut pa_effects = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("fx"), || true));
-                    let mut pa_color = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("col"), || true));
-                    let mut pa_audio = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("aud"), || true));
-                    let mut pa_transform = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("tfm"), || true));
-                    let mut pa_speed = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("spd"), || false));
-
-                    ui.checkbox(&mut pa_effects, "Effects (built-in + OFX)");
-                    ui.checkbox(&mut pa_color, "Color Grade (node graph)");
-                    ui.checkbox(&mut pa_audio, "Audio (volume, pan, gain, fades, FX)");
-                    ui.checkbox(&mut pa_transform, "Transform (position, scale, rotation, opacity)");
-                    ui.checkbox(&mut pa_speed, "Speed");
-
-                    // Write back to egui data store
-                    ctx.data_mut(|d| { d.insert_temp(pa_id.with("fx"), pa_effects); d.insert_temp(pa_id.with("col"), pa_color); d.insert_temp(pa_id.with("aud"), pa_audio); d.insert_temp(pa_id.with("tfm"), pa_transform); d.insert_temp(pa_id.with("spd"), pa_speed); });
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Paste").clicked() {
-                            all_cmds.push(AppCommand::PasteAttributes {
-                                effects: pa_effects,
-                                color_grade: pa_color,
-                                audio: pa_audio,
-                                transform: pa_transform,
-                                speed: pa_speed,
-                            });
-                            self.state.show_paste_attributes_dialog = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_paste_attributes_dialog = false;
-                        }
-                    });
-                });
-            if !open {
-                self.state.show_paste_attributes_dialog = false;
-            }
-        }
-
-        // Speed dialog
-        if self.state.show_speed_dialog {
-            // Modal backdrop
-            egui::Area::new(egui::Id::new("speed_dialog_backdrop"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::PanelResizeLine)
-                .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
-                    let resp = ui.allocate_rect(screen, egui::Sense::click());
-                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
-                    if resp.clicked() { self.state.show_speed_dialog = false; }
-                });
-
-            let mut open = true;
-            egui::Window::new("Set Clip Speed")
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut open)
-                .order(egui::Order::Foreground)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(280.0);
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Speed:");
-                        ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
-                            .range(1.0..=1000.0).speed(1.0).suffix("%").fixed_decimals(0));
-                    });
-                    ui.add_space(4.0);
-
-                    // Preset buttons
-                    ui.horizontal(|ui| {
-                        for (label, pct) in [("25%", 25.0), ("50%", 50.0), ("100%", 100.0), ("200%", 200.0), ("400%", 400.0)] {
-                            if ui.selectable_label((self.state.speed_dialog_value - pct).abs() < 0.5, label).clicked() {
-                                self.state.speed_dialog_value = pct;
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.checkbox(&mut self.state.speed_dialog_reverse, "Reverse playback");
-                    ui.add_space(8.0);
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Apply").clicked() {
-                            if let Some(clip_id) = self.state.selected_clip {
-                                let mut speed = self.state.speed_dialog_value / 100.0;
-                                if self.state.speed_dialog_reverse { speed = -speed; }
-                                all_cmds.push(AppCommand::SetClipSpeed { clip_id, speed });
-                            }
-                            self.state.show_speed_dialog = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_speed_dialog = false;
-                        }
-                    });
-                });
-            if !open {
-                self.state.show_speed_dialog = false;
-            }
-        }
-
-        // Save Workspace dialog
-        if self.state.show_save_workspace_dialog {
-            let mut open = true;
-            egui::Window::new("Save Workspace")
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut open)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(260.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.state.save_workspace_name);
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            let layout = crate::state::SavedWorkspaceLayout {
-                                name: self.state.save_workspace_name.clone(),
-                                show_browser: self.state.show_browser_panel,
-                                show_inspector: self.state.show_inspector_panel,
-                                show_history: self.state.show_history_panel,
-                                show_markers: self.state.show_markers_panel,
-                                show_curve_editor: self.state.show_curve_editor,
-                                show_scopes: self.state.show_scopes,
-                                show_color_panel: self.state.show_color_panel,
-                            };
-                            // Replace if name exists, otherwise add
-                            if let Some(existing) = self.state.custom_workspaces.iter_mut().find(|w| w.name == layout.name) {
-                                *existing = layout;
-                            } else {
-                                self.state.custom_workspaces.push(layout);
-                            }
-                            self.state.show_save_workspace_dialog = false;
-                            self.state.toast.show("Workspace saved".to_string());
-                            // Persist to prefs file
-                            if let Ok(json) = serde_json::to_string_pretty(&self.state.custom_workspaces) {
-                                let path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
-                                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-                                let _ = std::fs::write(&path, json);
-                            }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_save_workspace_dialog = false;
-                        }
-                    });
-                });
-            if !open {
-                self.state.show_save_workspace_dialog = false;
-            }
-        }
-
-        // 4a1. Auto-save recovery dialog
-        if self.state.show_autosave_recovery {
-            egui::Window::new("Recover Auto-Save?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("A newer auto-save was found for this project.");
-                    ui.label("Would you like to restore it?");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Restore Auto-Save").clicked() {
-                            if let Some(autosave_path) = self.state.autosave_recovery_path.take() {
-                                let original_path = self.state.autosave_original_path.take();
-                                self.state.show_autosave_recovery = false;
-                                self.do_open_project_inner(&autosave_path);
-                                // Set project path to the original, not the autosave
-                                if let Some(orig) = original_path {
-                                    self.state.project_path = Some(orig);
-                                }
-                                self.state.dirty = true; // Mark dirty so user saves explicitly
-                            }
-                        }
-                        if ui.button("Keep Saved Version").clicked() {
-                            if let Some(original_path) = self.state.autosave_original_path.take() {
-                                self.state.autosave_recovery_path = None;
-                                self.state.show_autosave_recovery = false;
-                                self.do_open_project_inner(&original_path);
-                            }
-                        }
-                    });
-                });
-        }
-
-        // 4a1b. Confirm remove media from pool
-        if let Some(media_id) = self.state.show_remove_media_confirm {
-            let usage = self.state.media_usage_cache.get(&media_id).copied().unwrap_or(0);
-            let name = self.state.media_pool.get(&media_id)
-                .map(|m| m.filename.clone())
-                .unwrap_or_else(|| "Unknown".into());
-            egui::Window::new("Remove Media?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(format!("\"{}\" is used in {} clip(s).", name, usage));
-                    ui.label("Removing it will make those clips offline.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_remove_media_confirm = None;
-                        }
-                        if ui.button("Remove").clicked() {
-                            all_cmds.push(AppCommand::ConfirmRemoveFromPool { media_id });
-                        }
-                    });
-                });
-        }
-
-        // Delete unused media confirmation dialog
-        if let Some((count, total_bytes)) = self.state.show_delete_unused_confirm {
-            egui::Window::new("Delete Unused Media?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(format!("{count} items are not referenced by any timeline clip."));
-                    let size_mb = total_bytes as f64 / (1024.0 * 1024.0);
-                    if size_mb >= 1024.0 {
-                        ui.label(format!("({count} items referencing {:.1} GB of source media)", size_mb / 1024.0));
-                    } else {
-                        ui.label(format!("({count} items referencing {:.0} MB of source media)", size_mb));
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_delete_unused_confirm = None;
-                        }
-                        if ui.button(format!("Remove {count} items")).clicked() {
-                            all_cmds.push(AppCommand::ConfirmDeleteUnusedMedia);
-                        }
-                    });
-                });
-        }
-
-        // Export offline media warning dialog
-        if self.state.export_offline_warning.is_some() {
-            let mut dismiss = false;
-            let mut force_export = false;
-            if let Some((ref clips, _)) = self.state.export_offline_warning {
-                egui::Window::new("Export Contains Offline Media")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(ctx, |ui| {
-                        ui.label("These clips will export as black/silent frames:");
-                        ui.add_space(4.0);
-                        for (name, tc) in clips {
-                            ui.label(format!("  \u{2022} {}  at {}", name, tc));
-                        }
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Cancel").clicked() {
-                                dismiss = true;
-                            }
-                            if ui.button("Export Anyway").clicked() {
-                                force_export = true;
-                            }
-                        });
-                    });
-            }
-            if dismiss {
-                self.state.export_offline_warning = None;
-            }
-            if force_export {
-                if let Some((_, settings)) = self.state.export_offline_warning.take() {
-                    all_cmds.push(AppCommand::ForceExportSequence { settings });
-                }
-            }
-        }
-
-        // 4a2. Confirm remove track dialog
-        if let Some(track_id) = self.state.confirm_remove_track {
-            let mut open = true;
-            egui::Window::new("Remove Track")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("This track contains clips. Remove track and all its clips?");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Remove").clicked() {
-                            let _ = self.state.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
-                            self.state.confirm_remove_track = None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.state.confirm_remove_track = None;
-                        }
-                    });
-                });
-            if !open {
-                self.state.confirm_remove_track = None;
-            }
-        }
-
-        // 4b. Export dialog
-        let export_cmds = self.show_export_dialog(ctx);
-        all_cmds.extend(export_cmds);
-
-        // 4c. Render queue window
-        self.show_render_queue_window(ctx);
-
-        // 4c1. New Project dialog
-        if self.state.show_new_project_dialog {
-            if let Some(cmd) = self.new_project_dialog.show(
-                ctx,
-                &mut self.state.show_new_project_dialog,
-                &self.theme,
-            ) {
-                all_cmds.push(cmd);
-            }
-        }
-
-        // 4c2. Consolidate Project dialog
-        if self.state.show_consolidate_dialog {
-            if let Some(ref project_path) = self.state.project_path.clone() {
-                let mut open = true;
-                // Count media files outside the project directory
-                let project_dir = project_path.clone();
-                let external_media: Vec<_> = self.state.media_pool.all()
-                    .filter(|item| !item.offline && !item.path.starts_with(&project_dir))
-                    .map(|item| (item.id, item.path.clone(), item.file_size_bytes))
-                    .collect();
-                let file_count = external_media.len();
-                let total_bytes: u64 = external_media.iter().map(|(_, _, s)| s).sum();
-
-                egui::Window::new("Consolidate Project")
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_width(380.0)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(ctx, |ui| {
-                        ui.label("Copy all referenced media files into the project folder for portability.");
-                        ui.add_space(8.0);
-                        if file_count == 0 {
-                            ui.label(egui::RichText::new("All media is already inside the project folder.")
-                                .color(self.theme.text_secondary));
-                        } else {
-                            ui.label(format!("Media to copy: {} file(s)", file_count));
-                            ui.label(format!("Total size: {}", format_size_brief(total_bytes)));
-                            ui.add_space(12.0);
-                            ui.horizontal(|ui| {
-                                if ui.button("Cancel").clicked() {
-                                    self.state.show_consolidate_dialog = false;
-                                }
-                                if ui.button("Consolidate").clicked() {
-                                    self.state.show_consolidate_dialog = false;
-                                    let media_dir = project_dir.join("media").join("files");
-                                    if let Err(e) = std::fs::create_dir_all(&media_dir) {
-                                        tracing::error!("Failed to create media/files dir: {e}");
-                                    } else {
-                                        let mut copied = 0usize;
-                                        for (media_id, src_path, _) in &external_media {
-                                            let filename = src_path.file_name().unwrap_or_default();
-                                            let dst = media_dir.join(filename);
-                                            match std::fs::copy(src_path, &dst) {
-                                                Ok(_) => {
-                                                    // Update media item path
-                                                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                                                        item.path = dst;
-                                                    }
-                                                    copied += 1;
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!("Failed to copy {:?}: {e}", src_path);
-                                                }
-                                            }
-                                        }
-                                        self.state.dirty = true;
-                                        self.state.toast.show(format!("Consolidated {copied} file(s)"));
-                                        tracing::info!("Consolidated {copied}/{file_count} media files");
-                                    }
-                                }
-                            });
-                        }
-                    });
-                if !open {
-                    self.state.show_consolidate_dialog = false;
-                }
-            } else {
-                self.state.show_consolidate_dialog = false;
-            }
-        }
-
-        // 4c3. Project Info window
-        if self.state.show_project_info {
-            // Modal backdrop
-            egui::Area::new(egui::Id::new("project_info_backdrop"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
-                    let resp = ui.allocate_rect(screen, egui::Sense::click());
-                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
-                    if resp.clicked() { self.state.show_project_info = false; }
-                });
-
-            let mut still_open = true;
-            crate::panels::project_info::show_project_info(
-                ctx,
-                &mut self.state,
-                &self.theme,
-                &mut still_open,
-            );
-            if !still_open {
-                self.state.show_project_info = false;
-            }
-        }
-
-        // 4d. Preferences window
-        if self.state.show_preferences {
-            let (still_open, pref_cmds) = self.preferences_panel.show(
-                ctx,
-                &mut self.prefs,
-                &mut self.prefs_dirty,
-                &mut self.key_bindings,
-            );
-            all_cmds.extend(pref_cmds);
-            // Sync skim_audio pref → state (checkbox may have changed)
-            if self.state.audio_skimming_enabled != self.prefs.playback.skim_audio {
-                self.state.audio_skimming_enabled = self.prefs.playback.skim_audio;
-                if !self.state.audio_skimming_enabled && self.state.skim_audio_session.is_some() {
-                    all_cmds.push(AppCommand::BrowserSkimAudioEnd);
-                }
-            }
-            if !still_open {
-                self.state.show_preferences = false;
-            }
-        }
-
-        // Handle fullscreen toggle
-        if self.state.project_path.is_none() {
-            // Launch screen: no project open
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
-                .show(ctx, |ui| {
-                    let recent = self.prefs.general.recent_projects.clone();
-                    let cmds = self.launch_screen.show(ctx, ui, &recent, &self.theme);
-                    all_cmds.extend(cmds);
-                });
-        } else if self.state.fullscreen_viewer {
-            // Fullscreen viewer: just show the video frame
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let cmds = self.viewer.show_fullscreen(ui, &mut self.state);
-                all_cmds.extend(cmds);
-            });
-        } else {
-            // ── Manual rect layout ──
-            // Use CentralPanel as the container, then compute rects manually.
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
-                .show(ctx, |ui| {
-                    let full = ui.available_rect_before_wrap();
-                    let theme = &self.theme;
-
-                    // Pure rect computation — see crates/klipp-ui/src/layout.rs
-                    let rects = crate::layout::compute_layout(full, &self.layout, &self.state);
-                    let crate::layout::LayoutRects {
-                        full: _,
-                        toolbar_rect,
-                        statusbar_rect,
-                        browser_rect,
-                        left_resizer_rect,
-                        inspector_rect,
-                        right_resizer_rect,
-                        viewer_rect,
-                        h_resizer_rect,
-                        curve_editor_rect,
-                        audio_mixer_rect,
-                        timeline_rect,
-                        toggle_bar_rect,
-                        scopes_rect,
-                        nodes_rect,
-                    } = rects;
-
-                    // Derived scalars consumed by the render section below. These mirror
-                    // the locals that used to live in the inlined layout block, so every
-                    // downstream use-site keeps working unchanged.
-                    let main_top = toolbar_rect.max.y;
-                    let main_bottom = statusbar_rect.min.y;
-                    let center_left = left_resizer_rect.max.x;
-                    let center_w = viewer_rect.width();
-                    let in_color_ws = self.state.show_color_panel;
-                    let show_scopes_bar = in_color_ws && self.state.show_scopes;
-                    let show_nodes_bar = in_color_ws && self.state.show_node_strip;
-                    let toggle_bar_h = toggle_bar_rect.height();
-                    let scopes_h = scopes_rect.height();
-                    let nodes_h = nodes_rect.height();
-                    let audio_mixer_h = audio_mixer_rect.height();
-                    let curve_editor_h = curve_editor_rect.height();
-                    // flexible_h is the ratio-drag denominator — same formula as in layout.rs.
-                    let flexible_h = {
-                        let center_total = main_bottom - main_top;
-                        let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
-                        (center_total - fixed_h).max(200.0)
-                    };
-                    // Timeline-height clamp bounds for the horizontal resizer drag.
-                    let timeline_min_h = theme::TIMELINE_MIN_H;
-                    let max_timeline_h = {
-                        let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
-                        let color_bottom_top = main_bottom - color_bottom_total;
-                        (color_bottom_top - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT
-                    };
-
-                    // ── Render panels into their rects ──
-
-                    // Toolbar
-                    crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
-                        ui.set_min_size(toolbar_rect.size());
-                        ui.painter().rect_filled(
-                            toolbar_rect,
-                            0.0,
-                            theme.bg_deep,
-                        );
-                        // Bottom border
-                        ui.painter().hline(
-                            toolbar_rect.x_range(),
-                            toolbar_rect.max.y,
-                            egui::Stroke::new(1.0, theme.border),
-                        );
-                        let recent = self.prefs.general.recent_projects.clone();
-                        let cmds = self.toolbar.show(
-                            ui,
-                            &mut self.state,
-                            &recent,
-                            &self.theme,
-                            &mut self.layout.active_tool,
-                        );
-                        all_cmds.extend(cmds);
-                    });
-
-                    // Transport (rendered below toolbar, overlapping for now —
-                    // will be merged into toolbar in Phase 3)
-                    // For now, render transport inside a thin strip at the
-                    // bottom of the toolbar area.
-                    // (Transport is currently 48px; we compress it into toolbar for now.)
-
-                    // Status bar
-                    crate::ui_util::allocate_clipped_ui(ui, statusbar_rect, |ui| {
-                        ui.set_min_size(statusbar_rect.size());
-                        ui.painter()
-                            .rect_filled(statusbar_rect, 0.0, theme.bg_void);
-                        ui.painter().hline(
-                            statusbar_rect.x_range(),
-                            statusbar_rect.min.y,
-                            egui::Stroke::new(1.0, theme.border),
-                        );
-                        crate::panels::status_bar::show(ui, &self.state, &self.theme);
-                    });
-
-                    // Browser (left panel)
-                    crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
-                        ui.set_min_size(browser_rect.size());
-                        ui.painter()
-                            .rect_filled(browser_rect, 0.0, theme.bg_panel);
-                        let cmds = self.browser.show(
-                            ui,
-                            &mut self.state,
-                            &self.theme,
-                            &mut self.layout.active_browser_tab,
-                            &mut self.layout.files_pinned,
-                            &mut self.layout.files_split_ratio,
-                        );
-                        all_cmds.extend(cmds);
-                        // Sync view mode to prefs if changed
-                        if self.browser.browser_view_mode != self.prefs.editing.media_browser_view_mode {
-                            self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
-                            let _ = self.prefs.save();
-                        }
-                    });
-
-                    // Inspector (right panel) — contextual based on workspace
-                    crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
-                        ui.set_min_size(inspector_rect.size());
-                        ui.painter().rect_filled(inspector_rect, 0.0, theme.bg_panel);
-
-                        let in_color_workspace = self.state.show_color_panel
-                            && self.state.selected_clip.is_some();
-
-                        if in_color_workspace {
-                            // Color workspace: tabbed simple inspector
-                            let clip_id = self.state.selected_clip.unwrap();
-                            let seq_idx = self.state.active_sequence_idx;
-                            let clip = self.state.sequences[seq_idx].tracks.iter_mut()
-                                .find_map(|t| t.find_clip_mut(clip_id));
-                            if let Some(clip) = clip {
-                                // Grade versions bar
-                                let grade_ver_h = 26.0;
-                                let avail_w = ui.available_width();
-                                ui.horizontal(|ui| {
-                                    ui.set_height(grade_ver_h);
-                                    ui.add_space(8.0);
-                                    ui.label(egui::RichText::new("Grades").size(10.0).color(self.theme.text_dim));
-                                    ui.add_space(4.0);
-                                    let num_versions = clip.grade_versions.len();
-                                    let active = clip.active_grade_version;
-                                    for i in 0..num_versions {
-                                        let is_active = active == Some(i);
-                                        let label = {
-                                            let name = &clip.grade_versions[i].name;
-                                            if name.is_empty() {
-                                                format!("V{}", i + 1)
-                                            } else {
-                                                name.clone()
-                                            }
-                                        };
-                                        let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(10.0));
-                                        if resp.clicked() && !is_active {
-                                            all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
-                                        }
-                                        resp.context_menu(|ui| {
-                                            if ui.button("Rename...").clicked() {
-                                                all_cmds.push(AppCommand::RenameGradeVersion {
-                                                    clip_id,
-                                                    version_index: i,
-                                                    name: format!("Version {}", i + 1),
-                                                });
-                                                ui.close_menu();
-                                            }
-                                            if !is_active && ui.button("Delete").clicked() {
-                                                all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
-                                                ui.close_menu();
-                                            }
-                                        });
-                                    }
-                                    if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
-                                        let name = format!("Version {}", num_versions + 1);
-                                        all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
-                                    }
-                                });
-                                ui.add_space(2.0);
-                                // Separator
-                                let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
-                                ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
-
-                                // ── Grade Stills reference section ──
-                                {
-                                    let stills_h = 28.0;
-                                    ui.horizontal(|ui| {
-                                        ui.set_height(stills_h);
-                                        ui.add_space(8.0);
-                                        ui.label(egui::RichText::new("Stills").size(10.0).color(self.theme.text_dim));
-                                        ui.add_space(4.0);
-
-                                        // Thumbnail buttons for each saved still
-                                        let mut delete_idx = None;
-                                        for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
-                                            let is_active = self.state.active_grade_still == Some(i);
-                                            // Upload texture lazily
-                                            if still.texture.is_none() && !still.rgba.is_empty() {
-                                                let sw = still.width as usize;
-                                                let sh = still.height as usize;
-                                                let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
-                                                    .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
-                                                    .collect();
-                                                let image = egui::ColorImage { size: [sw, sh], pixels };
-                                                still.texture = Some(ui.ctx().load_texture(
-                                                    format!("grade_still_thumb_{}", i),
-                                                    image,
-                                                    egui::TextureOptions::LINEAR,
-                                                ));
-                                            }
-                                            let btn_size = egui::vec2(36.0, 22.0);
-                                            let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
-                                            // Draw thumbnail
-                                            if let Some(tex) = &still.texture {
-                                                ui.painter().image(
-                                                    tex.id(),
-                                                    rect,
-                                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                                    egui::Color32::WHITE,
-                                                );
-                                            }
-                                            // Active border
-                                            if is_active {
-                                                ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, self.theme.text_accent));
-                                            } else {
-                                                ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5, self.theme.border));
-                                            }
-                                            if resp.clicked() {
-                                                all_cmds.push(AppCommand::SetActiveGradeStill {
-                                                    index: if is_active { None } else { Some(i) },
-                                                });
-                                            }
-                                            let resp = resp.on_hover_text(&still.name);
-                                            resp.context_menu(|ui| {
-                                                if ui.button("Delete").clicked() {
-                                                    delete_idx = Some(i);
-                                                    ui.close_menu();
-                                                }
-                                            });
-                                        }
-                                        if let Some(idx) = delete_idx {
-                                            all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
-                                        }
-
-                                        // Capture button
-                                        if ui.small_button("\u{1F4F7}").on_hover_text("Capture current frame as grade still").clicked() {
-                                            let name = format!("Still {}", self.state.grade_stills.len() + 1);
-                                            all_cmds.push(AppCommand::CaptureGradeStill { name });
-                                        }
-
-                                        // Compare toggle
-                                        let compare_active = self.state.grade_still_compare;
-                                        let compare_label = if compare_active { "Compare ON" } else { "Compare" };
-                                        let compare_color = if compare_active { self.theme.text_accent } else { self.theme.text_dim };
-                                        if ui.add(egui::Button::new(egui::RichText::new(compare_label).size(10.0).color(compare_color)).frame(false))
-                                            .on_hover_text("Toggle split-view comparison with active still")
-                                            .clicked()
-                                        {
-                                            all_cmds.push(AppCommand::ToggleGradeStillCompare);
-                                        }
-                                    });
-                                    // Separator
-                                    let sep_rect2 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
-                                    ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
-                                }
-
-                                if self.state.show_node_strip && self.state.selected_node_id.is_some() {
-                                    // Node strip visible + node selected → show that node's params
-                                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                                    let cmds = self.node_inspector_panel.show(
-                                        ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
-                                    );
-                                    all_cmds.extend(cmds);
-                                } else {
-                                    // Simple tabbed mode (default)
-                                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                                    let cmds = self.node_inspector_panel.show_simple(
-                                        ui, &mut clip.node_graph, clip_id,
-                                        &mut self.state.selected_node_id,
-                                        &mut self.state.color_tab,
-                                        &self.theme,
-                                        clip_time_secs,
-                                    );
-                                    all_cmds.extend(cmds);
-                                }
-                            }
-                        } else {
-                            // Edit workspace: standard clip inspector
-                            let cmds = self.new_inspector.show(
-                                ui, &self.state, &self.theme,
-                                &mut self.layout.active_inspector_tab,
-                            );
-                            all_cmds.extend(cmds);
-                        }
-                    });
-
-                    let color_tools_bottom = in_color_ws
-                        && self.state.color_tools_position == crate::state::ColorToolsPosition::Bottom;
-
-                    // Viewer (center top) — pure black, absolutely no border
-                    // Paint black fill slightly expanded to cover any sub-pixel gaps
-                    ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
-                    crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
-                        // Zero out ALL spacing and strokes for borderless viewer
-                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                        ui.spacing_mut().window_margin = egui::Margin::ZERO;
-                        {
-                            let v = &mut ui.style_mut().visuals;
-                            v.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
-                            v.widgets.noninteractive.fg_stroke = egui::Stroke::NONE;
-                            v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                            v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-                            v.widgets.active.bg_stroke = egui::Stroke::NONE;
-                            v.window_stroke = egui::Stroke::NONE;
-                            v.window_shadow = egui::Shadow::NONE;
-                        }
-                        let cmds = self.viewer.show(ui, &mut self.state, &self.theme);
-                        all_cmds.extend(cmds);
-                    });
-
-                    // Compute bottom-panel scope cursor data (shared by overlay + bottom panel)
-                    // If locked but data not yet computed, compute it now
-                    if self.state.scope_cursor_locked && self.state.scope_cursor_locked_data.is_none() {
-                        if let (Some(pos), Some(rect)) = (self.state.scope_cursor_locked_pos, self.state.viewer_image_rect) {
-                            let fb = self.frame_buffer.lock().unwrap();
-                            self.state.scope_cursor_locked_data = crate::widgets::scope_window::sample_viewer_pixel(
-                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
-                            );
-                        }
-                    }
-
-                    let bottom_scope_cursor: Option<crate::state::ScopeCursorData> = if self.state.scope_cursor_locked {
-                        self.state.scope_cursor_locked_data
-                    } else if self.state.scope_cursor_show {
-                        if let (Some(pos), Some(rect)) = (self.state.viewer_pointer_pos, self.state.viewer_image_rect) {
-                            let fb = self.frame_buffer.lock().unwrap();
-                            crate::widgets::scope_window::sample_viewer_pixel(
-                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
-                            )
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Scope overlay on viewer (semi-transparent, bottom-right corner)
-                    if self.state.show_scopes && self.state.scope_overlay_mode {
-                        let overlay_w = (viewer_rect.width() * 0.3).min(200.0);
-                        let overlay_h = overlay_w; // square
-                        let overlay_rect = egui::Rect::from_min_size(
-                            egui::pos2(viewer_rect.right() - overlay_w - 8.0, viewer_rect.bottom() - overlay_h - 8.0),
-                            egui::vec2(overlay_w, overlay_h),
-                        );
-                        crate::ui_util::allocate_clipped_ui(ui, overlay_rect, |ui| {
-                            ui.set_min_size(overlay_rect.size());
-                            // Semi-transparent dark background
-                            ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
-                            self.state.scope_state.scale = self.state.scope_scale;
-                            crate::widgets::scopes::show_scopes(
-                                ui,
-                                &mut self.state.scope_state,
-                                self.state.scope_mode,
-                                &self.frame_buffer,
-                                self.state.scope_quality,
-                                self.prefs.color.vectorscope_skin_angle,
-                                self.state.playback == PlaybackState::Playing,
-                                bottom_scope_cursor,
-                                self.state.scope_cursor_show,
-                            );
-                        });
-                    }
-
-                    // Curve editor (between viewer and timeline)
-                    if self.state.show_curve_editor && curve_editor_h > 0.0 {
-                        self.curve_editor.sync_param_from_state(&self.state);
-                        crate::ui_util::allocate_clipped_ui(ui, curve_editor_rect, |ui| {
-                            ui.set_min_size(curve_editor_rect.size());
-                            let cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
-                            all_cmds.extend(cmds);
-                        });
-                    }
-
-                    // Audio mixer (between curve editor and timeline)
-                    if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
-                        crate::ui_util::allocate_clipped_ui(ui, audio_mixer_rect, |ui| {
-                            ui.set_min_size(audio_mixer_rect.size());
-                            let cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
-                            all_cmds.extend(cmds);
-                        });
-                    }
-
-                    // Timeline (center bottom) — always visible
-                    crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
-                        ui.set_min_size(timeline_rect.size());
-                        let cmds = self.new_timeline.show(
-                            ui,
-                            &mut self.state,
-                            &self.theme,
-                            &mut self.timeline,
-                        );
-                        all_cmds.extend(cmds);
-                    });
-
-                    // ── Color workspace bottom panels ──
-                    if in_color_ws {
-                        // Resizer between viewer and bottom panels (draggable)
-                        if show_scopes_bar || show_nodes_bar {
-                            let resizer_rect = egui::Rect::from_min_size(
-                                egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
-                                egui::vec2(center_w, theme::RESIZER_THICKNESS),
-                            );
-                            let delta = resizer::horizontal_resizer(ui, resizer_rect, theme);
-                            if delta != 0.0 {
-                                // Adjust the viewer ratio based on drag
-                                let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
-                                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.75);
-                                self.layout_dirty = true;
-                            }
-                        }
-
-                        // Toggle bar: [Scopes] [Nodes] toggle buttons
-                        if toggle_bar_h > 0.0 {
-                            crate::ui_util::allocate_clipped_ui(ui, toggle_bar_rect, |ui| {
-                                ui.set_min_size(toggle_bar_rect.size());
-                                ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
-                                ui.painter().hline(
-                                    toggle_bar_rect.x_range(),
-                                    toggle_bar_rect.min.y,
-                                    egui::Stroke::new(0.5, theme.border),
-                                );
-                                ui.horizontal_centered(|ui| {
-                                    ui.add_space(8.0);
-                                    let scope_label = if self.state.show_scopes {
-                                        egui::RichText::new("Scopes").size(10.0).color(theme.text_accent)
-                                    } else {
-                                        egui::RichText::new("Scopes").size(10.0).color(theme.text_dim)
-                                    };
-                                    if ui.selectable_label(self.state.show_scopes, scope_label).clicked() {
-                                        self.state.show_scopes = !self.state.show_scopes;
-                                        ui.ctx().request_repaint();
-                                    }
-                                    // Color tools position toggle
-                                    ui.separator();
-                                    {
-                                        use crate::state::ColorToolsPosition;
-                                        let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
-                                        let label = if is_bottom { "Tools: Bottom" } else { "Tools: Right" };
-                                        let color = if is_bottom { theme.text_accent } else { theme.text_dim };
-                                        if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
-                                            .frame(false)).on_hover_text("Toggle color tools position").clicked()
-                                        {
-                                            self.state.color_tools_position = if is_bottom {
-                                                ColorToolsPosition::Right
-                                            } else {
-                                                ColorToolsPosition::Bottom
-                                            };
-                                        }
-                                    }
-
-                                    // Scope mode selector + controls (when scopes visible)
-                                    if self.state.show_scopes {
-                                        ui.separator();
-                                        use crate::state::{ScopeMode, ScopeScale};
-
-                                        // Mode tabs
-                                        for (mode, label) in [
-                                            (ScopeMode::Waveform, "Wave"),
-                                            (ScopeMode::Parade, "Parade"),
-                                            (ScopeMode::Vectorscope, "Vector"),
-                                            (ScopeMode::Histogram, "Hist"),
-                                        ] {
-                                            let active = self.state.scope_mode == mode;
-                                            let text = egui::RichText::new(label).size(9.0);
-                                            let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
-                                            if ui.selectable_label(active, text).clicked() {
-                                                self.state.scope_mode = mode;
-                                                let mode_byte = match mode {
-                                                    ScopeMode::Waveform => 0u8,
-                                                    ScopeMode::Parade => 1,
-                                                    ScopeMode::Vectorscope => 2,
-                                                    ScopeMode::Histogram => 3,
-                                                };
-                                                let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
-                                                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                                                ui.ctx().request_repaint();
-                                            }
-                                        }
-
-                                        // R/G/B channel pills (only for Waveform/Parade)
-                                        if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
-                                            ui.add_space(4.0);
-                                            ui.separator();
-                                            ui.add_space(2.0);
-                                            for (label, color, enabled) in [
-                                                ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
-                                                ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
-                                                ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
-                                            ] {
-                                                let bg = if *enabled { color } else { egui::Color32::from_rgb(0x30, 0x30, 0x35) };
-                                                let text_c = if *enabled { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
-                                                let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
-                                                    .fill(bg)
-                                                    .min_size(egui::vec2(20.0, 16.0))
-                                                    .rounding(3.0);
-                                                if ui.add(btn).clicked() { *enabled = !*enabled; }
-                                            }
-                                        }
-
-                                        // Right-side controls
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            // Settings gear
-                                            let gear_color = if self.state.scope_settings_open { theme.text_accent } else { theme.text_dim };
-                                            if ui.add(egui::Button::new(egui::RichText::new("\u{2699}").size(12.0).color(gear_color))
-                                                .frame(false)).clicked() {
-                                                self.state.scope_settings_open = !self.state.scope_settings_open;
-                                            }
-
-                                            // Floating scope window button
-                                            let win_color = if self.state.scope_window.open { theme.text_accent } else { theme.text_dim };
-                                            if ui.add(egui::Button::new(egui::RichText::new("\u{229e}").size(12.0).color(win_color))
-                                                .frame(false)).on_hover_text("Floating scope window").clicked() {
-                                                self.state.scope_window.open = !self.state.scope_window.open;
-                                            }
-
-                                            // Picker toggle (crosshair icon)
-                                            let picker_active = self.state.scope_cursor_show;
-                                            let picker_locked = self.state.scope_cursor_locked;
-                                            let picker_color = if picker_locked {
-                                                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
-                                            } else if picker_active {
-                                                theme.text_accent
-                                            } else {
-                                                theme.text_dim
-                                            };
-                                            let picker_resp = ui.add(egui::Button::new(
-                                                egui::RichText::new("\u{2295}").size(12.0).color(picker_color),
-                                            ).frame(false));
-                                            if picker_resp.clicked() {
-                                                if picker_locked {
-                                                    // Unlock
-                                                    self.state.scope_cursor_locked = false;
-                                                    self.state.scope_cursor_locked_pos = None;
-                                                    self.state.scope_cursor_locked_data = None;
-                                                } else {
-                                                    self.state.scope_cursor_show = !self.state.scope_cursor_show;
-                                                }
-                                            }
-                                            picker_resp.on_hover_text(if picker_locked {
-                                                "Click to unlock sample point"
-                                            } else if picker_active {
-                                                "Scope picker (click viewer to lock)"
-                                            } else {
-                                                "Enable scope picker"
-                                            });
-
-                                            // Overlay toggle
-                                            let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
-                                            if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
-                                                .frame(false)).on_hover_text("Overlay on viewer").clicked() {
-                                                self.state.scope_overlay_mode = !self.state.scope_overlay_mode;
-                                            }
-
-                                            // Scale selector
-                                            egui::ComboBox::from_id_salt("scope_scale_sel")
-                                                .width(50.0)
-                                                .selected_text(egui::RichText::new(self.state.scope_scale.button_label()).size(9.0))
-                                                .show_ui(ui, |ui| {
-                                                    for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
-                                                        ui.selectable_value(&mut self.state.scope_scale, s, s.label());
-                                                    }
-                                                });
-                                        });
-                                    }
-                                });
-                            });
-                        }
-
-                        // Bottom panel: color tools (when docked at bottom) OR scopes (default)
-                        if color_tools_bottom {
-                            // Color tools in the bottom panel (replacing scopes)
-                            let tools_h = if scopes_h > 0.0 { scopes_h } else {
-                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
-                                let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
-                                (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6)
-                            };
-                            let tools_rect = egui::Rect::from_min_size(
-                                egui::pos2(center_left, toggle_bar_rect.max.y),
-                                egui::vec2(center_w, tools_h),
-                            );
-                            crate::ui_util::allocate_clipped_ui(ui, tools_rect, |ui| {
-                                ui.set_min_size(tools_rect.size());
-                                ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
-                                if let Some(clip_id) = self.state.selected_clip {
-                                    let seq_idx = self.state.active_sequence_idx;
-                                    let clip = self.state.sequences[seq_idx].tracks.iter_mut()
-                                        .find_map(|t| t.find_clip_mut(clip_id));
-                                    if let Some(clip) = clip {
-                                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                                        let cmds = self.node_inspector_panel.show_simple_horizontal(
-                                            ui, &mut clip.node_graph, clip_id,
-                                            &mut self.state.selected_node_id,
-                                            &mut self.state.color_tab_bottom,
-                                            &self.theme,
-                                            clip_time_secs,
-                                        );
-                                        all_cmds.extend(cmds);
-                                    }
-                                } else {
-                                    ui.centered_and_justified(|ui| {
-                                        ui.label(egui::RichText::new("Select a clip to grade")
-                                            .size(12.0).color(theme.text_dim));
-                                    });
-                                }
-                            });
-                            ui.ctx().request_repaint();
-                        } else if self.state.show_scopes {
-                            // Compute rect dynamically from current state
-                            let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
-                                // Scopes just got enabled this frame — give it reasonable default
-                                let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
-                                let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
-                                let total_bottom = (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6);
-                                if show_nodes_bar { total_bottom * 0.6 } else { total_bottom }
-                            };
-                            let live_scopes_rect = egui::Rect::from_min_size(
-                                egui::pos2(center_left, toggle_bar_rect.max.y),
-                                egui::vec2(center_w, live_scopes_h),
-                            );
-                            crate::ui_util::allocate_clipped_ui(ui, live_scopes_rect, |ui| {
-                                ui.set_min_size(live_scopes_rect.size());
-                                ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
-                                // Detect scope setting changes and bump settings_generation
-                                if self.state.scope_state.scale != self.state.scope_scale
-                                    || self.state.scope_state.low_pass != self.state.scope_low_pass
-                                    || self.state.scope_state.bloom != self.state.scope_bloom
-                                    || self.state.scope_state.show_r != self.state.scope_show_r
-                                    || self.state.scope_state.show_g != self.state.scope_show_g
-                                    || self.state.scope_state.show_b != self.state.scope_show_b
-                                    || self.state.scope_state.quality != self.state.scope_quality
-                                {
-                                    self.state.scope_state.increment_settings_generation();
-                                }
-                                self.state.scope_state.scale = self.state.scope_scale;
-                                self.state.scope_state.low_pass = self.state.scope_low_pass;
-                                self.state.scope_state.bloom = self.state.scope_bloom;
-                                self.state.scope_state.show_r = self.state.scope_show_r;
-                                self.state.scope_state.show_g = self.state.scope_show_g;
-                                self.state.scope_state.show_b = self.state.scope_show_b;
-                                self.state.scope_state.quality = self.state.scope_quality;
-                                crate::widgets::scopes::show_scopes(
-                                    ui,
-                                    &mut self.state.scope_state,
-                                    self.state.scope_mode,
-                                    &self.frame_buffer,
-                                    self.state.scope_quality,
-                                    self.prefs.color.vectorscope_skin_angle,
-                                    self.state.playback == PlaybackState::Playing,
-                                    bottom_scope_cursor,
-                                    self.state.scope_cursor_show,
-                                );
-                            });
-                            // Force repaint to recalculate layout on next frame
-                            ui.ctx().request_repaint();
-                        }
-
-                        // Scope settings dropdown
-                        if self.state.scope_settings_open && self.state.show_scopes {
-                            use crate::state::ScopeScale;
-                            let dropdown_id = egui::Id::new("scope_settings_dropdown");
-                            egui::Area::new(dropdown_id)
-                                .order(egui::Order::Foreground)
-                                .fixed_pos(egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0))
-                                .show(ctx, |ui| {
-                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                        ui.set_min_width(200.0);
-                                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
-
-                                        // DISPLAY section
-                                        ui.label(egui::RichText::new("DISPLAY").size(9.0).color(theme.text_dim).strong());
-                                        ui.checkbox(&mut self.state.scope_low_pass, "Low Pass Filter");
-                                        ui.checkbox(&mut self.state.scope_bloom, "Bloom on dense regions");
-                                        ui.checkbox(&mut self.state.scope_overlay_mode, "Overlay on viewer");
-
-                                        ui.add_space(4.0);
-                                        ui.label(egui::RichText::new("QUALITY").size(9.0).color(theme.text_dim).strong());
-                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Low, "Draft (every 4px)");
-                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Medium, "Standard (every 2px)");
-                                        ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::High, "Full (every px)");
-
-                                        ui.add_space(4.0);
-                                        ui.label(egui::RichText::new("SCALE").size(9.0).color(theme.text_dim).strong());
-                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
-                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
-                                        ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
-                                    });
-                                });
-
-                            // Close on click outside
-                            if ui.input(|i| i.pointer.primary_clicked()) {
-                                let dropdown_rect = egui::Rect::from_min_size(
-                                    egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0),
-                                    egui::vec2(210.0, 250.0),
-                                );
-                                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                    if !dropdown_rect.contains(pos) && !toggle_bar_rect.contains(pos) {
-                                        self.state.scope_settings_open = false;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Node strip panel — read live state
-                        if self.state.show_node_strip {
-                            crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
-                                ui.set_min_size(nodes_rect.size());
-                                ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
-                                let clip_id = self.state.selected_clip;
-                                if let Some(cid) = clip_id {
-                                    let seq_idx = self.state.active_sequence_idx;
-                                    if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
-                                        .find_map(|t| t.find_clip_mut(cid))
-                                    {
-                                        let cmds = self.node_graph_panel.show(
-                                            ui, &mut self.state.selected_node_id,
-                                            &mut clip.node_graph, cid, &self.theme,
-                                        );
-                                        all_cmds.extend(cmds);
-                                    } else {
-                                        ui.painter().text(
-                                            nodes_rect.center(),
-                                            egui::Align2::CENTER_CENTER,
-                                            "Clip not found in sequence",
-                                            egui::FontId::proportional(12.0),
-                                            egui::Color32::from_rgb(100, 100, 110),
-                                        );
-                                    }
-                                } else {
-                                    ui.painter().text(
-                                        nodes_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        "Select a clip to view its node graph",
-                                        egui::FontId::proportional(12.0),
-                                        egui::Color32::from_rgb(100, 100, 110),
-                                    );
-                                }
-                            });
-                        }
-                    }
-
-                    // ── Draw resizers AFTER panels (so they get interaction priority) ──
-                    let left_delta =
-                        resizer::vertical_resizer(ui, left_resizer_rect, theme);
-                    let right_delta =
-                        resizer::vertical_resizer(ui, right_resizer_rect, theme);
-                    let h_delta =
-                        resizer::horizontal_resizer(ui, h_resizer_rect, theme);
-
-                    // Apply resizer deltas
-                    if left_delta != 0.0 {
-                        self.layout.browser_width = (self.layout.browser_width
-                            + left_delta)
-                            .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
-                    }
-                    if right_delta != 0.0 {
-                        self.layout.inspector_width = (self.layout.inspector_width
-                            - right_delta)
-                            .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
-                    }
-                    if h_delta != 0.0 {
-                        self.layout.timeline_height = (self.layout.timeline_height
-                            - h_delta)
-                            .clamp(timeline_min_h, max_timeline_h);
-                    }
-                    // Track layout dirty for persistence
-                    let resizer_active = left_delta != 0.0
-                        || right_delta != 0.0
-                        || h_delta != 0.0;
-                    if resizer_active {
-                        self.layout_dirty = true;
-                    }
-                    if self.layout_dirty
-                        && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
-                    {
-                        self.layout.save();
-                        self.layout_dirty = false;
-                    }
-
-                    // Transport is now integrated into the toolbar (P1-2).
-                    // Keyboard shortcuts still handled by self.transport.handle_keyboard().
-                });
-        }
+        self.render_main_layout(ctx, &mut all_cmds);
 
         // Markers panel
         if self.state.show_markers_panel {
@@ -14935,6 +13911,1447 @@ impl KlippApp {
             }
         }
     }
+    fn show_modal_dialogs(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        // 4a0. Paste Attributes dialog
+        if self.state.show_paste_attributes_dialog {
+            let mut open = true;
+            egui::Window::new("Paste Attributes")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+                    ui.label("Select which attributes to paste:");
+                    ui.add_space(6.0);
+
+                    // Persistent checkboxes via egui's data store (no unsafe statics)
+                    let pa_id = egui::Id::new("paste_attributes_checkboxes");
+                    let mut pa_effects = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("fx"), || true));
+                    let mut pa_color = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("col"), || true));
+                    let mut pa_audio = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("aud"), || true));
+                    let mut pa_transform = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("tfm"), || true));
+                    let mut pa_speed = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("spd"), || false));
+
+                    ui.checkbox(&mut pa_effects, "Effects (built-in + OFX)");
+                    ui.checkbox(&mut pa_color, "Color Grade (node graph)");
+                    ui.checkbox(&mut pa_audio, "Audio (volume, pan, gain, fades, FX)");
+                    ui.checkbox(&mut pa_transform, "Transform (position, scale, rotation, opacity)");
+                    ui.checkbox(&mut pa_speed, "Speed");
+
+                    // Write back to egui data store
+                    ctx.data_mut(|d| { d.insert_temp(pa_id.with("fx"), pa_effects); d.insert_temp(pa_id.with("col"), pa_color); d.insert_temp(pa_id.with("aud"), pa_audio); d.insert_temp(pa_id.with("tfm"), pa_transform); d.insert_temp(pa_id.with("spd"), pa_speed); });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Paste").clicked() {
+                            cmds.push(AppCommand::PasteAttributes {
+                                effects: pa_effects,
+                                color_grade: pa_color,
+                                audio: pa_audio,
+                                transform: pa_transform,
+                                speed: pa_speed,
+                            });
+                            self.state.show_paste_attributes_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_paste_attributes_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_paste_attributes_dialog = false;
+            }
+        }
+
+        // Speed dialog
+        if self.state.show_speed_dialog {
+            // Modal backdrop
+            egui::Area::new(egui::Id::new("speed_dialog_backdrop"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::PanelResizeLine)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let resp = ui.allocate_rect(screen, egui::Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+                    if resp.clicked() { self.state.show_speed_dialog = false; }
+                });
+
+            let mut open = true;
+            egui::Window::new("Set Clip Speed")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(280.0);
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Speed:");
+                        ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
+                            .range(1.0..=1000.0).speed(1.0).suffix("%").fixed_decimals(0));
+                    });
+                    ui.add_space(4.0);
+
+                    // Preset buttons
+                    ui.horizontal(|ui| {
+                        for (label, pct) in [("25%", 25.0), ("50%", 50.0), ("100%", 100.0), ("200%", 200.0), ("400%", 400.0)] {
+                            if ui.selectable_label((self.state.speed_dialog_value - pct).abs() < 0.5, label).clicked() {
+                                self.state.speed_dialog_value = pct;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+
+                    ui.checkbox(&mut self.state.speed_dialog_reverse, "Reverse playback");
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() {
+                            if let Some(clip_id) = self.state.selected_clip {
+                                let mut speed = self.state.speed_dialog_value / 100.0;
+                                if self.state.speed_dialog_reverse { speed = -speed; }
+                                cmds.push(AppCommand::SetClipSpeed { clip_id, speed });
+                            }
+                            self.state.show_speed_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_speed_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_speed_dialog = false;
+            }
+        }
+
+        // Save Workspace dialog
+        if self.state.show_save_workspace_dialog {
+            let mut open = true;
+            egui::Window::new("Save Workspace")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut self.state.save_workspace_name);
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            let layout = crate::state::SavedWorkspaceLayout {
+                                name: self.state.save_workspace_name.clone(),
+                                show_browser: self.state.show_browser_panel,
+                                show_inspector: self.state.show_inspector_panel,
+                                show_history: self.state.show_history_panel,
+                                show_markers: self.state.show_markers_panel,
+                                show_curve_editor: self.state.show_curve_editor,
+                                show_scopes: self.state.show_scopes,
+                                show_color_panel: self.state.show_color_panel,
+                            };
+                            // Replace if name exists, otherwise add
+                            if let Some(existing) = self.state.custom_workspaces.iter_mut().find(|w| w.name == layout.name) {
+                                *existing = layout;
+                            } else {
+                                self.state.custom_workspaces.push(layout);
+                            }
+                            self.state.show_save_workspace_dialog = false;
+                            self.state.toast.show("Workspace saved".to_string());
+                            // Persist to prefs file
+                            if let Ok(json) = serde_json::to_string_pretty(&self.state.custom_workspaces) {
+                                let path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
+                                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                                let _ = std::fs::write(&path, json);
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_save_workspace_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.show_save_workspace_dialog = false;
+            }
+        }
+
+        // 4a1. Auto-save recovery dialog
+        if self.state.show_autosave_recovery {
+            egui::Window::new("Recover Auto-Save?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("A newer auto-save was found for this project.");
+                    ui.label("Would you like to restore it?");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Restore Auto-Save").clicked() {
+                            if let Some(autosave_path) = self.state.autosave_recovery_path.take() {
+                                let original_path = self.state.autosave_original_path.take();
+                                self.state.show_autosave_recovery = false;
+                                self.do_open_project_inner(&autosave_path);
+                                // Set project path to the original, not the autosave
+                                if let Some(orig) = original_path {
+                                    self.state.project_path = Some(orig);
+                                }
+                                self.state.dirty = true; // Mark dirty so user saves explicitly
+                            }
+                        }
+                        if ui.button("Keep Saved Version").clicked() {
+                            if let Some(original_path) = self.state.autosave_original_path.take() {
+                                self.state.autosave_recovery_path = None;
+                                self.state.show_autosave_recovery = false;
+                                self.do_open_project_inner(&original_path);
+                            }
+                        }
+                    });
+                });
+        }
+
+        // 4a1b. Confirm remove media from pool
+        if let Some(media_id) = self.state.show_remove_media_confirm {
+            let usage = self.state.media_usage_cache.get(&media_id).copied().unwrap_or(0);
+            let name = self.state.media_pool.get(&media_id)
+                .map(|m| m.filename.clone())
+                .unwrap_or_else(|| "Unknown".into());
+            egui::Window::new("Remove Media?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("\"{}\" is used in {} clip(s).", name, usage));
+                    ui.label("Removing it will make those clips offline.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_remove_media_confirm = None;
+                        }
+                        if ui.button("Remove").clicked() {
+                            cmds.push(AppCommand::ConfirmRemoveFromPool { media_id });
+                        }
+                    });
+                });
+        }
+
+        // Delete unused media confirmation dialog
+        if let Some((count, total_bytes)) = self.state.show_delete_unused_confirm {
+            egui::Window::new("Delete Unused Media?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("{count} items are not referenced by any timeline clip."));
+                    let size_mb = total_bytes as f64 / (1024.0 * 1024.0);
+                    if size_mb >= 1024.0 {
+                        ui.label(format!("({count} items referencing {:.1} GB of source media)", size_mb / 1024.0));
+                    } else {
+                        ui.label(format!("({count} items referencing {:.0} MB of source media)", size_mb));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_delete_unused_confirm = None;
+                        }
+                        if ui.button(format!("Remove {count} items")).clicked() {
+                            cmds.push(AppCommand::ConfirmDeleteUnusedMedia);
+                        }
+                    });
+                });
+        }
+
+        // Export offline media warning dialog
+        if self.state.export_offline_warning.is_some() {
+            let mut dismiss = false;
+            let mut force_export = false;
+            if let Some((ref clips, _)) = self.state.export_offline_warning {
+                egui::Window::new("Export Contains Offline Media")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("These clips will export as black/silent frames:");
+                        ui.add_space(4.0);
+                        for (name, tc) in clips {
+                            ui.label(format!("  \u{2022} {}  at {}", name, tc));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                dismiss = true;
+                            }
+                            if ui.button("Export Anyway").clicked() {
+                                force_export = true;
+                            }
+                        });
+                    });
+            }
+            if dismiss {
+                self.state.export_offline_warning = None;
+            }
+            if force_export {
+                if let Some((_, settings)) = self.state.export_offline_warning.take() {
+                    cmds.push(AppCommand::ForceExportSequence { settings });
+                }
+            }
+        }
+
+        // 4a2. Confirm remove track dialog
+        if let Some(track_id) = self.state.confirm_remove_track {
+            let mut open = true;
+            egui::Window::new("Remove Track")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This track contains clips. Remove track and all its clips?");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Remove").clicked() {
+                            let _ = self.state.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                            self.state.confirm_remove_track = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.confirm_remove_track = None;
+                        }
+                    });
+                });
+            if !open {
+                self.state.confirm_remove_track = None;
+            }
+        }
+
+        // 4b. Export dialog
+        let export_cmds = self.show_export_dialog(ctx);
+        cmds.extend(export_cmds);
+
+        // 4c. Render queue window
+        self.show_render_queue_window(ctx);
+
+        // 4c1. New Project dialog
+        if self.state.show_new_project_dialog {
+            if let Some(cmd) = self.new_project_dialog.show(
+                ctx,
+                &mut self.state.show_new_project_dialog,
+                &self.theme,
+            ) {
+                cmds.push(cmd);
+            }
+        }
+
+        // 4c2. Consolidate Project dialog
+        if self.state.show_consolidate_dialog {
+            if let Some(ref project_path) = self.state.project_path.clone() {
+                let mut open = true;
+                // Count media files outside the project directory
+                let project_dir = project_path.clone();
+                let external_media: Vec<_> = self.state.media_pool.all()
+                    .filter(|item| !item.offline && !item.path.starts_with(&project_dir))
+                    .map(|item| (item.id, item.path.clone(), item.file_size_bytes))
+                    .collect();
+                let file_count = external_media.len();
+                let total_bytes: u64 = external_media.iter().map(|(_, _, s)| s).sum();
+
+                egui::Window::new("Consolidate Project")
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_width(380.0)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("Copy all referenced media files into the project folder for portability.");
+                        ui.add_space(8.0);
+                        if file_count == 0 {
+                            ui.label(egui::RichText::new("All media is already inside the project folder.")
+                                .color(self.theme.text_secondary));
+                        } else {
+                            ui.label(format!("Media to copy: {} file(s)", file_count));
+                            ui.label(format!("Total size: {}", format_size_brief(total_bytes)));
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Cancel").clicked() {
+                                    self.state.show_consolidate_dialog = false;
+                                }
+                                if ui.button("Consolidate").clicked() {
+                                    self.state.show_consolidate_dialog = false;
+                                    let media_dir = project_dir.join("media").join("files");
+                                    if let Err(e) = std::fs::create_dir_all(&media_dir) {
+                                        tracing::error!("Failed to create media/files dir: {e}");
+                                    } else {
+                                        let mut copied = 0usize;
+                                        for (media_id, src_path, _) in &external_media {
+                                            let filename = src_path.file_name().unwrap_or_default();
+                                            let dst = media_dir.join(filename);
+                                            match std::fs::copy(src_path, &dst) {
+                                                Ok(_) => {
+                                                    // Update media item path
+                                                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                                                        item.path = dst;
+                                                    }
+                                                    copied += 1;
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Failed to copy {:?}: {e}", src_path);
+                                                }
+                                            }
+                                        }
+                                        self.state.dirty = true;
+                                        self.state.toast.show(format!("Consolidated {copied} file(s)"));
+                                        tracing::info!("Consolidated {copied}/{file_count} media files");
+                                    }
+                                }
+                            });
+                        }
+                    });
+                if !open {
+                    self.state.show_consolidate_dialog = false;
+                }
+            } else {
+                self.state.show_consolidate_dialog = false;
+            }
+        }
+
+        // 4c3. Project Info window
+        if self.state.show_project_info {
+            // Modal backdrop
+            egui::Area::new(egui::Id::new("project_info_backdrop"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let resp = ui.allocate_rect(screen, egui::Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
+                    if resp.clicked() { self.state.show_project_info = false; }
+                });
+
+            let mut still_open = true;
+            crate::panels::project_info::show_project_info(
+                ctx,
+                &mut self.state,
+                &self.theme,
+                &mut still_open,
+            );
+            if !still_open {
+                self.state.show_project_info = false;
+            }
+        }
+
+        // 4d. Preferences window
+        if self.state.show_preferences {
+            let (still_open, pref_cmds) = self.preferences_panel.show(
+                ctx,
+                &mut self.prefs,
+                &mut self.prefs_dirty,
+                &mut self.key_bindings,
+            );
+            cmds.extend(pref_cmds);
+            // Sync skim_audio pref → state (checkbox may have changed)
+            if self.state.audio_skimming_enabled != self.prefs.playback.skim_audio {
+                self.state.audio_skimming_enabled = self.prefs.playback.skim_audio;
+                if !self.state.audio_skimming_enabled && self.state.skim_audio_session.is_some() {
+                    cmds.push(AppCommand::BrowserSkimAudioEnd);
+                }
+            }
+            if !still_open {
+                self.state.show_preferences = false;
+            }
+        }
+
+    }
+
+    fn render_launch_screen(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) -> bool {
+        if self.state.project_path.is_none() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .show(ctx, |ui| {
+                    let recent = self.prefs.general.recent_projects.clone();
+                    let panel_cmds = self.launch_screen.show(ctx, ui, &recent, &self.theme);
+                    all_cmds.extend(panel_cmds);
+                });
+            true
+        } else {
+            false
+        }
+    }
+
+    fn render_fullscreen_viewer(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) -> bool {
+        if self.state.fullscreen_viewer {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let panel_cmds = self.viewer.show_fullscreen(ui, &mut self.state);
+                all_cmds.extend(panel_cmds);
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    fn render_main_layout(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) {
+        if self.render_launch_screen(ctx, all_cmds) { return; }
+        if self.render_fullscreen_viewer(ctx, all_cmds) { return; }
+        {
+            // ── Manual rect layout ──
+            // Use CentralPanel as the container, then compute rects manually.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .show(ctx, |ui| {
+                    let full = ui.available_rect_before_wrap();
+                    let theme = self.theme.clone();
+
+                    // Pure rect computation — see crates/klipp-ui/src/layout.rs
+                    let rects = crate::layout::compute_layout(full, &self.layout, &self.state);
+                    let crate::layout::LayoutRects {
+                        full: _,
+                        toolbar_rect,
+                        statusbar_rect,
+                        browser_rect,
+                        left_resizer_rect,
+                        inspector_rect,
+                        right_resizer_rect,
+                        viewer_rect,
+                        h_resizer_rect,
+                        curve_editor_rect,
+                        audio_mixer_rect,
+                        timeline_rect,
+                        toggle_bar_rect,
+                        scopes_rect,
+                        nodes_rect,
+                    } = rects;
+
+                    // Derived scalars consumed by the render section below. These mirror
+                    // the locals that used to live in the inlined layout block, so every
+                    // downstream use-site keeps working unchanged.
+                    let main_top = toolbar_rect.max.y;
+                    let main_bottom = statusbar_rect.min.y;
+                    let center_left = left_resizer_rect.max.x;
+                    let center_w = viewer_rect.width();
+                    let in_color_ws = self.state.show_color_panel;
+                    let show_scopes_bar = in_color_ws && self.state.show_scopes;
+                    let show_nodes_bar = in_color_ws && self.state.show_node_strip;
+                    let toggle_bar_h = toggle_bar_rect.height();
+                    let scopes_h = scopes_rect.height();
+                    let nodes_h = nodes_rect.height();
+                    let audio_mixer_h = audio_mixer_rect.height();
+                    let curve_editor_h = curve_editor_rect.height();
+                    // flexible_h is the ratio-drag denominator — same formula as in layout.rs.
+                    let flexible_h = {
+                        let center_total = main_bottom - main_top;
+                        let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
+                        (center_total - fixed_h).max(200.0)
+                    };
+                    // Timeline-height clamp bounds for the horizontal resizer drag.
+                    let timeline_min_h = theme::TIMELINE_MIN_H;
+                    let max_timeline_h = {
+                        let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
+                        let color_bottom_top = main_bottom - color_bottom_total;
+                        (color_bottom_top - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT
+                    };
+
+                    // ── Render panels into their rects ──
+                    self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
+                    self.render_status_bar_panel(ui, statusbar_rect);
+
+                    self.render_browser_panel(ui, browser_rect, all_cmds);
+
+                    self.render_inspector_panel(ui, inspector_rect, all_cmds);
+
+
+                    let color_tools_bottom = in_color_ws
+                        && self.state.color_tools_position == crate::state::ColorToolsPosition::Bottom;
+
+                    self.render_viewer_panel(ui, viewer_rect, all_cmds);
+
+                    // Compute bottom-panel scope cursor data (shared by overlay + bottom panel)
+                    // If locked but data not yet computed, compute it now
+                    if self.state.scope_cursor_locked && self.state.scope_cursor_locked_data.is_none() {
+                        if let (Some(pos), Some(rect)) = (self.state.scope_cursor_locked_pos, self.state.viewer_image_rect) {
+                            let fb = self.frame_buffer.lock().unwrap();
+                            self.state.scope_cursor_locked_data = crate::widgets::scope_window::sample_viewer_pixel(
+                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                            );
+                        }
+                    }
+
+                    let bottom_scope_cursor: Option<crate::state::ScopeCursorData> = if self.state.scope_cursor_locked {
+                        self.state.scope_cursor_locked_data
+                    } else if self.state.scope_cursor_show {
+                        if let (Some(pos), Some(rect)) = (self.state.viewer_pointer_pos, self.state.viewer_image_rect) {
+                            let fb = self.frame_buffer.lock().unwrap();
+                            crate::widgets::scope_window::sample_viewer_pixel(
+                                pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Scope overlay on viewer (semi-transparent, bottom-right corner)
+                    if self.state.show_scopes && self.state.scope_overlay_mode {
+                        let overlay_w = (viewer_rect.width() * 0.3).min(200.0);
+                        let overlay_h = overlay_w; // square
+                        let overlay_rect = egui::Rect::from_min_size(
+                            egui::pos2(viewer_rect.right() - overlay_w - 8.0, viewer_rect.bottom() - overlay_h - 8.0),
+                            egui::vec2(overlay_w, overlay_h),
+                        );
+                        crate::ui_util::allocate_clipped_ui(ui, overlay_rect, |ui| {
+                            ui.set_min_size(overlay_rect.size());
+                            // Semi-transparent dark background
+                            ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
+                            self.state.scope_state.scale = self.state.scope_scale;
+                            crate::widgets::scopes::show_scopes(
+                                ui,
+                                &mut self.state.scope_state,
+                                self.state.scope_mode,
+                                &self.frame_buffer,
+                                self.state.scope_quality,
+                                self.prefs.color.vectorscope_skin_angle,
+                                self.state.playback == PlaybackState::Playing,
+                                bottom_scope_cursor,
+                                self.state.scope_cursor_show,
+                            );
+                        });
+                    }
+
+                    if self.state.show_curve_editor && curve_editor_h > 0.0 {
+                        self.render_curve_editor_panel(ui, curve_editor_rect, all_cmds);
+                    }
+                    if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
+                        self.render_audio_mixer_panel(ui, audio_mixer_rect, all_cmds);
+                    }
+                    self.render_timeline_panel(ui, timeline_rect, all_cmds);
+
+                    // ── Color workspace bottom panels ──
+                    if in_color_ws {
+                        self.render_color_workspace_bottom(
+                            ctx,
+                            ui,
+                            all_cmds,
+                            ColorWsParams {
+                                show_scopes_bar,
+                                show_nodes_bar,
+                                color_tools_bottom,
+                                toggle_bar_h,
+                                scopes_h,
+                                center_left,
+                                center_w,
+                                main_top,
+                                main_bottom,
+                                flexible_h,
+                                toggle_bar_rect,
+                                nodes_rect,
+                                bottom_scope_cursor,
+                            },
+                        );
+                    }
+
+                    self.handle_panel_resizers(
+                        ui,
+                        left_resizer_rect,
+                        right_resizer_rect,
+                        h_resizer_rect,
+                        timeline_min_h,
+                        max_timeline_h,
+                    );
+
+                    // Transport is now integrated into the toolbar (P1-2).
+                    // Keyboard shortcuts still handled by self.transport.handle_keyboard().
+                });
+        }
+
+    }
+
+    fn handle_panel_resizers(
+        &mut self,
+        ui: &mut egui::Ui,
+        left_resizer_rect: egui::Rect,
+        right_resizer_rect: egui::Rect,
+        h_resizer_rect: egui::Rect,
+        timeline_min_h: f32,
+        max_timeline_h: f32,
+    ) {
+        let theme = self.theme.clone();
+        let left_delta = resizer::vertical_resizer(ui, left_resizer_rect, &theme);
+        let right_delta = resizer::vertical_resizer(ui, right_resizer_rect, &theme);
+        let h_delta = resizer::horizontal_resizer(ui, h_resizer_rect, &theme);
+
+        if left_delta != 0.0 {
+            self.layout.browser_width = (self.layout.browser_width + left_delta)
+                .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
+        }
+        if right_delta != 0.0 {
+            self.layout.inspector_width = (self.layout.inspector_width - right_delta)
+                .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
+        }
+        if h_delta != 0.0 {
+            self.layout.timeline_height = (self.layout.timeline_height - h_delta)
+                .clamp(timeline_min_h, max_timeline_h);
+        }
+        let resizer_active = left_delta != 0.0 || right_delta != 0.0 || h_delta != 0.0;
+        if resizer_active {
+            self.layout_dirty = true;
+        }
+        if self.layout_dirty
+            && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
+        {
+            self.layout.save();
+            self.layout_dirty = false;
+        }
+    }
+
+    fn render_toolbar_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        toolbar_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        let theme = &self.theme;
+        let border = theme.border;
+        let bg_deep = theme.bg_deep;
+        crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
+            ui.set_min_size(toolbar_rect.size());
+            ui.painter().rect_filled(toolbar_rect, 0.0, bg_deep);
+            ui.painter().hline(
+                toolbar_rect.x_range(),
+                toolbar_rect.max.y,
+                egui::Stroke::new(1.0, border),
+            );
+            let recent = self.prefs.general.recent_projects.clone();
+            let panel_cmds = self.toolbar.show(
+                ui,
+                &mut self.state,
+                &recent,
+                &self.theme,
+                &mut self.layout.active_tool,
+            );
+            all_cmds.extend(panel_cmds);
+        });
+    }
+
+    fn render_viewer_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewer_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
+        crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            ui.spacing_mut().window_margin = egui::Margin::ZERO;
+            {
+                let v = &mut ui.style_mut().visuals;
+                v.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+                v.widgets.noninteractive.fg_stroke = egui::Stroke::NONE;
+                v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                v.widgets.active.bg_stroke = egui::Stroke::NONE;
+                v.window_stroke = egui::Stroke::NONE;
+                v.window_shadow = egui::Shadow::NONE;
+            }
+            let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
+            all_cmds.extend(panel_cmds);
+        });
+    }
+
+    fn render_curve_editor_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        curve_editor_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        self.curve_editor.sync_param_from_state(&self.state);
+        crate::ui_util::allocate_clipped_ui(ui, curve_editor_rect, |ui| {
+            ui.set_min_size(curve_editor_rect.size());
+            let panel_cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
+            all_cmds.extend(panel_cmds);
+        });
+    }
+
+    fn render_audio_mixer_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        audio_mixer_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        crate::ui_util::allocate_clipped_ui(ui, audio_mixer_rect, |ui| {
+            ui.set_min_size(audio_mixer_rect.size());
+            let panel_cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
+            all_cmds.extend(panel_cmds);
+        });
+    }
+
+    fn render_timeline_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        timeline_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
+            ui.set_min_size(timeline_rect.size());
+            let panel_cmds = self.new_timeline.show(
+                ui,
+                &mut self.state,
+                &self.theme,
+                &mut self.timeline,
+            );
+            all_cmds.extend(panel_cmds);
+        });
+    }
+
+    fn render_inspector_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        inspector_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        let bg_panel = self.theme.bg_panel;
+        crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
+            ui.set_min_size(inspector_rect.size());
+            ui.painter().rect_filled(inspector_rect, 0.0, bg_panel);
+
+            let in_color_workspace = self.state.show_color_panel
+                && self.state.selected_clip.is_some();
+
+            if in_color_workspace {
+                let clip_id = self.state.selected_clip.unwrap();
+                let seq_idx = self.state.active_sequence_idx;
+                let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                    .find_map(|t| t.find_clip_mut(clip_id));
+                if let Some(clip) = clip {
+                    let grade_ver_h = 26.0;
+                    let avail_w = ui.available_width();
+                    ui.horizontal(|ui| {
+                        ui.set_height(grade_ver_h);
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Grades").size(10.0).color(self.theme.text_dim));
+                        ui.add_space(4.0);
+                        let num_versions = clip.grade_versions.len();
+                        let active = clip.active_grade_version;
+                        for i in 0..num_versions {
+                            let is_active = active == Some(i);
+                            let label = {
+                                let name = &clip.grade_versions[i].name;
+                                if name.is_empty() {
+                                    format!("V{}", i + 1)
+                                } else {
+                                    name.clone()
+                                }
+                            };
+                            let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(10.0));
+                            if resp.clicked() && !is_active {
+                                all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button("Rename...").clicked() {
+                                    all_cmds.push(AppCommand::RenameGradeVersion {
+                                        clip_id,
+                                        version_index: i,
+                                        name: format!("Version {}", i + 1),
+                                    });
+                                    ui.close_menu();
+                                }
+                                if !is_active && ui.button("Delete").clicked() {
+                                    all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                        if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
+                            let name = format!("Version {}", num_versions + 1);
+                            all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                        }
+                    });
+                    ui.add_space(2.0);
+                    let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                    ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
+
+                    {
+                        let stills_h = 28.0;
+                        ui.horizontal(|ui| {
+                            ui.set_height(stills_h);
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Stills").size(10.0).color(self.theme.text_dim));
+                            ui.add_space(4.0);
+
+                            let mut delete_idx = None;
+                            for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
+                                let is_active = self.state.active_grade_still == Some(i);
+                                if still.texture.is_none() && !still.rgba.is_empty() {
+                                    let sw = still.width as usize;
+                                    let sh = still.height as usize;
+                                    let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
+                                        .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
+                                        .collect();
+                                    let image = egui::ColorImage { size: [sw, sh], pixels };
+                                    still.texture = Some(ui.ctx().load_texture(
+                                        format!("grade_still_thumb_{}", i),
+                                        image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                let btn_size = egui::vec2(36.0, 22.0);
+                                let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                                if let Some(tex) = &still.texture {
+                                    ui.painter().image(
+                                        tex.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                                if is_active {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, self.theme.text_accent));
+                                } else {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5, self.theme.border));
+                                }
+                                if resp.clicked() {
+                                    all_cmds.push(AppCommand::SetActiveGradeStill {
+                                        index: if is_active { None } else { Some(i) },
+                                    });
+                                }
+                                let resp = resp.on_hover_text(&still.name);
+                                resp.context_menu(|ui| {
+                                    if ui.button("Delete").clicked() {
+                                        delete_idx = Some(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                            if let Some(idx) = delete_idx {
+                                all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
+                            }
+
+                            if ui.small_button("\u{1F4F7}").on_hover_text("Capture current frame as grade still").clicked() {
+                                let name = format!("Still {}", self.state.grade_stills.len() + 1);
+                                all_cmds.push(AppCommand::CaptureGradeStill { name });
+                            }
+
+                            let compare_active = self.state.grade_still_compare;
+                            let compare_label = if compare_active { "Compare ON" } else { "Compare" };
+                            let compare_color = if compare_active { self.theme.text_accent } else { self.theme.text_dim };
+                            if ui.add(egui::Button::new(egui::RichText::new(compare_label).size(10.0).color(compare_color)).frame(false))
+                                .on_hover_text("Toggle split-view comparison with active still")
+                                .clicked()
+                            {
+                                all_cmds.push(AppCommand::ToggleGradeStillCompare);
+                            }
+                        });
+                        let sep_rect2 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                        ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
+                    }
+
+                    if self.state.show_node_strip && self.state.selected_node_id.is_some() {
+                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                        let panel_cmds = self.node_inspector_panel.show(
+                            ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
+                        );
+                        all_cmds.extend(panel_cmds);
+                    } else {
+                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                        let panel_cmds = self.node_inspector_panel.show_simple(
+                            ui, &mut clip.node_graph, clip_id,
+                            &mut self.state.selected_node_id,
+                            &mut self.state.color_tab,
+                            &self.theme,
+                            clip_time_secs,
+                        );
+                        all_cmds.extend(panel_cmds);
+                    }
+                }
+            } else {
+                let panel_cmds = self.new_inspector.show(
+                    ui, &self.state, &self.theme,
+                    &mut self.layout.active_inspector_tab,
+                );
+                all_cmds.extend(panel_cmds);
+            }
+        });
+    }
+
+    fn render_browser_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        browser_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        let bg_panel = self.theme.bg_panel;
+        crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
+            ui.set_min_size(browser_rect.size());
+            ui.painter().rect_filled(browser_rect, 0.0, bg_panel);
+            let panel_cmds = self.browser.show(
+                ui,
+                &mut self.state,
+                &self.theme,
+                &mut self.layout.active_browser_tab,
+                &mut self.layout.files_pinned,
+                &mut self.layout.files_split_ratio,
+            );
+            all_cmds.extend(panel_cmds);
+            if self.browser.browser_view_mode != self.prefs.editing.media_browser_view_mode {
+                self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
+                let _ = self.prefs.save();
+            }
+        });
+    }
+
+    fn render_status_bar_panel(&mut self, ui: &mut egui::Ui, statusbar_rect: egui::Rect) {
+        let theme = &self.theme;
+        let border = theme.border;
+        let bg_void = theme.bg_void;
+        crate::ui_util::allocate_clipped_ui(ui, statusbar_rect, |ui| {
+            ui.set_min_size(statusbar_rect.size());
+            ui.painter().rect_filled(statusbar_rect, 0.0, bg_void);
+            ui.painter().hline(
+                statusbar_rect.x_range(),
+                statusbar_rect.min.y,
+                egui::Stroke::new(1.0, border),
+            );
+            crate::panels::status_bar::show(ui, &self.state, &self.theme);
+        });
+    }
+
+    fn render_color_workspace_bottom(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        all_cmds: &mut Vec<AppCommand>,
+        p: ColorWsParams,
+    ) {
+        let ColorWsParams {
+            show_scopes_bar,
+            show_nodes_bar,
+            color_tools_bottom,
+            toggle_bar_h,
+            scopes_h,
+            center_left,
+            center_w,
+            main_top,
+            main_bottom,
+            flexible_h,
+            toggle_bar_rect,
+            nodes_rect,
+            bottom_scope_cursor,
+        } = p;
+        let theme = self.theme.clone();
+
+        // Resizer between viewer and bottom panels (draggable)
+        if show_scopes_bar || show_nodes_bar {
+            let resizer_rect = egui::Rect::from_min_size(
+                egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
+                egui::vec2(center_w, theme::RESIZER_THICKNESS),
+            );
+            let delta = resizer::horizontal_resizer(ui, resizer_rect, &theme);
+            if delta != 0.0 {
+                let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
+                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.75);
+                self.layout_dirty = true;
+            }
+        }
+
+        // Toggle bar: [Scopes] [Nodes] toggle buttons
+        if toggle_bar_h > 0.0 {
+            self.render_color_ws_toggle_bar(ui, toggle_bar_rect, &theme);
+        }
+
+        // Bottom panel: color tools (when docked at bottom) OR scopes (default)
+        if color_tools_bottom {
+            self.render_color_ws_bottom_tools(
+                ui, all_cmds, center_left, center_w, scopes_h,
+                main_top, main_bottom, toggle_bar_h, toggle_bar_rect, &theme,
+            );
+        } else if self.state.show_scopes {
+            self.render_color_ws_bottom_scopes(
+                ui, center_left, center_w, scopes_h, main_top, main_bottom,
+                toggle_bar_h, show_nodes_bar, toggle_bar_rect, bottom_scope_cursor, &theme,
+            );
+        }
+
+        // Scope settings dropdown
+        if self.state.scope_settings_open && self.state.show_scopes {
+            self.render_color_ws_scope_settings_dropdown(ctx, ui, toggle_bar_rect, &theme);
+        }
+
+        // Node strip panel — read live state
+        if self.state.show_node_strip {
+            self.render_color_ws_node_strip(ui, all_cmds, nodes_rect, &theme);
+        }
+    }
+
+    fn render_color_ws_toggle_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        toggle_bar_rect: egui::Rect,
+        theme: &KlippTheme,
+    ) {
+        crate::ui_util::allocate_clipped_ui(ui, toggle_bar_rect, |ui| {
+            ui.set_min_size(toggle_bar_rect.size());
+            ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
+            ui.painter().hline(
+                toggle_bar_rect.x_range(),
+                toggle_bar_rect.min.y,
+                egui::Stroke::new(0.5, theme.border),
+            );
+            ui.horizontal_centered(|ui| {
+                ui.add_space(8.0);
+                let scope_label = if self.state.show_scopes {
+                    egui::RichText::new("Scopes").size(10.0).color(theme.text_accent)
+                } else {
+                    egui::RichText::new("Scopes").size(10.0).color(theme.text_dim)
+                };
+                if ui.selectable_label(self.state.show_scopes, scope_label).clicked() {
+                    self.state.show_scopes = !self.state.show_scopes;
+                    ui.ctx().request_repaint();
+                }
+                ui.separator();
+                {
+                    use crate::state::ColorToolsPosition;
+                    let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
+                    let label = if is_bottom { "Tools: Bottom" } else { "Tools: Right" };
+                    let color = if is_bottom { theme.text_accent } else { theme.text_dim };
+                    if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
+                        .frame(false)).on_hover_text("Toggle color tools position").clicked()
+                    {
+                        self.state.color_tools_position = if is_bottom {
+                            ColorToolsPosition::Right
+                        } else {
+                            ColorToolsPosition::Bottom
+                        };
+                    }
+                }
+
+                if self.state.show_scopes {
+                    ui.separator();
+                    use crate::state::{ScopeMode, ScopeScale};
+
+                    for (mode, label) in [
+                        (ScopeMode::Waveform, "Wave"),
+                        (ScopeMode::Parade, "Parade"),
+                        (ScopeMode::Vectorscope, "Vector"),
+                        (ScopeMode::Histogram, "Hist"),
+                    ] {
+                        let active = self.state.scope_mode == mode;
+                        let text = egui::RichText::new(label).size(9.0);
+                        let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
+                        if ui.selectable_label(active, text).clicked() {
+                            self.state.scope_mode = mode;
+                            let mode_byte = match mode {
+                                ScopeMode::Waveform => 0u8,
+                                ScopeMode::Parade => 1,
+                                ScopeMode::Vectorscope => 2,
+                                ScopeMode::Histogram => 3,
+                            };
+                            let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            ui.ctx().request_repaint();
+                        }
+                    }
+
+                    if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(2.0);
+                        for (label, color, enabled) in [
+                            ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
+                            ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
+                            ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
+                        ] {
+                            let bg = if *enabled { color } else { egui::Color32::from_rgb(0x30, 0x30, 0x35) };
+                            let text_c = if *enabled { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                            let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
+                                .fill(bg)
+                                .min_size(egui::vec2(20.0, 16.0))
+                                .rounding(3.0);
+                            if ui.add(btn).clicked() { *enabled = !*enabled; }
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let gear_color = if self.state.scope_settings_open { theme.text_accent } else { theme.text_dim };
+                        if ui.add(egui::Button::new(egui::RichText::new("\u{2699}").size(12.0).color(gear_color))
+                            .frame(false)).clicked() {
+                            self.state.scope_settings_open = !self.state.scope_settings_open;
+                        }
+
+                        let win_color = if self.state.scope_window.open { theme.text_accent } else { theme.text_dim };
+                        if ui.add(egui::Button::new(egui::RichText::new("\u{229e}").size(12.0).color(win_color))
+                            .frame(false)).on_hover_text("Floating scope window").clicked() {
+                            self.state.scope_window.open = !self.state.scope_window.open;
+                        }
+
+                        let picker_active = self.state.scope_cursor_show;
+                        let picker_locked = self.state.scope_cursor_locked;
+                        let picker_color = if picker_locked {
+                            egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                        } else if picker_active {
+                            theme.text_accent
+                        } else {
+                            theme.text_dim
+                        };
+                        let picker_resp = ui.add(egui::Button::new(
+                            egui::RichText::new("\u{2295}").size(12.0).color(picker_color),
+                        ).frame(false));
+                        if picker_resp.clicked() {
+                            if picker_locked {
+                                self.state.scope_cursor_locked = false;
+                                self.state.scope_cursor_locked_pos = None;
+                                self.state.scope_cursor_locked_data = None;
+                            } else {
+                                self.state.scope_cursor_show = !self.state.scope_cursor_show;
+                            }
+                        }
+                        picker_resp.on_hover_text(if picker_locked {
+                            "Click to unlock sample point"
+                        } else if picker_active {
+                            "Scope picker (click viewer to lock)"
+                        } else {
+                            "Enable scope picker"
+                        });
+
+                        let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
+                        if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
+                            .frame(false)).on_hover_text("Overlay on viewer").clicked() {
+                            self.state.scope_overlay_mode = !self.state.scope_overlay_mode;
+                        }
+
+                        egui::ComboBox::from_id_salt("scope_scale_sel")
+                            .width(50.0)
+                            .selected_text(egui::RichText::new(self.state.scope_scale.button_label()).size(9.0))
+                            .show_ui(ui, |ui| {
+                                for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
+                                    ui.selectable_value(&mut self.state.scope_scale, s, s.label());
+                                }
+                            });
+                    });
+                }
+            });
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_color_ws_bottom_tools(
+        &mut self,
+        ui: &mut egui::Ui,
+        all_cmds: &mut Vec<AppCommand>,
+        center_left: f32,
+        center_w: f32,
+        scopes_h: f32,
+        main_top: f32,
+        main_bottom: f32,
+        toggle_bar_h: f32,
+        toggle_bar_rect: egui::Rect,
+        theme: &KlippTheme,
+    ) {
+        let tools_h = if scopes_h > 0.0 { scopes_h } else {
+            let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+            let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
+            (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6)
+        };
+        let tools_rect = egui::Rect::from_min_size(
+            egui::pos2(center_left, toggle_bar_rect.max.y),
+            egui::vec2(center_w, tools_h),
+        );
+        crate::ui_util::allocate_clipped_ui(ui, tools_rect, |ui| {
+            ui.set_min_size(tools_rect.size());
+            ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
+            if let Some(clip_id) = self.state.selected_clip {
+                let seq_idx = self.state.active_sequence_idx;
+                let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                    .find_map(|t| t.find_clip_mut(clip_id));
+                if let Some(clip) = clip {
+                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let panel_cmds = self.node_inspector_panel.show_simple_horizontal(
+                        ui, &mut clip.node_graph, clip_id,
+                        &mut self.state.selected_node_id,
+                        &mut self.state.color_tab_bottom,
+                        &self.theme,
+                        clip_time_secs,
+                    );
+                    all_cmds.extend(panel_cmds);
+                }
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new("Select a clip to grade")
+                        .size(12.0).color(theme.text_dim));
+                });
+            }
+        });
+        ui.ctx().request_repaint();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_color_ws_bottom_scopes(
+        &mut self,
+        ui: &mut egui::Ui,
+        center_left: f32,
+        center_w: f32,
+        scopes_h: f32,
+        main_top: f32,
+        main_bottom: f32,
+        toggle_bar_h: f32,
+        show_nodes_bar: bool,
+        toggle_bar_rect: egui::Rect,
+        bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
+        theme: &KlippTheme,
+    ) {
+        let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
+            let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+            let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
+            let total_bottom = (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6);
+            if show_nodes_bar { total_bottom * 0.6 } else { total_bottom }
+        };
+        let live_scopes_rect = egui::Rect::from_min_size(
+            egui::pos2(center_left, toggle_bar_rect.max.y),
+            egui::vec2(center_w, live_scopes_h),
+        );
+        crate::ui_util::allocate_clipped_ui(ui, live_scopes_rect, |ui| {
+            ui.set_min_size(live_scopes_rect.size());
+            ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
+            if self.state.scope_state.scale != self.state.scope_scale
+                || self.state.scope_state.low_pass != self.state.scope_low_pass
+                || self.state.scope_state.bloom != self.state.scope_bloom
+                || self.state.scope_state.show_r != self.state.scope_show_r
+                || self.state.scope_state.show_g != self.state.scope_show_g
+                || self.state.scope_state.show_b != self.state.scope_show_b
+                || self.state.scope_state.quality != self.state.scope_quality
+            {
+                self.state.scope_state.increment_settings_generation();
+            }
+            self.state.scope_state.scale = self.state.scope_scale;
+            self.state.scope_state.low_pass = self.state.scope_low_pass;
+            self.state.scope_state.bloom = self.state.scope_bloom;
+            self.state.scope_state.show_r = self.state.scope_show_r;
+            self.state.scope_state.show_g = self.state.scope_show_g;
+            self.state.scope_state.show_b = self.state.scope_show_b;
+            self.state.scope_state.quality = self.state.scope_quality;
+            crate::widgets::scopes::show_scopes(
+                ui,
+                &mut self.state.scope_state,
+                self.state.scope_mode,
+                &self.frame_buffer,
+                self.state.scope_quality,
+                self.prefs.color.vectorscope_skin_angle,
+                self.state.playback == PlaybackState::Playing,
+                bottom_scope_cursor,
+                self.state.scope_cursor_show,
+            );
+        });
+        ui.ctx().request_repaint();
+    }
+
+    fn render_color_ws_scope_settings_dropdown(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        toggle_bar_rect: egui::Rect,
+        theme: &KlippTheme,
+    ) {
+        use crate::state::ScopeScale;
+        let dropdown_id = egui::Id::new("scope_settings_dropdown");
+        egui::Area::new(dropdown_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(200.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
+
+                    ui.label(egui::RichText::new("DISPLAY").size(9.0).color(theme.text_dim).strong());
+                    ui.checkbox(&mut self.state.scope_low_pass, "Low Pass Filter");
+                    ui.checkbox(&mut self.state.scope_bloom, "Bloom on dense regions");
+                    ui.checkbox(&mut self.state.scope_overlay_mode, "Overlay on viewer");
+
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("QUALITY").size(9.0).color(theme.text_dim).strong());
+                    ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Low, "Draft (every 4px)");
+                    ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Medium, "Standard (every 2px)");
+                    ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::High, "Full (every px)");
+
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("SCALE").size(9.0).color(theme.text_dim).strong());
+                    ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
+                    ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
+                    ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
+                });
+            });
+
+        if ui.input(|i| i.pointer.primary_clicked()) {
+            let dropdown_rect = egui::Rect::from_min_size(
+                egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0),
+                egui::vec2(210.0, 250.0),
+            );
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                if !dropdown_rect.contains(pos) && !toggle_bar_rect.contains(pos) {
+                    self.state.scope_settings_open = false;
+                }
+            }
+        }
+    }
+
+    fn render_color_ws_node_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        all_cmds: &mut Vec<AppCommand>,
+        nodes_rect: egui::Rect,
+        theme: &KlippTheme,
+    ) {
+        crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
+            ui.set_min_size(nodes_rect.size());
+            ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
+            let clip_id = self.state.selected_clip;
+            if let Some(cid) = clip_id {
+                let seq_idx = self.state.active_sequence_idx;
+                if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
+                    .find_map(|t| t.find_clip_mut(cid))
+                {
+                    let panel_cmds = self.node_graph_panel.show(
+                        ui, &mut self.state.selected_node_id,
+                        &mut clip.node_graph, cid, &self.theme,
+                    );
+                    all_cmds.extend(panel_cmds);
+                } else {
+                    ui.painter().text(
+                        nodes_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Clip not found in sequence",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_rgb(100, 100, 110),
+                    );
+                }
+            } else {
+                ui.painter().text(
+                    nodes_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Select a clip to view its node graph",
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(100, 100, 110),
+                );
+            }
+        });
+    }
+}
+
+struct ColorWsParams {
+    show_scopes_bar: bool,
+    show_nodes_bar: bool,
+    color_tools_bottom: bool,
+    toggle_bar_h: f32,
+    scopes_h: f32,
+    center_left: f32,
+    center_w: f32,
+    main_top: f32,
+    main_bottom: f32,
+    flexible_h: f32,
+    toggle_bar_rect: egui::Rect,
+    nodes_rect: egui::Rect,
+    bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
 }
 
 /// Count how many clips across all sequences reference this media_id.

@@ -10,6 +10,7 @@ use egui::Color32;
 /// The accent color (`#e8a020`) works great as TEXT on dark backgrounds, but when used
 /// as a BACKGROUND fill, all text on top must be dark (`#1a1a1e` or black).
 /// Violating this makes text nearly unreadable.
+#[derive(Clone)]
 pub struct KlippTheme {
     // Backgrounds — darkest to lightest
     pub bg_void: Color32,
