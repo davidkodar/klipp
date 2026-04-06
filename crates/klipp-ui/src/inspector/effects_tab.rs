@@ -1225,7 +1225,7 @@ fn has_effect_kfs(clip: &Clip, effect_index: usize, param_name: &str) -> bool {
 
 fn show_builtin_effect_params(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     effect: &klipp_effects::BuiltinEffect,
     clip_id: klipp_core::ClipId,
     effect_index: usize,
@@ -1693,9 +1693,108 @@ fn show_builtin_effect_params(
                     cmds.push(AppCommand::CancelStabilization { clip_id });
                 }
             } else if has_data {
-                ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Analysis complete");
-                if ui.small_button("Re-analyze").clicked() {
-                    cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Analysis complete");
+                    if ui.small_button("Re-analyze").clicked() {
+                        cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+                    }
+                    let compare_on = state.stabilization_compare_active;
+                    let compare_label = if compare_on { "Exit Compare" } else { "Compare" };
+                    let compare_btn = ui.small_button(compare_label)
+                        .on_hover_text("Split-view raw vs stabilized. Drag the divider on the viewer to compare.");
+                    if compare_btn.clicked() {
+                        cmds.push(AppCommand::ToggleStabilizationCompare);
+                    }
+                });
+                // Quality metric: how much shake the smoothing actually removed.
+                if let Some(smoothed) = clip.smoothed_trajectory.as_ref() {
+                    let pct = smoothed.jitter_reduction_pct();
+                    let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
+                        // Source was already smooth — nothing to remove.
+                        (egui::Color32::from_rgb(170, 170, 180), "Source already smooth — minimal shake detected".to_string())
+                    } else if pct >= 60.0 {
+                        (egui::Color32::from_rgb(120, 210, 140), format!("Shake reduced by {pct:.0}%"))
+                    } else if pct >= 25.0 {
+                        (egui::Color32::from_rgb(220, 200, 110), format!("Shake reduced by {pct:.0}%"))
+                    } else {
+                        (egui::Color32::from_rgb(220, 140, 110), format!("Shake reduced by {pct:.0}%"))
+                    };
+                    ui.colored_label(label_color, egui::RichText::new(headline).size(11.0));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Jitter: {:.1} → {:.1} px/frame",
+                            smoothed.raw_jitter_px, smoothed.smoothed_jitter_px
+                        ))
+                        .size(9.5)
+                        .color(egui::Color32::from_rgb(140, 140, 150)),
+                    );
+
+                    // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
+                    // Visualizes what stabilization is actually doing.
+                    if let Some(data) = clip.stabilization_data.as_ref() {
+                        let raw: Vec<f32> = data.trajectory.iter().map(|p| p.tx as f32).collect();
+                        let smooth: Vec<f32> = smoothed.smoothed.iter().map(|p| p.tx as f32).collect();
+                        if raw.len() >= 2 && smooth.len() == raw.len() {
+                            let avail = ui.available_width();
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(avail, 64.0),
+                                egui::Sense::hover(),
+                            );
+                            let p = ui.painter_at(rect);
+                            // Background
+                            p.rect_filled(rect, 3.0, egui::Color32::from_rgb(22, 22, 26));
+                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(50, 50, 58)));
+
+                            // Y range covers both lines with small padding.
+                            let mut lo = f32::INFINITY;
+                            let mut hi = f32::NEG_INFINITY;
+                            for &v in raw.iter().chain(smooth.iter()) {
+                                if v < lo { lo = v; }
+                                if v > hi { hi = v; }
+                            }
+                            let span = (hi - lo).max(1.0);
+                            let pad_y = 4.0;
+                            let inner = rect.shrink2(egui::vec2(4.0, pad_y));
+
+                            let to_pt = |i: usize, v: f32| -> egui::Pos2 {
+                                let x = inner.left() + (i as f32 / (raw.len() - 1) as f32) * inner.width();
+                                let t = (v - lo) / span;
+                                let y = inner.bottom() - t * inner.height();
+                                egui::pos2(x, y)
+                            };
+
+                            // Zero/baseline reference line at the smoothed midpoint.
+                            let mid = (lo + hi) * 0.5;
+                            let mid_y = inner.bottom() - ((mid - lo) / span) * inner.height();
+                            p.line_segment(
+                                [egui::pos2(inner.left(), mid_y), egui::pos2(inner.right(), mid_y)],
+                                egui::Stroke::new(0.5, egui::Color32::from_rgb(45, 45, 52)),
+                            );
+
+                            let raw_pts: Vec<egui::Pos2> = raw.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
+                            let smooth_pts: Vec<egui::Pos2> = smooth.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
+                            // Raw trajectory: dim, thin
+                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 120, 135))));
+                            // Smoothed trajectory: bright accent, thicker
+                            p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6, theme.accent)));
+
+                            // Tiny legend
+                            p.text(
+                                egui::pos2(rect.left() + 6.0, rect.top() + 4.0),
+                                egui::Align2::LEFT_TOP,
+                                "raw",
+                                egui::FontId::proportional(8.5),
+                                egui::Color32::from_rgb(120, 120, 135),
+                            );
+                            p.text(
+                                egui::pos2(rect.left() + 28.0, rect.top() + 4.0),
+                                egui::Align2::LEFT_TOP,
+                                "smoothed",
+                                egui::FontId::proportional(8.5),
+                                theme.accent,
+                            );
+                        }
+                    }
                 }
             } else {
                 if ui.button("Analyze Clip").clicked() {
@@ -1711,7 +1810,14 @@ fn show_builtin_effect_params(
             let ks_s = Some(effect_keyframe_state(clip, effect_index, "smoothing", clip_time_secs));
             let ks_c = Some(effect_keyframe_state(clip, effect_index, "crop_ratio", clip_time_secs));
             let r_s = scrubby_param_row(ui, "Smoothing", smoothing, 0.0..=1.0, 0.5, 0.005, 2, "", ks_s);
+            let smoothing_changed = r_s.changed;
             track_scrubby!("smoothing", r_s, *smoothing);
+            // Smoothing slider drives live re-smooth: cheap (microseconds), no decode.
+            // Only fires when there's analysis data to re-smooth against.
+            if smoothing_changed && clip.stabilization_data.is_some() {
+                cmds.push(AppCommand::ResmoothStabilization { clip_id });
+                changed = true;
+            }
             let r_c = scrubby_param_row(ui, "Crop", crop_ratio, 0.0..=0.2, 0.05, 0.002, 3, "", ks_c);
             track_scrubby!("crop_ratio", r_c, *crop_ratio);
 

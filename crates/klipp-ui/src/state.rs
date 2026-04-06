@@ -501,6 +501,10 @@ pub struct AppState {
     pub before_after_active: bool,
     pub split_position: f32, // 0.0-1.0, default 0.5
 
+    // Stabilization compare split view (raw vs stabilized).
+    // Mutually exclusive with before_after_active and grade_still_compare.
+    pub stabilization_compare_active: bool,
+
     // Grade stills (reference frame comparison)
     /// Saved grade reference stills for comparison.
     pub grade_stills: Vec<GradeStill>,
@@ -1439,6 +1443,7 @@ impl Default for AppState {
             qualifier_sample_request: None,
             matte_preview_active: false,
             before_after_active: false,
+            stabilization_compare_active: false,
             split_position: 0.5,
             grade_stills: Vec::new(),
             active_grade_still: None,

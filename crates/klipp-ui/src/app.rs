@@ -1391,10 +1391,11 @@ impl KlippApp {
             // Take ownership — zero copy, ~0µs
             let rgba = std::mem::take(&mut fb.data);
             let original = std::mem::take(&mut fb.original_data);
-            (rgba, original, fw, fh, w, h)
+            let unstab = std::mem::take(&mut fb.unstab_data);
+            (rgba, original, unstab, fw, fh, w, h)
             // lock released immediately — fb.data is now empty
         };
-        let (mut rgba_bytes, original_bytes, fb_width, fb_height, w, h) = frame_data;
+        let (mut rgba_bytes, original_bytes, unstab_bytes, fb_width, fb_height, w, h) = frame_data;
 
         // Full-res frame arrived — clear preview flags
         self.state.showing_thumbnail_preview = false;
@@ -1498,6 +1499,19 @@ impl KlippApp {
                 let copy_end = (split_x * 4).min(w * 4);
                 rgba_bytes[row_start..row_start + copy_end]
                     .copy_from_slice(&original_bytes[row_start..row_start + copy_end]);
+            }
+        }
+
+        // Stabilization compare split: left = raw (unstabilized), right = stabilized
+        if self.state.stabilization_compare_active && !unstab_bytes.is_empty()
+            && unstab_bytes.len() == rgba_bytes.len()
+        {
+            let split_x = (self.state.split_position * w as f32) as usize;
+            for y in 0..h {
+                let row_start = y * w * 4;
+                let copy_end = (split_x * 4).min(w * 4);
+                rgba_bytes[row_start..row_start + copy_end]
+                    .copy_from_slice(&unstab_bytes[row_start..row_start + copy_end]);
             }
         }
 
@@ -1606,6 +1620,7 @@ impl KlippApp {
             if fb.data.is_empty() {
                 fb.data = rgba_bytes;
                 fb.original_data = original_bytes;
+                fb.unstab_data = unstab_bytes;
             }
         }
     }
@@ -7352,7 +7367,28 @@ impl KlippApp {
             }
             AppCommand::ToggleBeforeAfter => {
                 self.state.before_after_active = !self.state.before_after_active;
+                if self.state.before_after_active {
+                    // Mutually exclusive with other compare modes
+                    if self.state.stabilization_compare_active {
+                        self.state.stabilization_compare_active = false;
+                        let _ = self.cmd_tx.send(AppCommand::ToggleStabilizationCompare);
+                    }
+                    self.state.grade_still_compare = false;
+                }
                 // Fall through to forward to engine (sets bypass_color_grade)
+                let _ = self.cmd_tx.send(cmd.clone());
+                true
+            }
+            AppCommand::ToggleStabilizationCompare => {
+                self.state.stabilization_compare_active = !self.state.stabilization_compare_active;
+                if self.state.stabilization_compare_active {
+                    // Mutually exclusive with other compare modes
+                    if self.state.before_after_active {
+                        self.state.before_after_active = false;
+                        let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
+                    }
+                    self.state.grade_still_compare = false;
+                }
                 let _ = self.cmd_tx.send(cmd.clone());
                 true
             }
@@ -8674,10 +8710,20 @@ impl KlippApp {
                         let fps = item.fps.as_f64();
                         let dur_secs = item.duration.to_secs_f64();
                         let frame_count = (dur_secs * fps).round() as usize;
-                        Some((item.path.clone(), fps, dur_secs, frame_count))
+                        // Pull the smoothing slider's current value off the effect
+                        // so the initial smooth uses what the user already set,
+                        // not a hardcoded 0.5.
+                        let smoothing = c.builtin_effects.iter().find_map(|e| {
+                            if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
+                                Some(*smoothing as f64)
+                            } else {
+                                None
+                            }
+                        }).unwrap_or(0.5);
+                        Some((item.path.clone(), fps, dur_secs, frame_count, smoothing))
                     });
 
-                if let Some((path, fps, duration_secs, frame_count)) = clip_info {
+                if let Some((path, fps, duration_secs, frame_count, smoothing)) = clip_info {
                     let clip_id = *clip_id;
                     self.state.stabilization_in_progress.insert(clip_id);
                     self.state.stabilization_progress.insert(clip_id, 0.0);
@@ -8685,20 +8731,95 @@ impl KlippApp {
                     let sequence = self.sequence.clone();
 
                     std::thread::spawn(move || {
+                        // Pipelined decode + analyze. The decoder runs on a producer
+                        // thread, the analyzer (FAST-9 / match / RANSAC) runs here on
+                        // the consumer side. Frames flow over a small bounded channel
+                        // so the two halves overlap — wall time becomes ~max(decode,
+                        // analyze) × frames instead of (decode + analyze) × frames.
+                        //
+                        // Channel is sync_channel(3): tiny memory bound (~1.5 MB at
+                        // 480p), enough buffering to hide jitter.
+                        //
+                        // Producer exits cleanly when the consumer drops the receiver
+                        // (analyze_clip returns). No explicit cancel flag needed.
+                        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
+                        let path_for_producer = path.clone();
+                        let event_tx_open = event_tx.clone();
+                        let producer = std::thread::Builder::new()
+                            .name("klipp-stab-decode".to_string())
+                            .spawn(move || -> std::time::Duration {
+                                let mut walker = match klipp_engine::SequentialFrameDecoder::open(&path_for_producer, 480) {
+                                    Ok(w) => w,
+                                    Err(e) => {
+                                        let _ = event_tx_open.send(AppEvent::StabilizationFailed { clip_id, error: format!("decoder open: {e}") });
+                                        return std::time::Duration::ZERO;
+                                    }
+                                };
+                                let mut decode_wall = std::time::Duration::ZERO;
+                                loop {
+                                    let t0 = std::time::Instant::now();
+                                    let frame = walker.next_frame();
+                                    decode_wall += t0.elapsed();
+                                    match frame {
+                                        Some(f) => {
+                                            // send blocks if consumer is behind — that's
+                                            // exactly the backpressure we want.
+                                            if frame_tx.send(f).is_err() {
+                                                // Consumer dropped (analyze done/aborted).
+                                                break;
+                                            }
+                                        }
+                                        None => break, // EOF or decode error
+                                    }
+                                }
+                                decode_wall
+                            });
+                        let producer = match producer {
+                            Ok(h) => h,
+                            Err(e) => {
+                                let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error: format!("spawn producer: {e}") });
+                                return;
+                            }
+                        };
+
+                        let analyze_start = std::time::Instant::now();
+                        let mut consumer_stall = std::time::Duration::ZERO;
+                        let mut decoded_frames = 0usize;
                         let result = klipp_effects::stabilization::analyze_clip(
                             fps,
                             frame_count,
-                            &mut |time_secs| {
-                                klipp_engine::generate_thumbnail_at_size(&path, time_secs, 480).ok()
+                            &mut |_time_secs| {
+                                let t0 = std::time::Instant::now();
+                                let f = frame_rx.recv().ok();
+                                consumer_stall += t0.elapsed();
+                                if f.is_some() { decoded_frames += 1; }
+                                f
                             },
                             &|progress| {
                                 let _ = event_tx.send(AppEvent::StabilizationProgress { clip_id, progress });
                                 true // no cancel support yet
                             },
                         );
+                        // Drop receiver so the producer's next send() errors out and
+                        // it exits cleanly. (Implicit drop happens at scope end too,
+                        // but explicit makes the intent clear.)
+                        drop(frame_rx);
+                        let decode_wall = producer.join().unwrap_or(std::time::Duration::ZERO);
+                        let total = analyze_start.elapsed();
+                        let analysis_wall = total.saturating_sub(consumer_stall);
+                        tracing::info!(
+                            "Stabilization analyze (pipelined): {} frames in {:.2}s — decode {:.2}s, analysis {:.2}s, consumer stall {:.2}s ({:.0}% of total)",
+                            decoded_frames,
+                            total.as_secs_f64(),
+                            decode_wall.as_secs_f64(),
+                            analysis_wall.as_secs_f64(),
+                            consumer_stall.as_secs_f64(),
+                            100.0 * consumer_stall.as_secs_f64() / total.as_secs_f64().max(1e-6),
+                        );
                         match result {
                             Ok(data) => {
-                                let smoothed = klipp_effects::stabilization::smooth_trajectory(&data, 0.5 * duration_secs);
+                                let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
+                                let smoothed = klipp_effects::stabilization::smooth_trajectory(&data, window_secs);
                                 if let Ok(mut seq) = sequence.write() {
                                     for track in &mut seq.tracks {
                                         if let Some(clip) = track.find_clip_mut(clip_id) {
@@ -8722,6 +8843,30 @@ impl KlippApp {
                 // Currently no cancel flag — just remove from in-progress
                 self.state.stabilization_in_progress.remove(clip_id);
                 self.state.stabilization_progress.remove(clip_id);
+                true
+            }
+            AppCommand::ResmoothStabilization { clip_id } => {
+                // Re-run gaussian smoothing on the existing baked trajectory using
+                // the current smoothing slider value. Microseconds — safe to call
+                // every slider tick.
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    // Find the current smoothing value from the VideoStabilization effect.
+                    let smoothing = clip.builtin_effects.iter().find_map(|e| {
+                        if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
+                            Some(*smoothing as f64)
+                        } else {
+                            None
+                        }
+                    }).unwrap_or(0.5);
+                    if let Some(data) = clip.stabilization_data.as_ref() {
+                        let duration_secs = data.frame_count as f64 / data.fps.max(1.0);
+                        let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
+                        let smoothed = klipp_effects::stabilization::smooth_trajectory(data, window_secs);
+                        clip.smoothed_trajectory = Some(smoothed);
+                    }
+                }
+                self.state.dirty = true;
                 true
             }
             AppCommand::ToggleTrackingMode => {

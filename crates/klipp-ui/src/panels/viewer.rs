@@ -446,9 +446,12 @@ impl ViewerPanel {
     ) {
         let image_rect = frame.image_rect;
         let grade_still_active = frame.grade_still_active;
+        let stab_compare_active = state.stabilization_compare_active;
         let split_x = image_rect.min.x + state.split_position * image_rect.width();
         let divider_color = if grade_still_active {
             egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
+        } else if stab_compare_active {
+            egui::Color32::from_rgb(0x60, 0xd0, 0x80) // green for stabilization compare
         } else {
             egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
         };
@@ -463,11 +466,13 @@ impl ViewerPanel {
         // Labels
         let label_font = egui::FontId::proportional(10.0);
         let label_y = image_rect.min.y + 14.0;
-        let left_label = if grade_still_active {
+        let (left_label, right_label) = if grade_still_active {
             let idx = state.active_grade_still.unwrap();
-            state.grade_stills[idx].name.as_str()
+            (state.grade_stills[idx].name.as_str(), "Graded")
+        } else if stab_compare_active {
+            ("Raw", "Stabilized")
         } else {
-            "Original"
+            ("Original", "Graded")
         };
         ui.painter().text(
             egui::pos2(split_x - 8.0, label_y),
@@ -479,7 +484,7 @@ impl ViewerPanel {
         ui.painter().text(
             egui::pos2(split_x + 8.0, label_y),
             egui::Align2::LEFT_CENTER,
-            "Graded",
+            right_label,
             label_font,
             egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
         );
@@ -1139,7 +1144,7 @@ impl ViewerPanel {
         }
 
         // ── Before/After or Grade Still split divider ──
-        let show_split_divider = state.before_after_active || frame.grade_still_active;
+        let show_split_divider = state.before_after_active || frame.grade_still_active || state.stabilization_compare_active;
         if show_split_divider {
             self.draw_split_divider(ui, state, &frame);
         }

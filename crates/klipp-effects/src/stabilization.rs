@@ -40,6 +40,39 @@ pub struct SmoothedTrajectory {
     pub corrections: Vec<Homography>,
     /// Tracks which smoothing window produced this (for lazy re-smooth detection).
     pub smoothing_window_secs: f64,
+    /// RMS frame-to-frame translation magnitude of the raw (unstabilized) trajectory,
+    /// in analysis-proxy pixels. Higher = shakier source.
+    pub raw_jitter_px: f64,
+    /// RMS frame-to-frame translation magnitude of the smoothed trajectory,
+    /// in analysis-proxy pixels. Lower = smoother result.
+    pub smoothed_jitter_px: f64,
+}
+
+impl SmoothedTrajectory {
+    /// Percentage by which jitter was reduced (0–100). Returns 0 if raw is zero
+    /// (i.e. the source had no shake to remove).
+    pub fn jitter_reduction_pct(&self) -> f64 {
+        if self.raw_jitter_px < 1e-6 {
+            return 0.0;
+        }
+        let ratio = self.smoothed_jitter_px / self.raw_jitter_px;
+        ((1.0 - ratio).max(0.0) * 100.0).min(100.0)
+    }
+}
+
+/// RMS magnitude of frame-to-frame (tx, ty) deltas across a trajectory.
+/// This is the "jitter" metric: high for shaky footage, low for smooth.
+fn trajectory_jitter_rms(traj: &[MotionParams]) -> f64 {
+    if traj.len() < 2 {
+        return 0.0;
+    }
+    let mut sumsq = 0.0;
+    for w in traj.windows(2) {
+        let dx = w[1].tx - w[0].tx;
+        let dy = w[1].ty - w[0].ty;
+        sumsq += dx * dx + dy * dy;
+    }
+    (sumsq / (traj.len() - 1) as f64).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -400,10 +433,15 @@ pub fn smooth_trajectory(
         corrections.push(correction);
     }
 
+    let raw_jitter_px = trajectory_jitter_rms(&data.trajectory);
+    let smoothed_jitter_px = trajectory_jitter_rms(&smoothed);
+
     SmoothedTrajectory {
         smoothed,
         corrections,
         smoothing_window_secs,
+        raw_jitter_px,
+        smoothed_jitter_px,
     }
 }
 

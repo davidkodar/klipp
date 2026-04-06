@@ -4,6 +4,9 @@ pub struct FrameBuffer {
     pub data: Vec<u8>,
     /// Pre-grade original frame for Before/After split view.
     pub original_data: Vec<u8>,
+    /// Frame rendered with VideoStabilization bypassed, for stabilization compare
+    /// split view. Empty when compare mode is off.
+    pub unstab_data: Vec<u8>,
     /// Pre-grade decoded frame — used by UI thread to re-grade without engine round-trip.
     /// Shared via Arc to avoid expensive clones on the hot playback path.
     pub pregrade_data: Arc<Vec<u8>>,
@@ -41,6 +44,7 @@ impl FrameBuffer {
         Self {
             data: vec![0u8; (width * height * 4) as usize],
             original_data: Vec::new(),
+            unstab_data: Vec::new(),
             pregrade_data: Arc::new(Vec::new()),
             scope_data: Vec::new(),
             scope_preview: Vec::new(),

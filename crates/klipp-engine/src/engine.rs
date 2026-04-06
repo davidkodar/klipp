@@ -217,6 +217,10 @@ pub struct PlaybackEngine {
     graph_executor: klipp_nodes::GraphExecutor,
     // Before/After — when true, skip per-clip color grade to show ungraded frame
     bypass_color_grade: bool,
+    // Stabilization compare — when true, render the builtin effect chain twice
+    // (once with VideoStabilization, once without) so the viewer can split-view
+    // the raw vs stabilized result. Cost: ~2× builtin chain when active.
+    pub compare_stabilization: bool,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
     // Scope tap — which node's output to capture for scope display
@@ -359,6 +363,7 @@ impl PlaybackEngine {
             color_pipeline: klipp_color::ColorPipeline::new(),
             graph_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             bypass_color_grade: false,
+            compare_stabilization: false,
             matte_preview: false,
             scope_tap_node: None,
             scope_render_mode: 0,
@@ -799,6 +804,11 @@ impl PlaybackEngine {
             AppCommand::ToggleBeforeAfter => {
                 self.bypass_color_grade = !self.bypass_color_grade;
                 debug!("Before/After: bypass_color_grade = {}", self.bypass_color_grade);
+            }
+
+            AppCommand::ToggleStabilizationCompare => {
+                self.compare_stabilization = !self.compare_stabilization;
+                debug!("StabilizationCompare: compare_stabilization = {}", self.compare_stabilization);
             }
 
             AppCommand::SetMattePreview(active) => {
@@ -4294,6 +4304,13 @@ impl PlaybackEngine {
             }
         }
 
+        // Stabilization compare: if compare mode is on AND this clip has a
+        // VideoStabilization effect, snapshot the buffer here so we can re-run
+        // the builtin chain a second time with stab filtered out.
+        let stab_compare_active = self.compare_stabilization
+            && builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
+        let pre_builtin_for_compare = if stab_compare_active { Some(rgba.clone()) } else { None };
+
         // 3. Built-in effects (GPU-accelerated when available, CPU fallback)
         let rgba = if !builtin_fx.is_empty() {
             if let Some(gpu) = &mut self.gpu_effects {
@@ -4316,6 +4333,32 @@ impl PlaybackEngine {
         };
         let t5 = std::time::Instant::now();
 
+        // 4b. Stabilization compare second pass: re-run builtin chain + LUT with
+        // VideoStabilization filtered out, producing the "raw" half of the split.
+        // Mirrors steps 3 + 4 exactly so both halves are pixel-comparable except
+        // for the stab warp.
+        let unstab_rgba = if let Some(pre_builtin) = pre_builtin_for_compare {
+            let no_stab: Vec<klipp_effects::BuiltinEffect> = builtin_fx.iter()
+                .filter(|e| !matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
+                .cloned()
+                .collect();
+            let r = if !no_stab.is_empty() {
+                if let Some(gpu) = &mut self.gpu_effects {
+                    gpu.apply_effects(&no_stab, pre_builtin, width, height)
+                } else {
+                    klipp_effects::apply_effects(&no_stab, pre_builtin, width, height)
+                }
+            } else { pre_builtin };
+            let r = if self.color_pipeline.enabled {
+                if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                    gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                } else {
+                    self.color_pipeline.process_frame(r, width, height)
+                }
+            } else { r };
+            Some(r)
+        } else { None };
+
         // Store pre-grade frame in frame buffer for Before/After split
         if let Some(original) = pre_grade_rgba {
             let mut fb = self.frame_buffer.lock().unwrap();
@@ -4325,6 +4368,16 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap();
             if !fb.original_data.is_empty() {
                 fb.original_data = Vec::new();
+            }
+        }
+
+        // Store unstab frame for stabilization compare split
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            if let Some(u) = unstab_rgba {
+                fb.unstab_data = u;
+            } else if !fb.unstab_data.is_empty() {
+                fb.unstab_data = Vec::new();
             }
         }
 
@@ -5544,4 +5597,132 @@ pub fn generate_filmstrip_incremental(
     }
 
     Ok(count)
+}
+
+/// Sequential frame walker for analysis passes (e.g. video stabilization).
+///
+/// Opens the file once with GPU decode if available (CUDA → SW fallback), then
+/// yields decoded RGBA frames in source order via `next_frame()`. No per-frame
+/// seeks, no per-frame ffmpeg open. Designed to replace patterns that called
+/// `generate_thumbnail_at_size` in a tight loop, which paid the
+/// open+seek+sw-decode cost on every frame.
+///
+/// Forward-only sequential access. Not for random seek.
+pub struct SequentialFrameDecoder {
+    format_ctx: ffmpeg_next::format::context::Input,
+    decoder: ffmpeg_next::decoder::Video,
+    stream_index: usize,
+    is_hw: bool,
+    rotation: i32,
+    decode_w: u32,
+    decode_h: u32,
+    sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext>,
+    eof_reached: bool,
+    drained: bool,
+}
+
+impl SequentialFrameDecoder {
+    /// Open `path` and prepare for sequential decode. Output frames are scaled
+    /// so the longest visible (rotation-aware) edge is at most `max_width`
+    /// pixels. Uses GPU decode when available.
+    pub fn open(path: &std::path::Path, max_width: u32) -> Result<Self, String> {
+        let format_ctx = ffmpeg_next::format::input(path)
+            .map_err(|e| format!("ffmpeg open: {e}"))?;
+        let (decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
+        let rotation = {
+            let r = detect_rotation(&format_ctx, stream_index);
+            if r != 0 { r } else { detect_rotation_from_path(path) }
+        };
+        let src_w = decoder.width();
+        let src_h = decoder.height();
+        let eff_w = if rotation == 90 || rotation == 270 { src_h } else { src_w };
+        let scale = (max_width as f64 / eff_w as f64).min(1.0);
+        let decode_w = ((src_w as f64 * scale) as u32).max(1);
+        let decode_h = ((src_h as f64 * scale) as u32).max(1);
+        tracing::info!(
+            "SequentialFrameDecoder: opened {:?} accel={} src={}x{} target={}x{}",
+            path,
+            if is_hw { "GPU" } else { "SW" },
+            src_w,
+            src_h,
+            decode_w,
+            decode_h
+        );
+        Ok(Self {
+            format_ctx,
+            decoder,
+            stream_index,
+            is_hw,
+            rotation,
+            decode_w,
+            decode_h,
+            sws_cache: None,
+            eof_reached: false,
+            drained: false,
+        })
+    }
+
+    /// Decode and return the next frame in source order, or `None` at EOF.
+    pub fn next_frame(&mut self) -> Option<(Vec<u8>, u32, u32)> {
+        if self.drained {
+            return None;
+        }
+        let mut decoded = ffmpeg_next::frame::Video::empty();
+
+        if self.decoder.receive_frame(&mut decoded).is_ok() {
+            return self.convert(&decoded);
+        }
+
+        loop {
+            if self.eof_reached {
+                if self.decoder.receive_frame(&mut decoded).is_ok() {
+                    return self.convert(&decoded);
+                }
+                self.drained = true;
+                return None;
+            }
+
+            let mut packet = ffmpeg_next::codec::packet::Packet::empty();
+            match packet.read(&mut self.format_ctx) {
+                Ok(()) => {
+                    if packet.stream() != self.stream_index {
+                        continue;
+                    }
+                    let _ = self.decoder.send_packet(&packet);
+                }
+                Err(ffmpeg_next::Error::Eof) => {
+                    self.eof_reached = true;
+                    let _ = self.decoder.send_eof();
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("SequentialFrameDecoder: packet read error: {e}");
+                    self.drained = true;
+                    return None;
+                }
+            }
+
+            if self.decoder.receive_frame(&mut decoded).is_ok() {
+                return self.convert(&decoded);
+            }
+        }
+    }
+
+    fn convert(&mut self, decoded: &ffmpeg_next::frame::Video) -> Option<(Vec<u8>, u32, u32)> {
+        let rgba = frame_to_rgba(decoded, self.decode_w, self.decode_h, self.is_hw, &mut self.sws_cache)?;
+        if self.rotation != 0 {
+            let (rotated, rw, rh) = rotate_rgba(&rgba, self.decode_w, self.decode_h, self.rotation);
+            Some((rotated, rw, rh))
+        } else {
+            Some((rgba, self.decode_w, self.decode_h))
+        }
+    }
+}
+
+impl Drop for SequentialFrameDecoder {
+    fn drop(&mut self) {
+        if let Some(sws) = self.sws_cache.take() {
+            unsafe { ffmpeg_next::ffi::sws_freeContext(sws); }
+        }
+    }
 }

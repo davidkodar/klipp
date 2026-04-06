@@ -535,6 +535,9 @@ pub enum AppCommand {
     ToggleColorPanel,
     ShowEffectsBrowser,
     ToggleBeforeAfter,
+    /// Toggle stabilization compare split view (raw vs stabilized).
+    /// Mutually exclusive with ToggleBeforeAfter and grade still compare.
+    ToggleStabilizationCompare,
     SetMattePreview(bool),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
     /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
@@ -906,6 +909,10 @@ pub enum AppCommand {
     // Video stabilization
     AnalyzeStabilization { clip_id: ClipId },
     CancelStabilization { clip_id: ClipId },
+    /// Re-run smoothing on existing stabilization_data with the current smoothing
+    /// slider value. Cheap (microseconds) — no decode, just gaussian over the
+    /// already-baked trajectory. Used for live slider updates.
+    ResmoothStabilization { clip_id: ClipId },
 
     // Point tracking
     /// Add a new track point to a clip at the given normalized position.
