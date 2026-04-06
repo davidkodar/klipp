@@ -445,6 +445,12 @@ impl TimelinePanel {
                 egui::vec2(content_rect.width(), track_height),
             );
 
+            // Subtle alternating lane tint for scanability. Even rows inherit the
+            // panel-wide rgb(25,25,30) fill from line 279 — no paint needed.
+            if track_idx % 2 == 1 {
+                painter.rect_filled(track_rect, 0.0, egui::Color32::from_rgb(29, 29, 34));
+            }
+
             // Draw clips for this track (clipped to lane rect, bounded by tracks area)
             // Skip rendering for tracks fully outside the visible area
             if track_visible {
@@ -1966,6 +1972,20 @@ impl TimelinePanel {
                 content_rect.left() + playhead_secs * state.timeline_zoom - state.timeline_scroll_x;
 
             if playhead_x >= content_rect.left() && playhead_x <= content_rect.right() {
+                // Three-pass paint: outer halo, inner halo, sharp line.
+                // All three share the same `painter` clip (content_rect ∩ ui.clip_rect).
+                let halo_outer = egui::Rect::from_x_y_ranges(
+                    (playhead_x - 4.0)..=(playhead_x + 4.0),
+                    content_rect.top()..=content_rect.bottom(),
+                );
+                painter.rect_filled(halo_outer, 0.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 80, 80, 18));
+                let halo_inner = egui::Rect::from_x_y_ranges(
+                    (playhead_x - 2.0)..=(playhead_x + 2.0),
+                    content_rect.top()..=content_rect.bottom(),
+                );
+                painter.rect_filled(halo_inner, 0.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 80, 80, 40));
                 painter.line_segment(
                     [
                         egui::pos2(playhead_x, content_rect.top()),
@@ -2085,6 +2105,18 @@ impl TimelinePanel {
         let header_rect = layout.header_rect;
         let tracks_clip = layout.tracks_clip;
         let panel_rect = layout.panel_rect;
+
+        // Subtle alternating header row tint, parity-matched to the lane fill.
+        // Header column base is darker (rgb 20,20,24) so the odd-row delta is
+        // smaller (+5 to ~rgb 25,25,28) to keep perceived contrast consistent.
+        // Painted before the locked-state dim overlay so locking still reads.
+        if track_idx % 2 == 1 {
+            let header_row_rect = egui::Rect::from_min_size(
+                egui::pos2(header_rect.left(), track_y),
+                egui::vec2(state.track_header_width, track_height),
+            );
+            bg_painter.rect_filled(header_row_rect, 0.0, egui::Color32::from_rgb(25, 25, 28));
+        }
 
         let label_color = match track_kind {
             TrackKind::Audio => egui::Color32::from_rgb(100, 150, 110),
