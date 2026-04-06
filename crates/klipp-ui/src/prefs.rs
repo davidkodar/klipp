@@ -162,6 +162,9 @@ pub struct PlaybackPrefs {
     /// JKL speed step multiplier per press (e.g. 2.0 = 2x, 4x, 8x...).
     #[serde(default = "default_jkl_step")]
     pub jkl_speed_step: f32,
+    /// Dim everything outside the viewer during playback for cinematic focus.
+    #[serde(default = "default_true")]
+    pub dim_ui_on_play: bool,
 }
 fn default_pre_roll() -> f32 { 2.0 }
 fn default_jkl_step() -> f32 { 2.0 }
@@ -453,6 +456,7 @@ impl Default for PlaybackPrefs {
             background_render: true,
             pre_roll_duration: default_pre_roll(),
             jkl_speed_step: default_jkl_step(),
+            dim_ui_on_play: true,
         }
     }
 }

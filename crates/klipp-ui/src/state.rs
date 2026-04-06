@@ -473,6 +473,11 @@ pub struct AppState {
 
     /// Viewer image rect (set by viewer each frame for scope cursor sampling).
     pub viewer_image_rect: Option<egui::Rect>,
+    /// The viewer panel's outer rect (NOT the post-letterbox image rect).
+    /// Set every frame by `render_main_layout` (windowed) or `render_fullscreen_viewer`
+    /// (fullscreen). Used by overlays that need to align with the viewer regardless of
+    /// layout mode. `egui::Rect::NOTHING` until first frame.
+    pub viewer_panel_rect: egui::Rect,
     /// Pointer position over the viewer image (set by viewer on hover, None when not hovering).
     pub viewer_pointer_pos: Option<egui::Pos2>,
 
@@ -1432,6 +1437,7 @@ impl Default for AppState {
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),
             viewer_image_rect: None,
+            viewer_panel_rect: egui::Rect::NOTHING,
             viewer_pointer_pos: None,
             scope_cursor_locked: false,
             scope_cursor_locked_pos: None,

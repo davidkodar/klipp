@@ -623,6 +623,19 @@ impl PreferencesPanel {
                 *dirty = true;
             }
         });
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Dim UI during playback",
+            "Darkens the panels around the viewer for cinematic focus",
+            |ui| {
+                let mut val = prefs.playback.dim_ui_on_play;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.playback.dim_ui_on_play = val;
+                    *dirty = true;
+                }
+            },
+        );
     }
 
     fn show_editing(

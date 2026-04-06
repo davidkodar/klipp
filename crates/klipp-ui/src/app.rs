@@ -12642,6 +12642,69 @@ impl eframe::App for KlippApp {
 
         self.render_main_layout(ctx, &mut all_cmds);
 
+        // Dim UI on play: darken everything outside the viewer rect during
+        // playback for cinematic focus. Click-through (no allocate_rect),
+        // Order::Middle so modals/command palette/markers/toasts paint above
+        // it. Fades in/out via egui's animator.
+        if self.prefs.playback.dim_ui_on_play {
+            let target_alpha = if self.state.playback == PlaybackState::Playing {
+                60.0_f32
+            } else {
+                0.0_f32
+            };
+            let alpha = ctx.animate_value_with_time(
+                egui::Id::new("dim_on_play_alpha"),
+                target_alpha,
+                0.15, // 150ms fade
+            );
+            if alpha > 0.5 {
+                // Read the actual viewer panel rect that was painted this frame
+                // by either render_main_layout (windowed) or render_fullscreen_viewer
+                // (fullscreen). Avoids recomputing layout, which would be wrong in
+                // fullscreen mode where compute_layout is never called.
+                let viewer = self.state.viewer_panel_rect;
+                let screen = ctx.screen_rect();
+                let dim = egui::Color32::from_black_alpha(alpha as u8);
+
+                ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Middle,
+                    egui::Id::new("dim_on_play_layer"),
+                ))
+                .extend([
+                    // top strip — full width above the viewer
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_max(screen.min, egui::pos2(screen.max.x, viewer.min.y)),
+                        0.0,
+                        dim,
+                    ),
+                    // bottom strip — full width below the viewer
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(screen.min.x, viewer.max.y), screen.max),
+                        0.0,
+                        dim,
+                    ),
+                    // left strip — between top and bottom strips, left of viewer
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(screen.min.x, viewer.min.y),
+                            egui::pos2(viewer.min.x, viewer.max.y),
+                        ),
+                        0.0,
+                        dim,
+                    ),
+                    // right strip — between top and bottom strips, right of viewer
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(viewer.max.x, viewer.min.y),
+                            egui::pos2(screen.max.x, viewer.max.y),
+                        ),
+                        0.0,
+                        dim,
+                    ),
+                ]);
+            }
+        }
+
         // Markers panel
         if self.state.show_markers_panel {
             let cmds = self.markers.show(ctx, &mut self.state);
@@ -14528,6 +14591,10 @@ impl KlippApp {
 
     fn render_fullscreen_viewer(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) -> bool {
         if self.state.fullscreen_viewer {
+            // Fullscreen viewer occupies the entire screen — record this so the
+            // dim-on-play overlay (which paints around the viewer rect) computes
+            // a zero-area frame and produces no visible strips.
+            self.state.viewer_panel_rect = ctx.screen_rect();
             egui::CentralPanel::default().show(ctx, |ui| {
                 let panel_cmds = self.viewer.show_fullscreen(ui, &mut self.state);
                 all_cmds.extend(panel_cmds);
@@ -14548,10 +14615,12 @@ impl KlippApp {
                 .frame(egui::Frame::none().fill(self.theme.bg_void))
                 .show(ctx, |ui| {
                     let full = ui.available_rect_before_wrap();
-                    let theme = self.theme.clone();
 
                     // Pure rect computation — see crates/klipp-ui/src/layout.rs
                     let rects = crate::layout::compute_layout(full, &self.layout, &self.state);
+                    // Cache the viewer panel rect for overlays (e.g. dim-on-play)
+                    // that need to align with the viewer regardless of layout mode.
+                    self.state.viewer_panel_rect = rects.viewer_rect;
                     let crate::layout::LayoutRects {
                         full: _,
                         toolbar_rect,
@@ -14822,10 +14891,6 @@ impl KlippApp {
                 let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
                 all_cmds.extend(panel_cmds);
             });
-
-            // Radial vignette: triangulated fan from transparent center to
-            // 8% black at the outer ellipse (inscribed in viewer_rect).
-            paint_viewer_vignette(ui.painter(), viewer_rect);
         });
     }
 
@@ -15685,36 +15750,6 @@ fn try_poster_from_media(
     ).ok()?;
 
     save_rgba_as_png(&rgba, w, h, out_path).then(|| out_path.to_path_buf())
-}
-
-/// Paint a radial vignette over `rect`: transparent at the center, fading to
-/// ~8% black at the inscribed ellipse edge. Uses a 32-segment triangle fan.
-fn paint_viewer_vignette(painter: &egui::Painter, rect: egui::Rect) {
-    use egui::epaint::{Mesh, Vertex, WHITE_UV};
-    let center = rect.center();
-    let rx = rect.width() * 0.5;
-    let ry = rect.height() * 0.5;
-    let segments = 32usize;
-    let edge = egui::Color32::from_black_alpha(20);
-    let center_color = egui::Color32::TRANSPARENT;
-
-    let mut mesh = Mesh::default();
-    mesh.vertices.push(Vertex {
-        pos: center,
-        uv: WHITE_UV,
-        color: center_color,
-    });
-    for i in 0..segments {
-        let theta = (i as f32) / (segments as f32) * std::f32::consts::TAU;
-        let pos = egui::pos2(center.x + rx * theta.cos(), center.y + ry * theta.sin());
-        mesh.vertices.push(Vertex { pos, uv: WHITE_UV, color: edge });
-    }
-    for i in 0..segments {
-        let a = 1 + i as u32;
-        let b = 1 + ((i + 1) % segments) as u32;
-        mesh.indices.extend_from_slice(&[0, a, b]);
-    }
-    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Force-capture the current viewer frame as project thumbnail (for custom thumbnail).
