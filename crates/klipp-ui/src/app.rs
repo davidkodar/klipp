@@ -14642,7 +14642,18 @@ impl KlippApp {
         viewer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
-        ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
+        // Cinematic elevation: shadow painted on the parent (unclipped) painter so it
+        // bleeds into surrounding panels — allocate_clipped_ui below would otherwise
+        // clip it to viewer_rect. Then Frame handles fill/stroke/margin/rounding.
+        let rounding = egui::Rounding::same(8.0);
+        let shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 12.0),
+            blur: 40.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(115),
+        };
+        ui.painter().add(shadow.as_shape(viewer_rect, rounding));
+
         crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             ui.spacing_mut().window_margin = egui::Margin::ZERO;
@@ -14656,8 +14667,20 @@ impl KlippApp {
                 v.window_stroke = egui::Stroke::NONE;
                 v.window_shadow = egui::Shadow::NONE;
             }
-            let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
-            all_cmds.extend(panel_cmds);
+            let frame = egui::Frame::none()
+                .fill(self.theme.bg_viewer)
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)))
+                .inner_margin(egui::Margin::same(12.0))
+                .rounding(rounding);
+            frame.show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
+                all_cmds.extend(panel_cmds);
+            });
+
+            // Radial vignette: triangulated fan from transparent center to
+            // 8% black at the outer ellipse (inscribed in viewer_rect).
+            paint_viewer_vignette(ui.painter(), viewer_rect);
         });
     }
 
@@ -15517,6 +15540,36 @@ fn try_poster_from_media(
     ).ok()?;
 
     save_rgba_as_png(&rgba, w, h, out_path).then(|| out_path.to_path_buf())
+}
+
+/// Paint a radial vignette over `rect`: transparent at the center, fading to
+/// ~8% black at the inscribed ellipse edge. Uses a 32-segment triangle fan.
+fn paint_viewer_vignette(painter: &egui::Painter, rect: egui::Rect) {
+    use egui::epaint::{Mesh, Vertex, WHITE_UV};
+    let center = rect.center();
+    let rx = rect.width() * 0.5;
+    let ry = rect.height() * 0.5;
+    let segments = 32usize;
+    let edge = egui::Color32::from_black_alpha(20);
+    let center_color = egui::Color32::TRANSPARENT;
+
+    let mut mesh = Mesh::default();
+    mesh.vertices.push(Vertex {
+        pos: center,
+        uv: WHITE_UV,
+        color: center_color,
+    });
+    for i in 0..segments {
+        let theta = (i as f32) / (segments as f32) * std::f32::consts::TAU;
+        let pos = egui::pos2(center.x + rx * theta.cos(), center.y + ry * theta.sin());
+        mesh.vertices.push(Vertex { pos, uv: WHITE_UV, color: edge });
+    }
+    for i in 0..segments {
+        let a = 1 + i as u32;
+        let b = 1 + ((i + 1) % segments) as u32;
+        mesh.indices.extend_from_slice(&[0, a, b]);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Force-capture the current viewer frame as project thumbnail (for custom thumbnail).

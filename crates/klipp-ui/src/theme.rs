@@ -19,6 +19,9 @@ pub struct KlippTheme {
     pub bg_panel_alt: Color32,
     pub bg_raised: Color32,
     pub bg_hover: Color32,
+    /// Elevated container background for the program viewer — bg_deep + ~4% brightness.
+    /// Used as the Frame fill around the viewer; the inner video letterbox stays pure black.
+    pub bg_viewer: Color32,
 
     // Borders
     pub border: Color32,
@@ -61,6 +64,7 @@ impl Default for KlippTheme {
             bg_panel_alt: Color32::from_rgb(0x1c, 0x1c, 0x21),
             bg_raised: Color32::from_rgb(0x22, 0x22, 0x28),
             bg_hover: Color32::from_rgb(0x2a, 0x2a, 0x32),
+            bg_viewer: Color32::from_rgb(28, 28, 30),
 
             border: Color32::from_rgb(0x2a, 0x2a, 0x32),
             border_light: Color32::from_rgb(0x36, 0x36, 0x40),
