@@ -14,6 +14,7 @@ pub mod effect_presets;
 pub mod state;
 pub mod theme;
 pub mod timeline;
+pub mod ui_util;
 pub mod widgets;
 
 pub use app::KlippApp;

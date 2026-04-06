@@ -122,6 +122,18 @@ pub struct TimelineLayout {
     pub track_header_width: f32,
 }
 
+/// Per-frame scratch data recomputed at the start of every `TimelinePanel::show()` call.
+/// Not persisted between frames — reset unconditionally at the top of `show()`.
+#[derive(Default)]
+pub(crate) struct TimelineFrameCache {
+    /// Current snap guide X in screen coordinates (None if no snap active this frame).
+    pub snap_line_x: Option<f32>,
+    /// Per-track rects this frame: (track_idx, kind, rect). Used for cross-track drag hit testing.
+    pub track_rects: Vec<(usize, TrackKind, egui::Rect)>,
+    /// Clip id → screen rect, populated while drawing clips. Used for linked-clip connection lines.
+    pub clip_screen_rects: HashMap<ClipId, egui::Rect>,
+}
+
 #[derive(Default)]
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
@@ -131,7 +143,6 @@ pub struct TimelinePanel {
     roll_trimming: Option<RollTrimState>,
     slipping_clip: Option<SlipState>,
     sliding_clip: Option<SlideState>,
-    snap_line_x: Option<f32>,
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
     press_origin: Option<egui::Pos2>,
@@ -140,16 +151,14 @@ pub struct TimelinePanel {
     filmstrip_total: usize,
     /// Last filmstrip refinement request time — debounce to avoid spamming
     last_refine_request: Option<std::time::Instant>,
-    /// Track rects from last frame — used for cross-track drag detection
-    track_rects: Vec<(usize, TrackKind, egui::Rect)>,
-    /// Clip id -> screen rect, populated during clip drawing for connection lines
-    clip_screen_rects: HashMap<ClipId, egui::Rect>,
     /// Suppress clip context menu when keyframe diamond right-click was handled
     suppress_clip_context_menu: bool,
     /// Track height resize drag: (track_index, start_y, original_height)
     resizing_track: Option<(usize, f32, f32)>,
     /// Marquee selection drag: start position in screen coords
     marquee_start: Option<egui::Pos2>,
+    /// Per-frame scratch cache — cleared at the top of `show()`.
+    pub(crate) frame_cache: TimelineFrameCache,
 }
 
 struct DragState {
@@ -239,6 +248,8 @@ impl TimelinePanel {
         sync_editing_prefs_to_timeline(state.snap_threshold_px);
 
         let mut cmds = Vec::new();
+        // Reset per-frame scratch cache — these fields are rebuilt below.
+        self.frame_cache = TimelineFrameCache::default();
         let available = ui.available_size();
 
         // Reset per-frame state
@@ -438,11 +449,6 @@ impl TimelinePanel {
             self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
         }
 
-        // Reset snap line
-        self.snap_line_x = None;
-        // Reset clip screen rects for connection line drawing
-        self.clip_screen_rects.clear();
-
         // Draw tracks: Video 2, Video 1, Audio 1
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
         let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
@@ -492,7 +498,6 @@ impl TimelinePanel {
         };
 
         // Pre-compute all track rects so cross-track drag can find any track
-        self.track_rects.clear();
         {
             let mut pre_y = tracks_start_y - scroll_y;
             for ti in 0..track_count {
@@ -502,7 +507,7 @@ impl TimelinePanel {
                     egui::pos2(content_rect.left(), pre_y),
                     egui::vec2(content_rect.width(), th),
                 );
-                self.track_rects.push((ti, tk, rect));
+                self.frame_cache.track_rects.push((ti, tk, rect));
                 pre_y += th;
             }
         }
@@ -853,7 +858,7 @@ impl TimelinePanel {
                 if let Some(pos) = cur_pos {
                     // Only start if in the content area (not header) and not on a clip
                     if pos.x > content_rect.left() && pos.y >= tracks_start_y - scroll_y {
-                        let on_clip = self.track_rects.iter().any(|(ti, _, tr)| {
+                        let on_clip = self.frame_cache.track_rects.iter().any(|(ti, _, tr)| {
                             let clips = &state.sequence().tracks[*ti].clips;
                             self.hit_test_clip_body(clips, &content_rect, tr, m_zoom, m_scroll,
                                 tr.height(), pos).is_some()
@@ -882,7 +887,7 @@ impl TimelinePanel {
 
                         // Collect clips intersecting the marquee
                         let mut selected = Vec::new();
-                        for (ti, _, track_rect) in &self.track_rects {
+                        for (ti, _, track_rect) in &self.frame_cache.track_rects {
                             if marquee_rect.max.y < track_rect.top() || marquee_rect.min.y > track_rect.bottom() {
                                 continue; // marquee doesn't overlap this track
                             }
@@ -977,8 +982,8 @@ impl TimelinePanel {
                         drawn_pairs.insert(pair_key);
 
                         if let (Some(rect_a), Some(rect_b)) = (
-                            self.clip_screen_rects.get(&clip.id),
-                            self.clip_screen_rects.get(&linked_id),
+                            self.frame_cache.clip_screen_rects.get(&clip.id),
+                            self.frame_cache.clip_screen_rects.get(&linked_id),
                         ) {
                             // Only draw if clips are on different tracks (vertically separated)
                             if (rect_a.top() - rect_b.top()).abs() > 1.0 {
@@ -1012,8 +1017,8 @@ impl TimelinePanel {
                             .map(|item| item.video_codec.is_empty())
                             .unwrap_or(false);
                         // Check if cursor is above topmost track or below bottommost track
-                        let first_rect_top = self.track_rects.first().map(|(_, _, r)| r.top());
-                        let last_rect_bottom = self.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let first_rect_top = self.frame_cache.track_rects.first().map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
                         let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
                         let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
 
@@ -1158,7 +1163,7 @@ impl TimelinePanel {
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 // Check if cursor is outside all track rects
-                let on_any_track = self.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
                     if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
                         // Create a new text track and place the title there
@@ -1401,7 +1406,7 @@ impl TimelinePanel {
         }
 
         // Snap indicator line (amber, full height, with timecode label)
-        if let Some(snap_x) = self.snap_line_x {
+        if let Some(snap_x) = self.frame_cache.snap_line_x {
             if snap_x >= content_rect.left() && snap_x <= content_rect.right() {
                 let snap_color = egui::Color32::from_rgb(232, 160, 32);
                 // Thick amber line spanning full track area
@@ -1469,7 +1474,7 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = effective_track_height(track);
                         // Find track_rect from track_rects cache
-                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left(); // approximation — content_rect not available here
                             let clip_rect_approx = {
                                 let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -1583,7 +1588,7 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
                                 let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -1714,7 +1719,7 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_bh.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
                                 let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -1816,7 +1821,7 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
                                 let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -5028,7 +5033,7 @@ impl TimelinePanel {
                 // Skip — will be handled when we draw the correct track
             } else if let Some(pos) = pointer_pos {
                 // Determine which track the pointer is hovering over
-                let hover_track_idx = self.track_rects.iter()
+                let hover_track_idx = self.frame_cache.track_rects.iter()
                     .find(|(_, _, rect)| rect.contains(pos))
                     .map(|(idx, _, _)| *idx);
 
@@ -5057,7 +5062,7 @@ impl TimelinePanel {
                             if let Some((snap_target, snap_secs)) = find_snap(new_timeline_in, drag.clip_id) {
                                 final_in = snap_target;
                                 snapped = true;
-                                self.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
+                                self.frame_cache.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
                             }
                             // Snap right edge (if no left-edge snap found, or if right is closer)
                             if let Some((snap_target, snap_secs)) = find_snap(new_out, drag.clip_id) {
@@ -5072,7 +5077,7 @@ impl TimelinePanel {
                                 if !snapped || right_dist < left_dist {
                                     final_in = right_snap_in;
                                     snapped = true;
-                                    self.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
+                                    self.frame_cache.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
                                 }
                             }
                         }
@@ -5249,7 +5254,7 @@ impl TimelinePanel {
                                         || other_track.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline;
                                     if !is_connected { continue; }
 
-                                    let other_track_rect = self.track_rects.iter()
+                                    let other_track_rect = self.frame_cache.track_rects.iter()
                                         .find(|(idx, _, _)| *idx == other_ti)
                                         .map(|(_, _, r)| *r);
                                     let other_track_rect = match other_track_rect {
@@ -5414,7 +5419,7 @@ impl TimelinePanel {
 
                     // Auto-connect/disconnect indicator during non-primary drag
                     if !is_primary {
-                        let primary_rect = self.track_rects.iter()
+                        let primary_rect = self.frame_cache.track_rects.iter()
                             .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
                                 .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
                             .map(|(_, _, r)| *r);
@@ -5522,7 +5527,7 @@ impl TimelinePanel {
                             let target_kind = state.sequence().tracks.get(target_idx)
                                 .map(|t| t.kind);
                             if source_kind == target_kind {
-                                if let Some((_, _, rect)) = self.track_rects.iter()
+                                if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                 {
                                     painter.rect_stroke(
@@ -5544,7 +5549,7 @@ impl TimelinePanel {
 
                 // Check if pointer is over a different compatible track
                 let target_track = pointer_pos.and_then(|pos| {
-                    self.track_rects.iter()
+                    self.frame_cache.track_rects.iter()
                         .find(|(_, _, rect)| rect.contains(pos))
                         .map(|(idx, _, _)| *idx)
                 });
@@ -5635,7 +5640,7 @@ impl TimelinePanel {
                             }
 
                             // Auto-connect/disconnect on drop for non-primary tracks
-                            let primary_rect = self.track_rects.iter()
+                            let primary_rect = self.frame_cache.track_rects.iter()
                                 .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
                                     .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
                                 .map(|(pi, _, r)| (*pi, *r));
@@ -5691,8 +5696,8 @@ impl TimelinePanel {
                     // Dropped outside all tracks — auto-create a matching track
                     if let Some(pos) = pointer_pos {
                         let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
-                        let first_rect_top = self.track_rects.first().map(|(_, _, r)| r.top());
-                        let last_rect_bottom = self.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let first_rect_top = self.frame_cache.track_rects.first().map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
                         let above_all = first_rect_top.is_some_and(|top| pos.y < top);
                         let below_all = last_rect_bottom.is_some_and(|bot| pos.y > bot);
 
@@ -6152,7 +6157,7 @@ impl TimelinePanel {
                         if dist_px < 8.0 {
                             snapped_boundary = state.playhead;
                             let snap_x = content_rect.left() + playhead_secs as f32 * zoom - state.timeline_scroll_x;
-                            self.snap_line_x = Some(snap_x);
+                            self.frame_cache.snap_line_x = Some(snap_x);
                         }
                     }
 
@@ -6315,7 +6320,7 @@ impl TimelinePanel {
                                     let max_in = trim.original_source_out - RationalTime { value: 1, rate: trim.original_source_out.rate };
                                     if snapped_source_in >= zero && snapped_source_in <= max_in {
                                         new_timeline_in = snap_target;
-                                        self.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
+                                        self.frame_cache.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
                                     }
                                 }
 
@@ -6349,7 +6354,7 @@ impl TimelinePanel {
                                 let mut snapped_timeline_out = new_timeline_out;
                                 if let Some((snap_target, snap_secs)) = find_snap(new_timeline_out, trim.clip_id) {
                                     snapped_timeline_out = snap_target;
-                                    self.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
+                                    self.frame_cache.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
                                 }
 
                                 // Recompute source_in from the snapped duration
@@ -6409,7 +6414,7 @@ impl TimelinePanel {
                                 let min_out = trim.original_source_in + RationalTime { value: 1, rate: trim.original_source_in.rate };
                                 if snapped_source_out >= min_out && snapped_source_out <= media_duration {
                                     new_timeline_out = snap_target;
-                                    self.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
+                                    self.frame_cache.snap_line_x = Some(content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x);
                                 }
                             }
 
@@ -6989,7 +6994,7 @@ impl TimelinePanel {
             );
 
             // Cache clip rect for connection line drawing
-            self.clip_screen_rects.insert(clip.id, clip_rect);
+            self.frame_cache.clip_screen_rects.insert(clip.id, clip_rect);
 
             // Skip if not visible (horizontal or vertical)
             if clip_rect.right() < content_rect.left()
@@ -8316,7 +8321,7 @@ impl TimelinePanel {
                             let clip_top = track_rect.top();
 
                             // Find primary track rect for the bottom of the line
-                            let primary_bottom = self.track_rects.iter()
+                            let primary_bottom = self.frame_cache.track_rects.iter()
                                 .find(|(idx, _, _)| *idx == primary_idx)
                                 .map(|(_, _, r)| r.bottom())
                                 .unwrap_or(track_rect.bottom());

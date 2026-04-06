@@ -35,7 +35,7 @@ impl NewTimelinePanel {
             full_rect.min,
             egui::vec2(full_rect.width(), 34.0),
         );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
+        crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
             ui.painter().rect_filled(toolbar_rect, 0.0, theme.bg_panel);
             ui.painter().hline(
                 toolbar_rect.x_range(),
@@ -50,7 +50,7 @@ impl NewTimelinePanel {
             egui::pos2(full_rect.min.x, toolbar_rect.max.y),
             egui::vec2(full_rect.width(), sequence_tabs::HEIGHT),
         );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
+        crate::ui_util::allocate_clipped_ui(ui, tabs_rect, |ui| {
             let tab_cmds = sequence_tabs::show(ui, state, theme);
             cmds.extend(tab_cmds);
         });
@@ -75,10 +75,9 @@ impl NewTimelinePanel {
         );
 
         // Draw track headers
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
-            // Clip scrolled-out headers to the header column so they can't paint
-            // outside (into the ruler above, the status bar below, or the clip area).
-            ui.set_clip_rect(header_rect.intersect(ui.clip_rect()));
+        // allocate_clipped_ui sets clip_rect = header_rect for us, so scrolled-out
+        // headers cannot paint into the ruler/status bar/clip area.
+        crate::ui_util::allocate_clipped_ui(ui, header_rect, |ui| {
             ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
             ui.painter().vline(
                 header_rect.max.x,
@@ -332,9 +331,9 @@ impl NewTimelinePanel {
                 snap_secs, state.fps.rate(), theme,
             );
         }
-        // CRITICAL: clip everything to prevent bleed into inspector
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tracks_rect), |ui| {
-            ui.set_clip_rect(tracks_rect.intersect(ui.clip_rect()));
+        // allocate_clipped_ui sets clip_rect = tracks_rect, preventing the old
+        // timeline panel from bleeding into the inspector or status bar.
+        crate::ui_util::allocate_clipped_ui(ui, tracks_rect, |ui| {
             let old_cmds = old_timeline.show(ui, state);
             cmds.extend(old_cmds);
         });

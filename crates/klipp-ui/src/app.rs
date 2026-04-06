@@ -12692,7 +12692,7 @@ impl eframe::App for KlippApp {
                     // ── Render panels into their rects ──
 
                     // Toolbar
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
                         ui.set_min_size(toolbar_rect.size());
                         ui.painter().rect_filled(
                             toolbar_rect,
@@ -12723,7 +12723,7 @@ impl eframe::App for KlippApp {
                     // (Transport is currently 48px; we compress it into toolbar for now.)
 
                     // Status bar
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(statusbar_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, statusbar_rect, |ui| {
                         ui.set_min_size(statusbar_rect.size());
                         ui.painter()
                             .rect_filled(statusbar_rect, 0.0, theme.bg_void);
@@ -12736,7 +12736,7 @@ impl eframe::App for KlippApp {
                     });
 
                     // Browser (left panel)
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(browser_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
                         ui.set_min_size(browser_rect.size());
                         ui.painter()
                             .rect_filled(browser_rect, 0.0, theme.bg_panel);
@@ -12757,7 +12757,7 @@ impl eframe::App for KlippApp {
                     });
 
                     // Inspector (right panel) — contextual based on workspace
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inspector_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
                         ui.set_min_size(inspector_rect.size());
                         ui.painter().rect_filled(inspector_rect, 0.0, theme.bg_panel);
 
@@ -12939,7 +12939,7 @@ impl eframe::App for KlippApp {
                     // Viewer (center top) — pure black, absolutely no border
                     // Paint black fill slightly expanded to cover any sub-pixel gaps
                     ui.painter().rect_filled(viewer_rect.expand(1.0), 0.0, egui::Color32::BLACK);
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(viewer_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
                         // Zero out ALL spacing and strokes for borderless viewer
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                         ui.spacing_mut().window_margin = egui::Margin::ZERO;
@@ -12991,7 +12991,7 @@ impl eframe::App for KlippApp {
                             egui::pos2(viewer_rect.right() - overlay_w - 8.0, viewer_rect.bottom() - overlay_h - 8.0),
                             egui::vec2(overlay_w, overlay_h),
                         );
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
+                        crate::ui_util::allocate_clipped_ui(ui, overlay_rect, |ui| {
                             ui.set_min_size(overlay_rect.size());
                             // Semi-transparent dark background
                             ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
@@ -13013,7 +13013,7 @@ impl eframe::App for KlippApp {
                     // Curve editor (between viewer and timeline)
                     if self.state.show_curve_editor && curve_editor_h > 0.0 {
                         self.curve_editor.sync_param_from_state(&self.state);
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(curve_editor_rect), |ui| {
+                        crate::ui_util::allocate_clipped_ui(ui, curve_editor_rect, |ui| {
                             ui.set_min_size(curve_editor_rect.size());
                             let cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
                             all_cmds.extend(cmds);
@@ -13022,7 +13022,7 @@ impl eframe::App for KlippApp {
 
                     // Audio mixer (between curve editor and timeline)
                     if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(audio_mixer_rect), |ui| {
+                        crate::ui_util::allocate_clipped_ui(ui, audio_mixer_rect, |ui| {
                             ui.set_min_size(audio_mixer_rect.size());
                             let cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
                             all_cmds.extend(cmds);
@@ -13030,7 +13030,7 @@ impl eframe::App for KlippApp {
                     }
 
                     // Timeline (center bottom) — always visible
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(timeline_rect), |ui| {
+                    crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
                         ui.set_min_size(timeline_rect.size());
                         let cmds = self.new_timeline.show(
                             ui,
@@ -13060,7 +13060,7 @@ impl eframe::App for KlippApp {
 
                         // Toggle bar: [Scopes] [Nodes] toggle buttons
                         if toggle_bar_h > 0.0 {
-                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toggle_bar_rect), |ui| {
+                            crate::ui_util::allocate_clipped_ui(ui, toggle_bar_rect, |ui| {
                                 ui.set_min_size(toggle_bar_rect.size());
                                 ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
                                 ui.painter().hline(
@@ -13227,7 +13227,7 @@ impl eframe::App for KlippApp {
                                 egui::pos2(center_left, toggle_bar_rect.max.y),
                                 egui::vec2(center_w, tools_h),
                             );
-                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+                            crate::ui_util::allocate_clipped_ui(ui, tools_rect, |ui| {
                                 ui.set_min_size(tools_rect.size());
                                 ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
                                 if let Some(clip_id) = self.state.selected_clip {
@@ -13266,7 +13266,7 @@ impl eframe::App for KlippApp {
                                 egui::pos2(center_left, toggle_bar_rect.max.y),
                                 egui::vec2(center_w, live_scopes_h),
                             );
-                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(live_scopes_rect), |ui| {
+                            crate::ui_util::allocate_clipped_ui(ui, live_scopes_rect, |ui| {
                                 ui.set_min_size(live_scopes_rect.size());
                                 ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
                                 // Detect scope setting changes and bump settings_generation
@@ -13351,7 +13351,7 @@ impl eframe::App for KlippApp {
 
                         // Node strip panel — read live state
                         if self.state.show_node_strip {
-                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nodes_rect), |ui| {
+                            crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
                                 ui.set_min_size(nodes_rect.size());
                                 ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
                                 let clip_id = self.state.selected_clip;
