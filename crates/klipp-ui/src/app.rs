@@ -7117,18 +7117,35 @@ impl KlippApp {
                         &fb.data, fb.width, fb.height,
                     );
                     drop(fb);
-                    // Apply to the clip's ColorBalance node
+                    // Apply to the clip's ColorBalance node. Snapshot the graph
+                    // before applying so we can push a single SetNodeGraph undo
+                    // entry covering the whole auto-WB gesture.
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let mut snapshot: Option<klipp_nodes::NodeGraph> = None;
+                    let mut committed: Option<klipp_nodes::NodeGraph> = None;
                     for track in &mut seq.tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            snapshot = Some(clip.node_graph.clone());
                             if let Some(node) = clip.node_graph.nodes.iter_mut()
                                 .find(|n| n.kind == klipp_nodes::NodeKind::ColorBalance)
                             {
                                 node.params.temperature = Some(temp_adj);
                                 node.params.tint = Some(tint_adj);
                             }
+                            committed = Some(clip.node_graph.clone());
                             break;
                         }
+                    }
+                    if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetNodeGraph {
+                                clip_id: *clip_id,
+                                old_graph,
+                                new_graph,
+                            },
+                        });
+                        self.state.dirty = true;
                     }
                     *needs_refresh = true;
                 }
@@ -15745,6 +15762,89 @@ mod node_param_undo_tests {
             }
             other => panic!("expected SetNodeGraph, got {:?}", other),
         }
+    }
+
+    /// An atomic click-to-reset (Begin + SetNodeParam + End in the same
+    /// frame) must produce exactly one `SetNodeGraph` history entry whose
+    /// `old_graph` holds the pre-click state. This models the behavior of
+    /// `push_atomic_node_edit` in node_inspector.rs.
+    #[test]
+    fn atomic_edit_creates_single_history_entry() {
+        use klipp_core::AppCommand;
+        use klipp_nodes::NodeId;
+
+        // Simulated command stream produced by a single "reset" click:
+        let clip_id = ClipId::new();
+        let node_id = NodeId::new_v4();
+        let mut cmds: Vec<AppCommand> = Vec::new();
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        cmds.push(AppCommand::SetNodeParam {
+            clip_id,
+            node_id,
+            param: "exposure".into(),
+            value: 0.0,
+        });
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+
+        // The stream must contain exactly one Begin and one End bracketing
+        // the SetNodeParam. That's the contract a handler needs to produce a
+        // single history entry.
+        let begin_count = cmds.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
+        let end_count = cmds.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count();
+        let set_count = cmds.iter().filter(|c| matches!(c, AppCommand::SetNodeParam { .. })).count();
+        assert_eq!(begin_count, 1, "atomic edit must emit exactly one Begin");
+        assert_eq!(end_count, 1, "atomic edit must emit exactly one End");
+        assert_eq!(set_count, 1, "atomic edit here carries one SetNodeParam");
+
+        // Order: Begin must precede the SetNodeParam, End must follow.
+        let begin_idx = cmds.iter().position(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).unwrap();
+        let set_idx = cmds.iter().position(|c| matches!(c, AppCommand::SetNodeParam { .. })).unwrap();
+        let end_idx = cmds.iter().position(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).unwrap();
+        assert!(begin_idx < set_idx && set_idx < end_idx,
+            "expected Begin < SetNodeParam < End, got {begin_idx}/{set_idx}/{end_idx}");
+    }
+
+    /// Two consecutive atomic edits must produce two separate Begin/End
+    /// brackets so they become two distinct history entries, not one
+    /// coalesced undo step.
+    #[test]
+    fn multiple_atomic_edits_create_separate_brackets() {
+        use klipp_core::AppCommand;
+        use klipp_nodes::NodeId;
+
+        let clip_id = ClipId::new();
+        let node_id = NodeId::new_v4();
+        let mut cmds: Vec<AppCommand> = Vec::new();
+
+        // First atomic edit
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: 0.5 });
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+
+        // Second atomic edit
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: 0.3 });
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+
+        let begin_count = cmds.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
+        let end_count = cmds.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count();
+        assert_eq!(begin_count, 2, "two edits must emit two Begins");
+        assert_eq!(end_count, 2, "two edits must emit two Ends");
+
+        // The two brackets must be disjoint: the first End must precede the
+        // second Begin. If they were interleaved, the handler would coalesce
+        // them into a single history entry.
+        let positions: Vec<usize> = cmds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                AppCommand::BeginNodeParamEdit { .. } | AppCommand::EndNodeParamEdit { .. } => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(positions.len(), 4);
+        assert!(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[3],
+            "brackets must not interleave");
     }
 
     #[test]

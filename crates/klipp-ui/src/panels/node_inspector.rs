@@ -298,11 +298,11 @@ impl NodeInspectorPanel {
                 ui.add_space(8.0);
                 if ui.selectable_label(!log_mode, "Linear").clicked() && log_mode {
                     graph.nodes[wi].params.wheels_log_mode = Some(false);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 0.0 });
+                    push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 0.0);
                 }
                 if ui.selectable_label(log_mode, "Log (HDR)").clicked() && !log_mode {
                     graph.nodes[wi].params.wheels_log_mode = Some(true);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 1.0 });
+                    push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 1.0);
                 }
             });
             ui.add_space(4.0);
@@ -428,7 +428,7 @@ impl NodeInspectorPanel {
                     }
                     if sat_resp.double_clicked() || sat_resp.secondary_clicked() {
                         s = 0.0; *sat_field = Some(s);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name, value: 0.0 });
+                        push_atomic_node_edit(cmds, clip_id, node_id, &sat_name, 0.0);
                     }
                     let sat_t = (s + 1.0) / 2.0;
                     let sat_thumb_x = cx + sat_t * track_draw_w;
@@ -477,7 +477,7 @@ impl NodeInspectorPanel {
                     }
                     if bri_resp.double_clicked() || bri_resp.secondary_clicked() {
                         b = 0.0; *bri_field = Some(b);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name, value: 0.0 });
+                        push_atomic_node_edit(cmds, clip_id, node_id, &bri_name, 0.0);
                     }
                     let bri_t = (b + 1.0) / 2.0;
                     let bri_thumb_x = cx + bri_t * track_draw_w;
@@ -519,7 +519,9 @@ impl NodeInspectorPanel {
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
                     if reset {
                         node.params.exposure = Some(0.0);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
+                        atomic_node_edit_batch(cmds, clip_id, |c| {
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
+                        });
                     }
                     let mut val = node.params.exposure.unwrap_or(0.0);
                     if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, "stops", theme, cmds, clip_id) {
@@ -539,8 +541,10 @@ impl NodeInspectorPanel {
                     if reset {
                         node.params.contrast = Some(0.0);
                         node.params.clarity = Some(0.0);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: 0.0 });
+                        atomic_node_edit_batch(cmds, clip_id, |c| {
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: 0.0 });
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: 0.0 });
+                        });
                     }
                     let mut val = node.params.contrast.unwrap_or(0.0);
                     if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
@@ -565,8 +569,10 @@ impl NodeInspectorPanel {
                     if reset {
                         node.params.saturation = Some(1.0);
                         node.params.vibrance = Some(0.0);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: 0.0 });
+                        atomic_node_edit_batch(cmds, clip_id, |c| {
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: 1.0 });
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: 0.0 });
+                        });
                     }
                     let mut val = node.params.saturation.unwrap_or(1.0);
                     if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme, cmds, clip_id) {
@@ -591,8 +597,12 @@ impl NodeInspectorPanel {
                     if reset {
                         for p in ["highlights", "shadows", "whites", "blacks"] {
                             node.params.apply_override(p, 0.0);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: 0.0 });
                         }
+                        atomic_node_edit_batch(cmds, clip_id, |c| {
+                            for p in ["highlights", "shadows", "whites", "blacks"] {
+                                c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: 0.0 });
+                            }
+                        });
                     }
                     for (label, param_name, default) in [
                         ("Highlights", "highlights", 0.0_f32),
@@ -623,14 +633,18 @@ impl NodeInspectorPanel {
                 if reset {
                     for (p, d) in [("temperature", 0.0), ("tint", 0.0), ("hue", 0.0), ("global_mix", 1.0)] {
                         node.params.apply_override(p, d);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: d });
                     }
+                    atomic_node_edit_batch(cmds, clip_id, |c| {
+                        for (p, d) in [("temperature", 0.0), ("tint", 0.0), ("hue", 0.0), ("global_mix", 1.0)] {
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: p.into(), value: d });
+                        }
+                    });
                 }
                 // Temperature: blue → orange gradient
                 let mut temp = node.params.temperature.unwrap_or(0.0);
                 if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0,
                     egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
-                    egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme)
+                    egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
                 {
                     node.params.temperature = Some(temp);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "temperature".into(), value: temp });
@@ -640,7 +654,7 @@ impl NodeInspectorPanel {
                 let mut tint = node.params.tint.unwrap_or(0.0);
                 if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0,
                     egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
-                    egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme)
+                    egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
                 {
                     node.params.tint = Some(tint);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
@@ -659,7 +673,7 @@ impl NodeInspectorPanel {
 
                 // Hue: rainbow spectrum
                 let mut hue = node.params.hue.unwrap_or(0.0);
-                if hue_slider_row(ui, "Hue", &mut hue, theme) {
+                if hue_slider_row(ui, "Hue", &mut hue, theme, cmds, clip_id) {
                     node.params.hue = Some(hue);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
                 }
@@ -668,7 +682,7 @@ impl NodeInspectorPanel {
                 let mut mix = node.params.global_mix.unwrap_or(1.0);
                 if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0,
                     egui::Color32::from_rgba_premultiplied(255, 255, 255, 20),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 90), theme)
+                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 90), theme, cmds, clip_id)
                 {
                     node.params.global_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
@@ -685,9 +699,11 @@ impl NodeInspectorPanel {
                         node.params.denoise_luma = Some(0.0);
                         node.params.denoise_chroma = Some(0.0);
                         node.params.denoise_radius = Some(3);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: 0.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: 0.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: 3.0 });
+                        atomic_node_edit_batch(cmds, clip_id, |c| {
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: 0.0 });
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: 0.0 });
+                            c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: 3.0 });
+                        });
                     }
                     let mut luma = node.params.denoise_luma.unwrap_or(0.0);
                     if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, "", theme, cmds, clip_id) {
@@ -763,31 +779,31 @@ impl NodeInspectorPanel {
         match kind {
             NodeKind::Exposure => {
                 let mut val = params.exposure.unwrap_or(0.0);
-                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops") {
+                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id) {
                     params.exposure = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: val });
                 }
             }
             NodeKind::Contrast => {
                 let mut val = params.contrast.unwrap_or(0.0);
-                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "") {
+                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id) {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
                 }
                 let mut cval = params.clarity.unwrap_or(0.0);
-                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "") {
+                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id) {
                     params.clarity = Some(cval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "clarity".into(), value: cval });
                 }
             }
             NodeKind::Saturation => {
                 let mut val = params.saturation.unwrap_or(1.0);
-                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "") {
+                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id) {
                     params.saturation = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: val });
                 }
                 let mut vval = params.vibrance.unwrap_or(0.0);
-                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "") {
+                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id) {
                     params.vibrance = Some(vval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "vibrance".into(), value: vval });
                 }
@@ -800,7 +816,7 @@ impl NodeInspectorPanel {
                     ("Blacks", params.blacks.unwrap_or(0.0), "blacks"),
                 ] {
                     let mut val = field;
-                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "") {
+                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id) {
                         params.apply_override(param_name, val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param_name.into(), value: val });
                     }
@@ -826,11 +842,11 @@ impl NodeInspectorPanel {
                     let log_sel = log_mode;
                     if ui.selectable_label(linear_sel, "Linear").clicked() && !linear_sel {
                         params.wheels_log_mode = Some(false);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 0.0 });
+                        push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 0.0);
                     }
                     if ui.selectable_label(log_sel, "Log (HDR)").clicked() && !log_sel {
                         params.wheels_log_mode = Some(true);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "wheels_log_mode".into(), value: 1.0 });
+                        push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 1.0);
                     }
                 });
                 ui.add_space(4.0);
@@ -1016,8 +1032,10 @@ impl NodeInspectorPanel {
                             if reset {
                                 params.apply_override(sat_name, 0.0);
                                 params.apply_override(bri_name, 0.0);
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                                atomic_node_edit_batch(cmds, clip_id, |c| {
+                                    c.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: 0.0 });
+                                    c.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: 0.0 });
+                                });
                             }
                             let mut s = sat_val;
                             if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme, cmds, clip_id) {
@@ -1264,7 +1282,7 @@ impl NodeInspectorPanel {
                     ("Global Mix", "global_mix", params.global_mix.unwrap_or(1.0), 0.0..=1.0),
                 ] {
                     let mut v = val;
-                    if grade_slider(ui, label, &mut v, range, "") {
+                    if grade_slider(ui, label, &mut v, range, "", cmds, clip_id) {
                         params.apply_override(pname, v);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
                     }
@@ -1279,25 +1297,25 @@ impl NodeInspectorPanel {
                 ui.checkbox(&mut qual.enabled, "Enabled");
                 if qual.enabled {
                     let mut hc = qual.hue_center;
-                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg") { qual.hue_center = hc; }
+                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id) { qual.hue_center = hc; }
                     let mut hw = qual.hue_width;
-                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg") { qual.hue_width = hw; }
+                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id) { qual.hue_width = hw; }
                     let mut hs = qual.hue_soft;
-                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg") { qual.hue_soft = hs; }
+                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id) { qual.hue_soft = hs; }
                     ui.add_space(4.0);
                     let mut sl = qual.sat_low;
-                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "") { qual.sat_low = sl; }
+                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id) { qual.sat_low = sl; }
                     let mut sh = qual.sat_high;
-                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "") { qual.sat_high = sh; }
+                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id) { qual.sat_high = sh; }
                     let mut ss = qual.sat_soft;
-                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "") { qual.sat_soft = ss; }
+                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id) { qual.sat_soft = ss; }
                     ui.add_space(4.0);
                     let mut ll = qual.lum_low;
-                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "") { qual.lum_low = ll; }
+                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id) { qual.lum_low = ll; }
                     let mut lh = qual.lum_high;
-                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "") { qual.lum_high = lh; }
+                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id) { qual.lum_high = lh; }
                     let mut ls = qual.lum_soft;
-                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "") { qual.lum_soft = ls; }
+                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id) { qual.lum_soft = ls; }
                     ui.checkbox(&mut qual.invert, "Invert");
                     cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: qual.clone() });
                 }
@@ -1490,13 +1508,13 @@ impl NodeInspectorPanel {
                 ui.checkbox(&mut grain.enabled, "Enabled");
                 if grain.enabled {
                     let mut a = grain.amount;
-                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "") { grain.amount = a; }
+                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id) { grain.amount = a; }
                     let mut s = grain.size;
-                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "") { grain.size = s; }
+                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id) { grain.size = s; }
                     let mut sh = grain.shadows;
-                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "") { grain.shadows = sh; }
+                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id) { grain.shadows = sh; }
                     let mut hi = grain.highlights;
-                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "") { grain.highlights = hi; }
+                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id) { grain.highlights = hi; }
                     ui.checkbox(&mut grain.monochrome, "Monochrome");
                 }
             }
@@ -1507,31 +1525,31 @@ impl NodeInspectorPanel {
                     ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
                 }
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
-                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "") {
+                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id) {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
                 }
             }
             NodeKind::Blend | NodeKind::ApplyMatte => {
                 let mut mix = params.mix.unwrap_or(1.0);
-                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "") {
+                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id) {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
                 }
             }
             NodeKind::Denoise => {
                 let mut luma = params.denoise_luma.unwrap_or(0.0);
-                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "") {
+                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id) {
                     params.denoise_luma = Some(luma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_luma".into(), value: luma });
                 }
                 let mut chroma = params.denoise_chroma.unwrap_or(0.0);
-                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "") {
+                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id) {
                     params.denoise_chroma = Some(chroma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
                 }
                 let mut radius = params.denoise_radius.unwrap_or(3) as f32;
-                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px") {
+                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id) {
                     let r = radius.round() as u32;
                     params.denoise_radius = Some(r);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
@@ -1670,6 +1688,13 @@ impl NodeInspectorPanel {
             painter.circle_stroke(egui::pos2(px, py), 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
         }
 
+        // Drag begin/end for undo coalescing.
+        if resp.drag_started() {
+            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        }
+        if resp.drag_stopped() {
+            cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+        }
         // Handle drag interaction
         if resp.dragged() {
             if let Some(pos) = resp.interact_pointer_pos() {
@@ -1716,20 +1741,22 @@ impl NodeInspectorPanel {
         if ui.small_button("Reset Warper").clicked() {
             warper.hue_shifts = [0.0; 12];
             warper.sat_shifts = [0.0; 12];
-            for s in 0..12 {
-                cmds.push(AppCommand::SetNodeParam {
-                    clip_id,
-                    node_id,
-                    param: format!("warper_hue_{s}"),
-                    value: 0.0,
-                });
-                cmds.push(AppCommand::SetNodeParam {
-                    clip_id,
-                    node_id,
-                    param: format!("warper_sat_{s}"),
-                    value: 0.0,
-                });
-            }
+            atomic_node_edit_batch(cmds, clip_id, |c| {
+                for s in 0..12 {
+                    c.push(AppCommand::SetNodeParam {
+                        clip_id,
+                        node_id,
+                        param: format!("warper_hue_{s}"),
+                        value: 0.0,
+                    });
+                    c.push(AppCommand::SetNodeParam {
+                        clip_id,
+                        node_id,
+                        param: format!("warper_sat_{s}"),
+                        value: 0.0,
+                    });
+                }
+            });
         }
 
         // Show active sector values as compact readout
@@ -2113,6 +2140,8 @@ fn gradient_slider_row(
     color_left: egui::Color32,
     color_right: egui::Color32,
     _theme: &KlippTheme,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
 ) -> bool {
     let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
@@ -2169,11 +2198,17 @@ fn gradient_slider_row(
         egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
     let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
     let mut changed = false;
+    if slider_resp.drag_started() {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    }
     if slider_resp.dragged() || slider_resp.clicked() {
         if let Some(pos) = slider_resp.interact_pointer_pos() {
             *value = range.start() + ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * range_span;
             changed = true;
         }
+    }
+    if slider_resp.drag_stopped() {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
     }
     changed
 }
@@ -2184,6 +2219,8 @@ fn hue_slider_row(
     label: &str,
     value: &mut f32,
     _theme: &KlippTheme,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
 ) -> bool {
     let avail_w = ui.available_width();
     let label_w = (avail_w * 0.28).max(50.0);
@@ -2234,24 +2271,44 @@ fn hue_slider_row(
         egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
     let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
     let mut changed = false;
+    if slider_resp.drag_started() {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    }
     if slider_resp.dragged() || slider_resp.clicked() {
         if let Some(pos) = slider_resp.interact_pointer_pos() {
             *value = ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * 360.0;
             changed = true;
         }
     }
+    if slider_resp.drag_stopped() {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
     changed
 }
 
-/// Legacy grade_slider for non-Adjustments tabs (backward compatible)
-fn grade_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> bool {
-    // Use a dummy theme — the inspector_row reads accent from theme
-    // For legacy calls, use the simpler layout
+/// Legacy grade_slider for non-Adjustments tabs. Takes `cmds` + `clip_id` so
+/// drag gestures are wrapped in `BeginNodeParamEdit` / `EndNodeParamEdit` and
+/// enter the undo history as a single step.
+fn grade_slider(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+) -> bool {
     let pad = 14.0;
     let w = (ui.available_width() - pad * 2.0).max(60.0);
     let range_span = (range.end() - range.start()).abs();
     let speed = range_span / 800.0;
     let mut changed = false;
+    // Begin/End signals collected inside the horizontal closures (which can't
+    // mutably borrow `cmds` directly) and flushed after each closure returns.
+    let mut drag_value_started = false;
+    let mut drag_value_ended = false;
+    let mut drag_slider_started = false;
+    let mut drag_slider_ended = false;
 
     ui.horizontal(|ui| {
         ui.add_space(pad);
@@ -2267,18 +2324,68 @@ fn grade_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops
                         if suffix.is_empty() { format!("{v:.2}") } else { format!("{v:.2} {suffix}") }
                     }),
             );
+            if resp.drag_started() { drag_value_started = true; }
             if resp.changed() { changed = true; }
+            if resp.drag_stopped() { drag_value_ended = true; }
         });
     });
+    if drag_value_started {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    }
+    if drag_value_ended {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
     ui.horizontal(|ui| {
         ui.add_space(pad);
         let resp = ui.add_sized(
             [w, 10.0],
             egui::Slider::new(value, range).show_value(false).clamping(egui::SliderClamping::Always),
         );
+        if resp.drag_started() { drag_slider_started = true; }
         if resp.changed() { changed = true; }
+        if resp.drag_stopped() { drag_slider_ended = true; }
     });
+    if drag_slider_started {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    }
+    if drag_slider_ended {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
     changed
+}
+
+/// Push a single atomic node-param edit wrapped in a `BeginNodeParamEdit` /
+/// `EndNodeParamEdit` pair so it enters the undo history as one step. Use for
+/// click-to-reset, preset buttons, and other instantaneous (non-drag) edits.
+fn push_atomic_node_edit(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    node_id: NodeId,
+    param: &str,
+    value: f32,
+) {
+    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    cmds.push(AppCommand::SetNodeParam {
+        clip_id,
+        node_id,
+        param: param.into(),
+        value,
+    });
+    cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+}
+
+/// Wrap a closure that emits one or more `SetNodeParam` commands with a single
+/// `BeginNodeParamEdit` / `EndNodeParamEdit` pair so the whole batch becomes
+/// one undoable history entry. Use for multi-param resets (section reset,
+/// "Reset Warper", etc.).
+fn atomic_node_edit_batch<F: FnOnce(&mut Vec<AppCommand>)>(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    body: F,
+) {
+    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    body(cmds);
+    cmds.push(AppCommand::EndNodeParamEdit { clip_id });
 }
 
 fn push_wheel_cmds(cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId, prefix: &str, offset: [f32; 2], master: f32) {
