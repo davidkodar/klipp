@@ -76,6 +76,9 @@ impl NewTimelinePanel {
 
         // Draw track headers
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+            // Clip scrolled-out headers to the header column so they can't paint
+            // outside (into the ruler above, the status bar below, or the clip area).
+            ui.set_clip_rect(header_rect.intersect(ui.clip_rect()));
             ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
             ui.painter().vline(
                 header_rect.max.x,

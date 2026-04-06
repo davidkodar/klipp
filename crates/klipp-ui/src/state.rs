@@ -220,6 +220,10 @@ pub struct AppState {
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
     pub timeline_scroll_y: f32,
+    /// (track_idx, pointer_y_at_drag_start, original_height) — set while a track resize is in progress.
+    pub timeline_resizing_track: Option<(usize, f32, f32)>,
+    /// Per-track pre-collapse height memory for double-click collapse/expand toggle.
+    pub timeline_track_pre_collapse: std::collections::HashMap<usize, f32>,
     pub playhead_follow: PlayheadFollow,
     pub track_header_width: f32,
     /// Viewer zoom level (1.0 = fit, 0.25/0.5/2.0/4.0 for pixel-level zoom).
@@ -1287,6 +1291,8 @@ impl Default for AppState {
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
             timeline_scroll_y: 0.0,
+            timeline_resizing_track: None,
+            timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
             track_header_width: 160.0,
             viewer_zoom: 0.0, // 0.0 = fit-to-window mode

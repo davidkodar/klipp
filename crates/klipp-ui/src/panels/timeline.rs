@@ -9,14 +9,14 @@ const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
 // Default track heights — overridable via prefs.timeline (synced to state.timeline_prefs)
-const VIDEO_TRACK_HEIGHT: f32 = 50.0;
-const AUDIO_TRACK_HEIGHT: f32 = 48.0;
-const TEXT_TRACK_HEIGHT: f32 = 32.0;
+pub(crate) const VIDEO_TRACK_HEIGHT: f32 = 50.0;
+pub(crate) const AUDIO_TRACK_HEIGHT: f32 = 48.0;
+pub(crate) const TEXT_TRACK_HEIGHT: f32 = 32.0;
 const MIN_TRACK_HEIGHT: f32 = 32.0;
 const MAX_TRACK_HEIGHT: f32 = 300.0;
 
 /// Get effective track height, respecting custom_height override and prefs.
-fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
+pub(crate) fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
     track.custom_height.unwrap_or(match track.kind {
         TrackKind::Audio => AUDIO_TRACK_HEIGHT,
         TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
@@ -1553,7 +1553,9 @@ impl TimelinePanel {
                                 };
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{} | {}", time_text, value_text);
-                                let painter = ui.painter();
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -1677,7 +1679,9 @@ impl TimelinePanel {
                                 };
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{} | {}", time_text, value_text);
-                                let painter = ui.painter();
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -1782,7 +1786,9 @@ impl TimelinePanel {
                                     (time_offset.min(0.0), value_offset)
                                 };
                                 let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter();
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -1891,7 +1897,9 @@ impl TimelinePanel {
                                     (time_offset.min(0.0), value_offset)
                                 };
                                 let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter();
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -2896,7 +2904,7 @@ impl TimelinePanel {
         clip: &klipp_timeline::Clip,
         state: &AppState,
         track_kind: klipp_timeline::TrackKind,
-        is_title: bool,
+        _is_title: bool,
         is_offline: bool,
         border_color: egui::Color32,
         border_width: f32,
@@ -3209,7 +3217,7 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        track_kind: klipp_timeline::TrackKind,
+        _track_kind: klipp_timeline::TrackKind,
         content_rect: &egui::Rect,
         zoom: f32,
         scroll: f32,
@@ -4488,7 +4496,7 @@ impl TimelinePanel {
     #[allow(clippy::too_many_arguments)]
     fn show_clip_context_menu(
         &mut self,
-        ui: &mut egui::Ui,
+        _ui: &mut egui::Ui,
         track_response: &egui::Response,
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
@@ -6482,7 +6490,7 @@ impl TimelinePanel {
         track_height: f32,
         pointer_pos: Option<egui::Pos2>,
         track_kind: klipp_timeline::TrackKind,
-        interactive: bool,
+        _interactive: bool,
     ) {
         // Trim handle hover highlight — edge-first detection + roll trim junction detection
         if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none() {
@@ -8455,7 +8463,7 @@ impl TimelinePanel {
             }
             targets
         };
-        let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64)> {
+        let _find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64)> {
             if !snap_enabled { return None; }
             let edge_secs = edge_time.to_secs_f64();
             let mut best: Option<(f64, RationalTime)> = None;
@@ -8699,7 +8707,9 @@ impl TimelinePanel {
         let btn_h = 16.0;
         let y = ruler_rect.top() + (RULER_HEIGHT - btn_h) / 2.0;
         let mut x = header_rect.left() + 2.0;
-        let painter = ui.painter();
+        let painter = ui.painter().with_clip_rect(
+            ui.clip_rect().intersect(ui.max_rect()),
+        );
 
         // Fit button
         let fit_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));

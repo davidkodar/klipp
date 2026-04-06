@@ -4398,7 +4398,7 @@ impl KlippApp {
                                     let source_t = src_in_secs + (t - sc_start);
                                     if source_t < 0.0 || source_t >= total_dur {
                                         t += window_secs;
-                                        return true;
+                                        continue;
                                     }
                                     let sample_idx = (source_t * sample_rate as f64) as usize * channels as usize;
                                     let end_idx = ((sample_idx + window_samples).min(samples.len())).max(sample_idx);

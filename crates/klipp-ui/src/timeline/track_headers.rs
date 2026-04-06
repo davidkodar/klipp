@@ -36,7 +36,11 @@ pub fn show(
     let mut cmds = Vec::new();
 
     // ── Track headers ──
-    let mut y = header_rect.min.y + ruler_h;
+    // Apply the same vertical scroll offset the clip area uses so rows stay aligned.
+    let scroll_y = state.timeline_scroll_y;
+    let mut y = header_rect.min.y + ruler_h - scroll_y;
+    let visible_top = header_rect.min.y + ruler_h;
+    let visible_bottom = header_rect.max.y;
     let mut toggle_mute: Option<usize> = None;
     let mut toggle_lock: Option<usize> = None;
     // Deferred magnetic operation from context menu (track_idx, action)
@@ -51,11 +55,16 @@ pub fn show(
     let track_count = state.sequence().tracks.len();
     for track_idx in 0..track_count {
         let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
-        let track_h = match track.kind {
-            TrackKind::Audio => crate::theme::TRACK_AUDIO_H,
-            TrackKind::Text | TrackKind::Subtitle => crate::theme::TRACK_TEXT_H,
-            _ => crate::theme::TRACK_VIDEO_H,
-        };
+        let track_h = crate::panels::timeline::effective_track_height(track);
+
+        // Vertical visibility culling — skip rows above/below the visible header strip.
+        if y + track_h < visible_top {
+            y += track_h;
+            continue;
+        }
+        if y > visible_bottom {
+            break;
+        }
 
         let track_rect = egui::Rect::from_min_size(
             egui::pos2(header_rect.min.x, y),
@@ -263,7 +272,7 @@ pub fn show(
 
         let track_role = track.magnetic_role.clone();
         let track_id = track.id;
-        let _track_kind = track.kind;
+        let track_kind = track.kind;
         header_resp.context_menu(|ui| {
             ui.set_min_width(180.0);
 
@@ -340,6 +349,110 @@ pub fn show(
                     cmds.push(AppCommand::RemoveTrack { track_id });
                     ui.close_menu();
                 }
+        });
+
+        // ── Track height resize handle (bottom edge of header) ──
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(track_rect.left(), track_rect.max.y - 3.0),
+            egui::vec2(track_rect.width(), 6.0),
+        );
+        let handle_resp = ui.interact(
+            handle_rect,
+            egui::Id::new(("track_resize_new", track_idx)),
+            egui::Sense::click_and_drag(),
+        );
+
+        if handle_resp.hovered() || handle_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ui.painter().line_segment(
+                [
+                    egui::pos2(track_rect.left(), track_rect.max.y - 1.0),
+                    egui::pos2(track_rect.right(), track_rect.max.y - 1.0),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)),
+            );
+        }
+
+        // Drag start — snapshot original height
+        if handle_resp.drag_started() {
+            state.timeline_resizing_track = Some((
+                track_idx,
+                handle_resp.interact_pointer_pos().map_or(0.0, |p| p.y),
+                track_h,
+            ));
+        }
+
+        // Dragging — update custom_height
+        if handle_resp.dragged() {
+            if let Some((ridx, start_y, orig_h)) = state.timeline_resizing_track {
+                if ridx == track_idx {
+                    if let Some(pos) = handle_resp.interact_pointer_pos() {
+                        let delta = pos.y - start_y;
+                        let new_h = (orig_h + delta).clamp(32.0, 300.0);
+                        state.sequence_mut().tracks[track_idx].custom_height = Some(new_h);
+                        state.dirty = true;
+                    }
+                }
+            }
+        }
+
+        // Drag end
+        if handle_resp.drag_stopped() {
+            state.timeline_resizing_track = None;
+        }
+
+        // Double-click — collapse/expand toggle with height memory
+        if handle_resp.double_clicked() {
+            let min_h = 32.0;
+            if track_h <= min_h + 2.0 {
+                // Expand — restore pre-collapse height or default by kind
+                let restore = state
+                    .timeline_track_pre_collapse
+                    .remove(&track_idx)
+                    .unwrap_or(match track_kind {
+                        TrackKind::Audio => crate::panels::timeline::AUDIO_TRACK_HEIGHT,
+                        TrackKind::Text | TrackKind::Subtitle => {
+                            crate::panels::timeline::TEXT_TRACK_HEIGHT
+                        }
+                        _ => crate::panels::timeline::VIDEO_TRACK_HEIGHT,
+                    });
+                state.sequence_mut().tracks[track_idx].custom_height = Some(restore);
+            } else {
+                // Collapse — save current height first
+                state.timeline_track_pre_collapse.insert(track_idx, track_h);
+                state.sequence_mut().tracks[track_idx].custom_height = Some(min_h);
+            }
+            state.dirty = true;
+        }
+
+        // Right-click context menu — preset heights
+        handle_resp.context_menu(|ui| {
+            if ui.button("Small (32px)").clicked() {
+                state.sequence_mut().tracks[track_idx].custom_height = Some(32.0);
+                state.dirty = true;
+                ui.close_menu();
+            }
+            if ui.button("Medium (64px)").clicked() {
+                state.sequence_mut().tracks[track_idx].custom_height = Some(64.0);
+                state.dirty = true;
+                ui.close_menu();
+            }
+            if ui.button("Large (120px)").clicked() {
+                state.sequence_mut().tracks[track_idx].custom_height = Some(120.0);
+                state.dirty = true;
+                ui.close_menu();
+            }
+            if ui.button("Expanded (200px)").clicked() {
+                state.sequence_mut().tracks[track_idx].custom_height = Some(200.0);
+                state.dirty = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Reset to default").clicked() {
+                state.sequence_mut().tracks[track_idx].custom_height = None;
+                state.dirty = true;
+                ui.close_menu();
+            }
         });
 
         y += track_h;
