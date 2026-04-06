@@ -256,7 +256,7 @@ impl TimelinePanel {
         state.hovered_clip = None;
         self.suppress_clip_context_menu = false;
 
-        self.handle_scroll_zoom(ui, state);
+        self.handle_scroll_zoom(ui, state, &mut cmds);
 
         let full_rect = egui::Rect::from_min_size(ui.cursor().min, available);
         ui.advance_cursor_after_rect(full_rect);
@@ -445,7 +445,7 @@ impl TimelinePanel {
             );
             painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
             self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
-            self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state);
+            self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state, &mut cmds);
             self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
         }
 
@@ -748,51 +748,53 @@ impl TimelinePanel {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                 }
 
-                // Double-click: collapse/expand toggle with height memory
+                let track_id = state.sequence().tracks[track_idx].id;
+
+                // Double-click: collapse/expand toggle with height memory.
+                // Direct mutation on `pre_collapse_height` (UI memory); the new
+                // custom_height is routed through SetTrackCustomHeight so the
+                // gesture enters undo/engine sync.
                 if handle_resp.double_clicked() {
-                    let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
-                    if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
-                        // Collapsed → expand: restore pre-collapse height or default
-                        track.custom_height = track.pre_collapse_height.take();
-                    } else {
-                        // Expand → collapse: save current height, set to minimum
-                        track.pre_collapse_height = track.custom_height.or(Some(track_height));
-                        track.custom_height = Some(MIN_TRACK_HEIGHT);
-                    }
-                    state.dirty = true;
+                    let new_h = {
+                        let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
+                        if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
+                            // Collapsed → expand: restore pre-collapse height or default
+                            track.pre_collapse_height.take()
+                        } else {
+                            // Expand → collapse: save current height, set to minimum
+                            track.pre_collapse_height = track.custom_height.or(Some(track_height));
+                            Some(MIN_TRACK_HEIGHT)
+                        }
+                    };
+                    cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
                 }
 
-                // Right-click: preset heights context menu
+                // Right-click: preset heights context menu — all committed values
+                // go through the command.
                 handle_resp.context_menu(|ui| {
                     if ui.button("Small (32px)").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(32.0);
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
                         ui.close_menu();
                     }
                     if ui.button("Medium (64px)").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(64.0);
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
                         ui.close_menu();
                     }
                     if ui.button("Large (120px)").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(120.0);
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
                         ui.close_menu();
                     }
                     if ui.button("Expanded (200px)").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(200.0);
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
                         ui.close_menu();
                     }
                     if ui.button("Maximum (300px)").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(300.0);
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(300.0) });
                         ui.close_menu();
                     }
                     ui.separator();
                     if ui.button("Reset to default").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = None;
-                        state.dirty = true;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
                         ui.close_menu();
                     }
                 });
@@ -800,6 +802,8 @@ impl TimelinePanel {
                 if handle_resp.drag_started() {
                     self.resizing_track = Some((track_idx, handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0), track_height));
                 }
+                // Drag — direct per-frame mutation for smooth visual feedback.
+                // The terminal value is routed through SetTrackCustomHeight on drag_stopped.
                 if handle_resp.dragged() {
                     if let Some((ri, start_y, orig_h)) = self.resizing_track {
                         if ri == track_idx {
@@ -822,6 +826,11 @@ impl TimelinePanel {
                 }
                 if handle_resp.drag_stopped() {
                     self.resizing_track = None;
+                    // Commit terminal value through the command so the gesture is undoable.
+                    // Ctrl+drag (all tracks) is not undoable here — the handler is per-track;
+                    // a future AddCommand::SetAllTrackHeights would cover it.
+                    let final_h = state.sequence().tracks[track_idx].custom_height;
+                    cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: final_h });
                 }
                 // Draw subtle resize line on hover
                 if handle_resp.hovered() || handle_resp.dragged() {
@@ -902,7 +911,7 @@ impl TimelinePanel {
                         }
                         state.selected_clips = selected;
                         if let Some(first) = state.selected_clips.first().copied() {
-                            state.selected_clip = Some(first);
+                            cmds.push(AppCommand::SelectClip(Some(first)));
                         }
                     }
                 }
@@ -1371,6 +1380,11 @@ impl TimelinePanel {
             if state.playback == PlaybackState::Playing {
                 match state.playhead_follow {
                     PlayheadFollow::Page => {
+                        // Direct mutation intentional — smooth playhead follow requires
+                        // per-frame interpolation with frame-timing sensitivity.
+                        // Converting to a command would introduce one-frame lag that
+                        // breaks smooth follow. This is pure viewport state with no
+                        // undo value.
                         let playhead_x_abs = playhead_secs * state.timeline_zoom;
                         let view_end = state.timeline_scroll_x + view_width;
                         if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
@@ -2849,7 +2863,7 @@ impl TimelinePanel {
     }
 
     /// Handle scroll (vertical/horizontal) and zoom (Ctrl+wheel) input.
-    fn handle_scroll_zoom(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
+    fn handle_scroll_zoom(&mut self, ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
         let avail_rect = ui.available_rect_before_wrap();
         let approx_tracks_y = avail_rect.top()
             + (if state.show_overview_bar && !self.embedded { OVERVIEW_BAR_HEIGHT } else { 0.0 })
@@ -2864,12 +2878,17 @@ impl TimelinePanel {
                 let old_zoom = state.timeline_zoom;
                 let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 2000.0);
                 let content_left = avail_rect.left() + state.track_header_width;
-                if let Some(cursor_pos) = pointer_pos {
+                let new_scroll_x = if let Some(cursor_pos) = pointer_pos {
                     let cursor_x = cursor_pos.x - content_left;
                     let time_at_cursor = (state.timeline_scroll_x + cursor_x) / old_zoom;
-                    state.timeline_scroll_x = (time_at_cursor * new_zoom - cursor_x).max(0.0);
-                }
-                state.timeline_zoom = new_zoom;
+                    Some((time_at_cursor * new_zoom - cursor_x).max(0.0))
+                } else {
+                    None
+                };
+                cmds.push(AppCommand::SetTimelineZoom {
+                    zoom: new_zoom,
+                    scroll_x: new_scroll_x,
+                });
             } else {
                 let (smooth_sx, smooth_sy) = ui.input_mut(|i| {
                     let s = i.smooth_scroll_delta;
@@ -4520,7 +4539,7 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     // Store the clip id so the context menu can use it
-                    state.selected_clip = Some(hit_clip.id);
+                    cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                 }
             }
         }
@@ -4939,8 +4958,8 @@ impl TimelinePanel {
                     .is_some_and(|t| t.custom_height.is_some());
                 if has_custom_h
                     && ui.button("Reset Track Height").clicked() {
-                        state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = None;
-                        state.dirty = true;
+                        let track_id = state.sequence().tracks[track_idx].id;
+                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
                         ui.close_menu();
                     }
 
@@ -6893,6 +6912,7 @@ impl TimelinePanel {
         pointer_pos: Option<egui::Pos2>,
         pointer_released: bool,
         state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
     ) -> bool {
         if !clip.kind.is_gap() {
             return false;
@@ -6940,7 +6960,7 @@ impl TimelinePanel {
         if let Some(pos) = pointer_pos {
             if clip_rect.contains(pos) && content_rect.contains(pos) {
                 if pointer_released {
-                    state.selected_clip = Some(clip.id);
+                    cmds.push(AppCommand::SelectClip(Some(clip.id)));
                 }
                 state.hovered_clip = Some(clip.id);
             }
@@ -7006,7 +7026,7 @@ impl TimelinePanel {
             }
 
             // Gap clip rendering — hatched pattern with duration label
-            if self.draw_gap_clip(painter, clip_rect, clip, content_rect, pointer_pos, pointer_released, state) {
+            if self.draw_gap_clip(painter, clip_rect, clip, content_rect, pointer_pos, pointer_released, state, cmds) {
                 continue;
             }
 
@@ -8707,6 +8727,7 @@ impl TimelinePanel {
         header_rect: &egui::Rect,
         ruler_rect: &egui::Rect,
         state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
     ) {
         let btn_w = 22.0;
         let btn_h = 16.0;
@@ -8727,13 +8748,7 @@ impl TimelinePanel {
         painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER, "Fit",
             egui::FontId::proportional(8.0), egui::Color32::from_rgb(220, 220, 230));
         if fit_resp.clicked() {
-            let dur_secs = state.sequence_duration().to_secs_f64() as f32;
-            if dur_secs > 0.0 {
-                let content_width = ruler_rect.width() - 20.0;
-                // Allow zoom down to 0.1 px/sec for long clips (e.g. 12 min movie)
-                state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 2000.0);
-                state.timeline_scroll_x = 0.0;
-            }
+            cmds.push(AppCommand::ZoomTimelineToFit);
         }
         x += btn_w + 2.0;
 
@@ -8747,7 +8762,8 @@ impl TimelinePanel {
         });
         Icon::Minus.bold(12.0).tint(egui::Color32::from_rgb(220, 220, 230)).paint_at(ui, minus_rect.shrink(2.0));
         if minus_resp.clicked() {
-            state.timeline_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
+            let new_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
+            cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
         }
         x += btn_w + 2.0;
 
@@ -8761,7 +8777,8 @@ impl TimelinePanel {
         });
         Icon::Plus.bold(12.0).tint(egui::Color32::from_rgb(220, 220, 230)).paint_at(ui, plus_rect.shrink(2.0));
         if plus_resp.clicked() {
-            state.timeline_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
+            let new_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
+            cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
         }
     }
 

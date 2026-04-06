@@ -382,7 +382,8 @@ pub fn show(
             ));
         }
 
-        // Dragging — update custom_height
+        // Dragging — update custom_height directly for smooth per-frame feedback.
+        // The committed value is routed through SetTrackCustomHeight on drag_stopped.
         if handle_resp.dragged() {
             if let Some((ridx, start_y, orig_h)) = state.timeline_resizing_track {
                 if ridx == track_idx {
@@ -396,17 +397,20 @@ pub fn show(
             }
         }
 
-        // Drag end
+        // Drag end — route the final committed value through the command so it
+        // enters the undo/engine pipeline once per gesture.
         if handle_resp.drag_stopped() {
             state.timeline_resizing_track = None;
+            let final_h = state.sequence().tracks[track_idx].custom_height;
+            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: final_h });
         }
 
         // Double-click — collapse/expand toggle with height memory
         if handle_resp.double_clicked() {
             let min_h = 32.0;
-            if track_h <= min_h + 2.0 {
+            let new_h = if track_h <= min_h + 2.0 {
                 // Expand — restore pre-collapse height or default by kind
-                let restore = state
+                state
                     .timeline_track_pre_collapse
                     .remove(&track_idx)
                     .unwrap_or(match track_kind {
@@ -415,42 +419,36 @@ pub fn show(
                             crate::panels::timeline::TEXT_TRACK_HEIGHT
                         }
                         _ => crate::panels::timeline::VIDEO_TRACK_HEIGHT,
-                    });
-                state.sequence_mut().tracks[track_idx].custom_height = Some(restore);
+                    })
             } else {
                 // Collapse — save current height first
                 state.timeline_track_pre_collapse.insert(track_idx, track_h);
-                state.sequence_mut().tracks[track_idx].custom_height = Some(min_h);
-            }
-            state.dirty = true;
+                min_h
+            };
+            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(new_h) });
         }
 
         // Right-click context menu — preset heights
         handle_resp.context_menu(|ui| {
             if ui.button("Small (32px)").clicked() {
-                state.sequence_mut().tracks[track_idx].custom_height = Some(32.0);
-                state.dirty = true;
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
                 ui.close_menu();
             }
             if ui.button("Medium (64px)").clicked() {
-                state.sequence_mut().tracks[track_idx].custom_height = Some(64.0);
-                state.dirty = true;
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
                 ui.close_menu();
             }
             if ui.button("Large (120px)").clicked() {
-                state.sequence_mut().tracks[track_idx].custom_height = Some(120.0);
-                state.dirty = true;
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
                 ui.close_menu();
             }
             if ui.button("Expanded (200px)").clicked() {
-                state.sequence_mut().tracks[track_idx].custom_height = Some(200.0);
-                state.dirty = true;
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
                 ui.close_menu();
             }
             ui.separator();
             if ui.button("Reset to default").clicked() {
-                state.sequence_mut().tracks[track_idx].custom_height = None;
-                state.dirty = true;
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
                 ui.close_menu();
             }
         });

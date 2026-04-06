@@ -2308,6 +2308,26 @@ impl KlippApp {
                     }
                     return true;
                 }
+                // Set timeline zoom, optionally atomically with scroll_x
+                // (for cursor-anchored Ctrl+wheel zoom).
+                AppCommand::SetTimelineZoom { zoom, scroll_x } => {
+                    self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
+                    if let Some(sx) = scroll_x {
+                        self.state.timeline_scroll_x = sx.max(0.0);
+                    }
+                    return true;
+                }
+                // Fit the timeline to the current visible content width
+                // (used by zoom-fit button and toolbar).
+                AppCommand::ZoomTimelineToFit => {
+                    let dur = self.state.sequence_duration().to_secs_f64() as f32;
+                    let w = self.state.last_timeline_content_width;
+                    if dur > 0.0 && w > 0.0 {
+                        self.state.timeline_zoom = (w / dur).clamp(0.1, 2000.0);
+                        self.state.timeline_scroll_x = 0.0;
+                    }
+                    return true;
+                }
                 // Apply motion preset (Ken Burns, PiP)
                 AppCommand::ApplyMotionPreset { clip_id, preset } => {
                     let cid = *clip_id;
@@ -8283,6 +8303,14 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTrackCustomHeight { track_id, height } => {
+                let seq = self.state.sequence_mut();
+                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    track.custom_height = height.map(|h| h.clamp(32.0, 300.0));
+                }
+                self.state.dirty = true;
+                true
+            }
             AppCommand::GroupClips { clip_ids } => {
                 let gid = GroupId::new();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -12542,152 +12570,54 @@ impl eframe::App for KlippApp {
                     let full = ui.available_rect_before_wrap();
                     let theme = &self.theme;
 
-                    // ── Toolbar (top 44px) ──
-                    let toolbar_rect = egui::Rect::from_min_size(
-                        full.min,
-                        egui::vec2(full.width(), theme::TOOLBAR_HEIGHT),
-                    );
+                    // Pure rect computation — see crates/klipp-ui/src/layout.rs
+                    let rects = crate::layout::compute_layout(full, &self.layout, &self.state);
+                    let crate::layout::LayoutRects {
+                        full: _,
+                        toolbar_rect,
+                        statusbar_rect,
+                        browser_rect,
+                        left_resizer_rect,
+                        inspector_rect,
+                        right_resizer_rect,
+                        viewer_rect,
+                        h_resizer_rect,
+                        curve_editor_rect,
+                        audio_mixer_rect,
+                        timeline_rect,
+                        toggle_bar_rect,
+                        scopes_rect,
+                        nodes_rect,
+                    } = rects;
 
-                    // ── Status bar (bottom 26px) ──
-                    let statusbar_rect = egui::Rect::from_min_size(
-                        egui::pos2(full.min.x, full.max.y - theme::STATUSBAR_HEIGHT),
-                        egui::vec2(full.width(), theme::STATUSBAR_HEIGHT),
-                    );
-
-                    // ── Main row (between toolbar and status bar) ──
+                    // Derived scalars consumed by the render section below. These mirror
+                    // the locals that used to live in the inlined layout block, so every
+                    // downstream use-site keeps working unchanged.
                     let main_top = toolbar_rect.max.y;
                     let main_bottom = statusbar_rect.min.y;
-                    let main_height = main_bottom - main_top;
-
-                    // Browser (left) — collapsible
-                    let browser_w = if self.state.show_browser_panel { self.layout.browser_width } else { 0.0 };
-                    let browser_rect = egui::Rect::from_min_size(
-                        egui::pos2(full.min.x, main_top),
-                        egui::vec2(browser_w, main_height),
-                    );
-
-                    // Left resizer
-                    let left_resizer_rect = egui::Rect::from_min_size(
-                        egui::pos2(full.min.x + browser_w, main_top),
-                        egui::vec2(theme::RESIZER_THICKNESS, main_height),
-                    );
-
-                    // Inspector (right) — collapsible, clamp to available space
-                    let inspector_w = if self.state.show_inspector_panel {
-                        let max_inspector_w = (full.width() - browser_w - theme::RESIZER_THICKNESS * 2.0 - 100.0).max(theme::INSPECTOR_MIN_W);
-                        self.layout.inspector_width.min(max_inspector_w)
-                    } else {
-                        0.0
-                    };
-                    let inspector_rect = egui::Rect::from_min_size(
-                        egui::pos2(full.max.x - inspector_w, main_top),
-                        egui::vec2(inspector_w, main_height),
-                    );
-
-                    // Right resizer
-                    let right_resizer_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            full.max.x - inspector_w - theme::RESIZER_THICKNESS,
-                            main_top,
-                        ),
-                        egui::vec2(theme::RESIZER_THICKNESS, main_height),
-                    );
-
-                    // Center column (between left resizer and right resizer)
                     let center_left = left_resizer_rect.max.x;
-                    let center_right = right_resizer_rect.min.x;
-                    let center_w = (center_right - center_left).max(100.0);
-
-                    // ── Color workspace: viewer + toggle bar + scopes + nodes ──
+                    let center_w = viewer_rect.width();
                     let in_color_ws = self.state.show_color_panel;
                     let show_scopes_bar = in_color_ws && self.state.show_scopes;
                     let show_nodes_bar = in_color_ws && self.state.show_node_strip;
-
-                    // In Color workspace: allocate bottom space for toggle + scopes + nodes
-                    // Use ratio to split between viewer+timeline and bottom panels
-                    let toggle_bar_h: f32 = if in_color_ws { 22.0 } else { 0.0 };
-                    let center_total = main_bottom - main_top;
-                    let has_bottom_panels = show_scopes_bar || show_nodes_bar;
-
-                    // Bottom panels (scopes + nodes) share a flexible height controlled by the ratio
-                    let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
-                    let flexible_h = (center_total - fixed_h).max(200.0);
-                    let bottom_panel_h: f32 = if has_bottom_panels {
-                        let viewer_ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
-                        (flexible_h * (1.0 - viewer_ratio)).clamp(80.0, flexible_h * 0.6)
-                    } else {
-                        0.0
+                    let toggle_bar_h = toggle_bar_rect.height();
+                    let scopes_h = scopes_rect.height();
+                    let nodes_h = nodes_rect.height();
+                    let audio_mixer_h = audio_mixer_rect.height();
+                    let curve_editor_h = curve_editor_rect.height();
+                    // flexible_h is the ratio-drag denominator — same formula as in layout.rs.
+                    let flexible_h = {
+                        let center_total = main_bottom - main_top;
+                        let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
+                        (center_total - fixed_h).max(200.0)
                     };
-
-                    // Split bottom panel between scopes and nodes
-                    let (scopes_h, nodes_h) = match (show_scopes_bar, show_nodes_bar) {
-                        (true, true) => (bottom_panel_h * 0.6, bottom_panel_h * 0.4),
-                        (true, false) => (bottom_panel_h, 0.0),
-                        (false, true) => (0.0, bottom_panel_h),
-                        (false, false) => (0.0, 0.0),
-                    };
-
-                    let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
-                    let color_bottom_top = main_bottom - color_bottom_total;
-
-                    let toggle_bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, color_bottom_top),
-                        egui::vec2(center_w, toggle_bar_h),
-                    );
-                    let scopes_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, toggle_bar_rect.max.y),
-                        egui::vec2(center_w, scopes_h),
-                    );
-                    let nodes_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, scopes_rect.max.y),
-                        egui::vec2(center_w, nodes_h),
-                    );
-
-                    let _color_panel_open = false;
-
-                    // Timeline: hidden in Color workspace, normal otherwise
-                    // Timeline sits above the scopes/nodes area (or fills to bottom if none)
-                    let timeline_bottom = color_bottom_top;
-                    let max_timeline_h = (timeline_bottom - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT;
+                    // Timeline-height clamp bounds for the horizontal resizer drag.
                     let timeline_min_h = theme::TIMELINE_MIN_H;
-                    let timeline_h = self
-                        .layout
-                        .timeline_height
-                        .clamp(timeline_min_h, max_timeline_h);
-
-                    let timeline_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, timeline_bottom - timeline_h),
-                        egui::vec2(center_w, timeline_h),
-                    );
-
-                    // Audio mixer (between viewer and timeline when visible)
-                    let audio_mixer_h: f32 = if self.state.show_audio_mixer { 220.0 } else { 0.0 };
-                    let audio_mixer_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, timeline_rect.min.y - audio_mixer_h - if audio_mixer_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
-                        egui::vec2(center_w, audio_mixer_h),
-                    );
-
-                    // Curve editor (between viewer and audio mixer / timeline when visible)
-                    let curve_editor_h: f32 = if self.state.show_curve_editor { 180.0 } else { 0.0 };
-                    let curve_editor_rect = egui::Rect::from_min_size(
-                        egui::pos2(center_left, audio_mixer_rect.min.y - curve_editor_h - if curve_editor_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
-                        egui::vec2(center_w, curve_editor_h),
-                    );
-
-                    // Horizontal resizer (between viewer and curve editor / audio mixer / timeline)
-                    let h_resizer_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            center_left,
-                            curve_editor_rect.min.y - theme::RESIZER_THICKNESS,
-                        ),
-                        egui::vec2(center_w, theme::RESIZER_THICKNESS),
-                    );
-
-                    // Viewer (top of center, above horizontal resizer)
-                    let viewer_rect = egui::Rect::from_min_max(
-                        egui::pos2(center_left, main_top),
-                        egui::pos2(center_left + center_w, h_resizer_rect.min.y),
-                    );
+                    let max_timeline_h = {
+                        let color_bottom_total = toggle_bar_h + scopes_h + nodes_h;
+                        let color_bottom_top = main_bottom - color_bottom_total;
+                        (color_bottom_top - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT
+                    };
 
                     // ── Render panels into their rects ──
 

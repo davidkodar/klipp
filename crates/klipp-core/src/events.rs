@@ -430,6 +430,15 @@ pub enum AppCommand {
     SetPanLaw(crate::config::PanLaw),
     /// Zoom timeline to fit all clips.
     FitTimelineToWindow,
+    /// Set timeline zoom (pixels-per-second), optionally with a new scroll_x in
+    /// the same step for cursor-anchored zoom. Clamped to (0.1, 2000.0).
+    SetTimelineZoom {
+        zoom: f32,
+        scroll_x: Option<f32>,
+    },
+    /// Fit the timeline to the visible content width. Preferred over
+    /// `FitTimelineToWindow` for zoom-button / fit-button call sites.
+    ZoomTimelineToFit,
     /// Apply a motion preset (Ken Burns / PiP) to selected clip.
     ApplyMotionPreset { clip_id: ClipId, preset: String },
     /// Create an adjustment layer at the playhead on the top video track.
@@ -732,6 +741,10 @@ pub enum AppCommand {
 
     // Track locking
     SetTrackLocked { track_id: TrackId, locked: bool },
+
+    /// Set (or clear) a track's custom pixel height. `None` restores the
+    /// kind's default height. Height is clamped to (32.0, 300.0).
+    SetTrackCustomHeight { track_id: TrackId, height: Option<f32> },
 
     // Clip grouping
     GroupClips { clip_ids: Vec<ClipId> },

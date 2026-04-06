@@ -233,6 +233,8 @@ pub struct AppState {
 
     // Selection
     pub selected_clip: Option<ClipId>,
+    /// UI-only state — not undoable. Multi-clip selection is managed directly
+    /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
     pub hovered_clip: Option<ClipId>,
 
@@ -443,7 +445,6 @@ pub struct AppState {
     pub color_grade_clipboard: Option<klipp_nodes::NodeGraph>,
     pub curves_single_mode: bool,
     pub curve_histograms: Option<klipp_color::scopes::HistogramData>,
-    pub slider_edit: crate::widgets::color_slider::SliderEditState,
     pub show_preset_menu: bool,
     pub preset_save_name: String,
     pub show_preset_save: bool,
@@ -1404,7 +1405,6 @@ impl Default for AppState {
             color_grade_clipboard: None,
             curves_single_mode: false,
             curve_histograms: None,
-            slider_edit: Default::default(),
             show_preset_menu: false,
             preset_save_name: String::new(),
             show_preset_save: false,

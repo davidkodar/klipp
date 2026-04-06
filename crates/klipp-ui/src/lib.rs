@@ -6,6 +6,7 @@ pub mod icons;
 pub mod inspector;
 pub mod keybindings;
 pub mod layout_state;
+pub(crate) mod layout;
 pub mod media_watcher;
 pub mod panels;
 pub mod prefs;
