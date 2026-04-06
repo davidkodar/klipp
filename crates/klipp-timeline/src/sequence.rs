@@ -302,6 +302,9 @@ pub struct Track {
     /// Custom track height in pixels. None = use default for track kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
+    /// Stored height before collapse, so double-click can restore it.
+    #[serde(skip)]
+    pub pre_collapse_height: Option<f32>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -329,6 +332,7 @@ impl Track {
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
             custom_height: None,
+            pre_collapse_height: None,
         }
     }
 
@@ -1035,5 +1039,399 @@ impl Clip {
             smoothed_trajectory: None,
             track_points: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::MediaId;
+
+    const RATE: u32 = 24;
+
+    fn tc(frames: i64) -> Timecode {
+        RationalTime::from_frames(frames, RATE)
+    }
+
+    fn make_clip(timeline_in: i64, timeline_out: i64, src_in: i64, src_out: i64) -> Clip {
+        Clip::media(MediaId::new(), tc(timeline_in), tc(timeline_out), tc(src_in), tc(src_out))
+    }
+
+    fn make_track(clips: Vec<Clip>) -> Track {
+        let mut t = Track::new("V1", TrackKind::Video);
+        t.clips = clips;
+        t
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ripple_trim_left
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ripple_trim_left_shrinks_clip_shifts_downstream() {
+        // Three adjacent clips: [0..24], [24..48], [48..72]
+        let c0 = make_clip(0, 24, 0, 24);
+        let c1 = make_clip(24, 48, 0, 24);
+        let c2 = make_clip(48, 72, 0, 24);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0, c1, c2]);
+
+        // Trim clip 0's left edge inward by 6 frames (shrink it)
+        track.ripple_trim_left(id0, tc(6), tc(6));
+
+        // Clip 0: timeline_in=6, source_in=6 (smaller by 6 frames)
+        assert_eq!(track.clips[0].timeline_in, tc(6));
+        assert_eq!(track.clips[0].source_in, tc(6));
+        // timeline_out unchanged for clip 0
+        assert_eq!(track.clips[0].timeline_out, tc(24));
+
+        // Downstream clips shift by +6
+        assert_eq!(track.clips[1].timeline_in, tc(30));
+        assert_eq!(track.clips[1].timeline_out, tc(54));
+        assert_eq!(track.clips[2].timeline_in, tc(54));
+        assert_eq!(track.clips[2].timeline_out, tc(78));
+    }
+
+    #[test]
+    fn ripple_trim_left_expands_clip_shifts_downstream() {
+        // Clip with source headroom: source starts at frame 12
+        let c0 = make_clip(12, 36, 12, 36);
+        let c1 = make_clip(36, 60, 0, 24);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0, c1]);
+
+        // Expand clip 0's left edge out by 12 frames
+        track.ripple_trim_left(id0, tc(0), tc(0));
+
+        assert_eq!(track.clips[0].timeline_in, tc(0));
+        assert_eq!(track.clips[0].source_in, tc(0));
+        // Downstream shifts by -12
+        assert_eq!(track.clips[1].timeline_in, tc(24));
+        assert_eq!(track.clips[1].timeline_out, tc(48));
+    }
+
+    #[test]
+    fn ripple_trim_left_nonexistent_clip_is_noop() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let mut track = make_track(vec![c0]);
+        let fake_id = ClipId::new();
+        track.ripple_trim_left(fake_id, tc(6), tc(6));
+        // Nothing changed
+        assert_eq!(track.clips[0].timeline_in, tc(0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ripple_trim_right
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ripple_trim_right_shrinks_clip_shifts_downstream() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let c1 = make_clip(24, 48, 0, 24);
+        let c2 = make_clip(48, 72, 0, 24);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0, c1, c2]);
+
+        // Trim clip 0's right edge inward by 6 frames
+        track.ripple_trim_right(id0, tc(18), tc(18));
+
+        assert_eq!(track.clips[0].timeline_out, tc(18));
+        assert_eq!(track.clips[0].source_out, tc(18));
+        // Downstream clips shift left by 6
+        assert_eq!(track.clips[1].timeline_in, tc(18));
+        assert_eq!(track.clips[1].timeline_out, tc(42));
+        assert_eq!(track.clips[2].timeline_in, tc(42));
+        assert_eq!(track.clips[2].timeline_out, tc(66));
+    }
+
+    #[test]
+    fn ripple_trim_right_expands_clip_shifts_downstream() {
+        // Clip with source tail room
+        let c0 = make_clip(0, 24, 0, 24); // source has more (we allow setting source_out > original)
+        let c1 = make_clip(24, 48, 0, 24);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0, c1]);
+
+        // Extend clip 0 by 12 frames
+        track.ripple_trim_right(id0, tc(36), tc(36));
+
+        assert_eq!(track.clips[0].timeline_out, tc(36));
+        assert_eq!(track.clips[0].source_out, tc(36));
+        // Downstream shifts right by 12
+        assert_eq!(track.clips[1].timeline_in, tc(36));
+        assert_eq!(track.clips[1].timeline_out, tc(60));
+    }
+
+    #[test]
+    fn ripple_trim_right_no_downstream_clips() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+
+        track.ripple_trim_right(id0, tc(12), tc(12));
+
+        assert_eq!(track.clips[0].timeline_out, tc(12));
+        assert_eq!(track.clips[0].source_out, tc(12));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ripple_remove
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ripple_remove_shifts_downstream() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let c1 = make_clip(24, 48, 0, 24);
+        let c2 = make_clip(48, 72, 0, 24);
+        let id1 = c1.id;
+        let mut track = make_track(vec![c0, c1, c2]);
+
+        let removed = track.ripple_remove(id1).unwrap();
+        assert_eq!(removed.timeline_in, tc(24));
+
+        assert_eq!(track.clips.len(), 2);
+        assert_eq!(track.clips[0].timeline_out, tc(24));
+        // c2 shifted left by 24 frames
+        assert_eq!(track.clips[1].timeline_in, tc(24));
+        assert_eq!(track.clips[1].timeline_out, tc(48));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // blade_at
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn blade_splits_clip_correctly() {
+        let c0 = make_clip(0, 48, 0, 48);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+
+        let result = track.blade_at(id0, tc(24));
+        assert!(result.is_some());
+
+        assert_eq!(track.clips.len(), 2);
+        assert_eq!(track.clips[0].timeline_out, tc(24));
+        assert_eq!(track.clips[0].source_out, tc(24));
+        assert_eq!(track.clips[1].timeline_in, tc(24));
+        assert_eq!(track.clips[1].source_in, tc(24));
+    }
+
+    #[test]
+    fn blade_at_edge_returns_none() {
+        let c0 = make_clip(0, 48, 0, 48);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+
+        // Cut at 1 frame from start (within 1-frame guard)
+        assert!(track.blade_at(id0, tc(1)).is_none());
+        // Cut at 1 frame from end
+        assert!(track.blade_at(id0, tc(47)).is_none());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Slip (source in/out shift, timeline fixed)
+    // ═══════════════════════════════════════════════════════════════
+    // Slip is UI-level only (no Track method), but we test the invariants:
+    // - timeline_in and timeline_out must NOT change
+    // - source_in and source_out shift by the same delta
+    // - source_in >= 0, source_out <= media_duration
+
+    #[test]
+    fn slip_preserves_timeline_position() {
+        // Clip at timeline [24..48], showing source [12..36] of a 72-frame media
+        let mut clip = make_clip(24, 48, 12, 36);
+
+        // Slip forward by 6 frames
+        let delta = tc(6);
+        clip.source_in += delta;
+        clip.source_out += delta;
+
+        assert_eq!(clip.timeline_in, tc(24)); // unchanged
+        assert_eq!(clip.timeline_out, tc(48)); // unchanged
+        assert_eq!(clip.source_in, tc(18));
+        assert_eq!(clip.source_out, tc(42));
+        assert_eq!(clip.duration(), tc(24)); // same duration
+        assert_eq!(clip.source_duration(), tc(24)); // same source duration
+    }
+
+    #[test]
+    fn slip_clamps_at_source_boundaries() {
+        let mut clip = make_clip(0, 24, 0, 24);
+        let media_duration = tc(48);
+
+        // Try to slip backward (source_in would go negative)
+        let delta = tc(-6);
+        let clamped_delta = if clip.source_in + delta < tc(0) {
+            tc(0) - clip.source_in
+        } else {
+            delta
+        };
+        clip.source_in += clamped_delta;
+        clip.source_out += clamped_delta;
+        // Should clamp at 0
+        assert_eq!(clip.source_in, tc(0));
+        assert_eq!(clip.source_out, tc(24));
+
+        // Slip forward to the end
+        let delta = tc(30);
+        let clamped_delta = if clip.source_out + delta > media_duration {
+            media_duration - clip.source_out
+        } else {
+            delta
+        };
+        clip.source_in += clamped_delta;
+        clip.source_out += clamped_delta;
+        assert_eq!(clip.source_in, tc(24));
+        assert_eq!(clip.source_out, tc(48));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Roll (boundary between two adjacent clips shifts)
+    // ═══════════════════════════════════════════════════════════════
+    // Roll is UI-level, but we test the invariants:
+    // - Clip A's out and Clip B's in move by same delta
+    // - Total span A+B is preserved
+    // - Neither clip goes below minimum duration
+
+    #[test]
+    fn roll_moves_boundary_preserves_total_span() {
+        // Two adjacent clips: A=[0..24], B=[24..48]
+        // Source: A shows [0..24] of 48-frame media, B shows [0..24] of 48-frame media
+        let mut clip_a = make_clip(0, 24, 0, 24);
+        let mut clip_b = make_clip(24, 48, 0, 24);
+
+        let total_span = clip_b.timeline_out - clip_a.timeline_in;
+
+        // Roll right by 6 frames: A gets longer, B gets shorter
+        let delta = tc(6);
+        clip_a.source_out += delta;
+        clip_a.timeline_out += delta;
+        clip_b.source_in += delta;
+        clip_b.timeline_in += delta;
+
+        assert_eq!(clip_a.timeline_out, tc(30));
+        assert_eq!(clip_b.timeline_in, tc(30));
+        assert_eq!(clip_a.duration(), tc(30));
+        assert_eq!(clip_b.duration(), tc(18));
+        // Total span preserved
+        assert_eq!(clip_b.timeline_out - clip_a.timeline_in, total_span);
+    }
+
+    #[test]
+    fn roll_clamped_to_minimum_duration() {
+        let mut clip_a = make_clip(0, 24, 0, 24);
+        let mut clip_b = make_clip(24, 48, 0, 24);
+
+        let min_dur = tc(1); // 1 frame minimum
+
+        // Try to roll right by 30 frames (would make B negative duration)
+        let delta = tc(30);
+        let max_delta = clip_b.duration() - min_dur; // 23 frames max
+        let clamped = if delta > max_delta { max_delta } else { delta };
+
+        clip_a.source_out += clamped;
+        clip_a.timeline_out += clamped;
+        clip_b.source_in += clamped;
+        clip_b.timeline_in += clamped;
+
+        assert_eq!(clip_b.duration(), min_dur); // B is at minimum
+        assert_eq!(clip_a.duration(), tc(47)); // A got the rest
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Slide (clip moves, neighbors absorb the shift)
+    // ═══════════════════════════════════════════════════════════════
+    // Slide is UI-level. Invariants:
+    // - Center clip's source_in/out unchanged, timeline shifts
+    // - Left neighbor's out expands/shrinks by delta
+    // - Right neighbor's in expands/shrinks by -delta
+    // - No gaps between any of the three clips
+
+    #[test]
+    fn slide_moves_clip_adjusts_neighbors() {
+        // Three adjacent clips: L=[0..24], C=[24..48], R=[48..72]
+        // All have source headroom (48 frame sources)
+        let mut left = make_clip(0, 24, 0, 24);
+        let mut center = make_clip(24, 48, 0, 24);
+        let mut right = make_clip(48, 72, 0, 24);
+
+        let orig_center_src_in = center.source_in;
+        let orig_center_src_out = center.source_out;
+
+        // Slide center right by 6 frames
+        let delta = tc(6);
+        // Center moves on timeline
+        center.timeline_in += delta;
+        center.timeline_out += delta;
+        // Left neighbor extends to fill
+        left.timeline_out += delta;
+        left.source_out += delta;
+        // Right neighbor shrinks from the left
+        right.timeline_in += delta;
+        right.source_in += delta;
+
+        // No gaps
+        assert_eq!(left.timeline_out, center.timeline_in);
+        assert_eq!(center.timeline_out, right.timeline_in);
+
+        // Center source unchanged
+        assert_eq!(center.source_in, orig_center_src_in);
+        assert_eq!(center.source_out, orig_center_src_out);
+
+        // Verify positions
+        assert_eq!(left.timeline_out, tc(30));
+        assert_eq!(center.timeline_in, tc(30));
+        assert_eq!(center.timeline_out, tc(54));
+        assert_eq!(right.timeline_in, tc(54));
+    }
+
+    #[test]
+    fn slide_clamped_by_neighbor_minimum_duration() {
+        let left = make_clip(0, 24, 0, 48);  // 48-frame source
+        let _center = make_clip(24, 48, 0, 24);
+        let right = make_clip(48, 72, 0, 48); // 48-frame source
+
+        let min_dur = tc(1);
+
+        // Slide right: limited by right neighbor's minimum duration
+        let delta = tc(30);
+        let max_right = right.duration() - min_dur; // 23
+        // Slide left: limited by left neighbor's minimum duration
+        let max_left = left.duration() - min_dur; // 23
+
+        let clamped = delta.min(max_right).min(max_left);
+        // Should be 23 frames
+        assert_eq!(clamped, tc(23));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // find_clip / find_clip_mut
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn find_clip_returns_correct_clip() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let c1 = make_clip(24, 48, 0, 24);
+        let id0 = c0.id;
+        let id1 = c1.id;
+        let track = make_track(vec![c0, c1]);
+
+        assert_eq!(track.find_clip(id0).unwrap().timeline_in, tc(0));
+        assert_eq!(track.find_clip(id1).unwrap().timeline_in, tc(24));
+        assert!(track.find_clip(ClipId::new()).is_none());
+    }
+
+    #[test]
+    fn clip_at_timecode_finds_correct_clip() {
+        let c0 = make_clip(0, 24, 0, 24);
+        let c1 = make_clip(24, 48, 0, 24);
+        let id0 = c0.id;
+        let id1 = c1.id;
+        let track = make_track(vec![c0, c1]);
+
+        assert_eq!(track.clip_at_timecode(tc(0)).unwrap().1.id, id0);
+        assert_eq!(track.clip_at_timecode(tc(12)).unwrap().1.id, id0);
+        assert_eq!(track.clip_at_timecode(tc(24)).unwrap().1.id, id1);
+        assert!(track.clip_at_timecode(tc(48)).is_none()); // past end
     }
 }

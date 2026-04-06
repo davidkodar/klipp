@@ -682,3 +682,87 @@ fn consecutive_process_calls_maintain_state() {
     assert!(rms(&silence) > 0.001,
         "reverb should produce tail in subsequent silence buffer (rms={:.6})", rms(&silence));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Normalize effect — LUFS mode tests (uses BS.1770-4 LufsMeter)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn normalize_lufs_mode_boosts_quiet_signal() {
+    let mut fx = create_effect("normalize", SR).unwrap();
+    fx.set_param("target_lufs", -14.0);
+    fx.set_param("mode", 1.0); // LUFS mode
+
+    // Feed enough audio for the LUFS meter to produce readings (need >400ms)
+    // Use a quiet signal that should be boosted
+    let mut buf = sine_stereo(440.0, 1.0, SR);
+    for s in buf.iter_mut() { *s *= 0.05; } // very quiet
+    let original_rms = rms(&buf);
+    let ctx = make_ctx(SR);
+    fx.process(&mut buf, &ctx);
+
+    assert!(rms(&buf) > original_rms,
+        "LUFS normalize should boost quiet signal: before={:.4} after={:.4}",
+        original_rms, rms(&buf));
+}
+
+#[test]
+fn normalize_peak_mode_still_works() {
+    let mut fx = create_effect("normalize", SR).unwrap();
+    fx.set_param("target_lufs", -6.0);
+    fx.set_param("mode", 0.0); // peak mode
+
+    let mut buf = sine_stereo(440.0, 0.5, SR);
+    for s in buf.iter_mut() { *s *= 0.1; }
+    let original_rms = rms(&buf);
+    let ctx = make_ctx(SR);
+    fx.process(&mut buf, &ctx);
+
+    assert!(rms(&buf) > original_rms * 1.1,
+        "peak normalize should boost quiet signal: before={:.4} after={:.4}",
+        original_rms, rms(&buf));
+}
+
+#[test]
+fn normalize_reset_restores_unity_gain() {
+    let mut fx = create_effect("normalize", SR).unwrap();
+    fx.set_param("target_lufs", -14.0);
+    fx.set_param("mode", 1.0);
+
+    // Process some audio to change the internal gain
+    let mut buf = sine_stereo(440.0, 1.0, SR);
+    let ctx = make_ctx(SR);
+    fx.process(&mut buf, &ctx);
+
+    // Reset
+    fx.reset();
+
+    // Process a known signal after reset — should start from unity gain
+    let mut test_buf = sine_stereo(1000.0, 0.01, SR); // short buffer
+    let before = test_buf.clone();
+    fx.process(&mut test_buf, &ctx);
+
+    // Right after reset, gain should be near 1.0, so output ≈ input
+    let diff_rms = rms(&test_buf.iter().zip(before.iter())
+        .map(|(a, b)| a - b)
+        .collect::<Vec<f32>>());
+    assert!(diff_rms < 0.1,
+        "After reset, first few samples should be near-unity: diff_rms={:.4}", diff_rms);
+}
+
+#[test]
+fn normalize_params_roundtrip() {
+    let mut fx = create_effect("normalize", SR).unwrap();
+    fx.set_param("target_lufs", -18.0);
+    fx.set_param("mode", 0.0);
+
+    assert_eq!(fx.get_param("target_lufs"), Some(-18.0));
+    assert_eq!(fx.get_param("mode"), Some(0.0));
+
+    let serialized = fx.serialize_params();
+    let mut fx2 = create_effect("normalize", SR).unwrap();
+    fx2.deserialize_params(&serialized);
+
+    assert_eq!(fx2.get_param("target_lufs"), Some(-18.0));
+    assert_eq!(fx2.get_param("mode"), Some(0.0));
+}

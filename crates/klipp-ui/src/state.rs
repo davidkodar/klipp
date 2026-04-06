@@ -554,6 +554,24 @@ pub struct AppState {
     pub master_volume: f32,
     /// Master mute
     pub master_muted: bool,
+    /// BS.1770-4 LUFS metering (raw from engine)
+    pub lufs_momentary: f32,
+    pub lufs_short_term: f32,
+    pub lufs_integrated: f32,
+    pub lufs_true_peak_dbfs: f32,
+    /// Loudness range (EBU R128 LRA)
+    pub lufs_lra: f32,
+    /// Smoothed display values (EMA-filtered for stable visual)
+    pub lufs_momentary_smooth: f32,
+    pub lufs_short_term_smooth: f32,
+    /// Latched clipping indicator (true if any sample exceeded 0 dBFS since last reset)
+    pub clip_indicator: bool,
+    /// LUFS target from preferences (-23 EBU R128, -24 ATSC A/85)
+    pub lufs_target: f32,
+    /// Peak hold time in seconds from preferences
+    pub peak_hold_time_secs: f32,
+    /// Mixer: track name being edited (track_index, buffer)
+    pub mixer_editing_name: Option<(usize, String)>,
 
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
@@ -1448,6 +1466,17 @@ impl Default for AppState {
             master_peak_right: 0.0,
             master_volume: 1.0,
             master_muted: false,
+            lufs_momentary: f32::NEG_INFINITY,
+            lufs_short_term: f32::NEG_INFINITY,
+            lufs_integrated: f32::NEG_INFINITY,
+            lufs_true_peak_dbfs: f32::NEG_INFINITY,
+            lufs_lra: 0.0,
+            lufs_momentary_smooth: f32::NEG_INFINITY,
+            lufs_short_term_smooth: f32::NEG_INFINITY,
+            clip_indicator: false,
+            mixer_editing_name: None,
+            lufs_target: -23.0,
+            peak_hold_time_secs: 3.0,
             confirm_remove_track: None,
             show_markers_panel: false,
             show_browser_panel: true,

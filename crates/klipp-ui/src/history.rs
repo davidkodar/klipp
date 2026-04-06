@@ -108,6 +108,19 @@ pub enum EditCommand {
         new_timeline_in: RationalTime,
         new_timeline_out: RationalTime,
     },
+    LegacyRippleTrimClip {
+        clip_id: ClipId,
+        old_source_in: RationalTime,
+        old_source_out: RationalTime,
+        old_timeline_in: RationalTime,
+        old_timeline_out: RationalTime,
+        new_source_in: RationalTime,
+        new_source_out: RationalTime,
+        new_timeline_in: RationalTime,
+        new_timeline_out: RationalTime,
+        /// Downstream clips' original positions before the ripple shift
+        shifted_clips: Vec<(ClipId, RationalTime, RationalTime)>,
+    },
     LegacyRollTrimClip {
         clip_a_id: ClipId,
         clip_b_id: ClipId,
@@ -284,7 +297,7 @@ impl EditCommand {
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
-            EditCommand::LegacyTrimClip { .. } => "Trim Clip",
+            EditCommand::LegacyTrimClip { .. } | EditCommand::LegacyRippleTrimClip { .. } => "Trim Clip",
             EditCommand::LegacyRollTrimClip { .. } => "Roll Trim",
             EditCommand::LegacySlipClip { .. } => "Slip Clip",
             EditCommand::LegacySlideClip { .. } => "Slide Clip",

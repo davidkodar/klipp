@@ -194,6 +194,8 @@ pub struct PlaybackEngine {
     audio_output: Option<SendAudioOutput>,
     mix_thread: Option<MixThread>,
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
+    lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
+    lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cpal_sample_rate: u32,
     // Master clock — single source of truth for A/V timing
     master_clock: Arc<MasterClock>,
@@ -303,6 +305,8 @@ impl PlaybackEngine {
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
         let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone());
+        let lufs_readings = Some(mix_thread.lufs_readings());
+        let lufs_reset = Some(mix_thread.lufs_reset_flag());
         let preferred_device = crate::audio_output::PREFERRED_DEVICE.lock().ok().and_then(|g| g.clone());
         let audio_output = match AudioOutput::new_with_device(main_consumer, skim_consumer.clone(), preferred_device.as_deref()) {
             Ok(output) => {
@@ -339,6 +343,8 @@ impl PlaybackEngine {
             audio_output,
             mix_thread: Some(mix_thread),
             mixer,
+            lufs_readings,
+            lufs_reset,
             cpal_sample_rate,
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
@@ -466,6 +472,18 @@ impl PlaybackEngine {
                         left: master_l,
                         right: master_r,
                     });
+                }
+                // LUFS readings from the mix thread
+                if let Some(ref lufs_arc) = self.lufs_readings {
+                    if let Ok(r) = lufs_arc.try_lock() {
+                        let _ = self.event_tx.send(AppEvent::LufsReadings {
+                            momentary: r.momentary,
+                            short_term: r.short_term,
+                            integrated: r.integrated,
+                            loudness_range: r.loudness_range,
+                            true_peak_dbfs: r.true_peak_dbfs,
+                        });
+                    }
                 }
             }
         }
@@ -705,6 +723,11 @@ impl PlaybackEngine {
                 // Also keep mixer in sync for VU metering
                 if let Ok(mut m) = self.mixer.lock() {
                     m.master_volume = vol;
+                }
+            }
+            AppCommand::ResetLufsMeter => {
+                if let Some(ref flag) = self.lufs_reset {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
@@ -1323,6 +1346,8 @@ impl PlaybackEngine {
         if self.mix_thread.is_none() {
             let (mt, main_consumer) =
                 MixThread::new(self.cpal_sample_rate, self.mixer.clone());
+            self.lufs_readings = Some(mt.lufs_readings());
+            self.lufs_reset = Some(mt.lufs_reset_flag());
             match AudioOutput::new(main_consumer, self.skim_consumer.clone()) {
                 Ok(output) => {
                     self.audio_output = Some(SendAudioOutput(output));

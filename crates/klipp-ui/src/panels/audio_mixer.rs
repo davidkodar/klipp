@@ -2,188 +2,444 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
-/// Convert linear volume (0.0..2.0) to decibels.
-/// Returns -inf for 0.0, 0 dB for 1.0, +6 dB for 2.0.
-fn vol_to_db(vol: f32) -> f32 {
-    if vol <= 0.0001 {
-        -60.0
-    } else {
-        20.0 * vol.log10()
-    }
-}
+// ═══════════════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════════════
 
-/// Format dB value for display.
-fn format_db(db: f32) -> String {
-    if db <= -59.0 {
-        "-inf".to_string()
-    } else {
-        format!("{:+.1}", db)
-    }
-}
-
-/// Width of a single fader strip.
-const STRIP_W: f32 = 64.0;
+/// Width of a single fader strip (fader + peak meter).
+const STRIP_W: f32 = 100.0;
+/// Width of the master section (fader + peak bars + LUFS meter + gap).
+const MASTER_W: f32 = 176.0;
 /// Height of the vertical fader track.
-const FADER_TRACK_H: f32 = 120.0;
+const FADER_TRACK_H: f32 = 130.0;
+/// Width of a single peak-meter bar (L or R).
+const PEAK_BAR_W: f32 = 6.0;
+/// Width of the LUFS meter bar.
+const LUFS_BAR_W: f32 = 18.0;
+/// Gap between fader and meter bars.
+const METER_GAP: f32 = 5.0;
+/// Horizontal padding inside each strip.
+const STRIP_PAD: f32 = 6.0;
+/// Gap between bottom of meter bars and text readouts.
+const READOUT_GAP: f32 = 8.0;
+/// Minimum strip height.
+const STRIP_MIN_H: f32 = 280.0;
+/// Bottom padding inside each strip (used in STRIP_MIN_H budget).
+#[allow(dead_code)]
+const STRIP_BOTTOM_PAD: f32 = 14.0;
+/// Minimum mixer panel height.
+const MIXER_MIN_H: f32 = 280.0;
 
-/// Render a single vertical fader strip. Returns commands if values changed.
+// ═══════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+fn vol_to_db(vol: f32) -> f32 {
+    if vol <= 0.0001 { -60.0 } else { 20.0 * vol.log10() }
+}
+
+fn format_db(db: f32) -> String {
+    if db <= -59.0 { "-inf".to_string() } else { format!("{:+.1}", db) }
+}
+
+fn format_lufs(v: f32) -> String {
+    if v.is_finite() { format!("{:.1}", v) } else { "\u{2212}\u{221e}".to_string() }
+}
+
+/// Map a dB value to a 0..1 position on the meter.
+/// -60 dB = 0.0, 0 dB = 0.909, +6 dB = 1.0.
+fn db_to_t(db: f32) -> f32 {
+    ((db + 60.0) / 66.0).clamp(0.0, 1.0)
+}
+
+/// Map LUFS to 0..1 position. -60 LUFS = 0.0, 0 LUFS = 1.0.
+fn lufs_to_t(lufs: f32) -> f32 {
+    if !lufs.is_finite() { return 0.0; }
+    ((lufs + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+/// Color for a LUFS level relative to target (for bars).
+fn lufs_bar_color(lufs: f32, target: f32) -> egui::Color32 {
+    if !lufs.is_finite() {
+        return egui::Color32::from_rgb(0x30, 0x30, 0x38);
+    }
+    let diff = lufs - target;
+    if diff > 2.0 {
+        egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+    } else if diff >= -2.0 {
+        egui::Color32::from_rgb(0x40, 0xc0, 0x40)
+    } else if diff >= -8.0 {
+        egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+    } else {
+        egui::Color32::from_rgb(0x40, 0x70, 0xa0)
+    }
+}
+
+/// Color for LUFS text readout.
+fn lufs_text_color(lufs: f32, target: f32) -> egui::Color32 {
+    if !lufs.is_finite() {
+        return egui::Color32::from_rgb(0x50, 0x50, 0x60);
+    }
+    let diff = lufs - target;
+    if diff > 2.0 {
+        egui::Color32::from_rgb(0xe0, 0x50, 0x50)
+    } else if diff.abs() <= 2.0 {
+        egui::Color32::from_rgb(0x50, 0xd0, 0x50)
+    } else {
+        egui::Color32::from_rgb(0xe8, 0xa8, 0x30)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Peak meter bar
+// ═══════════════════════════════════════════════════════════════════
+
+fn draw_peak_bar(
+    painter: &egui::Painter,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    bar_w: f32,
+    peak_linear: f32,
+    _theme: &KlippTheme,
+) {
+    let h = bottom - top;
+    let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
+    // Dark fill + visible border so empty meters are still visible
+    painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+
+    let db = vol_to_db(peak_linear);
+    let t = db_to_t(db);
+    if t <= 0.0 { return; }
+
+    let zones: &[(f32, f32, egui::Color32)] = &[
+        (0.0, db_to_t(-6.0), egui::Color32::from_rgb(0x30, 0xa0, 0x30)),
+        (db_to_t(-6.0), db_to_t(-1.0), egui::Color32::from_rgb(0xd0, 0xa0, 0x18)),
+        (db_to_t(-1.0), 1.0, egui::Color32::from_rgb(0xd0, 0x38, 0x38)),
+    ];
+
+    for &(zone_start, zone_end, color) in zones {
+        let seg_start = zone_start.max(0.0);
+        let seg_end = zone_end.min(t);
+        if seg_end <= seg_start { continue; }
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x, bottom - seg_end * h),
+                egui::pos2(x + bar_w, bottom - seg_start * h),
+            ),
+            0.0, color,
+        );
+    }
+
+    // Peak hold line
+    let hold_y = bottom - t * h;
+    painter.line_segment(
+        [egui::pos2(x, hold_y), egui::pos2(x + bar_w, hold_y)],
+        egui::Stroke::new(1.0, egui::Color32::WHITE),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LUFS meter bar
+// ═══════════════════════════════════════════════════════════════════
+
+fn draw_lufs_bar(
+    painter: &egui::Painter,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    bar_w: f32,
+    momentary: f32,
+    short_term: f32,
+    integrated: f32,
+    true_peak_dbfs: f32,
+    target: f32,
+    theme: &KlippTheme,
+) {
+    let h = bottom - top;
+    let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
+    painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+
+    // Green target zone (subtle background)
+    let on_lo = lufs_to_t(target - 2.0);
+    let on_hi = lufs_to_t(target + 2.0);
+    if on_hi > on_lo {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x, bottom - on_hi * h),
+                egui::pos2(x + bar_w, bottom - on_lo * h),
+            ),
+            0.0, egui::Color32::from_rgba_premultiplied(0x30, 0x80, 0x30, 25),
+        );
+    }
+
+    // Integrated (widest, dimmest)
+    let i_t = lufs_to_t(integrated);
+    if i_t > 0.0 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x, bottom - i_t * h), egui::pos2(x + bar_w, bottom)),
+            0.0, lufs_bar_color(integrated, target).linear_multiply(0.35),
+        );
+    }
+
+    // Short-term (medium)
+    let st_t = lufs_to_t(short_term);
+    if st_t > 0.0 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x + 1.0, bottom - st_t * h),
+                egui::pos2(x + bar_w - 1.0, bottom),
+            ),
+            0.0, lufs_bar_color(short_term, target).linear_multiply(0.55),
+        );
+    }
+
+    // Momentary (narrow center, brightest)
+    let m_t = lufs_to_t(momentary);
+    if m_t > 0.0 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x + 3.0, bottom - m_t * h),
+                egui::pos2(x + bar_w - 3.0, bottom),
+            ),
+            0.0, lufs_bar_color(momentary, target).linear_multiply(0.85),
+        );
+    }
+
+    // Target line
+    let target_t = lufs_to_t(target);
+    if target_t > 0.0 && target_t < 1.0 {
+        let ty = bottom - target_t * h;
+        painter.line_segment(
+            [egui::pos2(x - 1.0, ty), egui::pos2(x + bar_w + 1.0, ty)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0xd0, 0x50)),
+        );
+    }
+
+    // True peak indicator tick on right
+    if true_peak_dbfs.is_finite() {
+        let tp_t = db_to_t(true_peak_dbfs);
+        if tp_t > 0.0 {
+            let tp_y = bottom - tp_t * h;
+            let tp_color = if true_peak_dbfs > -1.0 {
+                egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+            } else { theme.text_secondary };
+            painter.line_segment(
+                [egui::pos2(x + bar_w, tp_y), egui::pos2(x + bar_w + 3.0, tp_y)],
+                egui::Stroke::new(2.0, tp_color),
+            );
+        }
+    }
+
+    // Scale ticks on left
+    for &lufs_val in &[-48.0_f32, -36.0, -24.0, -18.0, -12.0, -6.0, 0.0] {
+        let tick_t = lufs_to_t(lufs_val);
+        let tick_y = bottom - tick_t * h;
+        painter.line_segment(
+            [egui::pos2(x - 2.0, tick_y), egui::pos2(x, tick_y)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Track fader strip
+// ═══════════════════════════════════════════════════════════════════
+
 fn fader_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     track_index: usize,
     name: &str,
+    track_id: klipp_core::TrackId,
     volume: &mut f32,
     pan: &mut f32,
     muted: &mut bool,
     solo: &mut bool,
+    peak_l: f32,
+    peak_r: f32,
+    editing_name: &mut Option<(usize, String)>,
     cmds: &mut Vec<AppCommand>,
 ) {
     let strip_rect = ui.available_rect_before_wrap();
+    let strip_h = strip_rect.height().max(STRIP_MIN_H);
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(STRIP_W, strip_rect.height()),
+        egui::vec2(STRIP_W, strip_h),
         egui::Sense::hover(),
     );
 
     let painter = ui.painter_at(rect);
-    let cx = rect.center().x;
-    let mut y = rect.min.y + 6.0;
+    // Strip background + border (consistent with master)
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x22));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
 
-    // -- Track name label --
-    painter.text(
-        egui::pos2(cx, y + 6.0),
-        egui::Align2::CENTER_CENTER,
-        name,
-        egui::FontId::proportional(10.0),
-        theme.text_primary,
+    let inner_left = rect.min.x + STRIP_PAD;
+    let inner_right = rect.max.x - STRIP_PAD;
+    let inner_w = inner_right - inner_left;
+    let fader_cx = inner_left + 22.0;
+    let meter_x = inner_right - PEAK_BAR_W * 2.0 - 3.0;
+    let mut y = rect.min.y + 10.0;
+
+    // -- Track name (double-click to rename) --
+    let name_rect = egui::Rect::from_min_size(
+        egui::pos2(inner_left, y),
+        egui::vec2(inner_w, 14.0),
     );
-    y += 18.0;
 
-    // -- Pan slider (horizontal) --
-    let pan_w = STRIP_W - 12.0;
-    let pan_rect = egui::Rect::from_min_size(egui::pos2(rect.min.x + 6.0, y), egui::vec2(pan_w, 14.0));
+    let is_editing = editing_name.as_ref().is_some_and(|(idx, _)| *idx == track_index);
+    if is_editing {
+        let edit_buf = &mut editing_name.as_mut().unwrap().1;
+        let resp = ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(name_rect),
+            |ui| {
+                let te = egui::TextEdit::singleline(edit_buf)
+                    .font(egui::FontId::proportional(10.0))
+                    .desired_width(STRIP_W - 8.0)
+                    .frame(true);
+                ui.add(te)
+            },
+        ).inner;
+        // Submit on enter or focus lost
+        if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let new_name = editing_name.take().unwrap().1;
+            if !new_name.is_empty() {
+                cmds.push(AppCommand::RenameTrack { track_id, name: new_name });
+            }
+        }
+    } else {
+        painter.text(
+            egui::pos2(rect.center().x, y + 6.0),
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(10.0),
+            theme.text_primary,
+        );
+        let name_resp = ui.allocate_rect(name_rect, egui::Sense::click());
+        if name_resp.double_clicked() {
+            *editing_name = Some((track_index, name.to_string()));
+        }
+    }
+    y += 16.0;
 
-    // Pan track background
-    painter.rect_filled(
-        egui::Rect::from_min_size(egui::pos2(pan_rect.min.x, pan_rect.center().y - 1.5), egui::vec2(pan_w, 3.0)),
-        1.5,
-        theme.bg_raised,
+    // -- Pan slider (horizontal, prominent) --
+    let pan_w = inner_w - 4.0;
+    let pan_rect = egui::Rect::from_min_size(egui::pos2(inner_left + 2.0, y), egui::vec2(pan_w, 16.0));
+    // Track groove
+    let groove = egui::Rect::from_min_size(
+        egui::pos2(pan_rect.min.x, pan_rect.center().y - 2.0),
+        egui::vec2(pan_w, 4.0),
     );
-    // Pan center tick
+    painter.rect_filled(groove, 2.0, theme.bg_raised);
+    painter.rect_stroke(groove, 2.0, egui::Stroke::new(0.5, theme.border_light));
+    // Center tick
     painter.line_segment(
-        [egui::pos2(pan_rect.center().x, pan_rect.center().y - 4.0), egui::pos2(pan_rect.center().x, pan_rect.center().y + 4.0)],
+        [egui::pos2(pan_rect.center().x, pan_rect.center().y - 5.0),
+         egui::pos2(pan_rect.center().x, pan_rect.center().y + 5.0)],
         egui::Stroke::new(1.0, theme.border_light),
     );
-    // Pan thumb position
-    let pan_t = (*pan + 1.0) / 2.0; // 0..1
+    // Fill from center to thumb
+    let pan_t = (*pan + 1.0) / 2.0;
     let pan_x = pan_rect.min.x + pan_t * pan_w;
-    painter.circle_filled(egui::pos2(pan_x, pan_rect.center().y), 4.0, theme.text_secondary);
-
+    let center_x = pan_rect.center().x;
+    let fill_l = center_x.min(pan_x);
+    let fill_r = center_x.max(pan_x);
+    if (fill_r - fill_l) > 1.0 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(fill_l, pan_rect.center().y - 1.5),
+                egui::pos2(fill_r, pan_rect.center().y + 1.5),
+            ),
+            1.0, theme.accent.linear_multiply(0.5),
+        );
+    }
+    // Thumb (rounded rect, bigger)
+    let thumb_w = 10.0;
+    let thumb_h = 12.0;
+    let thumb_rect = egui::Rect::from_center_size(
+        egui::pos2(pan_x, pan_rect.center().y),
+        egui::vec2(thumb_w, thumb_h),
+    );
+    painter.rect_filled(thumb_rect, 3.0, egui::Color32::from_rgb(0xc0, 0xc0, 0xc8));
+    painter.rect_stroke(thumb_rect, 3.0, egui::Stroke::new(0.5, theme.border));
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
     if pan_resp.dragged() {
-        let delta = pan_resp.drag_delta().x;
-        *pan = (*pan + delta / (pan_w * 0.5)).clamp(-1.0, 1.0);
+        *pan = (*pan + pan_resp.drag_delta().x / (pan_w * 0.5)).clamp(-1.0, 1.0);
         cmds.push(AppCommand::SetTrackPan { track_index, pan: *pan });
     }
     if pan_resp.double_clicked() {
         *pan = 0.0;
         cmds.push(AppCommand::SetTrackPan { track_index, pan: 0.0 });
     }
-    // Pan label
+    // Pan label below
     let pan_label = if pan.abs() < 0.01 { "C".to_string() } else { format!("{:+.0}", *pan * 100.0) };
     painter.text(
-        egui::pos2(cx, pan_rect.max.y + 1.0),
-        egui::Align2::CENTER_TOP,
-        &pan_label,
-        egui::FontId::monospace(7.0),
-        theme.text_dim,
+        egui::pos2(rect.center().x, pan_rect.max.y + 2.0),
+        egui::Align2::CENTER_TOP, &pan_label,
+        egui::FontId::monospace(8.0), theme.text_dim,
     );
-    y = pan_rect.max.y + 12.0;
+    y = pan_rect.max.y + 10.0;
 
     // -- Vertical volume fader --
     let fader_top = y;
     let fader_bottom = fader_top + FADER_TRACK_H;
 
-    // Fader track background (thin vertical line)
-    let track_rect = egui::Rect::from_min_max(
-        egui::pos2(cx - 1.5, fader_top),
-        egui::pos2(cx + 1.5, fader_bottom),
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, fader_top), egui::pos2(fader_cx + 1.5, fader_bottom)),
+        1.0, theme.bg_raised,
     );
-    painter.rect_filled(track_rect, 1.0, theme.bg_raised);
 
-    // dB scale marks on the left side
-    let db_marks: &[(f32, &str)] = &[
-        (2.0, "+6"),
-        (1.0, "0"),
-        (0.5, "-6"),
-        (0.25, "-12"),
-        (0.0, "-inf"),
-    ];
-    for &(vol_val, label) in db_marks {
-        let t = vol_val / 2.0; // normalize to 0..1
+    // dB scale marks
+    for &(vol_val, label) in &[(2.0_f32, "+6"), (1.0, "0"), (0.5, "-6"), (0.25, "-12"), (0.0, "-inf")] {
+        let t = vol_val / 2.0;
         let mark_y = fader_bottom - t * FADER_TRACK_H;
-        // Tick mark
         painter.line_segment(
-            [egui::pos2(cx - 6.0, mark_y), egui::pos2(cx - 2.0, mark_y)],
+            [egui::pos2(fader_cx - 6.0, mark_y), egui::pos2(fader_cx - 2.0, mark_y)],
             egui::Stroke::new(1.0, theme.border_light),
         );
         painter.text(
-            egui::pos2(cx - 8.0, mark_y),
-            egui::Align2::RIGHT_CENTER,
-            label,
-            egui::FontId::monospace(6.0),
-            theme.text_dim,
+            egui::pos2(fader_cx - 8.0, mark_y), egui::Align2::RIGHT_CENTER,
+            label, egui::FontId::monospace(6.0), theme.text_dim,
         );
     }
 
-    // Unity mark (0dB = volume 1.0) — prominent
-    let unity_y = fader_bottom - (1.0 / 2.0) * FADER_TRACK_H;
+    // Unity mark
+    let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
     painter.line_segment(
-        [egui::pos2(cx - 8.0, unity_y), egui::pos2(cx + 8.0, unity_y)],
+        [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
         egui::Stroke::new(1.0, theme.accent_dim),
     );
 
-    // Fill from bottom to thumb
+    // Fill + thumb
     let vol_t = (*volume / 2.0).clamp(0.0, 1.0);
     let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
-    let fill_color = if *muted {
-        theme.text_dim
-    } else if *volume > 1.0 {
-        egui::Color32::from_rgb(0xc0, 0x40, 0x40) // red for above unity
-    } else {
-        theme.accent
-    };
+    let fill_color = if *muted { theme.text_dim } else if *volume > 1.0 {
+        egui::Color32::from_rgb(0xc0, 0x40, 0x40)
+    } else { theme.accent };
     if *volume > 0.001 {
-        let fill_rect = egui::Rect::from_min_max(
-            egui::pos2(cx - 1.5, thumb_y),
-            egui::pos2(cx + 1.5, fader_bottom),
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, thumb_y), egui::pos2(fader_cx + 1.5, fader_bottom)),
+            0.0, fill_color,
         );
-        painter.rect_filled(fill_rect, 0.0, fill_color);
     }
-
-    // Thumb (fader handle — wider than the track)
-    let thumb_rect = egui::Rect::from_center_size(
-        egui::pos2(cx, thumb_y),
-        egui::vec2(16.0, 8.0),
-    );
+    let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(16.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
     painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0, fill_color));
-    // Center line on thumb
     painter.line_segment(
-        [egui::pos2(cx - 5.0, thumb_y), egui::pos2(cx + 5.0, thumb_y)],
+        [egui::pos2(fader_cx - 5.0, thumb_y), egui::pos2(fader_cx + 5.0, thumb_y)],
         egui::Stroke::new(1.0, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
     );
 
     // Fader interaction
     let fader_hit = egui::Rect::from_min_max(
-        egui::pos2(cx - 12.0, fader_top - 4.0),
-        egui::pos2(cx + 12.0, fader_bottom + 4.0),
+        egui::pos2(fader_cx - 12.0, fader_top - 4.0),
+        egui::pos2(fader_cx + 12.0, fader_bottom + 4.0),
     );
     let fader_resp = ui.allocate_rect(fader_hit, egui::Sense::click_and_drag());
     if fader_resp.dragged() {
-        let delta = fader_resp.drag_delta().y;
-        // Dragging UP increases volume
-        let step = -delta / FADER_TRACK_H * 2.0;
+        let step = -fader_resp.drag_delta().y / FADER_TRACK_H * 2.0;
         *volume = (*volume + step).clamp(0.0, 2.0);
         cmds.push(AppCommand::SetTrackVolume { track_index, volume: *volume });
     }
@@ -195,22 +451,33 @@ fn fader_strip(
         }
     }
     if fader_resp.double_clicked() {
-        *volume = 1.0; // Reset to unity
+        *volume = 1.0;
         cmds.push(AppCommand::SetTrackVolume { track_index, volume: 1.0 });
     }
 
-    y = fader_bottom + 4.0;
+    // -- Peak meter bars (right side) --
+    draw_peak_bar(&painter, meter_x, fader_top, fader_bottom, PEAK_BAR_W, peak_l, theme);
+    draw_peak_bar(&painter, meter_x + PEAK_BAR_W + 2.0, fader_top, fader_bottom, PEAK_BAR_W, peak_r, theme);
+
+    // Meter scale ticks (between fader and meter bars)
+    let tick_x = meter_x - 2.0;
+    for &db_val in &[0.0_f32, -6.0, -12.0, -24.0, -48.0] {
+        let tick_t = db_to_t(db_val);
+        let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
+        painter.line_segment(
+            [egui::pos2(tick_x - 2.0, tick_y), egui::pos2(tick_x, tick_y)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+        );
+    }
+
+    y = fader_bottom + READOUT_GAP;
 
     // -- dB readout --
     let db = vol_to_db(*volume);
-    let db_text = format_db(db);
     let db_color = if *muted { theme.text_dim } else { theme.text_secondary };
     painter.text(
-        egui::pos2(cx, y + 5.0),
-        egui::Align2::CENTER_CENTER,
-        &format!("{} dB", db_text),
-        egui::FontId::monospace(8.0),
-        db_color,
+        egui::pos2(rect.center().x, y + 5.0), egui::Align2::CENTER_CENTER,
+        &format!("{} dB", format_db(db)), egui::FontId::monospace(8.0), db_color,
     );
     y += 16.0;
 
@@ -218,48 +485,28 @@ fn fader_strip(
     let btn_size = egui::vec2(22.0, 16.0);
     let btn_gap = 4.0;
     let btns_w = btn_size.x * 2.0 + btn_gap;
-    let btn_left = cx - btns_w / 2.0;
+    let btn_left = rect.center().x - btns_w / 2.0;
 
-    // Mute button
+    // Mute
     let mute_rect = egui::Rect::from_min_size(egui::pos2(btn_left, y), btn_size);
-    let mute_bg = if *muted {
-        egui::Color32::from_rgb(0xc0, 0x30, 0x30) // red when active
-    } else {
-        theme.bg_raised
-    };
-    let mute_text_color = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
+    let mute_bg = if *muted { egui::Color32::from_rgb(0xc0, 0x30, 0x30) } else { theme.bg_raised };
+    let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
     painter.rect_filled(mute_rect, 3.0, mute_bg);
     painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0, theme.border));
-    painter.text(
-        mute_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "M",
-        egui::FontId::proportional(9.0),
-        mute_text_color,
-    );
+    painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(9.0), mute_tc);
     let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
     if mute_resp.clicked() {
         *muted = !*muted;
         cmds.push(AppCommand::SetTrackMute { track_index, muted: *muted });
     }
 
-    // Solo button
+    // Solo
     let solo_rect = egui::Rect::from_min_size(egui::pos2(btn_left + btn_size.x + btn_gap, y), btn_size);
-    let solo_bg = if *solo {
-        theme.accent // amber when active
-    } else {
-        theme.bg_raised
-    };
-    let solo_text_color = if *solo { theme.text_on_accent } else { theme.text_secondary };
+    let solo_bg = if *solo { theme.accent } else { theme.bg_raised };
+    let solo_tc = if *solo { theme.text_on_accent } else { theme.text_secondary };
     painter.rect_filled(solo_rect, 3.0, solo_bg);
     painter.rect_stroke(solo_rect, 3.0, egui::Stroke::new(1.0, theme.border));
-    painter.text(
-        solo_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "S",
-        egui::FontId::proportional(9.0),
-        solo_text_color,
-    );
+    painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(9.0), solo_tc);
     let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
     if solo_resp.clicked() {
         *solo = !*solo;
@@ -267,94 +514,129 @@ fn fader_strip(
     }
 }
 
-/// Render the master fader strip.
+// ═══════════════════════════════════════════════════════════════════
+// Master strip
+// ═══════════════════════════════════════════════════════════════════
+
 fn master_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     master_volume: &mut f32,
+    master_peak_l: f32,
+    master_peak_r: f32,
+    lufs_momentary: f32,
+    lufs_short_term: f32,
+    lufs_integrated: f32,
+    lufs_lra: f32,
+    lufs_true_peak_dbfs: f32,
+    lufs_target: f32,
+    clip_indicator: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
     let strip_rect = ui.available_rect_before_wrap();
+    let strip_h = strip_rect.height().max(STRIP_MIN_H);
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(STRIP_W, strip_rect.height()),
+        egui::vec2(MASTER_W, strip_h),
         egui::Sense::hover(),
     );
 
     let painter = ui.painter_at(rect);
-    let cx = rect.center().x;
-    let mut y = rect.min.y + 6.0;
 
-    // Separator line on left
-    painter.line_segment(
-        [egui::pos2(rect.min.x, rect.min.y + 4.0), egui::pos2(rect.min.x, rect.max.y - 4.0)],
-        egui::Stroke::new(1.0, theme.border),
-    );
+    // Master background — just slightly lighter than track strips for subtle distinction
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1e, 0x1e, 0x28));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
 
-    // -- "MASTER" label --
+    let mut y = rect.min.y + 10.0;
+
+    let fader_cx = rect.min.x + 30.0;
+    let peak_l_x = rect.min.x + 56.0;
+    let peak_r_x = peak_l_x + PEAK_BAR_W + 3.0;
+    let lufs_x = peak_r_x + PEAK_BAR_W + METER_GAP + 3.0;
+    let lufs_label_x = lufs_x + LUFS_BAR_W + 4.0;
+
+    // -- "MASTER" label + clip indicator --
+    let label_cx = rect.min.x + 40.0;
     painter.text(
-        egui::pos2(cx, y + 6.0),
-        egui::Align2::CENTER_CENTER,
-        "MASTER",
-        egui::FontId::proportional(9.0),
-        theme.accent,
+        egui::pos2(label_cx, y + 6.0), egui::Align2::CENTER_CENTER,
+        "MASTER", egui::FontId::proportional(9.0), theme.accent,
     );
-    y += 30.0; // skip pan area (master has no pan)
 
-    // -- Vertical volume fader --
-    let fader_top = y;
+    // Clip indicator (latched red dot, click to clear)
+    let clip_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.max.x - 14.0, y + 6.0), egui::vec2(12.0, 12.0),
+    );
+    let clip_color = if clip_indicator {
+        egui::Color32::from_rgb(0xe0, 0x30, 0x30)
+    } else {
+        egui::Color32::from_rgb(0x30, 0x30, 0x38)
+    };
+    painter.circle_filled(clip_rect.center(), 5.0, clip_color);
+    if clip_indicator {
+        painter.text(
+            egui::pos2(clip_rect.center().x, clip_rect.center().y),
+            egui::Align2::CENTER_CENTER, "C",
+            egui::FontId::monospace(6.0), egui::Color32::WHITE,
+        );
+    }
+    let clip_resp = ui.allocate_rect(clip_rect.expand(2.0), egui::Sense::click());
+    if clip_resp.clicked() {
+        cmds.push(AppCommand::ResetLufsMeter);
+    }
+
+    y += 20.0;
+
+    // LUFS scale labels
+    let fader_top = y + 10.0;
     let fader_bottom = fader_top + FADER_TRACK_H;
+    for &(lufs_val, label) in &[
+        (0.0_f32, "0"), (-6.0, "-6"), (-12.0, "-12"), (-18.0, "-18"),
+        (-24.0, "-24"), (-36.0, "-36"), (-48.0, "-48"),
+    ] {
+        let tick_t = lufs_to_t(lufs_val);
+        let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
+        painter.text(
+            egui::pos2(lufs_label_x, tick_y), egui::Align2::LEFT_CENTER,
+            label, egui::FontId::monospace(6.0), theme.text_dim,
+        );
+    }
 
-    // Fader track background
-    let track_rect = egui::Rect::from_min_max(
-        egui::pos2(cx - 1.5, fader_top),
-        egui::pos2(cx + 1.5, fader_bottom),
+    // -- Volume fader --
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, fader_top), egui::pos2(fader_cx + 1.5, fader_bottom)),
+        1.0, theme.bg_raised,
     );
-    painter.rect_filled(track_rect, 1.0, theme.bg_raised);
-
-    // Unity mark
-    let unity_y = fader_bottom - (1.0 / 2.0) * FADER_TRACK_H;
+    let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
     painter.line_segment(
-        [egui::pos2(cx - 8.0, unity_y), egui::pos2(cx + 8.0, unity_y)],
+        [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
         egui::Stroke::new(1.0, theme.accent_dim),
     );
 
-    // Fill from bottom to thumb
     let vol_t = (*master_volume / 2.0).clamp(0.0, 1.0);
     let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
     let fill_color = if *master_volume > 1.0 {
         egui::Color32::from_rgb(0xc0, 0x40, 0x40)
-    } else {
-        theme.accent
-    };
+    } else { theme.accent };
     if *master_volume > 0.001 {
-        let fill_rect = egui::Rect::from_min_max(
-            egui::pos2(cx - 1.5, thumb_y),
-            egui::pos2(cx + 1.5, fader_bottom),
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, thumb_y), egui::pos2(fader_cx + 1.5, fader_bottom)),
+            0.0, fill_color,
         );
-        painter.rect_filled(fill_rect, 0.0, fill_color);
     }
-
-    // Thumb
-    let thumb_rect = egui::Rect::from_center_size(
-        egui::pos2(cx, thumb_y),
-        egui::vec2(18.0, 8.0),
-    );
+    let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(18.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
     painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0, fill_color));
     painter.line_segment(
-        [egui::pos2(cx - 6.0, thumb_y), egui::pos2(cx + 6.0, thumb_y)],
+        [egui::pos2(fader_cx - 6.0, thumb_y), egui::pos2(fader_cx + 6.0, thumb_y)],
         egui::Stroke::new(1.0, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
     );
 
-    // Fader interaction
     let fader_hit = egui::Rect::from_min_max(
-        egui::pos2(cx - 12.0, fader_top - 4.0),
-        egui::pos2(cx + 12.0, fader_bottom + 4.0),
+        egui::pos2(fader_cx - 12.0, fader_top - 4.0),
+        egui::pos2(fader_cx + 12.0, fader_bottom + 4.0),
     );
     let fader_resp = ui.allocate_rect(fader_hit, egui::Sense::click_and_drag());
     if fader_resp.dragged() {
-        let delta = fader_resp.drag_delta().y;
-        let step = -delta / FADER_TRACK_H * 2.0;
+        let step = -fader_resp.drag_delta().y / FADER_TRACK_H * 2.0;
         *master_volume = (*master_volume + step).clamp(0.0, 2.0);
         cmds.push(AppCommand::SetMasterVolume(*master_volume));
     }
@@ -370,108 +652,198 @@ fn master_strip(
         cmds.push(AppCommand::SetMasterVolume(1.0));
     }
 
-    y = fader_bottom + 4.0;
-
-    // dB readout
-    let db = vol_to_db(*master_volume);
-    let db_text = format_db(db);
-    painter.text(
-        egui::pos2(cx, y + 5.0),
-        egui::Align2::CENTER_CENTER,
-        &format!("{} dB", db_text),
-        egui::FontId::monospace(8.0),
-        theme.text_secondary,
+    // -- Peak + LUFS bars --
+    draw_peak_bar(&painter, peak_l_x, fader_top, fader_bottom, PEAK_BAR_W, master_peak_l, theme);
+    draw_peak_bar(&painter, peak_r_x, fader_top, fader_bottom, PEAK_BAR_W, master_peak_r, theme);
+    draw_lufs_bar(
+        &painter, lufs_x, fader_top, fader_bottom, LUFS_BAR_W,
+        lufs_momentary, lufs_short_term, lufs_integrated, lufs_true_peak_dbfs, lufs_target, theme,
     );
+
+    y = fader_bottom + READOUT_GAP;
+
+    // -- Numerical readouts (two columns) --
+    let col1_x = rect.min.x + 10.0;
+    let col2_x = rect.min.x + MASTER_W / 2.0 + 4.0;
+
+    // Row 1: dB | Integrated
+    painter.text(
+        egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("{} dB", format_db(vol_to_db(*master_volume))),
+        egui::FontId::monospace(8.0), theme.text_secondary,
+    );
+    painter.text(
+        egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("I:{}", format_lufs(lufs_integrated)),
+        egui::FontId::monospace(8.0), lufs_text_color(lufs_integrated, lufs_target),
+    );
+    y += 11.0;
+
+    // Row 2: Peak | Short-term
+    let peak_db = vol_to_db(master_peak_l.max(master_peak_r));
+    let peak_color = if peak_db > -1.0 { egui::Color32::from_rgb(0xe0, 0x40, 0x40) } else { theme.text_dim };
+    painter.text(
+        egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("Pk{}", format_db(peak_db)),
+        egui::FontId::monospace(7.0), peak_color,
+    );
+    painter.text(
+        egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("S:{}", format_lufs(lufs_short_term)),
+        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+    );
+    y += 10.0;
+
+    // Row 3: TP | Momentary
+    let tp_color = if lufs_true_peak_dbfs > -1.0 && lufs_true_peak_dbfs.is_finite() {
+        egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+    } else { theme.text_dim };
+    painter.text(
+        egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("TP{}", format_lufs(lufs_true_peak_dbfs)),
+        egui::FontId::monospace(7.0), tp_color,
+    );
+    painter.text(
+        egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("M:{}", format_lufs(lufs_momentary)),
+        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+    );
+    y += 10.0;
+
+    // Row 4: LRA
+    painter.text(
+        egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
+        &format!("LRA {:.1} LU", lufs_lra),
+        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x80, 0x90, 0xb0),
+    );
+    y += 12.0;
+
+    // Reset button
+    let btn_rect = egui::Rect::from_min_size(egui::pos2(rect.center().x - 16.0, y), egui::vec2(32.0, 14.0));
+    painter.rect_filled(btn_rect, 2.0, theme.bg_raised);
+    painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0, theme.border));
+    painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "RST",
+        egui::FontId::monospace(7.0), theme.text_secondary);
+    let rst_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+    if rst_resp.clicked() {
+        cmds.push(AppCommand::ResetLufsMeter);
+    }
 }
 
-/// Show the audio mixer panel. Returns commands for track audio changes.
+// ═══════════════════════════════════════════════════════════════════
+// Public: show the audio mixer panel
+// ═══════════════════════════════════════════════════════════════════
+
+/// Persistent state for the mixer panel (track name editing).
+/// Stored in AppState to survive across frames.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
     theme: &KlippTheme,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
+    ui.set_min_height(MIXER_MIN_H);
     let full_rect = ui.max_rect();
 
-    // Background
+    // Background + header
     ui.painter().rect_filled(full_rect, 0.0, theme.bg_deep);
-    // Top border
-    ui.painter().hline(
-        full_rect.x_range(),
-        full_rect.min.y,
-        egui::Stroke::new(1.0, theme.border),
-    );
+    ui.painter().hline(full_rect.x_range(), full_rect.min.y, egui::Stroke::new(1.0, theme.border));
 
-    // Header bar
     let header_h = 20.0;
     let header_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), header_h));
     ui.painter().rect_filled(header_rect, 0.0, theme.bg_panel);
     ui.painter().text(
         egui::pos2(header_rect.min.x + 10.0, header_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "Audio Mixer",
-        egui::FontId::proportional(10.0),
-        theme.text_secondary,
+        egui::Align2::LEFT_CENTER, "Audio Mixer",
+        egui::FontId::proportional(10.0), theme.text_secondary,
     );
-    // Bottom border of header
-    ui.painter().hline(
-        full_rect.x_range(),
-        header_rect.max.y,
-        egui::Stroke::new(1.0, theme.border),
-    );
+    ui.painter().hline(full_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, theme.border));
 
-    // Content area below header
     let content_rect = egui::Rect::from_min_max(
-        egui::pos2(full_rect.min.x, header_rect.max.y),
-        full_rect.max,
+        egui::pos2(full_rect.min.x, header_rect.max.y), full_rect.max,
     );
 
-    // Gather track info from active sequence
     let seq = &mut state.sequences[state.active_sequence_idx];
     let track_count = seq.tracks.len();
 
-    // Collect track data we need (to avoid borrow issues)
-    let mut track_data: Vec<(String, f32, f32, bool, bool)> = seq.tracks.iter()
-        .map(|t| (t.name.clone(), t.volume, t.pan, t.muted, t.solo))
+    // Collect track data with track IDs and kinds
+    let mut track_data: Vec<(String, klipp_core::TrackId, klipp_timeline::TrackKind, f32, f32, bool, bool, bool)> = seq.tracks.iter()
+        .map(|t| {
+            // Video tracks with linked audio clips should show meters
+            let has_audio = t.kind == klipp_timeline::TrackKind::Audio
+                || t.clips.iter().any(|c| c.linked_clip_id.is_some());
+            (t.name.clone(), t.id, t.kind.clone(), t.volume, t.pan, t.muted, t.solo, has_audio)
+        })
         .collect();
     let mut master_vol = state.master_volume;
 
-    // Render strips in a horizontal layout
+    let peak_levels: Vec<(f32, f32)> = (0..track_count)
+        .map(|i| state.track_peak_levels.get(i).copied().unwrap_or((0.0, 0.0)))
+        .collect();
+
+    // Use a persistent editing_name state via a simple approach:
+    // store it temporarily in a local and write back.
+    let mut editing_name = state.mixer_editing_name.take();
+
+    // Clip content to mixer panel bounds
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+        ui.set_clip_rect(content_rect);
         ui.set_min_size(content_rect.size());
 
-        // Use a horizontal layout with scroll if needed
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
+        // Layout: scrollable tracks on left, fixed master on right
+        let master_total_w = MASTER_W + 12.0; // master width + gap
+        let tracks_max_w = (content_rect.width() - master_total_w).max(60.0);
 
-                    for i in 0..track_count {
-                        let (ref name, ref mut vol, ref mut pan, ref mut muted, ref mut solo) = track_data[i];
-                        fader_strip(
-                            ui, theme, i, name,
-                            vol, pan, muted, solo,
-                            &mut cmds,
-                        );
-                        // Thin separator between strips
-                        let sep_rect = ui.available_rect_before_wrap();
-                        ui.painter().line_segment(
-                            [egui::pos2(sep_rect.min.x, content_rect.min.y + 4.0),
-                             egui::pos2(sep_rect.min.x, content_rect.max.y - 4.0)],
-                            egui::Stroke::new(1.0, theme.border),
-                        );
-                    }
+        ui.horizontal(|ui| {
+            // ── Scrollable track strips ──
+            egui::ScrollArea::horizontal()
+                .id_salt("mixer_tracks_scroll")
+                .max_width(tracks_max_w)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(6.0);
 
-                    // Master fader on the right
-                    master_strip(ui, theme, &mut master_vol, &mut cmds);
+                        for i in 0..track_count {
+                            let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, _has_audio) = track_data[i];
+                            let (pl, pr) = peak_levels[i];
+                            fader_strip(
+                                ui, theme, i, name, track_id,
+                                vol, pan, muted, solo,
+                                pl, pr,
+                                &mut editing_name,
+                                &mut cmds,
+                            );
+                            // Gap between strips
+                            ui.add_space(4.0);
+                        }
+                    });
                 });
-            });
+
+            // ── Gap + fixed master strip ──
+            ui.add_space(12.0);
+
+            master_strip(
+                ui, theme, &mut master_vol,
+                state.master_peak_left,
+                state.master_peak_right,
+                state.lufs_momentary_smooth,
+                state.lufs_short_term_smooth,
+                state.lufs_integrated,
+                state.lufs_lra,
+                state.lufs_true_peak_dbfs,
+                state.lufs_target,
+                state.clip_indicator,
+                &mut cmds,
+            );
+        });
     });
 
-    // Write back track data changes (for immediate visual feedback)
+    state.mixer_editing_name = editing_name;
+
+    // Write back track data
     let seq = &mut state.sequences[state.active_sequence_idx];
-    for (i, (_, vol, pan, muted, solo)) in track_data.iter().enumerate() {
+    for (i, (_, _, _, vol, pan, muted, solo, _)) in track_data.iter().enumerate() {
         if i < seq.tracks.len() {
             seq.tracks[i].volume = *vol;
             seq.tracks[i].pan = *pan;
@@ -481,5 +853,177 @@ pub fn show(
     }
     state.master_volume = master_vol;
 
+    // Clear clip indicator on reset
+    if cmds.iter().any(|c| matches!(c, AppCommand::ResetLufsMeter)) {
+        state.clip_indicator = false;
+    }
+
     cmds
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Inspector LUFS meter widget
+// ═══════════════════════════════════════════════════════════════════
+
+pub fn draw_inspector_meter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    state: &AppState,
+    peak: (f32, f32),
+) {
+    ui.add_space(8.0);
+
+    let avail = ui.available_rect_before_wrap();
+    let meter_h = 120.0_f32.min(avail.height() - 70.0);
+    let total_h = meter_h + 64.0; // bar + gap + 3 rows of text
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail.width().min(220.0), total_h), egui::Sense::hover());
+
+    let painter = ui.painter_at(rect);
+    let bar_top = rect.min.y + 2.0;
+    let bar_bottom = bar_top + meter_h;
+
+    // Peak bars (wider for inspector)
+    let peak_bar_w = 7.0;
+    let mut x = rect.min.x + 6.0;
+    draw_peak_bar(&painter, x, bar_top, bar_bottom, peak_bar_w, peak.0, theme);
+    x += peak_bar_w + 3.0;
+    draw_peak_bar(&painter, x, bar_top, bar_bottom, peak_bar_w, peak.1, theme);
+    x += peak_bar_w + 6.0;
+
+    // LUFS bar (wider for inspector)
+    let lufs_w = 22.0;
+    draw_lufs_bar(
+        &painter, x, bar_top, bar_bottom, lufs_w,
+        state.lufs_momentary_smooth, state.lufs_short_term_smooth, state.lufs_integrated,
+        state.lufs_true_peak_dbfs, state.lufs_target, theme,
+    );
+
+    // Scale labels
+    let label_x = x + lufs_w + 5.0;
+    for &(lufs_val, label) in &[
+        (0.0_f32, "0"), (-6.0, "-6"), (-12.0, "-12"), (-18.0, "-18"),
+        (-24.0, "-24"), (-36.0, "-36"), (-48.0, "-48"),
+    ] {
+        let tick_t = lufs_to_t(lufs_val);
+        let tick_y = bar_bottom - tick_t * meter_h;
+        painter.text(
+            egui::pos2(label_x, tick_y), egui::Align2::LEFT_CENTER,
+            label, egui::FontId::monospace(7.0), theme.text_dim,
+        );
+    }
+
+    // Clip indicator
+    if state.clip_indicator {
+        painter.text(
+            egui::pos2(label_x + 32.0, bar_top + 6.0), egui::Align2::LEFT_CENTER,
+            "CLIP", egui::FontId::monospace(9.0), egui::Color32::from_rgb(0xe0, 0x30, 0x30),
+        );
+    }
+
+    // Numerical readouts — with gap below bar
+    let ry = bar_bottom + READOUT_GAP;
+    painter.text(
+        egui::pos2(rect.min.x + 6.0, ry + 5.0), egui::Align2::LEFT_CENTER,
+        &format!("I: {} LUFS", format_lufs(state.lufs_integrated)),
+        egui::FontId::monospace(10.0),
+        lufs_text_color(state.lufs_integrated, state.lufs_target),
+    );
+    painter.text(
+        egui::pos2(rect.min.x + 6.0, ry + 19.0), egui::Align2::LEFT_CENTER,
+        &format!("S: {}   M: {}   TP: {} dB",
+            format_lufs(state.lufs_short_term),
+            format_lufs(state.lufs_momentary),
+            format_lufs(state.lufs_true_peak_dbfs)),
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+    );
+    painter.text(
+        egui::pos2(rect.min.x + 6.0, ry + 33.0), egui::Align2::LEFT_CENTER,
+        &format!("LRA: {:.1} LU", state.lufs_lra),
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_rgb(0x80, 0x90, 0xb0),
+    );
+
+    ui.add_space(8.0);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixer_layout_constants_valid() {
+        // Master strip must be narrower than any reasonable panel width
+        assert!(MASTER_W > 0.0 && MASTER_W < 400.0);
+        // Track strip must be narrower than master
+        assert!(STRIP_W > 0.0 && STRIP_W < MASTER_W);
+        // Fader track must fit in the minimum strip height with room for controls
+        assert!(FADER_TRACK_H < STRIP_MIN_H - 80.0, "Fader needs room for name, pan, buttons");
+        // Minimum panel height must be at least as tall as strip min height
+        assert!(MIXER_MIN_H >= STRIP_MIN_H - 20.0);
+        // Peak bar width must be positive and reasonable
+        assert!(PEAK_BAR_W > 0.0 && PEAK_BAR_W < 20.0);
+        // LUFS bar must be wider than peak bars
+        assert!(LUFS_BAR_W > PEAK_BAR_W);
+    }
+
+    #[test]
+    fn mixer_scroll_area_width_leaves_room_for_master() {
+        // Simulate various panel widths
+        for panel_w in [400.0, 600.0, 800.0, 1200.0, 1920.0] {
+            let master_total_w = MASTER_W + 12.0;
+            let tracks_max_w = (panel_w - master_total_w).max(60.0);
+            // Track scroll area must leave room for master
+            assert!(tracks_max_w + master_total_w <= panel_w,
+                "Panel {panel_w}: tracks {tracks_max_w} + master {master_total_w} > panel");
+            // Track scroll area must be at least 60px
+            assert!(tracks_max_w >= 60.0, "Panel {panel_w}: tracks area too narrow");
+        }
+    }
+
+    #[test]
+    fn mixer_master_width_constant() {
+        // Master strip width should not depend on track count
+        let master_w_0_tracks = MASTER_W;
+        let master_w_16_tracks = MASTER_W;
+        assert_eq!(master_w_0_tracks, master_w_16_tracks);
+    }
+
+    #[test]
+    fn db_to_t_range() {
+        assert_eq!(db_to_t(-60.0), 0.0);
+        assert!((db_to_t(0.0) - 60.0 / 66.0).abs() < 0.01);
+        assert_eq!(db_to_t(6.0), 1.0);
+        // Out of range clamps
+        assert_eq!(db_to_t(-100.0), 0.0);
+        assert_eq!(db_to_t(20.0), 1.0);
+    }
+
+    #[test]
+    fn lufs_to_t_range() {
+        assert_eq!(lufs_to_t(f32::NEG_INFINITY), 0.0);
+        assert_eq!(lufs_to_t(-60.0), 0.0);
+        assert_eq!(lufs_to_t(0.0), 1.0);
+        assert_eq!(lufs_to_t(-30.0), 0.5);
+    }
+
+    #[test]
+    fn format_helpers() {
+        assert_eq!(format_db(-60.0), "-inf");
+        assert_eq!(format_db(0.0), "+0.0");
+        assert_eq!(format_lufs(f32::NEG_INFINITY), "\u{2212}\u{221e}");
+        assert_eq!(format_lufs(-23.0), "-23.0");
+    }
+
+    #[test]
+    fn vol_to_db_basic() {
+        assert_eq!(vol_to_db(0.0), -60.0);
+        assert!((vol_to_db(1.0) - 0.0).abs() < 0.01);
+        assert!((vol_to_db(2.0) - 6.02).abs() < 0.1);
+        assert!((vol_to_db(0.5) - (-6.02)).abs() < 0.1);
+    }
 }

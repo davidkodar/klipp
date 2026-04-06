@@ -297,6 +297,10 @@ pub enum AppCommand {
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
     TrimClip {
         clip_id: ClipId,
+        old_source_in: Timecode,
+        old_source_out: Timecode,
+        old_timeline_in: Timecode,
+        old_timeline_out: Timecode,
         new_source_in: Timecode,
         new_source_out: Timecode,
         new_timeline_in: Timecode,
@@ -370,6 +374,8 @@ pub enum AppCommand {
     SetTrackSolo { track_index: usize, solo: bool },
     SetTrackPan { track_index: usize, pan: f32 },
     SetMasterVolume(f32),
+    /// Reset the BS.1770-4 LUFS meter in the mix thread.
+    ResetLufsMeter,
     SetClipVolume(f32),
     SetClipPan(f32),
     SetClipGain(f32),
@@ -1055,6 +1061,8 @@ pub enum AppEvent {
     // Audio metering
     TrackPeakLevels { track_index: usize, left: f32, right: f32 },
     MasterPeakLevels { left: f32, right: f32 },
+    /// BS.1770-4 loudness meter readings from the mix thread.
+    LufsReadings { momentary: f32, short_term: f32, integrated: f32, loudness_range: f32, true_peak_dbfs: f32 },
 
     // Performance stats
     EngineStats { dropped_frames: u64, hw_decode: bool },

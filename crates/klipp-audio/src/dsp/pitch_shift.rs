@@ -61,7 +61,6 @@ impl ChannelState {
 /// grain completes its window, it resets to a position trailing behind the
 /// write pointer, ensuring it always reads valid data.
 pub struct PitchShift {
-    sample_rate: f32,
     semitones: f32,
     fine_cents: f32,
     channels: [ChannelState; MAX_CHANNELS],
@@ -85,7 +84,6 @@ impl PitchShift {
             .collect();
 
         Self {
-            sample_rate: sr,
             semitones: 0.0,
             fine_cents: 0.0,
             channels: [ChannelState::new(), ChannelState::new()],

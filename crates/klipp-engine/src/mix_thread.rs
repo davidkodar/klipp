@@ -1,6 +1,6 @@
 use crate::audio_decoder::{AudioConsumer, AudioProducer};
 use crossbeam_channel::{Receiver, Sender};
-use klipp_audio::AudioMixer;
+use klipp_audio::{AudioMixer, LufsMeter, LufsReadings};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +29,8 @@ enum MixCommand {
 pub struct MixThread {
     thread: Option<JoinHandle<()>>,
     cmd_tx: Sender<MixCommand>,
+    lufs_readings: Arc<Mutex<LufsReadings>>,
+    lufs_reset: Arc<AtomicBool>,
 }
 
 impl MixThread {
@@ -42,18 +44,36 @@ impl MixThread {
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
+        let lufs_readings = Arc::new(Mutex::new(LufsReadings::default()));
+        let lufs_reset = Arc::new(AtomicBool::new(false));
+        let lufs_readings_writer = lufs_readings.clone();
+        let lufs_reset_reader = lufs_reset.clone();
+        let sr = sample_rate;
+
         let thread = std::thread::Builder::new()
             .name("klipp-mix".into())
-            .spawn(move || mix_loop(producer, cmd_rx, mixer))
+            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader))
             .expect("failed to spawn mix thread");
 
         (
             Self {
                 thread: Some(thread),
                 cmd_tx,
+                lufs_readings,
+                lufs_reset,
             },
             consumer,
         )
+    }
+
+    /// Get a clone of the shared LUFS readings for the UI/engine to read.
+    pub fn lufs_readings(&self) -> Arc<Mutex<LufsReadings>> {
+        self.lufs_readings.clone()
+    }
+
+    /// Get a clone of the reset flag so the UI can trigger a meter reset.
+    pub fn lufs_reset_flag(&self) -> Arc<AtomicBool> {
+        self.lufs_reset.clone()
     }
 
     /// Register a staging consumer for a given track.
@@ -105,6 +125,9 @@ fn mix_loop(
     mut producer: AudioProducer,
     cmd_rx: Receiver<MixCommand>,
     mixer: Arc<Mutex<AudioMixer>>,
+    sample_rate: u32,
+    lufs_readings: Arc<Mutex<LufsReadings>>,
+    lufs_reset: Arc<AtomicBool>,
 ) {
     debug!("Mix thread started");
 
@@ -114,6 +137,7 @@ fn mix_loop(
         consumer: AudioConsumer,
     }
 
+    let mut lufs_meter = LufsMeter::new(sample_rate as f32);
     let mut stagings: Vec<StagingEntry> = Vec::new();
     // Per-track temporary buffer for reading from staging
     let chunk_samples = 1024; // 512 stereo frames ≈ 10.7ms at 48kHz
@@ -214,6 +238,19 @@ fn mix_loop(
                 continue;
             }
         };
+
+        // LUFS metering: process mixed output before pushing to ring buffer
+        if !mixed.is_empty() {
+            // Check reset flag
+            if lufs_reset.swap(false, Ordering::Relaxed) {
+                lufs_meter.reset();
+            }
+            lufs_meter.process(&mixed);
+            // Publish readings (try_lock to avoid blocking the mix thread)
+            if let Ok(mut r) = lufs_readings.try_lock() {
+                *r = lufs_meter.readings();
+            }
+        }
 
         // Push mixed output to main ring buffer
         if !mixed.is_empty() {

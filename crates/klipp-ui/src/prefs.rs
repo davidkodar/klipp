@@ -1058,7 +1058,7 @@ mod tests {
         assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Linear);
         assert_eq!(rt.audio.default_fade_duration_ms, 0);
         assert_eq!(rt.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128);
-        assert_eq!(rt.audio.normalize_target_lufs, -14.0);
+        assert_eq!(rt.audio.normalize_target_lufs, -23.0);
 
         // ExportPrefs
         assert!(rt.export.default_output_dir.is_none());
@@ -1066,12 +1066,12 @@ mod tests {
         assert!(rt.export.custom_presets.is_empty());
 
         // ProxyPrefs
-        assert!(rt.proxy.auto_generate_on_import);
-        assert_eq!(rt.proxy.proxy_resolution, ProxyResolution::Half);
+        assert!(!rt.proxy.auto_generate_on_import);
+        assert_eq!(rt.proxy.proxy_resolution, ProxyResolution::default());
         assert!(rt.proxy.proxy_cache_dir.is_none());
 
         // SystemPrefs
-        assert_eq!(rt.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
+        assert_eq!(rt.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(rt.system.decode_threads, 0);
         assert_eq!(rt.system.max_playback_height, 1080);
         assert_eq!(rt.system.frame_queue_size, 16);
@@ -1079,7 +1079,7 @@ mod tests {
         // AudioHardwarePrefs
         assert!(rt.audio_hardware.output_device.is_none());
         assert_eq!(rt.audio_hardware.sample_rate, 48000);
-        assert_eq!(rt.audio_hardware.buffer_size, 512);
+        assert_eq!(rt.audio_hardware.buffer_size, 256);
 
         // AppearancePrefs
         assert_eq!(rt.appearance.ui_text_size, 13.0);
@@ -1231,10 +1231,10 @@ mod tests {
         // Optional sections not in JSON get defaults
         assert!(prefs.editing.auto_create_tracks);
         assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
-        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
-        assert_eq!(prefs.audio_hardware.buffer_size, 512);
+        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
+        assert_eq!(prefs.audio_hardware.buffer_size, 256);
         assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
-        assert_eq!(prefs.media_cache.thumbnail_height, 120);
+        assert_eq!(prefs.media_cache.thumbnail_height, 256);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
         assert_eq!(prefs.title.default_size_pt, 48.0);
         assert_eq!(prefs.timeline.trim_handle_width, 14.0);
@@ -1511,7 +1511,7 @@ mod tests {
         assert_eq!(prefs.proxy.proxy_resolution, ProxyResolution::W1280);
 
         // New sections get defaults
-        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::HighPerformance);
+        assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(prefs.system.frame_queue_size, 16);
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
@@ -1640,6 +1640,9 @@ mod tests {
                 resolution: Some("1920x1080".into()),
                 thumbnail_path: Some(PathBuf::from("/tmp/thumb.png")),
                 total_size_bytes: Some(1_000_000),
+                clip_count: Some(5),
+                track_count: Some(3),
+                missing_media: None,
             },
             RecentProject::from_path(PathBuf::from("/projects/b.klipp")),
         ];

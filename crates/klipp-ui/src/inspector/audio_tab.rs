@@ -222,6 +222,13 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
 
     ui.add_space(8.0);
 
+    // ── LOUDNESS METER ──
+    section_card(ui, "LOUDNESS METER", theme, |ui| {
+        crate::panels::audio_mixer::draw_inspector_meter(ui, theme, state, (state.master_peak_left, state.master_peak_right));
+    });
+
+    ui.add_space(8.0);
+
     // ── RENDER SETTINGS ──
     section_card(ui, "RENDER SETTINGS", theme, |ui| {
         let w = ui.available_width();
