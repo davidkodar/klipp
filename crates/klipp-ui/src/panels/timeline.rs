@@ -335,147 +335,27 @@ impl TimelinePanel {
             self.draw_overview_bar(&painter, &overview_rect, state);
         }
 
-        // Overview bar interaction — raw pointer (ui.interact doesn't work in manual layout)
-        // Skip when embedded — the new timeline shell handles its own overview
-        let mut overview_bar_consumed = false;
-        if state.show_overview_bar && !self.embedded {
-            let overview_rect = egui::Rect::from_min_size(
-                content_rect.min,
-                egui::vec2(content_rect.width(), OVERVIEW_BAR_HEIGHT),
-            );
-            let dur_secs = state.sequence().total_duration().to_secs_f64() as f32;
-            if dur_secs > 0.0 {
-                let px_per_sec = overview_rect.width() / dur_secs;
-                let zoom = state.timeline_zoom;
-                let content_w = state.last_timeline_content_width;
-                let (pointer_pos, primary_down, primary_released, drag_delta) = ui.input(|i| (
-                    i.pointer.latest_pos(),
-                    i.pointer.primary_down(),
-                    i.pointer.primary_released(),
-                    i.pointer.delta(),
-                ));
-                let in_overview = pointer_pos.is_some_and(|p| overview_rect.contains(p));
-
-                // Drag: pointer is in overview and button held with movement
-                if in_overview && primary_down && drag_delta.x.abs() > 0.5 {
-                    overview_bar_consumed = true;
-                    let delta_secs = drag_delta.x / px_per_sec;
-                    state.timeline_scroll_x = (state.timeline_scroll_x + delta_secs * zoom).max(0.0);
-                }
-                // Click: pointer released in overview — jump viewport
-                if in_overview && primary_released {
-                    overview_bar_consumed = true;
-                    if let Some(pos) = pointer_pos {
-                        let click_secs = (pos.x - overview_rect.left()) / px_per_sec;
-                        let view_width_secs = content_w / zoom;
-                        let new_start_secs = click_secs - view_width_secs / 2.0;
-                        state.timeline_scroll_x = (new_start_secs * zoom).max(0.0);
-                    }
-                }
-            }
-        }
-
-        // Time ruler — skip when embedded (new ruler.rs handles it)
+        // ── Hoisted layout construction (ruler_rect computed here, drawing deferred below) ──
         let ruler_height_used = if self.embedded { 0.0 } else { RULER_HEIGHT };
         let ruler_rect = egui::Rect::from_min_size(
             egui::pos2(content_rect.left(), content_rect.top() + overview_height),
             egui::vec2(content_rect.width(), ruler_height_used),
         );
-        if !self.embedded {
-            painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
-            self.draw_ruler_ticks(&painter, &ruler_rect, state);
-        }
-
-        // Sequence markers + ruler click — skip when embedded
-        if !self.embedded {
-            let zoom = state.timeline_zoom;
-            let scroll = state.timeline_scroll_x;
-            for marker in &state.sequence().markers {
-                let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
-                if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
-                    let (r, g, b) = marker.color.to_rgb();
-                    let color = egui::Color32::from_rgb(r, g, b);
-                    let top = ruler_rect.bottom() - 10.0;
-                    let bot = ruler_rect.bottom() - 1.0;
-                    let half_w = 4.0;
-                    painter.add(egui::Shape::convex_polygon(
-                        vec![
-                            egui::pos2(x - half_w, top),
-                            egui::pos2(x + half_w, top),
-                            egui::pos2(x, bot),
-                        ],
-                        color,
-                        egui::Stroke::NONE,
-                    ));
-                }
-            }
-
-            let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
-            // Track scrub start/end for proxy auto-switch
-            if ruler_response.drag_started() && !state.is_scrubbing {
-                state.is_scrubbing = true;
-                state.pre_scrub_use_proxies = state.use_proxies;
-                cmds.push(AppCommand::BeginScrub);
-            }
-            if ruler_response.drag_stopped() && state.is_scrubbing {
-                state.is_scrubbing = false;
-                cmds.push(AppCommand::EndScrub);
-            }
-            if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
-                if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                    let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
-                    let secs = x_in_content / state.timeline_zoom;
-                    let tc = RationalTime::from_secs_f64(secs as f64, state.fps.rate());
-                    let dur = state.sequence_duration();
-                    let clamped = if dur.value > 0 {
-                        RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
-                    } else {
-                        RationalTime { value: tc.value.max(0), rate: tc.rate }
-                    };
-                    cmds.push(AppCommand::SeekTo(clamped));
-                }
-            }
-        }
-
-        // Media pool, zoom buttons, toggle buttons — skip when embedded
-        if !self.embedded {
-            let pool_rect = egui::Rect::from_min_size(
-                egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
-                egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
-            );
-            painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
-            self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
-            self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state, &mut cmds);
-            self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
-        }
-
-        // Draw tracks: Video 2, Video 1, Audio 1
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
         let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
-
         let track_count = state.sequence().tracks.len();
-
-        // Vertical scroll: compute total track height and clamp scroll offset
         let total_tracks_h: f32 = (0..track_count)
             .map(|ti| effective_track_height(&state.sequence().tracks[ti]))
             .sum();
         let available_h = content_rect.bottom() - tracks_start_y;
         let max_scroll_y = (total_tracks_h - available_h).max(0.0);
         state.timeline_scroll_y = state.timeline_scroll_y.clamp(0.0, max_scroll_y);
-
         let scroll_y = state.timeline_scroll_y;
-        let mut track_y = tracks_start_y - scroll_y;
-
-        // Clip rect for the track area — prevents rendering below status bar
         let tracks_clip_bottom = content_rect.bottom();
         let tracks_clip = egui::Rect::from_min_max(
             egui::pos2(panel_rect.left(), tracks_start_y),
             egui::pos2(panel_rect.right(), tracks_clip_bottom),
         );
-        // Header painter clipped to tracks area (not the full panel) to prevent track labels
-        // and buttons from bleeding into the ruler above or status bar below.
-        let header_painter = bg_painter.with_clip_rect(tracks_clip.intersect(effective_clip));
-
         let layout = TimelineLayout {
             panel_rect,
             status_rect,
@@ -496,6 +376,34 @@ impl TimelinePanel {
             track_count,
             track_header_width: state.track_header_width,
         };
+
+        let overview_bar_consumed = self.handle_overview_bar_interaction(ui, state, &layout);
+
+        // Time ruler drawing — skip when embedded (new ruler.rs handles it)
+        if !self.embedded {
+            painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
+            self.draw_ruler_ticks(&painter, &ruler_rect, state);
+        }
+
+        self.handle_ruler_interaction(ui, state, &painter, &layout, overview_bar_consumed, &mut cmds);
+
+        // Media pool, zoom buttons, toggle buttons — skip when embedded
+        if !self.embedded {
+            let pool_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
+                egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
+            );
+            painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
+            self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
+            self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state, &mut cmds);
+            self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
+        }
+
+        // Draw tracks: Video 2, Video 1, Audio 1
+        let mut track_y = tracks_start_y - scroll_y;
+        // Header painter clipped to tracks area (not the full panel) to prevent track labels
+        // and buttons from bleeding into the ruler above or status bar below.
+        let header_painter = bg_painter.with_clip_rect(tracks_clip.intersect(effective_clip));
 
         // Pre-compute all track rects so cross-track drag can find any track
         {
@@ -546,302 +454,17 @@ impl TimelinePanel {
                 state, &mut cmds, track_idx, true,
             );
 
-            // Media pool drag-and-drop: highlight track when dragging over it
-            if let Some(drag_media_id) = state.dragging_media {
-                let hover_pos = ui.input(|i| i.pointer.hover_pos());
-                let any_down = ui.input(|i| i.pointer.any_down());
-                if let Some(pos) = hover_pos {
-                    if track_rect.contains(pos) {
-                        // Check media type vs track type compatibility:
-                        // Audio-only → audio tracks only. Video → video tracks only.
-                        let is_audio_only = state.media_pool.get(&drag_media_id)
-                            .map(|item| item.video_codec.is_empty())
-                            .unwrap_or(false);
-                        let compatible = match track_kind {
-                            TrackKind::Audio => is_audio_only,
-                            _ => !is_audio_only,
-                        };
-                        if compatible {
-                            // Highlight drop target (cyan = valid)
-                            painter.rect_stroke(
-                                track_rect,
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
-                            );
-                            // Drop on release
-                            if !any_down {
-                                state.dragging_media = None;
-                                tracing::info!("Media drop: {:?} -> track {} ({})", drag_media_id, track_idx, track_name);
-                                cmds.push(AppCommand::AppendClipToTrack {
-                                    media_id: drag_media_id,
-                                    track_index: track_idx,
-                                });
-                            }
-                        } else {
-                            // Show red border for invalid drop target
-                            painter.rect_stroke(
-                                track_rect,
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
-                            );
-                        }
-                    }
-                }
-            }
+            self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
 
-            // Effect drag-and-drop: highlight clip when dragging effect over it
-            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })) {
-                let hover_pos = ui.input(|i| i.pointer.hover_pos());
-                let any_down = ui.input(|i| i.pointer.any_down());
-                if let Some(pos) = hover_pos {
-                    if track_rect.contains(pos) {
-                        let zoom = state.timeline_zoom;
-                        let scroll = state.timeline_scroll_x;
-                        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
-                        let mut hit_clip_id = None;
-                        for clip in clips {
-                            let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                            let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
-                            let clip_rect = egui::Rect::from_min_size(
-                                egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
-                                egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
-                            );
-                            if clip_rect.contains(pos) {
-                                hit_clip_id = Some(clip.id);
-                                // Draw purple highlight border on the hovered clip
-                                painter.rect_stroke(
-                                    clip_rect,
-                                    3.0,
-                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(160, 100, 220)),
-                                );
-                                break;
-                            }
-                        }
-
-                        if !any_down {
-                            if let Some(clip_id) = hit_clip_id {
-                                if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
-                                    if is_builtin {
-                                        // Look up default builtin effect from the registry by name
-                                        let effect = state.effect_registry.effects.iter()
-                                            .find(|e| e.name == name)
-                                            .and_then(|e| match &e.source {
-                                                crate::browser::effect_registry::EffectSource::Builtin(eff) => Some(eff.clone()),
-                                                _ => None,
-                                            });
-                                        if let Some(effect) = effect {
-                                            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
-                                            state.toast.show(format!("\"{}\" applied to clip", name));
-                                        }
-                                    } else {
-                                        cmds.push(AppCommand::AddEffect { clip_id, plugin_name: plugin_id });
-                                        state.toast.show(format!("\"{}\" applied to clip", name));
-                                    }
-                                }
-                            } else {
-                                // Dropped on track but not on a clip — just end the drag
-                                state.drag_drop.end();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Audio effect drag-and-drop: highlight audio clip when dragging audio effect over it
-            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
-                let hover_pos = ui.input(|i| i.pointer.hover_pos());
-                let any_down = ui.input(|i| i.pointer.any_down());
-                if let Some(pos) = hover_pos {
-                    if track_rect.contains(pos) {
-                        let zoom = state.timeline_zoom;
-                        let scroll = state.timeline_scroll_x;
-                        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
-                        let mut hit_clip_id = None;
-                        for clip in clips {
-                            let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                            let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
-                            let clip_rect = egui::Rect::from_min_size(
-                                egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
-                                egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
-                            );
-                            if clip_rect.contains(pos) {
-                                hit_clip_id = Some(clip.id);
-                                painter.rect_stroke(
-                                    clip_rect, 3.0,
-                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 140)),
-                                );
-                                break;
-                            }
-                        }
-
-                        if !any_down {
-                            if let Some(clip_id) = hit_clip_id {
-                                if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
-                                    cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
-                                    state.toast.show(format!("\"{}\" applied to clip", name));
-                                }
-                            } else {
-                                state.drag_drop.end();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Title template drag-and-drop: highlight text/video track when dragging title over it
-            if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
-                let hover_pos = ui.input(|i| i.pointer.hover_pos());
-                let any_down = ui.input(|i| i.pointer.any_down());
-                if let Some(pos) = hover_pos {
-                    if track_rect.contains(pos) {
-                        let compatible = track_kind == TrackKind::Text || track_kind == TrackKind::Video;
-                        if compatible {
-                            painter.rect_stroke(
-                                track_rect,
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)),
-                            );
-                            if !any_down {
-                                if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
-                                    // Calculate timeline position from cursor x
-                                    let rel_x = pos.x - content_rect.left();
-                                    let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
-                                    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                                    let frame = (time_secs * fps_rate as f32) as i64;
-                                    let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
-                                    let duration_frames = fps_rate * 5;
-                                    state.pending_title_data = Some(title_data);
-                                    state.pending_title_animation = animation;
-                                    cmds.push(AppCommand::CreateTitleClip {
-                                        track_index: track_idx,
-                                        timeline_in,
-                                        duration_frames,
-                                    });
-                                    state.toast.show(format!("\"{}\" title added to track", template_name));
-                                }
-                            }
-                        } else {
-                            painter.rect_stroke(
-                                track_rect,
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
-                            );
-                        }
-                    }
-                }
-            }
+            self.handle_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
+            self.handle_audio_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
+            self.handle_title_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
             } // end if track_visible (clip rendering + drag-drop)
 
-            // ── Track height resize handle (bottom edge of header) ──
             if !self.embedded && track_visible {
-                let handle_h = 4.0;
-                let handle_rect = egui::Rect::from_min_size(
-                    egui::pos2(header_rect.left(), track_y + track_height - handle_h),
-                    egui::vec2(state.track_header_width, handle_h * 2.0),
+                self.handle_track_resize_handle(
+                    ui, state, track_idx, track_y, track_height, header_rect, &painter, &mut cmds,
                 );
-                let handle_resp = ui.interact(
-                    handle_rect,
-                    egui::Id::new(("track_resize", track_idx)),
-                    egui::Sense::click_and_drag(),
-                );
-                if handle_resp.hovered() || handle_resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
-
-                let track_id = state.sequence().tracks[track_idx].id;
-
-                // Double-click: collapse/expand toggle with height memory.
-                // Direct mutation on `pre_collapse_height` (UI memory); the new
-                // custom_height is routed through SetTrackCustomHeight so the
-                // gesture enters undo/engine sync.
-                if handle_resp.double_clicked() {
-                    let new_h = {
-                        let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
-                        if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
-                            // Collapsed → expand: restore pre-collapse height or default
-                            track.pre_collapse_height.take()
-                        } else {
-                            // Expand → collapse: save current height, set to minimum
-                            track.pre_collapse_height = track.custom_height.or(Some(track_height));
-                            Some(MIN_TRACK_HEIGHT)
-                        }
-                    };
-                    cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
-                }
-
-                // Right-click: preset heights context menu — all committed values
-                // go through the command.
-                handle_resp.context_menu(|ui| {
-                    if ui.button("Small (32px)").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
-                        ui.close_menu();
-                    }
-                    if ui.button("Medium (64px)").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
-                        ui.close_menu();
-                    }
-                    if ui.button("Large (120px)").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
-                        ui.close_menu();
-                    }
-                    if ui.button("Expanded (200px)").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
-                        ui.close_menu();
-                    }
-                    if ui.button("Maximum (300px)").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(300.0) });
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Reset to default").clicked() {
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
-                        ui.close_menu();
-                    }
-                });
-
-                if handle_resp.drag_started() {
-                    self.resizing_track = Some((track_idx, handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0), track_height));
-                }
-                // Drag — direct per-frame mutation for smooth visual feedback.
-                // The terminal value is routed through SetTrackCustomHeight on drag_stopped.
-                if handle_resp.dragged() {
-                    if let Some((ri, start_y, orig_h)) = self.resizing_track {
-                        if ri == track_idx {
-                            if let Some(pos) = ui.ctx().pointer_latest_pos() {
-                                let delta = pos.y - start_y;
-                                let new_h = (orig_h + delta).clamp(MIN_TRACK_HEIGHT, MAX_TRACK_HEIGHT);
-                                let ctrl = ui.input(|i| i.modifiers.ctrl);
-                                if ctrl {
-                                    // Ctrl+drag: resize all tracks to the same height
-                                    for t in &mut state.sequences[state.active_sequence_idx].tracks {
-                                        t.custom_height = Some(new_h);
-                                    }
-                                } else {
-                                    state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
-                                }
-                                state.dirty = true;
-                            }
-                        }
-                    }
-                }
-                if handle_resp.drag_stopped() {
-                    self.resizing_track = None;
-                    // Commit terminal value through the command so the gesture is undoable.
-                    // Ctrl+drag (all tracks) is not undoable here — the handler is per-track;
-                    // a future AddCommand::SetAllTrackHeights would cover it.
-                    let final_h = state.sequence().tracks[track_idx].custom_height;
-                    cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: final_h });
-                }
-                // Draw subtle resize line on hover
-                if handle_resp.hovered() || handle_resp.dragged() {
-                    painter.line_segment(
-                        [
-                            egui::pos2(header_rect.left() + 2.0, track_y + track_height - 1.0),
-                            egui::pos2(header_rect.right() - 2.0, track_y + track_height - 1.0),
-                        ],
-                        egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 160, 40)),
-                    );
-                }
             }
 
             track_y += track_height;
@@ -852,207 +475,21 @@ impl TimelinePanel {
 
         self.draw_marquee(ui, state, &mut cmds, content_rect, tracks_start_y, scroll_y);
 
-        // ── Empty area below tracks: right-click to add new track ──
-        if !self.embedded {
-            let empty_area = egui::Rect::from_min_max(
-                egui::pos2(header_rect.left(), track_y),
-                egui::pos2(header_rect.right(), header_rect.bottom()),
-            );
-            if empty_area.height() > 10.0 {
-                let empty_resp = ui.interact(
-                    empty_area,
-                    ui.id().with("empty_track_area_ctx"),
-                    egui::Sense::click(),
-                );
-                empty_resp.context_menu(|ui| {
-                    ui.set_min_width(160.0);
-                    ui.label(egui::RichText::new("Add Track").strong().size(11.0));
-                    ui.separator();
-                    if ui.button("Video Track").clicked() {
-                        let name = state.sequence().next_track_name(TrackKind::Video);
-                        let track = klipp_timeline::Track::new(&name, TrackKind::Video);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
-                        cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
-                    }
-                    if ui.button("Audio Track").clicked() {
-                        let name = state.sequence().next_track_name(TrackKind::Audio);
-                        let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
-                        cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
-                    }
-                    if ui.button("Text Track").clicked() {
-                        let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
-                        let track = klipp_timeline::Track::new(&name, TrackKind::Text);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
-                        cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
-                    }
-                    if ui.button("Subtitle Track").clicked() {
-                        let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
-                        let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
-                        cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
-                    }
-                });
-            }
-        }
+        self.handle_empty_track_area_menu(ui, state, &layout, track_y, &mut cmds);
 
         self.draw_connection_lines(state, &painter, content_rect);
 
-        // Media drag released outside any track — auto-create track if enabled
-        if let Some(drag_media_id) = state.dragging_media {
-            if !ui.input(|i| i.pointer.any_down()) {
-                let mut handled = false;
-                if state.auto_create_tracks {
-                    if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                        let is_audio_only = state.media_pool.get(&drag_media_id)
-                            .map(|item| item.video_codec.is_empty())
-                            .unwrap_or(false);
-                        // Check if cursor is above topmost track or below bottommost track
-                        let first_rect_top = self.frame_cache.track_rects.first().map(|(_, _, r)| r.top());
-                        let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
-                        let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
-                        let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
-
-                        if above_all && !is_audio_only {
-                            // Create new video track at top
-                            let name = state.sequence().next_track_name(TrackKind::Video);
-                            let track_idx = {
-                                state.sequence_mut().add_video_track(name);
-                                // New video track inserted before first audio track — find it
-                                // It's the topmost video track (index 0 after insertion)
-                                0
-                            };
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
-                            handled = true;
-                            tracing::info!("Auto-created video track for media drop above timeline");
-                        } else if below_all && is_audio_only {
-                            // Create new audio track at bottom
-                            let name = state.sequence().next_track_name(TrackKind::Audio);
-                            state.sequence_mut().add_audio_track(name);
-                            let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
-                            handled = true;
-                            tracing::info!("Auto-created audio track for media drop below timeline");
-                        } else if below_all && !is_audio_only {
-                            // Video media below all tracks — create video track above audio
-                            let name = state.sequence().next_track_name(TrackKind::Video);
-                            state.sequence_mut().add_video_track(name);
-                            // add_video_track inserts before first audio track
-                            let track_idx = state.sequence().tracks.iter()
-                                .rposition(|t| t.kind == TrackKind::Video)
-                                .unwrap_or(0);
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
-                            handled = true;
-                            tracing::info!("Auto-created video track for media drop below timeline");
-                        } else if above_all && is_audio_only {
-                            // Audio media above all tracks — create audio track at bottom
-                            let name = state.sequence().next_track_name(TrackKind::Audio);
-                            state.sequence_mut().add_audio_track(name);
-                            let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
-                            handled = true;
-                            tracing::info!("Auto-created audio track for media drop above timeline");
-                        }
-                    }
-                }
-                if handled {
-                    state.dirty = true;
-                    cmds.push(AppCommand::SequenceUpdated);
-                }
-                state.dragging_media = None;
-            }
-        }
+        self.handle_media_auto_create_tracks(ui, state, &layout, &mut cmds);
 
         self.draw_drag_ghosts(ui, state);
 
-        // Title template drag released outside any track — auto-create text track
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
-            && !ui.input(|i| i.pointer.any_down())
-        {
-            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                // Check if cursor is outside all track rects
-                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
-                if !on_any_track && content_rect.contains(cursor_pos) {
-                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
-                        // Create a new text track and place the title there
-                        let track_num = state.sequence().tracks.iter()
-                            .filter(|t| t.kind == TrackKind::Text).count() + 1;
-                        let track = klipp_timeline::Track::new(
-                            &format!("Text {track_num}"),
-                            TrackKind::Text,
-                        );
-                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                        let track_idx = 0;
-                        let rel_x = cursor_pos.x - content_rect.left();
-                        let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
-                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                        let frame = (time_secs * fps_rate as f32) as i64;
-                        let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
-                        let duration_frames = fps_rate * 5;
-                        state.pending_title_data = Some(title_data);
-                        state.pending_title_animation = animation;
-                        cmds.push(AppCommand::CreateTitleClip {
-                            track_index: track_idx,
-                            timeline_in,
-                            duration_frames,
-                        });
-                        state.dirty = true;
-                        cmds.push(AppCommand::SequenceUpdated);
-                        state.toast.show(format!("\"{}\" title added to new track", template_name));
-                    }
-                } else if !on_any_track {
-                    // Released outside content area — cancel drag
-                    state.drag_drop.end();
-                }
-            } else {
-                state.drag_drop.end();
-            }
-        }
+        self.handle_title_drop_cleanup(ui, state, &layout, &mut cmds);
 
         // Global drag cleanup — if mouse released anywhere (not on a valid target), end the drag
-        {
-            let any_down = ui.input(|i| i.pointer.any_down());
-            if !any_down
-                && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
-                    | Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
-                    state.drag_drop.end();
-                }
-        }
+        self.handle_global_drag_cleanup(ui, state);
 
         // Range guide lines — 1px amber vertical lines at in/out points through track area
-        {
-            let theme = crate::theme::KlippTheme::default();
-            let zoom = state.timeline_zoom;
-            let scroll = state.timeline_scroll_x;
-            if let Some(in_pt) = state.sequence().in_point {
-                let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
-                if x >= content_rect.left() && x <= content_rect.right() {
-                    crate::timeline::range_visuals::draw_guide_line(&painter, x, tracks_start_y, content_rect.bottom(), &theme);
-                }
-            }
-            if let Some(out_pt) = state.sequence().out_point {
-                let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
-                if x >= content_rect.left() && x <= content_rect.right() {
-                    crate::timeline::range_visuals::draw_guide_line(&painter, x, tracks_start_y, content_rect.bottom(), &theme);
-                }
-            }
-        }
+        self.draw_range_guides(&painter, state, content_rect, tracks_start_y);
 
         self.draw_playhead(state, &painter, content_rect);
         self.draw_snap_line(state, &painter, content_rect, tracks_start_y);
@@ -1065,468 +502,32 @@ impl TimelinePanel {
         // Process dragging_audio_keyframe: update position on drag, clear on release.
         let pointer_released = ui.input(|i| i.pointer.primary_released());
         let pointer_down = ui.input(|i| i.pointer.primary_down());
-        if let Some(ref drag_kf) = state.dragging_audio_keyframe.clone() {
-            if pointer_released || !pointer_down {
-                // Release: send end-drag for undo coalescing, then clear drag state
-                let drag_key = format!("kf:audio:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
-                state.dragging_audio_keyframe = None;
-            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                // Find the clip's screen rect to map position back to time/value
-                let zoom = state.timeline_zoom;
-                let scroll = state.timeline_scroll_x;
-                // Find clip in sequence to get its rect
-                for (ti, track) in state.sequence().tracks.iter().enumerate() {
-                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = effective_track_height(track);
-                        // Find track_rect from track_rects cache
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
-                            let content_left = track_rect.left(); // approximation — content_rect not available here
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
-                                egui::Rect::from_min_size(
-                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
-                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
-                                )
-                            };
-                            let clip_dur_secs = clip.duration().to_secs_f64();
-                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
-                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
-                                let mut new_time = frac * clip_dur_secs;
-
-                                // ── Snap keyframe to notable positions ──
-                                // Snap threshold: 8px converted to time
-                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
-
-                                // Snap to playhead position (relative to clip start)
-                                let playhead_abs = state.playhead_smooth_secs;
-                                let clip_start_abs = clip.timeline_in.to_secs_f64();
-                                let playhead_rel = playhead_abs - clip_start_abs;
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
-                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
-                                        new_time = playhead_rel;
-                                    }
-
-                                // Snap to clip start boundary
-                                if new_time < snap_thresh_secs {
-                                    new_time = 0.0;
-                                }
-                                // Snap to clip end boundary
-                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs {
-                                    new_time = clip_dur_secs;
-                                }
-
-                                // Snap to other keyframes on the same clip/param
-                                let keyframes = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                };
-                                for (ki, kf) in keyframes.iter().enumerate() {
-                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
-                                        new_time = kf.time_secs;
-                                        break;
-                                    }
-                                }
-
-                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
-                                // Auto-scale Y range to match the drawing code
-                                let (static_val, kfs_ref) = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => (clip.volume, &clip.volume_keyframes),
-                                    klipp_core::AudioParam::Pan => (clip.pan, &clip.pan_keyframes),
-                                    klipp_core::AudioParam::Gain => (clip.gain, &clip.gain_keyframes),
-                                };
-                                let mut v_min = static_val;
-                                let mut v_max = static_val;
-                                for kf in kfs_ref.iter() {
-                                    if kf.value < v_min { v_min = kf.value; }
-                                    if kf.value > v_max { v_max = kf.value; }
-                                }
-                                let v_span = (v_max - v_min).max(0.01);
-                                let v_pad = v_span * 0.2;
-                                let p_min = v_min - v_pad;
-                                let p_range = v_span + v_pad * 2.0;
-                                let new_value = p_min + normalized * p_range;
-                                cmds.push(AppCommand::MoveAudioKeyframe {
-                                    clip_id: drag_kf.clip_id,
-                                    param: drag_kf.param,
-                                    index: drag_kf.keyframe_index,
-                                    new_time_secs: new_time,
-                                    new_value,
-                                });
-
-                                // Live value readout tooltip
-                                let value_text = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => format!("{:.2}", new_value),
-                                    klipp_core::AudioParam::Pan => format!("{:.2}", new_value),
-                                    klipp_core::AudioParam::Gain => format!("{:.2}", new_value),
-                                };
-                                let time_text = format!("{:.2}s", new_time);
-                                let tooltip = format!("{} | {}", time_text, value_text);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
-                                painter.text(
-                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
-                                    egui::Align2::LEFT_BOTTOM,
-                                    &tooltip,
-                                    egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
-                                );
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.handle_audio_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Video keyframe rubber band drag update ─────────────────────
-        if let Some(ref drag_kf) = state.dragging_video_keyframe.clone() {
-            if pointer_released || !pointer_down {
-                let drag_key = format!("kf:video:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
-                state.dragging_video_keyframe = None;
-            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                let zoom = state.timeline_zoom;
-                let scroll = state.timeline_scroll_x;
-                for (ti, track) in state.sequence().tracks.iter().enumerate() {
-                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
-                            let content_left = track_rect.left();
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
-                                egui::Rect::from_min_size(
-                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
-                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
-                                )
-                            };
-                            let clip_dur_secs = clip.duration().to_secs_f64();
-                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
-                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
-                                let mut new_time = frac * clip_dur_secs;
-
-                                // Snap to notable positions
-                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
-                                let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
-                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
-                                        new_time = playhead_rel;
-                                    }
-                                if new_time < snap_thresh_secs { new_time = 0.0; }
-                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
-
-                                // Snap to other keyframes
-                                let keyframes = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                };
-                                for (ki, kf) in keyframes.iter().enumerate() {
-                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
-                                        new_time = kf.time_secs;
-                                        break;
-                                    }
-                                }
-
-                                // Map Y to param value using auto-scaled range
-                                let base_val = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => {
-                                        clip.builtin_effects.iter()
-                                            .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                            .unwrap_or(1.0)
-                                    }
-                                    _ => {
-                                        let t = clip.builtin_effects.iter()
-                                            .find_map(|e| match e {
-                                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                                    Some((*position_x, *position_y, *scale_x, *rotation)),
-                                                _ => None,
-                                            })
-                                            .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                                        match drag_kf.param {
-                                            klipp_core::VideoParam::PositionX => t.0,
-                                            klipp_core::VideoParam::PositionY => t.1,
-                                            klipp_core::VideoParam::Scale => t.2,
-                                            klipp_core::VideoParam::Rotation => t.3,
-                                            _ => unreachable!(),
-                                        }
-                                    }
-                                };
-                                let mut val_min = base_val;
-                                let mut val_max = base_val;
-                                for kf in keyframes.iter() {
-                                    if kf.value < val_min { val_min = kf.value; }
-                                    if kf.value > val_max { val_max = kf.value; }
-                                }
-                                let val_span = (val_max - val_min).max(0.01);
-                                let padding = val_span * 0.2;
-                                let p_min = val_min - padding;
-                                let p_range = val_span + padding * 2.0;
-
-                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
-                                let new_value = p_min + normalized * p_range;
-
-                                cmds.push(AppCommand::MoveVideoKeyframe {
-                                    clip_id: drag_kf.clip_id,
-                                    param: drag_kf.param,
-                                    index: drag_kf.keyframe_index,
-                                    new_time_secs: new_time,
-                                    new_value,
-                                });
-
-                                // Live value readout tooltip
-                                let value_text = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", new_value * 100.0),
-                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", new_value),
-                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
-                                    klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
-                                    klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
-                                };
-                                let time_text = format!("{:.2}s", new_time);
-                                let tooltip = format!("{} | {}", time_text, value_text);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
-                                painter.text(
-                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
-                                    egui::Align2::LEFT_BOTTOM,
-                                    &tooltip,
-                                    egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
-                                );
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.handle_video_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Flat rubber band drag release ────────────────────────────────
-        if state.dragging_rubber_band.is_some() && (pointer_released || !pointer_down) {
-            state.dragging_rubber_band = None;
-        }
+        self.handle_rubber_band_release(ui, state);
 
         // ── Bezier tangent handle drag update ──────────────────────────────
-        if let Some(ref drag_bh) = state.dragging_bezier_handle.clone() {
-            if pointer_released || !pointer_down {
-                let drag_key = format!("kf:tangent:{}:{:?}:{}", drag_bh.clip_id.0, drag_bh.param, drag_bh.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_bh.clip_id });
-                state.dragging_bezier_handle = None;
-            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                let zoom = state.timeline_zoom;
-                let scroll = state.timeline_scroll_x;
-                for (ti, track) in state.sequence().tracks.iter().enumerate() {
-                    if let Some(clip) = track.find_clip(drag_bh.clip_id) {
-                        let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
-                            let content_left = track_rect.left();
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
-                                egui::Rect::from_min_size(
-                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
-                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
-                                )
-                            };
-                            let clip_dur_secs = clip.duration().to_secs_f64();
-                            // Auto-scale Y range to match the drawing code
-                            let keyframes = match drag_bh.param {
-                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                            };
-                            let bh_static = match drag_bh.param {
-                                klipp_core::AudioParam::Volume => clip.volume,
-                                klipp_core::AudioParam::Pan => clip.pan,
-                                klipp_core::AudioParam::Gain => clip.gain,
-                            };
-                            let mut bh_vmin = bh_static;
-                            let mut bh_vmax = bh_static;
-                            for k in keyframes.iter() {
-                                if k.value < bh_vmin { bh_vmin = k.value; }
-                                if k.value > bh_vmax { bh_vmax = k.value; }
-                            }
-                            let bh_span = (bh_vmax - bh_vmin).max(0.01);
-                            let bh_pad = bh_span * 0.2;
-                            let p_min = bh_vmin - bh_pad;
-                            let p_range = bh_span + bh_pad * 2.0;
-                            if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
-                                let kf_x = {
-                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
-                                };
-                                let kf_y = {
-                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
-                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
-                                };
-                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
-                                let value_scale = clip_rect_approx.height() / p_range;
-
-                                // Convert mouse position to tangent offset
-                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
-                                let value_offset = -(pos.y - kf_y) / value_scale;
-
-                                let (ti_arg, to_arg) = if drag_bh.is_out {
-                                    // Constrain tangent_out time offset to be non-negative
-                                    let clamped_time = time_offset.max(0.0) as f64;
-                                    (None, Some((clamped_time, value_offset)))
-                                } else {
-                                    // Constrain tangent_in time offset to be non-positive
-                                    let clamped_time = time_offset.min(0.0) as f64;
-                                    (Some((clamped_time, value_offset)), None)
-                                };
-                                cmds.push(AppCommand::SetAudioKeyframeTangent {
-                                    clip_id: drag_bh.clip_id,
-                                    param: drag_bh.param,
-                                    keyframe_index: drag_bh.keyframe_index,
-                                    tangent_in: ti_arg,
-                                    tangent_out: to_arg,
-                                });
-
-                                // Live tangent readout tooltip
-                                let (dt, dv) = if drag_bh.is_out {
-                                    (time_offset.max(0.0), value_offset)
-                                } else {
-                                    (time_offset.min(0.0), value_offset)
-                                };
-                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
-                                painter.text(
-                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
-                                    egui::Align2::LEFT_BOTTOM,
-                                    &tooltip,
-                                    egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
-                                );
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.handle_audio_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Video Bezier tangent handle drag update ─────────────────────────
-        if let Some(ref drag_vbh) = state.dragging_video_bezier_handle.clone() {
-            if pointer_released || !pointer_down {
-                let drag_key = format!("kf:vtangent:{}:{:?}:{}", drag_vbh.clip_id.0, drag_vbh.param, drag_vbh.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_vbh.clip_id });
-                state.dragging_video_bezier_handle = None;
-            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                let zoom = state.timeline_zoom;
-                let scroll = state.timeline_scroll_x;
-                for (ti, track) in state.sequence().tracks.iter().enumerate() {
-                    if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
-                        let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
-                            let content_left = track_rect.left();
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
-                                egui::Rect::from_min_size(
-                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
-                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
-                                )
-                            };
-                            let clip_dur_secs = clip.duration().to_secs_f64();
-
-                            // Read keyframes for the dragged video parameter
-                            let vrb_opacity_static = clip.builtin_effects.iter()
-                                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                .unwrap_or(1.0);
-                            let vrb_transform = clip.builtin_effects.iter()
-                                .find_map(|e| match e {
-                                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                        Some((*position_x, *position_y, *scale_x, *rotation)),
-                                    _ => None,
-                                })
-                                .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                            let (vrb_static_val, vrb_keyframes) = match drag_vbh.param {
-                                klipp_core::VideoParam::Opacity => (vrb_opacity_static, &clip.opacity_keyframes),
-                                klipp_core::VideoParam::PositionX => (vrb_transform.0, &clip.transform_pos_x_keyframes),
-                                klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
-                                klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
-                                klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
-                            };
-
-                            // Compute auto-scale Y axis (same as rendering)
-                            let mut vrb_val_min = vrb_static_val;
-                            let mut vrb_val_max = vrb_static_val;
-                            for kf in vrb_keyframes.iter() {
-                                if kf.value < vrb_val_min { vrb_val_min = kf.value; }
-                                if kf.value > vrb_val_max { vrb_val_max = kf.value; }
-                            }
-                            let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
-                            let vrb_padding = vrb_val_span * 0.2;
-                            let p_min = vrb_val_min - vrb_padding;
-                            let p_range = vrb_val_span + vrb_padding * 2.0;
-
-                            if let Some(kf) = vrb_keyframes.get(drag_vbh.keyframe_index) {
-                                let kf_x = {
-                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
-                                };
-                                let kf_y = {
-                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
-                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
-                                };
-                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
-                                let value_scale = clip_rect_approx.height() / p_range;
-
-                                // Convert mouse position to tangent offset
-                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
-                                let value_offset = -(pos.y - kf_y) / value_scale;
-
-                                let (ti_arg, to_arg) = if drag_vbh.is_out {
-                                    let clamped_time = time_offset.max(0.0) as f64;
-                                    (None, Some((clamped_time, value_offset)))
-                                } else {
-                                    let clamped_time = time_offset.min(0.0) as f64;
-                                    (Some((clamped_time, value_offset)), None)
-                                };
-                                cmds.push(AppCommand::SetVideoKeyframeTangent {
-                                    clip_id: drag_vbh.clip_id,
-                                    param: drag_vbh.param,
-                                    keyframe_index: drag_vbh.keyframe_index,
-                                    tangent_in: ti_arg,
-                                    tangent_out: to_arg,
-                                });
-
-                                // Live tangent readout tooltip
-                                let (dt, dv) = if drag_vbh.is_out {
-                                    (time_offset.max(0.0), value_offset)
-                                } else {
-                                    (time_offset.min(0.0), value_offset)
-                                };
-                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
-                                painter.text(
-                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
-                                    egui::Align2::LEFT_BOTTOM,
-                                    &tooltip,
-                                    egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
-                                );
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.handle_video_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Keyframe interpolation context menu popup ───────────────────────
+        self.show_keyframe_context_menu(ui, state, &mut cmds);
+
+        cmds
+    }
+
+    fn show_keyframe_context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
         if let Some(ref ctx_menu) = state.keyframe_context_menu.clone() {
             let menu_id = egui::Id::new("kf_interp_ctx_menu");
             let mut close_menu = false;
@@ -1765,7 +766,7 @@ impl TimelinePanel {
                                     egui::RichText::new("  Linear")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(&mut cmds, klipp_core::Interpolation::Linear);
+                                    emit_interp(cmds, klipp_core::Interpolation::Linear);
                                     close_menu = true;
                                 }
                             }
@@ -1779,7 +780,7 @@ impl TimelinePanel {
                                     egui::RichText::new("  Bezier (Custom)")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(&mut cmds, klipp_core::Interpolation::Bezier);
+                                    emit_interp(cmds, klipp_core::Interpolation::Bezier);
                                     close_menu = true;
                                 }
                             }
@@ -1792,8 +793,8 @@ impl TimelinePanel {
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(&mut cmds, klipp_core::Interpolation::Bezier);
-                                    emit_ease(&mut cmds, preset);
+                                    emit_interp(cmds, klipp_core::Interpolation::Bezier);
+                                    emit_ease(cmds, preset);
                                     close_menu = true;
                                 }
                             }
@@ -1807,7 +808,7 @@ impl TimelinePanel {
                                     egui::RichText::new("  Step (Hold)")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(&mut cmds, klipp_core::Interpolation::Step);
+                                    emit_interp(cmds, klipp_core::Interpolation::Step);
                                     close_menu = true;
                                 }
                             }
@@ -2005,8 +1006,637 @@ impl TimelinePanel {
                 }
             }
         }
+    }
 
-        cmds
+    fn handle_media_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_kind: TrackKind,
+        track_name: &str,
+        track_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if let Some(drag_media_id) = state.dragging_media {
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if let Some(pos) = hover_pos {
+                if track_rect.contains(pos) {
+                    let is_audio_only = state.media_pool.get(&drag_media_id)
+                        .map(|item| item.video_codec.is_empty())
+                        .unwrap_or(false);
+                    let compatible = match track_kind {
+                        TrackKind::Audio => is_audio_only,
+                        _ => !is_audio_only,
+                    };
+                    if compatible {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                        );
+                        if !any_down {
+                            state.dragging_media = None;
+                            tracing::info!("Media drop: {:?} -> track {} ({})", drag_media_id, track_idx, track_name);
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                        }
+                    } else {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_effect_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_rect: egui::Rect,
+        content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })) {
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if let Some(pos) = hover_pos {
+                if track_rect.contains(pos) {
+                    let zoom = state.timeline_zoom;
+                    let scroll = state.timeline_scroll_x;
+                    let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                    let mut hit_clip_id = None;
+                    for clip in clips {
+                        let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                        let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+                        let clip_rect = egui::Rect::from_min_size(
+                            egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
+                            egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                        );
+                        if clip_rect.contains(pos) {
+                            hit_clip_id = Some(clip.id);
+                            painter.rect_stroke(
+                                clip_rect,
+                                3.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(160, 100, 220)),
+                            );
+                            break;
+                        }
+                    }
+
+                    if !any_down {
+                        if let Some(clip_id) = hit_clip_id {
+                            if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
+                                if is_builtin {
+                                    let effect = state.effect_registry.effects.iter()
+                                        .find(|e| e.name == name)
+                                        .and_then(|e| match &e.source {
+                                            crate::browser::effect_registry::EffectSource::Builtin(eff) => Some(eff.clone()),
+                                            _ => None,
+                                        });
+                                    if let Some(effect) = effect {
+                                        cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
+                                        state.toast.show(format!("\"{}\" applied to clip", name));
+                                    }
+                                } else {
+                                    cmds.push(AppCommand::AddEffect { clip_id, plugin_name: plugin_id });
+                                    state.toast.show(format!("\"{}\" applied to clip", name));
+                                }
+                            }
+                        } else {
+                            state.drag_drop.end();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_audio_effect_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_rect: egui::Rect,
+        content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if let Some(pos) = hover_pos {
+                if track_rect.contains(pos) {
+                    let zoom = state.timeline_zoom;
+                    let scroll = state.timeline_scroll_x;
+                    let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                    let mut hit_clip_id = None;
+                    for clip in clips {
+                        let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                        let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+                        let clip_rect = egui::Rect::from_min_size(
+                            egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
+                            egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                        );
+                        if clip_rect.contains(pos) {
+                            hit_clip_id = Some(clip.id);
+                            painter.rect_stroke(
+                                clip_rect, 3.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 140)),
+                            );
+                            break;
+                        }
+                    }
+
+                    if !any_down {
+                        if let Some(clip_id) = hit_clip_id {
+                            if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
+                                cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
+                                state.toast.show(format!("\"{}\" applied to clip", name));
+                            }
+                        } else {
+                            state.drag_drop.end();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_title_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_kind: TrackKind,
+        track_rect: egui::Rect,
+        content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if let Some(pos) = hover_pos {
+                if track_rect.contains(pos) {
+                    let compatible = track_kind == TrackKind::Text || track_kind == TrackKind::Video;
+                    if compatible {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)),
+                        );
+                        if !any_down {
+                            if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
+                                let rel_x = pos.x - content_rect.left();
+                                let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
+                                let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                                let frame = (time_secs * fps_rate as f32) as i64;
+                                let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                                let duration_frames = fps_rate * 5;
+                                state.pending_title_data = Some(title_data);
+                                state.pending_title_animation = animation;
+                                cmds.push(AppCommand::CreateTitleClip {
+                                    track_index: track_idx,
+                                    timeline_in,
+                                    duration_frames,
+                                });
+                                state.toast.show(format!("\"{}\" title added to track", template_name));
+                            }
+                        }
+                    } else {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_track_resize_handle(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_y: f32,
+        track_height: f32,
+        header_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let handle_h = 4.0;
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(header_rect.left(), track_y + track_height - handle_h),
+            egui::vec2(state.track_header_width, handle_h * 2.0),
+        );
+        let handle_resp = ui.interact(
+            handle_rect,
+            egui::Id::new(("track_resize", track_idx)),
+            egui::Sense::click_and_drag(),
+        );
+        if handle_resp.hovered() || handle_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+
+        let track_id = state.sequence().tracks[track_idx].id;
+
+        if handle_resp.double_clicked() {
+            let new_h = {
+                let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
+                if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
+                    track.pre_collapse_height.take()
+                } else {
+                    track.pre_collapse_height = track.custom_height.or(Some(track_height));
+                    Some(MIN_TRACK_HEIGHT)
+                }
+            };
+            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
+        }
+
+        handle_resp.context_menu(|ui| {
+            if ui.button("Small (32px)").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
+                ui.close_menu();
+            }
+            if ui.button("Medium (64px)").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
+                ui.close_menu();
+            }
+            if ui.button("Large (120px)").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
+                ui.close_menu();
+            }
+            if ui.button("Expanded (200px)").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
+                ui.close_menu();
+            }
+            if ui.button("Maximum (300px)").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(300.0) });
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Reset to default").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
+                ui.close_menu();
+            }
+        });
+
+        if handle_resp.drag_started() {
+            self.resizing_track = Some((track_idx, handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0), track_height));
+        }
+        if handle_resp.dragged() {
+            if let Some((ri, start_y, orig_h)) = self.resizing_track {
+                if ri == track_idx {
+                    if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                        let delta = pos.y - start_y;
+                        let new_h = (orig_h + delta).clamp(MIN_TRACK_HEIGHT, MAX_TRACK_HEIGHT);
+                        let ctrl = ui.input(|i| i.modifiers.ctrl);
+                        if ctrl {
+                            for t in &mut state.sequences[state.active_sequence_idx].tracks {
+                                t.custom_height = Some(new_h);
+                            }
+                        } else {
+                            state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
+                        }
+                        state.dirty = true;
+                    }
+                }
+            }
+        }
+        if handle_resp.drag_stopped() {
+            self.resizing_track = None;
+            let final_h = state.sequence().tracks[track_idx].custom_height;
+            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: final_h });
+        }
+        if handle_resp.hovered() || handle_resp.dragged() {
+            painter.line_segment(
+                [
+                    egui::pos2(header_rect.left() + 2.0, track_y + track_height - 1.0),
+                    egui::pos2(header_rect.right() - 2.0, track_y + track_height - 1.0),
+                ],
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 160, 40)),
+            );
+        }
+    }
+
+    fn handle_title_drop_cleanup(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        layout: &TimelineLayout,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let content_rect = layout.content_rect;
+        // Title template drag released outside any track — auto-create text track
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
+            && !ui.input(|i| i.pointer.any_down())
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                // Check if cursor is outside all track rects
+                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                if !on_any_track && content_rect.contains(cursor_pos) {
+                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
+                        // Create a new text track and place the title there
+                        let track_num = state.sequence().tracks.iter()
+                            .filter(|t| t.kind == TrackKind::Text).count() + 1;
+                        let track = klipp_timeline::Track::new(
+                            &format!("Text {track_num}"),
+                            TrackKind::Text,
+                        );
+                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                        let track_idx = 0;
+                        let rel_x = cursor_pos.x - content_rect.left();
+                        let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
+                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                        let frame = (time_secs * fps_rate as f32) as i64;
+                        let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                        let duration_frames = fps_rate * 5;
+                        state.pending_title_data = Some(title_data);
+                        state.pending_title_animation = animation;
+                        cmds.push(AppCommand::CreateTitleClip {
+                            track_index: track_idx,
+                            timeline_in,
+                            duration_frames,
+                        });
+                        state.dirty = true;
+                        cmds.push(AppCommand::SequenceUpdated);
+                        state.toast.show(format!("\"{}\" title added to new track", template_name));
+                    }
+                } else if !on_any_track {
+                    // Released outside content area — cancel drag
+                    state.drag_drop.end();
+                }
+            } else {
+                state.drag_drop.end();
+            }
+        }
+    }
+
+    fn handle_media_auto_create_tracks(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        _layout: &TimelineLayout,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        // Media drag released outside any track — auto-create track if enabled
+        if let Some(drag_media_id) = state.dragging_media {
+            if !ui.input(|i| i.pointer.any_down()) {
+                let mut handled = false;
+                if state.auto_create_tracks {
+                    if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                        let is_audio_only = state.media_pool.get(&drag_media_id)
+                            .map(|item| item.video_codec.is_empty())
+                            .unwrap_or(false);
+                        // Check if cursor is above topmost track or below bottommost track
+                        let first_rect_top = self.frame_cache.track_rects.first().map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
+                        let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
+
+                        if above_all && !is_audio_only {
+                            // Create new video track at top
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            let track_idx = {
+                                state.sequence_mut().add_video_track(name);
+                                // New video track inserted before first audio track — find it
+                                // It's the topmost video track (index 0 after insertion)
+                                0
+                            };
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created video track for media drop above timeline");
+                        } else if below_all && is_audio_only {
+                            // Create new audio track at bottom
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            state.sequence_mut().add_audio_track(name);
+                            let track_idx = state.sequence().tracks.len() - 1;
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created audio track for media drop below timeline");
+                        } else if below_all && !is_audio_only {
+                            // Video media below all tracks — create video track above audio
+                            let name = state.sequence().next_track_name(TrackKind::Video);
+                            state.sequence_mut().add_video_track(name);
+                            // add_video_track inserts before first audio track
+                            let track_idx = state.sequence().tracks.iter()
+                                .rposition(|t| t.kind == TrackKind::Video)
+                                .unwrap_or(0);
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created video track for media drop below timeline");
+                        } else if above_all && is_audio_only {
+                            // Audio media above all tracks — create audio track at bottom
+                            let name = state.sequence().next_track_name(TrackKind::Audio);
+                            state.sequence_mut().add_audio_track(name);
+                            let track_idx = state.sequence().tracks.len() - 1;
+                            cmds.push(AppCommand::AppendClipToTrack {
+                                media_id: drag_media_id,
+                                track_index: track_idx,
+                            });
+                            handled = true;
+                            tracing::info!("Auto-created audio track for media drop above timeline");
+                        }
+                    }
+                }
+                if handled {
+                    state.dirty = true;
+                    cmds.push(AppCommand::SequenceUpdated);
+                }
+                state.dragging_media = None;
+            }
+        }
+    }
+
+    fn handle_empty_track_area_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        layout: &TimelineLayout,
+        track_y: f32,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let header_rect = layout.header_rect;
+        // ── Empty area below tracks: right-click to add new track ──
+        if !self.embedded {
+            let empty_area = egui::Rect::from_min_max(
+                egui::pos2(header_rect.left(), track_y),
+                egui::pos2(header_rect.right(), header_rect.bottom()),
+            );
+            if empty_area.height() > 10.0 {
+                let empty_resp = ui.interact(
+                    empty_area,
+                    ui.id().with("empty_track_area_ctx"),
+                    egui::Sense::click(),
+                );
+                empty_resp.context_menu(|ui| {
+                    ui.set_min_width(160.0);
+                    ui.label(egui::RichText::new("Add Track").strong().size(11.0));
+                    ui.separator();
+                    if ui.button("Video Track").clicked() {
+                        let name = state.sequence().next_track_name(TrackKind::Video);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Video);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Audio Track").clicked() {
+                        let name = state.sequence().next_track_name(TrackKind::Audio);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Text Track").clicked() {
+                        let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Text);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                    if ui.button("Subtitle Track").clicked() {
+                        let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
+                        let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
+                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        cmds.push(AppCommand::SequenceUpdated);
+                        ui.close_menu();
+                    }
+                });
+            }
+        }
+    }
+
+    fn handle_ruler_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        painter: &egui::Painter,
+        layout: &TimelineLayout,
+        overview_bar_consumed: bool,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let content_rect = layout.content_rect;
+        let ruler_rect = layout.ruler_rect;
+        // Sequence markers + ruler click — skip when embedded
+        if !self.embedded {
+            let zoom = state.timeline_zoom;
+            let scroll = state.timeline_scroll_x;
+            for marker in &state.sequence().markers {
+                let x = content_rect.left() + marker.position.to_secs_f64() as f32 * zoom - scroll;
+                if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
+                    let (r, g, b) = marker.color.to_rgb();
+                    let color = egui::Color32::from_rgb(r, g, b);
+                    let top = ruler_rect.bottom() - 10.0;
+                    let bot = ruler_rect.bottom() - 1.0;
+                    let half_w = 4.0;
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            egui::pos2(x - half_w, top),
+                            egui::pos2(x + half_w, top),
+                            egui::pos2(x, bot),
+                        ],
+                        color,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+
+            let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
+            // Track scrub start/end for proxy auto-switch
+            if ruler_response.drag_started() && !state.is_scrubbing {
+                state.is_scrubbing = true;
+                state.pre_scrub_use_proxies = state.use_proxies;
+                cmds.push(AppCommand::BeginScrub);
+            }
+            if ruler_response.drag_stopped() && state.is_scrubbing {
+                state.is_scrubbing = false;
+                cmds.push(AppCommand::EndScrub);
+            }
+            if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
+                if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                    let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
+                    let secs = x_in_content / state.timeline_zoom;
+                    let tc = RationalTime::from_secs_f64(secs as f64, state.fps.rate());
+                    let dur = state.sequence_duration();
+                    let clamped = if dur.value > 0 {
+                        RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
+                    } else {
+                        RationalTime { value: tc.value.max(0), rate: tc.rate }
+                    };
+                    cmds.push(AppCommand::SeekTo(clamped));
+                }
+            }
+        }
+    }
+
+    fn handle_overview_bar_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        layout: &TimelineLayout,
+    ) -> bool {
+        // Overview bar interaction — raw pointer (ui.interact doesn't work in manual layout)
+        // Skip when embedded — the new timeline shell handles its own overview
+        let mut overview_bar_consumed = false;
+        if state.show_overview_bar && !self.embedded {
+            let overview_rect = egui::Rect::from_min_size(
+                layout.content_rect.min,
+                egui::vec2(layout.content_rect.width(), OVERVIEW_BAR_HEIGHT),
+            );
+            let dur_secs = state.sequence().total_duration().to_secs_f64() as f32;
+            if dur_secs > 0.0 {
+                let px_per_sec = overview_rect.width() / dur_secs;
+                let zoom = state.timeline_zoom;
+                let content_w = state.last_timeline_content_width;
+                let (pointer_pos, primary_down, primary_released, drag_delta) = ui.input(|i| (
+                    i.pointer.latest_pos(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                    i.pointer.delta(),
+                ));
+                let in_overview = pointer_pos.is_some_and(|p| overview_rect.contains(p));
+
+                // Drag: pointer is in overview and button held with movement
+                if in_overview && primary_down && drag_delta.x.abs() > 0.5 {
+                    overview_bar_consumed = true;
+                    let delta_secs = drag_delta.x / px_per_sec;
+                    state.timeline_scroll_x = (state.timeline_scroll_x + delta_secs * zoom).max(0.0);
+                }
+                // Click: pointer released in overview — jump viewport
+                if in_overview && primary_released {
+                    overview_bar_consumed = true;
+                    if let Some(pos) = pointer_pos {
+                        let click_secs = (pos.x - overview_rect.left()) / px_per_sec;
+                        let view_width_secs = content_w / zoom;
+                        let new_start_secs = click_secs - view_width_secs / 2.0;
+                        state.timeline_scroll_x = (new_start_secs * zoom).max(0.0);
+                    }
+                }
+            }
+        }
+        overview_bar_consumed
     }
 
     /// Draw a single track's header: name, lock/visibility/mute/solo buttons, controls, context menu.
@@ -9260,6 +8890,544 @@ impl TimelinePanel {
                 }
                 t += frame_secs;
             }
+        }
+    }
+
+    fn handle_video_bezier_tangent_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        if let Some(ref drag_vbh) = state.dragging_video_bezier_handle.clone() {
+            if pointer_released || !pointer_down {
+                let drag_key = format!("kf:vtangent:{}:{:?}:{}", drag_vbh.clip_id.0, drag_vbh.param, drag_vbh.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_vbh.clip_id });
+                state.dragging_video_bezier_handle = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
+                        let track_height = effective_track_height(track);
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+
+                            // Read keyframes for the dragged video parameter
+                            let vrb_opacity_static = clip.builtin_effects.iter()
+                                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                                .unwrap_or(1.0);
+                            let vrb_transform = clip.builtin_effects.iter()
+                                .find_map(|e| match e {
+                                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                                        Some((*position_x, *position_y, *scale_x, *rotation)),
+                                    _ => None,
+                                })
+                                .unwrap_or((0.0, 0.0, 1.0, 0.0));
+                            let (vrb_static_val, vrb_keyframes) = match drag_vbh.param {
+                                klipp_core::VideoParam::Opacity => (vrb_opacity_static, &clip.opacity_keyframes),
+                                klipp_core::VideoParam::PositionX => (vrb_transform.0, &clip.transform_pos_x_keyframes),
+                                klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
+                                klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
+                                klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
+                            };
+
+                            // Compute auto-scale Y axis (same as rendering)
+                            let mut vrb_val_min = vrb_static_val;
+                            let mut vrb_val_max = vrb_static_val;
+                            for kf in vrb_keyframes.iter() {
+                                if kf.value < vrb_val_min { vrb_val_min = kf.value; }
+                                if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+                            }
+                            let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
+                            let vrb_padding = vrb_val_span * 0.2;
+                            let p_min = vrb_val_min - vrb_padding;
+                            let p_range = vrb_val_span + vrb_padding * 2.0;
+
+                            if let Some(kf) = vrb_keyframes.get(drag_vbh.keyframe_index) {
+                                let kf_x = {
+                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
+                                };
+                                let kf_y = {
+                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
+                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
+                                };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale = clip_rect_approx.height() / p_range;
+
+                                // Convert mouse position to tangent offset
+                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
+                                let value_offset = -(pos.y - kf_y) / value_scale;
+
+                                let (ti_arg, to_arg) = if drag_vbh.is_out {
+                                    let clamped_time = time_offset.max(0.0) as f64;
+                                    (None, Some((clamped_time, value_offset)))
+                                } else {
+                                    let clamped_time = time_offset.min(0.0) as f64;
+                                    (Some((clamped_time, value_offset)), None)
+                                };
+                                cmds.push(AppCommand::SetVideoKeyframeTangent {
+                                    clip_id: drag_vbh.clip_id,
+                                    param: drag_vbh.param,
+                                    keyframe_index: drag_vbh.keyframe_index,
+                                    tangent_in: ti_arg,
+                                    tangent_out: to_arg,
+                                });
+
+                                // Live tangent readout tooltip
+                                let (dt, dv) = if drag_vbh.is_out {
+                                    (time_offset.max(0.0), value_offset)
+                                } else {
+                                    (time_offset.min(0.0), value_offset)
+                                };
+                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_audio_bezier_tangent_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        if let Some(ref drag_bh) = state.dragging_bezier_handle.clone() {
+            if pointer_released || !pointer_down {
+                let drag_key = format!("kf:tangent:{}:{:?}:{}", drag_bh.clip_id.0, drag_bh.param, drag_bh.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_bh.clip_id });
+                state.dragging_bezier_handle = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_bh.clip_id) {
+                        let track_height = effective_track_height(track);
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            // Auto-scale Y range to match the drawing code
+                            let keyframes = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                            };
+                            let bh_static = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => clip.volume,
+                                klipp_core::AudioParam::Pan => clip.pan,
+                                klipp_core::AudioParam::Gain => clip.gain,
+                            };
+                            let mut bh_vmin = bh_static;
+                            let mut bh_vmax = bh_static;
+                            for k in keyframes.iter() {
+                                if k.value < bh_vmin { bh_vmin = k.value; }
+                                if k.value > bh_vmax { bh_vmax = k.value; }
+                            }
+                            let bh_span = (bh_vmax - bh_vmin).max(0.01);
+                            let bh_pad = bh_span * 0.2;
+                            let p_min = bh_vmin - bh_pad;
+                            let p_range = bh_span + bh_pad * 2.0;
+                            if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
+                                let kf_x = {
+                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
+                                };
+                                let kf_y = {
+                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
+                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
+                                };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let value_scale = clip_rect_approx.height() / p_range;
+
+                                // Convert mouse position to tangent offset
+                                let time_offset = (pos.x - kf_x) / pixels_per_sec;
+                                let value_offset = -(pos.y - kf_y) / value_scale;
+
+                                let (ti_arg, to_arg) = if drag_bh.is_out {
+                                    // Constrain tangent_out time offset to be non-negative
+                                    let clamped_time = time_offset.max(0.0) as f64;
+                                    (None, Some((clamped_time, value_offset)))
+                                } else {
+                                    // Constrain tangent_in time offset to be non-positive
+                                    let clamped_time = time_offset.min(0.0) as f64;
+                                    (Some((clamped_time, value_offset)), None)
+                                };
+                                cmds.push(AppCommand::SetAudioKeyframeTangent {
+                                    clip_id: drag_bh.clip_id,
+                                    param: drag_bh.param,
+                                    keyframe_index: drag_bh.keyframe_index,
+                                    tangent_in: ti_arg,
+                                    tangent_out: to_arg,
+                                });
+
+                                // Live tangent readout tooltip
+                                let (dt, dv) = if drag_bh.is_out {
+                                    (time_offset.max(0.0), value_offset)
+                                } else {
+                                    (time_offset.min(0.0), value_offset)
+                                };
+                                let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_video_keyframe_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        if let Some(ref drag_kf) = state.dragging_video_keyframe.clone() {
+            if pointer_released || !pointer_down {
+                let drag_key = format!("kf:video:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+                state.dragging_video_keyframe = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
+                        let track_height = effective_track_height(track);
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left();
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
+                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let mut new_time = frac * clip_dur_secs;
+
+                                // Snap to notable positions
+                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
+                                let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                        new_time = playhead_rel;
+                                    }
+                                if new_time < snap_thresh_secs { new_time = 0.0; }
+                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
+
+                                // Snap to other keyframes
+                                let keyframes = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
+                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
+                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
+                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
+                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                };
+                                for (ki, kf) in keyframes.iter().enumerate() {
+                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                        new_time = kf.time_secs;
+                                        break;
+                                    }
+                                }
+
+                                // Map Y to param value using auto-scaled range
+                                let base_val = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => {
+                                        clip.builtin_effects.iter()
+                                            .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                                            .unwrap_or(1.0)
+                                    }
+                                    _ => {
+                                        let t = clip.builtin_effects.iter()
+                                            .find_map(|e| match e {
+                                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
+                                                    Some((*position_x, *position_y, *scale_x, *rotation)),
+                                                _ => None,
+                                            })
+                                            .unwrap_or((0.0, 0.0, 1.0, 0.0));
+                                        match drag_kf.param {
+                                            klipp_core::VideoParam::PositionX => t.0,
+                                            klipp_core::VideoParam::PositionY => t.1,
+                                            klipp_core::VideoParam::Scale => t.2,
+                                            klipp_core::VideoParam::Rotation => t.3,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                };
+                                let mut val_min = base_val;
+                                let mut val_max = base_val;
+                                for kf in keyframes.iter() {
+                                    if kf.value < val_min { val_min = kf.value; }
+                                    if kf.value > val_max { val_max = kf.value; }
+                                }
+                                let val_span = (val_max - val_min).max(0.01);
+                                let padding = val_span * 0.2;
+                                let p_min = val_min - padding;
+                                let p_range = val_span + padding * 2.0;
+
+                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                let new_value = p_min + normalized * p_range;
+
+                                cmds.push(AppCommand::MoveVideoKeyframe {
+                                    clip_id: drag_kf.clip_id,
+                                    param: drag_kf.param,
+                                    index: drag_kf.keyframe_index,
+                                    new_time_secs: new_time,
+                                    new_value,
+                                });
+
+                                // Live value readout tooltip
+                                let value_text = match drag_kf.param {
+                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", new_value * 100.0),
+                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", new_value),
+                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
+                                    klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
+                                    klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
+                                };
+                                let time_text = format!("{:.2}s", new_time);
+                                let tooltip = format!("{} | {}", time_text, value_text);
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_audio_keyframe_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        if let Some(ref drag_kf) = state.dragging_audio_keyframe.clone() {
+            if pointer_released || !pointer_down {
+                // Release: send end-drag for undo coalescing, then clear drag state
+                let drag_key = format!("kf:audio:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
+                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+                state.dragging_audio_keyframe = None;
+            } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                // Find the clip's screen rect to map position back to time/value
+                let zoom = state.timeline_zoom;
+                let scroll = state.timeline_scroll_x;
+                // Find clip in sequence to get its rect
+                for (ti, track) in state.sequence().tracks.iter().enumerate() {
+                    if let Some(clip) = track.find_clip(drag_kf.clip_id) {
+                        let track_height = effective_track_height(track);
+                        // Find track_rect from track_rects cache
+                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                            let content_left = track_rect.left(); // approximation — content_rect not available here
+                            let clip_rect_approx = {
+                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                                    egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+                                )
+                            };
+                            let clip_dur_secs = clip.duration().to_secs_f64();
+                            if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
+                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let mut new_time = frac * clip_dur_secs;
+
+                                // ── Snap keyframe to notable positions ──
+                                // Snap threshold: 8px converted to time
+                                let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
+
+                                // Snap to playhead position (relative to clip start)
+                                let playhead_abs = state.playhead_smooth_secs;
+                                let clip_start_abs = clip.timeline_in.to_secs_f64();
+                                let playhead_rel = playhead_abs - clip_start_abs;
+                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
+                                        new_time = playhead_rel;
+                                    }
+
+                                // Snap to clip start boundary
+                                if new_time < snap_thresh_secs {
+                                    new_time = 0.0;
+                                }
+                                // Snap to clip end boundary
+                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs {
+                                    new_time = clip_dur_secs;
+                                }
+
+                                // Snap to other keyframes on the same clip/param
+                                let keyframes = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                };
+                                for (ki, kf) in keyframes.iter().enumerate() {
+                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                        new_time = kf.time_secs;
+                                        break;
+                                    }
+                                }
+
+                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                // Auto-scale Y range to match the drawing code
+                                let (static_val, kfs_ref) = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => (clip.volume, &clip.volume_keyframes),
+                                    klipp_core::AudioParam::Pan => (clip.pan, &clip.pan_keyframes),
+                                    klipp_core::AudioParam::Gain => (clip.gain, &clip.gain_keyframes),
+                                };
+                                let mut v_min = static_val;
+                                let mut v_max = static_val;
+                                for kf in kfs_ref.iter() {
+                                    if kf.value < v_min { v_min = kf.value; }
+                                    if kf.value > v_max { v_max = kf.value; }
+                                }
+                                let v_span = (v_max - v_min).max(0.01);
+                                let v_pad = v_span * 0.2;
+                                let p_min = v_min - v_pad;
+                                let p_range = v_span + v_pad * 2.0;
+                                let new_value = p_min + normalized * p_range;
+                                cmds.push(AppCommand::MoveAudioKeyframe {
+                                    clip_id: drag_kf.clip_id,
+                                    param: drag_kf.param,
+                                    index: drag_kf.keyframe_index,
+                                    new_time_secs: new_time,
+                                    new_value,
+                                });
+
+                                // Live value readout tooltip
+                                let value_text = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => format!("{:.2}", new_value),
+                                    klipp_core::AudioParam::Pan => format!("{:.2}", new_value),
+                                    klipp_core::AudioParam::Gain => format!("{:.2}", new_value),
+                                };
+                                let time_text = format!("{:.2}s", new_time);
+                                let tooltip = format!("{} | {}", time_text, value_text);
+                                let painter = ui.painter().with_clip_rect(
+                                    ui.clip_rect().intersect(ui.max_rect()),
+                                );
+                                painter.text(
+                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &tooltip,
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_range_guides(
+        &self,
+        painter: &egui::Painter,
+        state: &AppState,
+        content_rect: egui::Rect,
+        tracks_start_y: f32,
+    ) {
+        let theme = crate::theme::KlippTheme::default();
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        if let Some(in_pt) = state.sequence().in_point {
+            let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
+            if x >= content_rect.left() && x <= content_rect.right() {
+                crate::timeline::range_visuals::draw_guide_line(painter, x, tracks_start_y, content_rect.bottom(), &theme);
+            }
+        }
+        if let Some(out_pt) = state.sequence().out_point {
+            let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
+            if x >= content_rect.left() && x <= content_rect.right() {
+                crate::timeline::range_visuals::draw_guide_line(painter, x, tracks_start_y, content_rect.bottom(), &theme);
+            }
+        }
+    }
+
+    fn handle_global_drag_cleanup(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+    ) {
+        let any_down = ui.input(|i| i.pointer.any_down());
+        if !any_down
+            && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
+                | Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+                state.drag_drop.end();
+            }
+    }
+
+    fn handle_rubber_band_release(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+    ) {
+        let pointer_released = ui.input(|i| i.pointer.primary_released());
+        let pointer_down = ui.input(|i| i.pointer.primary_down());
+        if state.dragging_rubber_band.is_some() && (pointer_released || !pointer_down) {
+            state.dragging_rubber_band = None;
         }
     }
 }
