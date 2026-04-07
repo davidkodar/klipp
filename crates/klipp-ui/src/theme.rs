@@ -26,6 +26,9 @@ pub struct KlippTheme {
     // Borders
     pub border: Color32,
     pub border_light: Color32,
+    /// Idle fill color for panel resizer strips. Brighter than `border` so the
+    /// strip reads as a distinct divider against `bg_raised` inspector cards.
+    pub resizer_idle: Color32,
 
     // Accent — warm amber/gold
     pub accent: Color32,
@@ -68,6 +71,7 @@ impl Default for KlippTheme {
 
             border: Color32::from_rgb(0x2a, 0x2a, 0x32),
             border_light: Color32::from_rgb(0x36, 0x36, 0x40),
+            resizer_idle: Color32::from_rgb(55, 55, 65),
 
             accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
             accent_dim: Color32::from_rgb(0xa0, 0x6e, 0x14),
@@ -236,7 +240,7 @@ pub const BROWSER_MAX_W: f32 = 480.0;
 pub const INSPECTOR_DEFAULT_W: f32 = 230.0;
 pub const INSPECTOR_MIN_W: f32 = 150.0;
 pub const INSPECTOR_MAX_W: f32 = 400.0;
-pub const RESIZER_THICKNESS: f32 = 4.0;
+pub const RESIZER_THICKNESS: f32 = 5.0;
 pub const TRACK_VIDEO_H: f32 = 50.0;
 pub const TRACK_AUDIO_H: f32 = 48.0;
 pub const TRACK_TEXT_H: f32 = 32.0;
