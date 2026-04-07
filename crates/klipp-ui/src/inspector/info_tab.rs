@@ -15,7 +15,7 @@ pub fn show_no_selection(
     let seq = state.sequence();
 
     // ── PROJECT ──
-    section_card(ui, "PROJECT", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "PROJECT", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
 
         let project_name = state.project_path.as_ref()
@@ -102,7 +102,7 @@ pub fn show_no_selection(
     ui.add_space(8.0);
 
     // ── MEDIA ──
-    section_card(ui, "MEDIA", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "MEDIA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
 
         // Count media items
@@ -205,7 +205,7 @@ pub fn show_no_selection(
     ui.add_space(8.0);
 
     // ── SEQUENCE ──
-    section_card(ui, "SEQUENCE", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "SEQUENCE", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
 
         info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
@@ -266,7 +266,7 @@ pub fn show_no_selection(
     ui.add_space(8.0);
 
     // ── STORAGE ──
-    section_card(ui, "STORAGE", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "STORAGE", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
         let project_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
 
@@ -342,7 +342,7 @@ pub fn show_bin_media(
     let dim = theme.text_dim;
 
     // ── CLIP INFO ──
-    section_card(ui, "CLIP INFO", None, theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "CLIP INFO", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
 
         info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
@@ -521,7 +521,7 @@ pub fn show_bin_media(
 
     // ── TAGS ──
     let tag_count = media.tags.len();
-    section_card(ui, "TAGS", Some(format!("{tag_count}")), theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "TAGS", Some(format!("{tag_count}")), theme.bg_deep, theme.bg_panel, theme, |ui| {
         if media.tags.is_empty() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -607,7 +607,7 @@ pub fn show_bin_media(
     let usage_count = usages.len();
     let total_used_tc = klipp_core::Timecode::from_secs_f64(total_used_secs, state.sequence().fps.num);
 
-    section_card(ui, "TIMELINE USAGE", Some(format!("{usage_count}")), theme.bg_deep, theme.bg_panel, theme.border, theme, |ui| {
+    section_card(ui, "TIMELINE USAGE", Some(format!("{usage_count}")), theme.bg_deep, theme.bg_panel, theme, |ui| {
         let w = ui.available_width();
 
         info_row_custom(ui, theme, pad, row_h, w, "Used in", |ui, rx, cy| {
@@ -660,12 +660,11 @@ pub fn show_clip(
     let dim = theme.text_dim;
     let section_bg = theme.bg_deep;
     let card_bg = theme.bg_panel;
-    let border = theme.border;
 
     // ════════════════════════════════════════
     // CLIP INFO
     // ════════════════════════════════════════
-    section_card(ui, "CLIP INFO", None, section_bg, card_bg, border, theme, |ui| {
+    section_card(ui, "CLIP INFO", None, section_bg, card_bg, theme, |ui| {
         let w = ui.available_width();
 
         // Resolution
@@ -938,7 +937,7 @@ pub fn show_clip(
     // TAGS
     // ════════════════════════════════════════
     let tag_count = media.tags.len();
-    section_card(ui, "TAGS", Some(format!("{tag_count}")), section_bg, card_bg, border, theme, |ui| {
+    section_card(ui, "TAGS", Some(format!("{tag_count}")), section_bg, card_bg, theme, |ui| {
         if media.tags.is_empty() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1032,7 +1031,7 @@ pub fn show_clip(
     // ════════════════════════════════════════
     // TIMELINE
     // ════════════════════════════════════════
-    section_card(ui, "TIMELINE", None, section_bg, card_bg, border, theme, |ui| {
+    section_card(ui, "TIMELINE", None, section_bg, card_bg, theme, |ui| {
         let w = ui.available_width();
 
         // Progress bar — clip position in sequence
@@ -1142,7 +1141,6 @@ fn section_card(
     badge: Option<String>,
     header_bg: egui::Color32,
     card_bg: egui::Color32,
-    border: egui::Color32,
     theme: &KlippTheme,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
@@ -1173,17 +1171,6 @@ fn section_card(
         egui::Rounding::same(6.0)
     };
     ui.painter().rect_filled(header_rect, rounding, header_bg);
-
-    // Left accent bar
-    let accent_rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 }
-    } else {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 }
-    };
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(header_rect.min, egui::vec2(3.0, header_h)),
-        accent_rounding, border,
-    );
 
     // Title
     ui.painter().text(
@@ -1229,33 +1216,13 @@ fn section_card(
 
     // Body
     if state.is_open() {
-        let body_start = ui.cursor().min;
-        let frame = egui::Frame::default()
+        let frame = egui::Frame::none()
             .fill(card_bg)
-            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 })
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE);
+            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 });
 
         frame.show(ui, |ui| {
             add_contents(ui);
         });
-
-        let body_end_y = ui.cursor().min.y;
-
-        // Left accent on body
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
-            0.0, border,
-        );
-
-        // Card outline
-        let full_rect = egui::Rect::from_min_max(
-            header_rect.min,
-            egui::pos2(header_rect.max.x, body_end_y),
-        );
-        ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, border));
-    } else {
-        ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, border));
     }
 
     state.store(ui.ctx());

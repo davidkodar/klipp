@@ -5,9 +5,11 @@ use egui::{CursorIcon, Rect, Sense, Ui};
 /// Idle: subtle border color. Hover/drag: accent highlight.
 /// The hit area is wider than the visible strip for easier grabbing.
 pub fn vertical_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
-    // Expand hit area to 12px wide (centered on the visual strip) for easier grabbing
-    let hit_rect = rect.expand2(egui::vec2(4.0, 0.0));
-    let response = ui.allocate_rect(hit_rect, Sense::drag());
+    // Hit rect equals the visual strip — no expansion. Previously the hit was
+    // expanded ±4px horizontally, which allocated input space inside adjacent
+    // panels and registered hover/drag interactions there. The 5px strip is
+    // grabbable enough on its own.
+    let response = ui.allocate_rect(rect, Sense::drag());
     let painter = ui.painter();
 
     let active = response.hovered() || response.dragged();

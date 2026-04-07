@@ -2114,16 +2114,6 @@ fn section_card(
     };
     ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
 
-    let accent_rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 }
-    } else {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 }
-    };
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(header_rect.min, egui::vec2(3.0, header_h)),
-        accent_rounding, theme.border,
-    );
-
     ui.painter().text(
         egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -2152,23 +2142,10 @@ fn section_card(
     }
 
     if col_state.is_open() {
-        let body_start = ui.cursor().min;
-        let frame = egui::Frame::default()
+        let frame = egui::Frame::none()
             .fill(theme.bg_panel)
-            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 })
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE);
+            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 });
         frame.show(ui, |ui| { add_contents(ui); });
-
-        let body_end_y = ui.cursor().min.y;
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
-            0.0, theme.border,
-        );
-        let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-        ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
-    } else {
-        ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
     }
 
     col_state.store(ui.ctx());

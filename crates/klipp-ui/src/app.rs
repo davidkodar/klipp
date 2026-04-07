@@ -14859,14 +14859,33 @@ impl KlippApp {
         // Cinematic elevation: shadow painted on the parent (unclipped) painter so it
         // bleeds into surrounding panels — allocate_clipped_ui below would otherwise
         // clip it to viewer_rect. Then Frame handles fill/stroke/margin/rounding.
-        let rounding = egui::Rounding::same(8.0);
+        // Asymmetric: rounded on the left/top/bottom edges, square on the right
+        // edge so the viewer sits flush against the right resizer with no
+        // bg_viewer strip showing through. Used for both the shadow shape and the
+        // Frame outline below.
+        let rounding = egui::Rounding {
+            nw: 8.0,
+            sw: 8.0,
+            ne: 0.0,
+            se: 0.0,
+        };
         let shadow = egui::epaint::Shadow {
             offset: egui::vec2(0.0, 12.0),
             blur: 40.0,
             spread: 0.0,
             color: egui::Color32::from_black_alpha(115),
         };
-        ui.painter().add(shadow.as_shape(viewer_rect, rounding));
+        // Clip the shadow painter so the 40px blur cannot bleed rightward past
+        // the viewer's right edge into the resizer strip and the inspector's
+        // left edge. Left/top/bottom bleed is still allowed (correct — the
+        // viewer should still cast a shadow into the surrounding panels there).
+        let shadow_painter = ui.painter().with_clip_rect(
+            egui::Rect::from_min_max(
+                egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY),
+                egui::pos2(viewer_rect.max.x, f32::INFINITY),
+            ),
+        );
+        shadow_painter.add(shadow.as_shape(viewer_rect, rounding));
 
         crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -14884,7 +14903,7 @@ impl KlippApp {
             let frame = egui::Frame::none()
                 .fill(self.theme.bg_viewer)
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)))
-                .inner_margin(egui::Margin::same(12.0))
+                .inner_margin(egui::Margin { left: 12.0, right: 0.0, top: 12.0, bottom: 12.0 })
                 .rounding(rounding);
             frame.show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
@@ -14949,6 +14968,11 @@ impl KlippApp {
         crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
             ui.set_min_size(inspector_rect.size());
             ui.painter().rect_filled(inspector_rect, 0.0, bg_panel);
+            // egui's ScrollArea paints its scrollbar gutter with
+            // visuals.extreme_bg_color, which globally is bg_void (near-black)
+            // and reads as a dark strip against the inspector's bg_panel. Override
+            // it locally so the gutter blends into the inspector background.
+            ui.style_mut().visuals.extreme_bg_color = bg_panel;
 
             let in_color_workspace = self.state.show_color_panel
                 && self.state.selected_clip.is_some();
@@ -15004,6 +15028,12 @@ impl KlippApp {
                     });
                     ui.add_space(2.0);
                     let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                    // Match the add_space(8.0) inside the surrounding horizontal so
+                    // the separator doesn't notch into the empty left padding zone.
+                    let sep_rect = egui::Rect::from_min_max(
+                        egui::pos2(sep_rect.min.x + 8.0, sep_rect.min.y),
+                        sep_rect.max,
+                    );
                     ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
 
                     {
@@ -15078,6 +15108,11 @@ impl KlippApp {
                             }
                         });
                         let sep_rect2 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                        // Match the add_space(8.0) inside the surrounding horizontal.
+                        let sep_rect2 = egui::Rect::from_min_max(
+                            egui::pos2(sep_rect2.min.x + 8.0, sep_rect2.min.y),
+                            sep_rect2.max,
+                        );
                         ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
                     }
 

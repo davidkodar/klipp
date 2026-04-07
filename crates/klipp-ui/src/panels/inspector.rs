@@ -191,7 +191,7 @@ impl InspectorPanel {
             // ════════════════════════════════════════
             self.info_clip_open = Self::section_card(
                 ui, "CLIP INFO", self.info_clip_open, None,
-                section_bg, card_bg, border, pad, |ui| {
+                section_bg, card_bg, pad, |ui| {
                     let w = ui.available_width();
 
                     // Resolution
@@ -424,7 +424,7 @@ impl InspectorPanel {
             self.info_tags_open = Self::section_card(
                 ui, "TAGS", self.info_tags_open,
                 Some(format!("{tag_count}")),
-                section_bg, card_bg, border, pad, |ui| {
+                section_bg, card_bg, pad, |ui| {
                     if media.tags.is_empty() {
                         ui.add_space(4.0);
                         ui.label(
@@ -529,7 +529,7 @@ impl InspectorPanel {
             // ════════════════════════════════════════
             self.info_timeline_open = Self::section_card(
                 ui, "TIMELINE", self.info_timeline_open, None,
-                section_bg, card_bg, border, pad, |ui| {
+                section_bg, card_bg, pad, |ui| {
                     let w = ui.available_width();
 
                     // Progress bar — clip position in sequence
@@ -658,7 +658,6 @@ impl InspectorPanel {
         badge: Option<String>,
         header_bg: egui::Color32,
         card_bg: egui::Color32,
-        border_color: egui::Color32,
         pad: f32,
         add_contents: impl FnOnce(&mut egui::Ui),
     ) -> bool {
@@ -667,21 +666,11 @@ impl InspectorPanel {
         let header_h = 30.0;
         let dim = egui::Color32::from_rgb(100, 100, 115);
 
-        // Card outer frame
-        let outer_start = ui.cursor().min;
-
         // Header
         let (header_rect, header_resp) = ui.allocate_exact_size(
             egui::vec2(w, header_h), egui::Sense::click(),
         );
         ui.painter().rect_filled(header_rect, egui::Rounding { nw: 6.0, ne: 6.0, sw: if is_open { 0.0 } else { 6.0 }, se: if is_open { 0.0 } else { 6.0 }}, header_bg);
-
-        // Left border accent
-        let accent_rect = egui::Rect::from_min_size(
-            header_rect.min,
-            egui::vec2(3.0, header_h),
-        );
-        ui.painter().rect_filled(accent_rect, egui::Rounding { nw: 6.0, ne: 0.0, sw: if is_open { 0.0 } else { 6.0 }, se: 0.0 }, border_color);
 
         // Title
         ui.painter().text(
@@ -719,40 +708,14 @@ impl InspectorPanel {
 
         // Body
         if is_open {
-            let body_start = ui.cursor().min;
             // Draw card body background (will be sized after contents)
-            let frame = egui::Frame::default()
+            let frame = egui::Frame::none()
                 .fill(card_bg)
-                .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 })
-                .stroke(egui::Stroke::NONE)
-                .shadow(egui::Shadow::NONE);
+                .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 });
 
             frame.show(ui, |ui| {
                 add_contents(ui);
             });
-
-            // Bottom border
-            let body_end_y = ui.cursor().min.y;
-            let body_rect = egui::Rect::from_min_max(
-                body_start,
-                egui::pos2(body_start.x + w, body_end_y),
-            );
-            // Left border on body
-            let body_accent = egui::Rect::from_min_size(
-                body_rect.min,
-                egui::vec2(3.0, body_rect.height()),
-            );
-            ui.painter().rect_filled(body_accent, 0.0, border_color);
-
-            // Card outline
-            let full_card = egui::Rect::from_min_max(
-                outer_start,
-                egui::pos2(outer_start.x + w, body_end_y),
-            );
-            ui.painter().rect_stroke(full_card.shrink(0.25), 6.0, egui::Stroke::new(0.5, border_color));
-        } else {
-            // Outline for collapsed header
-            ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, border_color));
         }
 
         is_open
