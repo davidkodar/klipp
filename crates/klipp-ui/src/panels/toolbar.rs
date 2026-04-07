@@ -238,7 +238,7 @@ impl ToolbarPanel {
                     let (bg, fg) = if active {
                         (theme.accent, theme.bg_void)
                     } else {
-                        (egui::Color32::TRANSPARENT, theme.text_secondary)
+                        (theme.bg_raised, theme.text_secondary)
                     };
                     let (rect, resp) = ui.allocate_exact_size(
                         egui::vec2(32.0, 32.0),
@@ -283,7 +283,11 @@ impl ToolbarPanel {
                         egui::vec2(36.0, 20.0),
                         egui::Sense::click(),
                     );
-                    let bg = mode_color.linear_multiply(0.25);
+                    let bg = if resp.hovered() {
+                        mode_color.linear_multiply(0.35)
+                    } else {
+                        mode_color.linear_multiply(0.25)
+                    };
                     let border = mode_color.linear_multiply(0.6);
                     ui.painter().rect_filled(rect, 3.0, bg);
                     ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border));
@@ -815,10 +819,10 @@ fn icon_rect(btn: egui::Rect) -> egui::Rect {
 
 
 fn sep(ui: &mut egui::Ui, theme: &KlippTheme) {
-    ui.add_space(4.0);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(1.0, 22.0), egui::Sense::hover());
+    ui.add_space(12.0);
+    let (r, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
     ui.painter().rect_filled(r, 0.0, theme.border_light);
-    ui.add_space(4.0);
+    ui.add_space(12.0);
 }
 
 // ═══════════════════════════════════════════
