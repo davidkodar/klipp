@@ -749,7 +749,7 @@ impl InspectorPanel {
                 outer_start,
                 egui::pos2(outer_start.x + w, body_end_y),
             );
-            ui.painter().rect_stroke(full_card, 6.0, egui::Stroke::new(0.5, border_color));
+            ui.painter().rect_stroke(full_card.shrink(0.25), 6.0, egui::Stroke::new(0.5, border_color));
         } else {
             // Outline for collapsed header
             ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, border_color));

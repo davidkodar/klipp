@@ -144,8 +144,10 @@ pub fn show(
             egui::Rounding::same(card_rounding)
         };
         ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
-        // Border on header
-        ui.painter().rect_stroke(header_rect, header_rounding, egui::Stroke::new(0.5, theme.border));
+        // Border on header — shrink by 0.25 so the 0.5px centered stroke fits
+        // entirely inside header_rect. Prevents the stroke's outer half (0.25px)
+        // from bleeding left of inspector_rect.min.x into the adjacent resizer.
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5, theme.border));
 
         // Collapse caret (SVG icon, not unicode)
         let caret_x = header_rect.min.x + pad;
@@ -360,7 +362,7 @@ pub fn show(
             egui::Rounding::same(card_rounding)
         };
         ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
-        ui.painter().rect_stroke(header_rect, header_rounding, egui::Stroke::new(0.5, theme.border));
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5, theme.border));
 
         // Collapse caret (SVG icon)
         let caret_x = header_rect.min.x + pad;

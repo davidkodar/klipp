@@ -1253,9 +1253,9 @@ fn section_card(
             header_rect.min,
             egui::pos2(header_rect.max.x, body_end_y),
         );
-        ui.painter().rect_stroke(full_rect, 6.0, egui::Stroke::new(0.5, border));
+        ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, border));
     } else {
-        ui.painter().rect_stroke(header_rect, 6.0, egui::Stroke::new(0.5, border));
+        ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, border));
     }
 
     state.store(ui.ctx());
