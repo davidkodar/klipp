@@ -1433,6 +1433,8 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         Ripple => 20,
         PageTurn => 21,
         PageTurnReverse => 22,
+        ChromaticAberration => 23,
+        FilmBurn => 24,
     }
 }
 
@@ -1945,6 +1947,96 @@ fn show_transition_inspector(
                             user_params: new_params,
                         });
                     }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::FilmBurn) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Temperature", 0u8, 0.0..=1.0, 0.01),
+                    ("Speed", 1u8, 0.5..=2.0, 0.05),
+                    ("Grain", 2u8, 0.0..=1.0, 0.01),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            1 => transition.user_params.param1,
+                            _ => transition.user_params.param2,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                1 => new_params.param1 = v,
+                                _ => new_params.param2 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::ChromaticAberration
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Offset")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(0.0..=60.0)
+                            .speed(0.5)
+                            .suffix(" px"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Direction")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let dirs = ["Horizontal", "Vertical", "Diagonal"];
+                    let current = transition.user_params.param1.round() as usize;
+                    egui::ComboBox::from_id_salt("chroma_dir")
+                        .selected_text(dirs.get(current).copied().unwrap_or("Horizontal"))
+                        .show_ui(ui, |ui| {
+                            for (i, name) in dirs.iter().enumerate() {
+                                if ui.selectable_label(current == i, *name).clicked() {
+                                    let mut new_params = transition.user_params;
+                                    new_params.param1 = i as f32;
+                                    cmds.push(AppCommand::SetTransitionParam {
+                                        track_index: track_idx,
+                                        transition_id: transition.id,
+                                        user_params: new_params,
+                                    });
+                                }
+                            }
+                        });
                 });
             }
             if matches!(transition.kind, klipp_timeline::TransitionKind::Ripple) {

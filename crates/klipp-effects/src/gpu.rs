@@ -4149,6 +4149,62 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let t = clamp(1.0 - shadow, 0.0, 1.0);
             result = vec4<f32>(from_px.x * t, from_px.y * t, from_px.z * t, 255.0);
         }
+    } else if params.kind_id == 23u {
+        // Chromatic Aberration: R/B channels sampled with offset, envelope peaks at midpoint.
+        // param0 = max offset px, param1 = direction (0=H, 1=V, 2=diag)
+        let max_offset = params.param0;
+        let dir = u32(params.param1 + 0.5);
+        let envelope = sin(p * 3.14159265) * max_offset;
+        var r_ox: f32 = 0.0;
+        var r_oy: f32 = 0.0;
+        var b_ox: f32 = 0.0;
+        var b_oy: f32 = 0.0;
+        if dir == 1u {
+            r_oy = -envelope;
+            b_oy = envelope;
+        } else if dir == 2u {
+            r_ox = -envelope * 0.707;
+            r_oy = -envelope * 0.707;
+            b_ox = envelope * 0.707;
+            b_oy = envelope * 0.707;
+        } else {
+            r_ox = -envelope;
+            b_ox = envelope;
+        }
+        let base_g = lerp_pixel(from_px, to_px, p).y;
+        let rx = clamp(f32(x) + r_ox, 0.0, f32(params.width) - 1.0);
+        let ry = clamp(f32(y) + r_oy, 0.0, f32(params.height) - 1.0);
+        let r_idx = u32(ry) * params.width + u32(rx);
+        let r_val = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p).x;
+        let bx = clamp(f32(x) + b_ox, 0.0, f32(params.width) - 1.0);
+        let by = clamp(f32(y) + b_oy, 0.0, f32(params.height) - 1.0);
+        let b_idx = u32(by) * params.width + u32(bx);
+        let b_val = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p).z;
+        result = vec4<f32>(r_val, base_g, b_val, 255.0);
+    } else if params.kind_id == 24u {
+        // Film Burn: hot-spot bleach toward burn color, with grain.
+        // param0 = temperature, param1 = speed, param2 = grain
+        let temp = params.param0;
+        let speed = params.param1;
+        let grain = params.param2;
+        let burn_r = 1.0;
+        let burn_g = 1.0 - temp * 0.35;
+        let burn_b = 1.0 - temp * 0.75;
+        let shaped_p = pow(p * speed, 0.6);
+        let envelope = sin(min(shaped_p, 1.0) * 3.14159265);
+        let hash = fract(sin(f32(x) * 127.1 + f32(y) * 311.7) * 43758.545);
+        let hash2 = fract(sin(f32(x) * 269.5 + f32(y) * 183.3) * 12345.678);
+        let pixel_thresh = hash * 0.6 + 0.2;
+        let burn_t = clamp((envelope - pixel_thresh) / 0.3, 0.0, 1.0);
+        let grain_val = (hash2 - 0.5) * grain * envelope;
+        // unpack() returns 0..255 floats in this shader; normalize for the burn math.
+        let base_rn = (from_px.x * (1.0 - p) + to_px.x * p) / 255.0;
+        let base_gn = (from_px.y * (1.0 - p) + to_px.y * p) / 255.0;
+        let base_bn = (from_px.z * (1.0 - p) + to_px.z * p) / 255.0;
+        let rn = clamp(base_rn + (burn_r - base_rn) * burn_t + grain_val, 0.0, 1.0);
+        let gn = clamp(base_gn + (burn_g - base_gn) * burn_t + grain_val, 0.0, 1.0);
+        let bn = clamp(base_bn + (burn_b - base_bn) * burn_t + grain_val, 0.0, 1.0);
+        result = vec4<f32>(rn * 255.0, gn * 255.0, bn * 255.0, 255.0);
     } else {
         result = lerp_pixel(from_px, to_px, p);
     }

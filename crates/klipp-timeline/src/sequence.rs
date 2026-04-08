@@ -692,6 +692,8 @@ pub enum TransitionKind {
     Ripple,
     PageTurn,
     PageTurnReverse,
+    ChromaticAberration,
+    FilmBurn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

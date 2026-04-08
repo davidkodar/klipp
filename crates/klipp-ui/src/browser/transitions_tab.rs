@@ -393,6 +393,71 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Film Burn",
+        kind_id: 24,
+        category: TransitionCategory::Cinematic,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let cx = egui::pos2(r.min.x + r.width() * 0.6, r.min.y + r.height() * 0.4);
+            p.circle_filled(
+                cx,
+                r.height() * 0.4,
+                egui::Color32::from_rgba_unmultiplied(255, 160, 40, 60),
+            );
+            p.circle_filled(
+                cx,
+                r.height() * 0.25,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 100, 140),
+            );
+            p.circle_filled(
+                cx,
+                r.height() * 0.12,
+                egui::Color32::from_rgba_unmultiplied(255, 240, 220, 220),
+            );
+            for i in 0..8 {
+                let gx = r.min.x + (i as f32 * 37.0) % r.width();
+                let gy = r.min.y + (i as f32 * 53.0) % r.height();
+                p.circle_filled(
+                    egui::pos2(gx, gy),
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 220, 150, 80),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Chromatic Aberration",
+        kind_id: 23,
+        category: TransitionCategory::Effect,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, egui::Color32::from_rgb(20, 20, 30));
+            let cx = r.center();
+            let hw = r.width() * 0.3;
+            let hh = r.height() * 0.35;
+            p.rect_filled(
+                egui::Rect::from_center_size(
+                    egui::pos2(cx.x - 6.0, cx.y),
+                    egui::vec2(hw * 2.0, hh * 2.0),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 0, 0, 120),
+            );
+            p.rect_filled(
+                egui::Rect::from_center_size(cx, egui::vec2(hw * 2.0, hh * 2.0)),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 255, 0, 120),
+            );
+            p.rect_filled(
+                egui::Rect::from_center_size(
+                    egui::pos2(cx.x + 6.0, cx.y),
+                    egui::vec2(hw * 2.0, hh * 2.0),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
+            );
+        },
+    },
+    TransitionDef {
         name: "Ripple",
         kind_id: 20,
         category: TransitionCategory::Effect,

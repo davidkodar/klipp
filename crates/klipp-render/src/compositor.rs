@@ -550,6 +550,73 @@ fn render_transition(
                 }
             }
         }
+        TransitionKind::ChromaticAberration => {
+            // RGB channel split export (uses default 20px horizontal offset).
+            let max_offset = 20.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * max_offset;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let base_g = (from[fi + 1] as f32 * (1.0 - p)
+                        + to[fi + 1] as f32 * p
+                        + 0.5) as u8;
+                    let rx = (x as f32 - envelope).clamp(0.0, w as f32 - 1.0) as usize;
+                    let ri = (y * w + rx) * 4;
+                    let r_val = (from[ri] as f32 * (1.0 - p)
+                        + to[ri] as f32 * p
+                        + 0.5) as u8;
+                    let bx = (x as f32 + envelope).clamp(0.0, w as f32 - 1.0) as usize;
+                    let bi = (y * w + bx) * 4;
+                    let b_val = (from[bi + 2] as f32 * (1.0 - p)
+                        + to[bi + 2] as f32 * p
+                        + 0.5) as u8;
+                    output[fi] = r_val;
+                    output[fi + 1] = base_g;
+                    output[fi + 2] = b_val;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::FilmBurn => {
+            // Film Burn export (defaults: temp 0.8, speed 1.0, grain 0.4).
+            let temp = 0.8_f32;
+            let grain = 0.4_f32;
+            let burn_r: f32 = 1.0;
+            let burn_g: f32 = 1.0 - temp * 0.35;
+            let burn_b: f32 = 1.0 - temp * 0.75;
+            let shaped_p = p.powf(0.6).min(1.0);
+            let envelope = (shaped_p * std::f32::consts::PI).sin();
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let pixel_thresh = hash * 0.6 + 0.2;
+                    let burn_t = ((envelope - pixel_thresh) / 0.3).clamp(0.0, 1.0);
+                    let grain_val = (hash2 - 0.5) * grain * envelope;
+                    let base_r = (from[fi] as f32 * (1.0 - p) + to[fi] as f32 * p) / 255.0;
+                    let base_g =
+                        (from[fi + 1] as f32 * (1.0 - p) + to[fi + 1] as f32 * p) / 255.0;
+                    let base_b =
+                        (from[fi + 2] as f32 * (1.0 - p) + to[fi + 2] as f32 * p) / 255.0;
+                    let r = (base_r + (burn_r - base_r) * burn_t + grain_val).clamp(0.0, 1.0);
+                    let g = (base_g + (burn_g - base_g) * burn_t + grain_val).clamp(0.0, 1.0);
+                    let b = (base_b + (burn_b - base_b) * burn_t + grain_val).clamp(0.0, 1.0);
+                    output[fi] = (r * 255.0 + 0.5) as u8;
+                    output[fi + 1] = (g * 255.0 + 0.5) as u8;
+                    output[fi + 2] = (b * 255.0 + 0.5) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
             let inv = 1.0 - p;

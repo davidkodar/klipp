@@ -28,6 +28,8 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::Ripple => 20,
         TransitionKind::PageTurn => 21,
         TransitionKind::PageTurnReverse => 22,
+        TransitionKind::ChromaticAberration => 23,
+        TransitionKind::FilmBurn => 24,
     }
 }
 
@@ -57,6 +59,8 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         20 => TransitionKind::Ripple,
         21 => TransitionKind::PageTurn,
         22 => TransitionKind::PageTurnReverse,
+        23 => TransitionKind::ChromaticAberration,
+        24 => TransitionKind::FilmBurn,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -87,6 +91,8 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (20, "Ripple"),
         (21, "Page Turn"),
         (22, "Page Turn Reverse"),
+        (23, "Chromatic Aberration"),
+        (24, "Film Burn"),
     ]
 }
 
@@ -596,6 +602,96 @@ pub fn render_transition_with_params(
                         t,
                         &mut output[idx..idx + 4],
                     );
+                }
+            }
+        }
+        TransitionKind::FilmBurn => {
+            // Organic hot-spot bleach/burn with grain, peaks at midpoint.
+            // param0 = temperature (0=white, 1=amber), param1 = speed, param2 = grain
+            let temp = user_params.param0;
+            let speed = user_params.param1;
+            let grain = user_params.param2;
+            let burn_r: f32 = 1.0;
+            let burn_g: f32 = 1.0 - temp * 0.35;
+            let burn_b: f32 = 1.0 - temp * 0.75;
+            let shaped_p = (p * speed).powf(0.6).min(1.0);
+            let envelope = (shaped_p * std::f32::consts::PI).sin();
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    // Pseudo-random per-pixel variation.
+                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let pixel_thresh = hash * 0.6 + 0.2;
+                    // burn_t: active only while envelope exceeds per-pixel threshold.
+                    // No additive bias, so at envelope=0 (p=0 and p=1) burn_t=0.
+                    let burn_t = ((envelope - pixel_thresh) / 0.3).clamp(0.0, 1.0);
+                    let grain_val = (hash2 - 0.5) * grain * envelope;
+                    let base_r =
+                        (from[fi] as f32 * (1.0 - p) + to[fi] as f32 * p) / 255.0;
+                    let base_g =
+                        (from[fi + 1] as f32 * (1.0 - p) + to[fi + 1] as f32 * p) / 255.0;
+                    let base_b =
+                        (from[fi + 2] as f32 * (1.0 - p) + to[fi + 2] as f32 * p) / 255.0;
+                    let r = (base_r + (burn_r - base_r) * burn_t + grain_val).clamp(0.0, 1.0);
+                    let g = (base_g + (burn_g - base_g) * burn_t + grain_val).clamp(0.0, 1.0);
+                    let b = (base_b + (burn_b - base_b) * burn_t + grain_val).clamp(0.0, 1.0);
+                    output[fi] = (r * 255.0 + 0.5) as u8;
+                    output[fi + 1] = (g * 255.0 + 0.5) as u8;
+                    output[fi + 2] = (b * 255.0 + 0.5) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::ChromaticAberration => {
+            // RGB channel separation peaking at midpoint.
+            // param0 = max offset (px), param1 = direction (0=H, 1=V, 2=diag)
+            let max_offset = user_params.param0;
+            let dir = user_params.param1.round() as u32;
+            let envelope = (p * std::f32::consts::PI).sin() * max_offset;
+            let (r_ox, r_oy, b_ox, b_oy) = match dir {
+                1 => (0.0, -envelope, 0.0, envelope),
+                2 => (
+                    -envelope * 0.707,
+                    -envelope * 0.707,
+                    envelope * 0.707,
+                    envelope * 0.707,
+                ),
+                _ => (-envelope, 0.0, envelope, 0.0),
+            };
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    // Green channel: base blend at pixel position.
+                    let base_g = (from[fi + 1] as f32 * (1.0 - p)
+                        + to[fi + 1] as f32 * p
+                        + 0.5) as u8;
+                    // Red channel from r_offset sample.
+                    let rx = (x as f32 + r_ox).clamp(0.0, w as f32 - 1.0) as usize;
+                    let ry = (y as f32 + r_oy).clamp(0.0, h as f32 - 1.0) as usize;
+                    let ri = (ry * w + rx) * 4;
+                    let r_val = (from[ri] as f32 * (1.0 - p)
+                        + to[ri] as f32 * p
+                        + 0.5) as u8;
+                    // Blue channel from b_offset sample.
+                    let bx = (x as f32 + b_ox).clamp(0.0, w as f32 - 1.0) as usize;
+                    let by = (y as f32 + b_oy).clamp(0.0, h as f32 - 1.0) as usize;
+                    let bi = (by * w + bx) * 4;
+                    let b_val = (from[bi + 2] as f32 * (1.0 - p)
+                        + to[bi + 2] as f32 * p
+                        + 0.5) as u8;
+                    output[fi] = r_val;
+                    output[fi + 1] = base_g;
+                    output[fi + 2] = b_val;
+                    output[fi + 3] = 255;
                 }
             }
         }
@@ -1387,11 +1483,13 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::Ripple), 20);
         assert_eq!(transition_kind_to_id(TransitionKind::PageTurn), 21);
         assert_eq!(transition_kind_to_id(TransitionKind::PageTurnReverse), 22);
+        assert_eq!(transition_kind_to_id(TransitionKind::ChromaticAberration), 23);
+        assert_eq!(transition_kind_to_id(TransitionKind::FilmBurn), 24);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=22u8 {
+        for id in 0..=24u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -1400,12 +1498,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(23), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(25), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_23() {
-        assert_eq!(all_transition_kinds().len(), 23);
+    fn all_transition_kinds_returns_25() {
+        assert_eq!(all_transition_kinds().len(), 25);
     }
 
     // ========================================================================
@@ -1448,6 +1546,62 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn film_burn_at_zero_is_from() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(200, 200, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::FilmBurn, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 100, 100, 10);
+    }
+
+    #[test]
+    fn film_burn_at_one_is_to() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(200, 200, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::FilmBurn, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 200, 200, 200, 10);
+    }
+
+    #[test]
+    fn film_burn_midpoint_is_brighter() {
+        let from = make_solid(50, 50, 50, 255, 8, 8);
+        let to = make_solid(50, 50, 50, 255, 8, 8);
+        let result = render_transition(TransitionKind::FilmBurn, &from, &to, 0.5, 8, 8);
+        let avg_r: f32 = result.chunks(4).map(|px| px[0] as f32).sum::<f32>() / 64.0;
+        assert!(
+            avg_r > 70.0,
+            "burn should brighten at midpoint, got avg {}",
+            avg_r
+        );
+    }
+
+    #[test]
+    fn chromatic_aberration_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ChromaticAberration, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn chromatic_aberration_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ChromaticAberration, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn chromatic_aberration_midpoint_produces_output() {
+        let from = make_solid(200, 100, 50, 255, 16, 8);
+        let to = make_solid(50, 100, 200, 255, 16, 8);
+        let result =
+            render_transition(TransitionKind::ChromaticAberration, &from, &to, 0.5, 16, 8);
+        assert_eq!(result.len(), 16 * 8 * 4);
     }
 
     #[test]
@@ -1626,6 +1780,8 @@ mod tests {
             TransitionKind::Ripple,
             TransitionKind::PageTurn,
             TransitionKind::PageTurnReverse,
+            TransitionKind::ChromaticAberration,
+            TransitionKind::FilmBurn,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -1655,6 +1811,8 @@ mod tests {
             TransitionKind::Ripple,
             TransitionKind::PageTurn,
             TransitionKind::PageTurnReverse,
+            TransitionKind::ChromaticAberration,
+            TransitionKind::FilmBurn,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

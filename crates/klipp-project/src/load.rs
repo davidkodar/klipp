@@ -248,6 +248,8 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         Ripple => 20,
         PageTurn => 21,
         PageTurnReverse => 22,
+        ChromaticAberration => 23,
+        FilmBurn => 24,
     }
 }
 
@@ -303,6 +305,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "Ripple" => klipp_timeline::TransitionKind::Ripple,
                     "PageTurn" => klipp_timeline::TransitionKind::PageTurn,
                     "PageTurnReverse" => klipp_timeline::TransitionKind::PageTurnReverse,
+                    "ChromaticAberration" => klipp_timeline::TransitionKind::ChromaticAberration,
+                    "FilmBurn" => klipp_timeline::TransitionKind::FilmBurn,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

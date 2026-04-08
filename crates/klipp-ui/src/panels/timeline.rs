@@ -6665,6 +6665,8 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::Ripple => "Ripple",
                                 klipp_timeline::TransitionKind::PageTurn => "Page",
                                 klipp_timeline::TransitionKind::PageTurnReverse => "Page R",
+                                klipp_timeline::TransitionKind::ChromaticAberration => "Chroma",
+                                klipp_timeline::TransitionKind::FilmBurn => "Burn",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

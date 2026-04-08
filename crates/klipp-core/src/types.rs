@@ -319,6 +319,15 @@ impl TransitionUserParams {
             },
             // Page Turn / Page Turn Reverse: param0=shadow intensity, param1=direction
             21 | 22 => Self { param0: 0.6, param1: 0.0, ..Self::default() },
+            // ChromaticAberration: param0=max offset px, param1=direction
+            23 => Self { param0: 20.0, param1: 0.0, ..Self::default() },
+            // FilmBurn: param0=temperature, param1=speed, param2=grain
+            24 => Self {
+                param0: 0.8,
+                param1: 1.0,
+                param2: 0.4,
+                ..Self::default()
+            },
             _ => Self::default(),
         }
     }
