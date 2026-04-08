@@ -29,6 +29,16 @@ impl NewInspectorPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
+        // ── Transition inspector (short-circuit clip inspector) ──
+        if let Some((track_idx, trans_id)) = state.selected_transition {
+            if let Some(track) = state.sequence().tracks.get(track_idx) {
+                if let Some(transition) = track.transitions.iter().find(|t| t.id == trans_id) {
+                    show_transition_inspector(ui, theme, track_idx, transition, &mut cmds);
+                    return cmds;
+                }
+            }
+        }
+
         // Resolve selected clip (timeline) or selected media (bin)
         let clip_id = state.selected_clip;
         let clip_info = clip_id.and_then(|cid| {
@@ -1395,6 +1405,151 @@ fn emit_grow_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_du
     let span = d;
     cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
     cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
+}
+
+fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
+    use klipp_timeline::TransitionKind::*;
+    match kind {
+        CrossDissolve => 0,
+        WipeLeft => 1,
+        WipeRight => 2,
+        WipeUp => 3,
+        WipeDown => 4,
+        DipToBlack => 5,
+        DipToWhite => 6,
+        PushLeft => 7,
+        FilmDissolve => 8,
+        BlurDissolve => 9,
+        Flash => 10,
+        Spin => 11,
+        LightLeak => 12,
+    }
+}
+
+fn show_transition_inspector(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    track_idx: usize,
+    transition: &klipp_timeline::Transition,
+    cmds: &mut Vec<AppCommand>,
+) {
+    // Header
+    let header_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), 42.0),
+    );
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+        ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
+        ui.painter().hline(
+            header_rect.x_range(),
+            header_rect.max.y,
+            egui::Stroke::new(1.0, theme.border),
+        );
+        ui.add_space(9.0);
+        ui.vertical(|ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("INSPECTOR")
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+            ui.label(
+                egui::RichText::new("Transition")
+                    .size(13.0)
+                    .strong()
+                    .color(theme.text_primary),
+            );
+        });
+    });
+    ui.advance_cursor_after_rect(header_rect);
+
+    ui.add_space(12.0);
+
+    let current_kind_id = transition_kind_id(transition.kind);
+    let kinds = klipp_engine::transition::all_transition_kinds();
+    let current_name = kinds
+        .iter()
+        .find(|(id, _)| *id == current_kind_id)
+        .map(|(_, n)| *n)
+        .unwrap_or("Unknown");
+
+    egui::Frame::none()
+        .fill(theme.bg_raised)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("TRANSITION")
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+            ui.add_space(8.0);
+
+            // Kind dropdown
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Type")
+                        .color(theme.text_secondary)
+                        .size(11.0),
+                );
+                egui::ComboBox::from_id_salt("transition_kind_picker")
+                    .selected_text(current_name)
+                    .show_ui(ui, |ui| {
+                        for (kid, name) in kinds {
+                            let mut selected = *kid == current_kind_id;
+                            if ui.selectable_value(&mut selected, true, *name).clicked()
+                                && *kid != current_kind_id
+                            {
+                                cmds.push(AppCommand::SetTransitionKind {
+                                    track_index: track_idx,
+                                    transition_id: transition.id,
+                                    kind_id: *kid,
+                                });
+                            }
+                        }
+                    });
+            });
+
+            ui.add_space(6.0);
+
+            // Duration scrubby
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Duration")
+                        .color(theme.text_secondary)
+                        .size(11.0),
+                );
+                let mut frames = transition.duration.value.max(1) as u32;
+                let resp = ui.add(
+                    egui::DragValue::new(&mut frames)
+                        .range(1..=600)
+                        .suffix(" fr"),
+                );
+                if resp.changed() {
+                    cmds.push(AppCommand::SetTransitionDuration {
+                        track_index: track_idx,
+                        transition_id: transition.id,
+                        duration_frames: frames,
+                    });
+                }
+            });
+
+            ui.add_space(12.0);
+
+            // Delete button
+            if ui
+                .add(egui::Button::new(
+                    egui::RichText::new("Remove Transition")
+                        .color(egui::Color32::from_rgb(255, 180, 180))
+                        .size(11.0),
+                ))
+                .clicked()
+            {
+                cmds.push(AppCommand::RemoveTransition {
+                    track_index: track_idx,
+                    transition_id: transition.id,
+                });
+            }
+        });
 }
 
 fn no_selection(ui: &mut egui::Ui, theme: &KlippTheme) {

@@ -9701,6 +9701,9 @@ impl KlippApp {
                     .map(|t| (t.clip_a_id, t.clip_b_id));
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     track.transitions.retain(|t| t.id != *transition_id);
+                    if self.state.selected_transition == Some((*track_index, *transition_id)) {
+                        self.state.selected_transition = None;
+                    }
                     // Clear audio crossfade on the clips
                     if let Some((a_id, b_id)) = clip_ids {
                         if let Some(c) = track.clips.iter_mut().find(|c| c.id == a_id) {

@@ -1,3 +1,4 @@
+use crate::drag_drop::DragPayload;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -48,6 +49,12 @@ pub fn show(
             .show(ui, |ui| {
                 for (i, tr) in filtered.iter().enumerate() {
                     let resp = transition_card(ui, theme, tr.name, card_w);
+                    if resp.drag_started() {
+                        state.drag_drop.begin(DragPayload::Transition {
+                            name: tr.name.to_string(),
+                            kind_id: tr.kind_id,
+                        });
+                    }
                     if resp.double_clicked() {
                         // Find selected clip and apply transition at its nearest cut point
                         if let Some(clip_id) = state.selected_clip {
@@ -97,7 +104,7 @@ pub fn show(
 fn transition_card(ui: &mut egui::Ui, theme: &KlippTheme, name: &str, width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, 68.0),
-        egui::Sense::click(),
+        egui::Sense::click_and_drag(),
     );
 
     let hovered = resp.hovered();

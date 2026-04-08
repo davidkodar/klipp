@@ -18,7 +18,7 @@ pub enum DragPayload {
         type_id: String,
     },
     /// Dragging a transition from the transitions browser tab.
-    Transition { name: String },
+    Transition { name: String, kind_id: u8 },
     /// Dragging a media item from the media browser tab.
     MediaClip { media_id: MediaId },
     /// Dragging a title template from the titles browser tab.

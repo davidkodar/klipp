@@ -254,6 +254,10 @@ pub struct PlaybackEngine {
     transition_decoder: Option<VideoDecoder>,
     transition_clip_id: Option<klipp_core::ClipId>,
     transition_frame_cache: Option<crate::types::DecodedFrame>,
+    /// Cached clip_a frame captured during the first half of a centered transition
+    /// window. Reused as the "from" frame during the second half, after the main
+    /// decoder has advanced to clip_b. Cleared when the transition ends.
+    transition_clip_a_last_frame: Option<Vec<u8>>,
     // Title renderer — generates RGBA frames for title clips
     title_renderer: klipp_title::TitleRenderer,
     // VU metering — emit peak levels at ~30Hz
@@ -388,6 +392,7 @@ impl PlaybackEngine {
             transition_decoder: None,
             transition_clip_id: None,
             transition_frame_cache: None,
+            transition_clip_a_last_frame: None,
             title_renderer: klipp_title::TitleRenderer::new(),
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
@@ -2339,6 +2344,7 @@ impl PlaybackEngine {
         self.transition_decoder = None;
         self.transition_clip_id = None;
         self.transition_frame_cache = None;
+        self.transition_clip_a_last_frame = None;
         self.stop_all_audio();
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
@@ -3451,6 +3457,7 @@ impl PlaybackEngine {
                     self.transition_clip_id = None;
                     self.transition_frame_cache = None;
                 }
+                self.transition_clip_a_last_frame = None;
                 return from_rgba;
             }
         };
@@ -3488,9 +3495,15 @@ impl PlaybackEngine {
             }
         }
 
-        // Pop frame from transition decoder
+        // Pop frame from transition decoder — comparison must be in partner source time,
+        // not master clock / timeline time. Mirrors the seek formula at lines 3473-3474.
+        let partner_source_secs = active.partner_clip.source_in.to_secs_f64()
+            + (self.playhead - active.partner_clip.timeline_in)
+                .to_secs_f64()
+                .max(0.0)
+                * active.partner_clip.speed;
         if let Some(t_dec) = &self.transition_decoder {
-            let current_source_secs = self.master_clock.current_secs();
+            let current_source_secs = partner_source_secs;
             let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
             let mut queue = t_dec.frame_queue().lock().unwrap();
             while let Some(f) = queue.front() {
@@ -3514,22 +3527,43 @@ impl PlaybackEngine {
             }
         }
 
-        // Blend if we have the partner frame
-        let to_rgba = match &self.transition_frame_cache {
-            Some(f) => f.to_rgba(),
-            None => {
-                // No partner frame yet — show from frame unblended
-                return from_rgba;
-            }
-        };
-
         let kind_id = crate::transition::transition_kind_to_id(active.kind);
 
-        // GPU-accelerated transition (preferred) or CPU fallback
-        if let Some(gpu) = &mut self.gpu_effects {
-            gpu.render_transition(&from_rgba, &to_rgba, kind_id, active.progress, width, height)
+        if !active.past_cut {
+            // First half: main decoder is on clip_a, partner decoder is on clip_b.
+            // Need the partner frame to blend. Cache from_rgba (clip_a) so the
+            // second-half branch can still show it after the main decoder advances.
+            let to_rgba = match &self.transition_frame_cache {
+                Some(f) => f.to_rgba(),
+                None => {
+                    // No partner frame yet — show main (clip_a) unblended
+                    return from_rgba;
+                }
+            };
+            self.transition_clip_a_last_frame = Some(from_rgba.clone());
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.render_transition(&from_rgba, &to_rgba, kind_id, active.progress, width, height)
+            } else {
+                crate::transition::render_transition(active.kind, &from_rgba, &to_rgba, active.progress, width, height)
+            }
         } else {
-            crate::transition::render_transition(active.kind, &from_rgba, &to_rgba, active.progress, width, height)
+            // Second half: main decoder has advanced to clip_b. Use the cached
+            // clip_a frame as "from" and the main (clip_b) frame as "to". The
+            // partner decoder is still running on clip_b; its frames are ignored
+            // here but we keep it open so there's no teardown mid-window.
+            let blend_from = match self.transition_clip_a_last_frame.clone() {
+                Some(f) => f,
+                None => {
+                    // No cached clip_a frame (e.g. seeked directly into second half).
+                    // Fall back to unblended main.
+                    return from_rgba;
+                }
+            };
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.render_transition(&blend_from, &from_rgba, kind_id, active.progress, width, height)
+            } else {
+                crate::transition::render_transition(active.kind, &blend_from, &from_rgba, active.progress, width, height)
+            }
         }
     }
 

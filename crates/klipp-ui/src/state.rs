@@ -1,5 +1,5 @@
 use crate::history::CommandHistory;
-use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, VideoParam, ViewerMode};
+use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
@@ -237,6 +237,8 @@ pub struct AppState {
     /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
     pub hovered_clip: Option<ClipId>,
+    /// Currently selected transition (track_idx, transition_id). UI-only state.
+    pub selected_transition: Option<(usize, TransitionId)>,
 
     // UI state
     pub show_unsaved_dialog: bool,
@@ -1311,6 +1313,7 @@ impl Default for AppState {
             last_timeline_content_width: 800.0,
             show_overview_bar: true,
             selected_clip: None,
+            selected_transition: None,
             selected_clips: Vec::new(),
             hovered_clip: None,
             show_unsaved_dialog: false,

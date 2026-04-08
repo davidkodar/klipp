@@ -64,9 +64,15 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
 pub struct ActiveTransition {
     pub kind: TransitionKind,
     pub progress: f32,
-    /// The partner clip (the clip on the other side of the transition from the current clip).
+    /// The partner clip (the clip on the other side of the transition from the main decoder).
+    /// First half of the centered window: main=clip_a → partner=clip_b.
+    /// Second half: main=clip_b → partner=clip_a.
     pub partner_clip: klipp_timeline::Clip,
     pub track_index: usize,
+    /// True when playhead is at or past the cut (i.e. on clip_b's side of the window).
+    /// Callers use this to order blend arguments as clip_a → clip_b regardless of
+    /// which clip the main decoder is currently on.
+    pub past_cut: bool,
 }
 
 /// Check if the playhead is within a transition region on any video track.
@@ -84,17 +90,19 @@ pub fn find_active_transition(
             // Find clip_a and clip_b
             let clip_a = track.find_clip(transition.clip_a_id);
             let clip_b = track.find_clip(transition.clip_b_id);
-            let (_clip_a, clip_b) = match (clip_a, clip_b) {
+            let (clip_a, clip_b) = match (clip_a, clip_b) {
                 (Some(a), Some(b)) => (a, b),
                 _ => continue,
             };
 
-            // The transition region is the overlap between clip_a's end and clip_b's start.
-            // transition.duration defines how long the transition lasts.
-            // The transition starts at clip_b.timeline_in (which should be < clip_a.timeline_out)
-            // and ends at clip_a.timeline_out (or clip_b.timeline_in + transition.duration).
-            let trans_start = clip_b.timeline_in;
-            let trans_end_tc = trans_start + transition.duration;
+            // Centered on the cut: half the duration sits on clip_a's tail,
+            // half sits on clip_b's head. Requires handle frames on both clips.
+            let half_duration = klipp_core::RationalTime {
+                value: transition.duration.value / 2,
+                rate: transition.duration.rate,
+            };
+            let trans_start = clip_b.timeline_in - half_duration;
+            let trans_end_tc = clip_b.timeline_in + half_duration;
 
             if playhead >= trans_start && playhead < trans_end_tc {
                 let elapsed = (playhead - trans_start).to_secs_f64();
@@ -105,14 +113,18 @@ pub fn find_active_transition(
                     0.0
                 };
 
-                // Determine which clip is the "partner" — the one NOT currently playing.
-                // During a transition, the V1 decoder is on clip_a (outgoing).
-                // The partner (incoming) is clip_b.
+                // Partner decoder is pinned to clip_b for the entire centered window
+                // so it never tears down at the cut. The engine caches clip_a's last
+                // frame during the first half and reuses it as "from" after the cut,
+                // once the main decoder has advanced to clip_b.
+                let _ = clip_a;
+                let past_cut = playhead >= clip_b.timeline_in;
                 return Some(ActiveTransition {
                     kind: transition.kind,
                     progress,
                     partner_clip: clip_b.clone(),
                     track_index: track_idx,
+                    past_cut,
                 });
             }
         }

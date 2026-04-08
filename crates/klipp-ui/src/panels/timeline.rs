@@ -464,6 +464,7 @@ impl TimelinePanel {
 
             self.handle_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
             self.handle_audio_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
+            self.handle_transition_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
             self.handle_title_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
             } // end if track_visible (clip rendering + drag-drop)
 
@@ -1179,6 +1180,95 @@ impl TimelinePanel {
         }
     }
 
+    fn handle_transition_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_rect: egui::Rect,
+        content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let kind_id = match &state.drag_drop.payload {
+            Some(crate::drag_drop::DragPayload::Transition { kind_id, .. }) => *kind_id,
+            _ => return,
+        };
+        let hover_pos = match ui.input(|i| i.pointer.hover_pos()) {
+            Some(p) => p,
+            None => return,
+        };
+        if !track_rect.contains(hover_pos) {
+            return;
+        }
+
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+
+        // Find nearest clip boundary (within 40px) that has two adjacent clips.
+        let mut best: Option<(usize, f32)> = None;
+        for i in 0..clips.len().saturating_sub(1) {
+            let a = &clips[i];
+            let boundary_secs = a.timeline_in.to_secs_f64() as f32 + a.duration().to_secs_f64() as f32;
+            let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
+            let dist = (hover_pos.x - boundary_x).abs();
+            if dist < 40.0 && best.map_or(true, |(_, d)| dist < d) {
+                best = Some((i, dist));
+            }
+        }
+
+        let Some((idx, _)) = best else {
+            return;
+        };
+
+        let clip_a_id = clips[idx].id;
+        let clip_b_id = clips[idx + 1].id;
+        let boundary_secs = clips[idx].timeline_in.to_secs_f64() as f32
+            + clips[idx].duration().to_secs_f64() as f32;
+        let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
+
+        // Highlight the gap at the boundary.
+        let highlight_w = 24.0;
+        let highlight_rect = egui::Rect::from_min_size(
+            egui::pos2(boundary_x - highlight_w * 0.5, track_rect.top() + 2.0),
+            egui::vec2(highlight_w, track_rect.height() - 4.0),
+        );
+        painter.rect_filled(
+            highlight_rect,
+            3.0,
+            egui::Color32::from_rgba_unmultiplied(255, 180, 40, 60),
+        );
+        painter.rect_stroke(
+            highlight_rect,
+            3.0,
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 180, 40)),
+        );
+
+        let any_down = ui.input(|i| i.pointer.any_down());
+        if !any_down {
+            // Skip if a transition already exists between these two clips.
+            let already = state.sequences[state.active_sequence_idx].tracks[track_idx]
+                .transitions
+                .iter()
+                .any(|t| t.clip_a_id == clip_a_id && t.clip_b_id == clip_b_id);
+            if let Some(crate::drag_drop::DragPayload::Transition { name, .. }) = state.drag_drop.end() {
+                if already {
+                    state.toast.show(format!("Transition already exists at this cut"));
+                } else {
+                    cmds.push(AppCommand::AddTransition {
+                        track_index: track_idx,
+                        clip_a_id,
+                        clip_b_id,
+                        kind_id,
+                        duration_frames: state.default_transition_frames,
+                    });
+                    state.toast.show(format!("\"{}\" applied", name));
+                }
+            }
+        }
+    }
+
     fn handle_title_dnd_over_track(
         &mut self,
         ui: &mut egui::Ui,
@@ -1846,6 +1936,40 @@ impl TimelinePanel {
                     &truncated,
                     egui::FontId::proportional(10.0),
                     egui::Color32::WHITE,
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw transition drag ghost — orange pill following the cursor
+        if let Some(crate::drag_drop::DragPayload::Transition { ref name, .. }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 130.0;
+                let ghost_h = 28.0;
+                let ghost_rect = egui::Rect::from_center_size(
+                    cursor_pos,
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("transition_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 6.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 180, 40, 210));
+                ghost_painter.rect_stroke(ghost_rect, 6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 210, 100, 230)));
+
+                let truncated = if name.len() > 16 { format!("{}...", &name[..13]) } else { name.clone() };
+                ghost_painter.text(
+                    ghost_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_rgb(20, 10, 0),
                 );
 
                 ui.ctx().request_repaint();
@@ -4120,6 +4244,38 @@ impl TimelinePanel {
                 let click_secs = (x_in_content as f64 / zoom as f64).max(0.0);
                 let click_tc = RationalTime::from_secs_f64(click_secs, fps.rate());
 
+                // Transition hit-test — takes priority over clip body so transitions
+                // painted over clip edges are selectable.
+                if state.active_tool == Tool::Select {
+                    let mut hit_transition: Option<klipp_core::TransitionId> = None;
+                    {
+                        let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
+                        for transition in &track.transitions {
+                            if let Some(clip_a) = track.clips.iter().find(|c| c.id == transition.clip_a_id) {
+                                let boundary_secs = clip_a.timeline_out.to_secs_f64() as f32;
+                                let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
+                                let dur_px = transition.duration.to_secs_f64() as f32 * zoom;
+                                let half = (dur_px * 0.5).max(6.0);
+                                let trans_rect = egui::Rect::from_x_y_ranges(
+                                    (boundary_x - half)..=(boundary_x + half),
+                                    track_rect.y_range(),
+                                );
+                                if trans_rect.contains(pos) {
+                                    hit_transition = Some(transition.id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(tid) = hit_transition {
+                        state.selected_transition = Some((track_idx, tid));
+                        state.selected_clip = None;
+                        state.selected_clips.clear();
+                        cmds.push(AppCommand::SelectClip(None));
+                        return;
+                    }
+                }
+
                 if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                     if state.active_tool == Tool::Blade {
                         // Snap blade position when snap is enabled (hold Shift to override)
@@ -4196,6 +4352,7 @@ impl TimelinePanel {
                             }
                         }
                         cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
+                        state.selected_transition = None;
                         // Clear media browser selection so inspector shows timeline clip (State 3)
                         state.selected_media_ids.clear();
                     }
@@ -6425,10 +6582,12 @@ impl TimelinePanel {
                 // Find clip_b (the incoming clip) to determine the transition position
                 let clip_b = track.find_clip(transition.clip_b_id);
                 if let Some(clip_b) = clip_b {
-                    let trans_start_secs = clip_b.timeline_in.to_secs_f64();
+                    let cut_secs = clip_b.timeline_in.to_secs_f64();
                     let trans_dur_secs = transition.duration.to_secs_f64();
+                    let trans_start_secs = cut_secs - trans_dur_secs * 0.5;
+                    let trans_end_secs = cut_secs + trans_dur_secs * 0.5;
                     let trans_start_x = content_rect.left() + (trans_start_secs * zoom as f64) as f32 - scroll;
-                    let trans_end_x = content_rect.left() + ((trans_start_secs + trans_dur_secs) * zoom as f64) as f32 - scroll;
+                    let trans_end_x = content_rect.left() + (trans_end_secs * zoom as f64) as f32 - scroll;
 
                     // Only draw if visible
                     if trans_end_x > content_rect.left() && trans_start_x < content_rect.right() {
@@ -6437,12 +6596,23 @@ impl TimelinePanel {
                             egui::pos2(trans_start_x, track_rect.top()),
                             egui::vec2(trans_w, track_height),
                         );
-                        // Semi-transparent overlay
+                        let is_selected = state.selected_transition
+                            .map(|(ti, tid)| ti == track_idx && tid == transition.id)
+                            .unwrap_or(false);
+                        // Semi-transparent overlay (brighter when selected)
+                        let fill_alpha = if is_selected { 90 } else { 35 };
                         painter.rect_filled(
                             indicator_rect,
                             0.0,
-                            egui::Color32::from_rgba_premultiplied(255, 180, 40, 35),
+                            egui::Color32::from_rgba_premultiplied(255, 180, 40, fill_alpha),
                         );
+                        if is_selected {
+                            painter.rect_stroke(
+                                indicator_rect,
+                                0.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 60)),
+                            );
+                        }
                         // Diamond marker at center
                         let cx = (trans_start_x + trans_end_x) / 2.0;
                         let cy = track_rect.center().y;
@@ -9563,7 +9733,8 @@ impl TimelinePanel {
         let any_down = ui.input(|i| i.pointer.any_down());
         if !any_down
             && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
-                | Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+                | Some(crate::drag_drop::DragPayload::AudioEffect { .. })
+                | Some(crate::drag_drop::DragPayload::Transition { .. })) {
                 state.drag_drop.end();
             }
     }
