@@ -292,6 +292,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     clip_a_id: ClipId(parse_uuid(&tr.clip_a_id).ok()?),
                     clip_b_id: ClipId(parse_uuid(&tr.clip_b_id).ok()?),
                     user_params: Default::default(),
+                    alignment: Default::default(),
                 })
             }).collect();
             track.clips = t.clips.iter().map(|c| {

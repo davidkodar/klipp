@@ -661,6 +661,10 @@ pub struct Transition {
     /// Missing from older project files — defaults are kind-neutral.
     #[serde(default)]
     pub user_params: klipp_core::TransitionUserParams,
+    /// Where the transition sits relative to the cut between its two clips.
+    /// Defaults to centred for backwards compatibility with older projects.
+    #[serde(default)]
+    pub alignment: klipp_core::TransitionAlignment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

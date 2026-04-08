@@ -3565,12 +3565,25 @@ impl PlaybackEngine {
             // clip_a frame as "from" and the main (clip_b) frame as "to". The
             // partner decoder is still running on clip_b; its frames are ignored
             // here but we keep it open so there's no teardown mid-window.
-            let blend_from = match self.transition_clip_a_last_frame.clone() {
-                Some(f) => f,
-                None => {
-                    // No cached clip_a frame (e.g. seeked directly into second half).
-                    // Fall back to unblended main.
-                    return from_rgba;
+            //
+            // Exception — StartAtCut alignment: the entire window is "past the cut",
+            // so the cache is never populated. In that mode the partner decoder is
+            // pointed at clip_a's tail (because there's no first half to occupy it),
+            // and we use its live frames as the "from" side directly.
+            let blend_from = if active.alignment == klipp_core::TransitionAlignment::StartAtCut {
+                // partner decoder frame for clip_a tail
+                match &self.transition_frame_cache {
+                    Some(f) => f.to_rgba(),
+                    None => return from_rgba,
+                }
+            } else {
+                match self.transition_clip_a_last_frame.clone() {
+                    Some(f) => f,
+                    None => {
+                        // No cached clip_a frame (e.g. seeked directly into second half).
+                        // Fall back to unblended main.
+                        return from_rgba;
+                    }
                 }
             };
             let up = active.user_params;

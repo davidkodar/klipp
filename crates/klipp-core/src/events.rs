@@ -614,6 +614,7 @@ pub enum AppCommand {
     SetTransitionDuration { track_index: usize, transition_id: crate::id::TransitionId, duration_frames: u32 },
     SetTransitionKind { track_index: usize, transition_id: crate::id::TransitionId, kind_id: u8 },
     SetTransitionParam { track_index: usize, transition_id: crate::id::TransitionId, user_params: crate::types::TransitionUserParams },
+    SetTransitionAlignment { track_index: usize, transition_id: crate::id::TransitionId, alignment: crate::types::TransitionAlignment },
 
     // Title clips
     CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },

@@ -6584,8 +6584,18 @@ impl TimelinePanel {
                 if let Some(clip_b) = clip_b {
                     let cut_secs = clip_b.timeline_in.to_secs_f64();
                     let trans_dur_secs = transition.duration.to_secs_f64();
-                    let trans_start_secs = cut_secs - trans_dur_secs * 0.5;
-                    let trans_end_secs = cut_secs + trans_dur_secs * 0.5;
+                    let (trans_start_secs, trans_end_secs) = match transition.alignment {
+                        klipp_core::TransitionAlignment::Center => (
+                            cut_secs - trans_dur_secs * 0.5,
+                            cut_secs + trans_dur_secs * 0.5,
+                        ),
+                        klipp_core::TransitionAlignment::StartAtCut => {
+                            (cut_secs, cut_secs + trans_dur_secs)
+                        }
+                        klipp_core::TransitionAlignment::EndAtCut => {
+                            (cut_secs - trans_dur_secs, cut_secs)
+                        }
+                    };
                     let trans_start_x = content_rect.left() + (trans_start_secs * zoom as f64) as f32 - scroll;
                     let trans_end_x = content_rect.left() + (trans_end_secs * zoom as f64) as f32 - scroll;
 
@@ -6613,8 +6623,9 @@ impl TimelinePanel {
                                 egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 60)),
                             );
                         }
-                        // Diamond marker at center
-                        let cx = (trans_start_x + trans_end_x) / 2.0;
+                        // Diamond marker sits on the cut, not the rect midpoint —
+                        // for non-Center alignments those are different points.
+                        let cx = content_rect.left() + (cut_secs * zoom as f64) as f32 - scroll;
                         let cy = track_rect.center().y;
                         let d = 5.0;
                         let diamond = vec![

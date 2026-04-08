@@ -217,6 +217,18 @@ pub struct AudioEffectInstance {
 fn default_audio_fx_enabled() -> bool { true }
 fn default_audio_fx_wet_dry() -> f32 { 1.0 }
 
+/// Where a transition sits relative to the cut between its two clips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TransitionAlignment {
+    /// Centred on the cut: `[cut - D/2, cut + D/2)`. Standard NLE default.
+    #[default]
+    Center,
+    /// Entire transition sits on clip_b: `[cut, cut + D)`.
+    StartAtCut,
+    /// Entire transition sits on clip_a: `[cut - D, cut)`.
+    EndAtCut,
+}
+
 /// Generic per-transition user-tunable parameters.
 ///
 /// The four scalar slots and RGBA colour are interpreted per `TransitionKind`

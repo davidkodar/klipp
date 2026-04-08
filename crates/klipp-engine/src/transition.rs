@@ -75,6 +75,8 @@ pub struct ActiveTransition {
     pub past_cut: bool,
     /// Per-kind tunable parameters copied from the source `Transition`.
     pub user_params: klipp_core::TransitionUserParams,
+    /// Where the transition window sits relative to the cut.
+    pub alignment: klipp_core::TransitionAlignment,
 }
 
 /// Check if the playhead is within a transition region on any video track.
@@ -97,14 +99,22 @@ pub fn find_active_transition(
                 _ => continue,
             };
 
-            // Centered on the cut: half the duration sits on clip_a's tail,
-            // half sits on clip_b's head. Requires handle frames on both clips.
-            let half_duration = klipp_core::RationalTime {
-                value: transition.duration.value / 2,
-                rate: transition.duration.rate,
+            // Window placement depends on the transition's alignment.
+            //   Center      → [cut - D/2, cut + D/2)  — needs handles on both clips
+            //   StartAtCut  → [cut, cut + D)          — entire window on clip_b
+            //   EndAtCut    → [cut - D, cut)          — entire window on clip_a
+            let cut = clip_b.timeline_in;
+            let (trans_start, trans_end_tc) = match transition.alignment {
+                klipp_core::TransitionAlignment::Center => {
+                    let half = klipp_core::RationalTime {
+                        value: transition.duration.value / 2,
+                        rate: transition.duration.rate,
+                    };
+                    (cut - half, cut + half)
+                }
+                klipp_core::TransitionAlignment::StartAtCut => (cut, cut + transition.duration),
+                klipp_core::TransitionAlignment::EndAtCut => (cut - transition.duration, cut),
             };
-            let trans_start = clip_b.timeline_in - half_duration;
-            let trans_end_tc = clip_b.timeline_in + half_duration;
 
             if playhead >= trans_start && playhead < trans_end_tc {
                 let elapsed = (playhead - trans_start).to_secs_f64();
@@ -115,19 +125,24 @@ pub fn find_active_transition(
                     0.0
                 };
 
-                // Partner decoder is pinned to clip_b for the entire centered window
-                // so it never tears down at the cut. The engine caches clip_a's last
-                // frame during the first half and reuses it as "from" after the cut,
-                // once the main decoder has advanced to clip_b.
-                let _ = clip_a;
+                // Partner-decoder selection depends on alignment:
+                //   Center      → clip_b (pre-roll for second half; first half caches clip_a)
+                //   StartAtCut  → clip_a (whole window is past_cut, partner supplies clip_a tail)
+                //   EndAtCut    → clip_b (whole window is pre-cut, partner supplies clip_b head)
+                let partner_clip = match transition.alignment {
+                    klipp_core::TransitionAlignment::StartAtCut => clip_a.clone(),
+                    klipp_core::TransitionAlignment::Center
+                    | klipp_core::TransitionAlignment::EndAtCut => clip_b.clone(),
+                };
                 let past_cut = playhead >= clip_b.timeline_in;
                 return Some(ActiveTransition {
                     kind: transition.kind,
                     progress,
-                    partner_clip: clip_b.clone(),
+                    partner_clip,
                     track_index: track_idx,
                     past_cut,
                     user_params: transition.user_params,
+                    alignment: transition.alignment,
                 });
             }
         }

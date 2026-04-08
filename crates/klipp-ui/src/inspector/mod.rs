@@ -1533,6 +1533,42 @@ fn show_transition_inspector(
                 }
             });
 
+            ui.add_space(6.0);
+
+            // Alignment selector — universal across all kinds.
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Alignment")
+                        .color(theme.text_secondary)
+                        .size(11.0),
+                );
+                use klipp_core::TransitionAlignment;
+                const ALIGNMENTS: &[(TransitionAlignment, &str)] = &[
+                    (TransitionAlignment::Center, "Center"),
+                    (TransitionAlignment::StartAtCut, "Start at Cut"),
+                    (TransitionAlignment::EndAtCut, "End at Cut"),
+                ];
+                let current_label = ALIGNMENTS
+                    .iter()
+                    .find(|(a, _)| *a == transition.alignment)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("Center");
+                egui::ComboBox::from_id_salt("transition_alignment")
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        for (alignment, label) in ALIGNMENTS {
+                            let is_current = *alignment == transition.alignment;
+                            if ui.selectable_label(is_current, *label).clicked() && !is_current {
+                                cmds.push(AppCommand::SetTransitionAlignment {
+                                    track_index: track_idx,
+                                    transition_id: transition.id,
+                                    alignment: *alignment,
+                                });
+                            }
+                        }
+                    });
+            });
+
             // Per-kind parameters
             if matches!(
                 transition.kind,

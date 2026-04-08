@@ -1039,6 +1039,7 @@ mod tests {
             clip_a_id,
             clip_b_id,
             user_params: Default::default(),
+            alignment: Default::default(),
         };
 
         let mut seq = make_sequence();
