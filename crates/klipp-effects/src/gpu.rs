@@ -4007,6 +4007,148 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             min(base.z + add.z, 255.0),
             base.w,
         );
+    } else if params.kind_id == 13u {
+        // Luminance Dissolve: bright pixels of `from` dissolve first, dark pixels last.
+        // param0 = softness (default 1.0).
+        let from_norm = from_px.rgb / 255.0;
+        let luma = dot(from_norm, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let softness = max(params.param0 * 0.15, 0.01);
+        let t = smoothstep(p - softness, p + softness, luma);
+        result = lerp_pixel(from_px, to_px, t);
+    } else if params.kind_id == 14u || params.kind_id == 15u {
+        // Circle Wipe In (14) expands from center; Out (15) contracts to center.
+        // param0 = softness, param1 = cx (0..1), param2 = cy (0..1)
+        let cx = params.param1 * f32(params.width);
+        let cy = params.param2 * f32(params.height);
+        let mx = max(cx, f32(params.width) - cx);
+        let my = max(cy, f32(params.height) - cy);
+        let max_r = max(length(vec2<f32>(mx, my)), 1.0);
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let dist = length(vec2<f32>(dx, dy)) / max_r;
+        let softness = max(params.param0 * 0.04, 0.001);
+        var radius: f32;
+        if params.kind_id == 14u {
+            radius = p * (1.0 + 2.0 * softness) - softness;
+        } else {
+            radius = (1.0 - p) * (1.0 + 2.0 * softness) - softness;
+        }
+        let s_val = smoothstep(radius - softness, radius + softness, dist);
+        var t: f32;
+        if params.kind_id == 14u {
+            t = 1.0 - s_val;
+        } else {
+            t = s_val;
+        }
+        result = lerp_pixel(from_px, to_px, t);
+    } else if params.kind_id == 16u {
+        // Clock Wipe: angular sweep around frame center.
+        // param0=softness, param1=start angle deg, param2=direction (0=CW, 1=CCW)
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let start_rad = params.param1 * 3.14159265 / 180.0;
+        let two_pi = 6.28318530;
+        var angle = atan2(dx, -dy) - start_rad;
+        angle = ((angle - floor(angle / two_pi) * two_pi) + two_pi);
+        angle = angle - floor(angle / two_pi) * two_pi;
+        if params.param2 > 0.5 {
+            angle = two_pi - angle;
+        }
+        let norm_angle = angle / two_pi;
+        let softness = max(params.param0 * 0.02, 0.001);
+        let threshold = p * (1.0 + 2.0 * softness) - softness;
+        let s_val = smoothstep(threshold - softness, threshold + softness, norm_angle);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_val);
+    } else if params.kind_id == 17u || params.kind_id == 18u {
+        // Barn Door Open (17) splits from center outward; Close (18) closes inward.
+        // param0 = softness, param1 = orientation (0=horizontal, 1=vertical)
+        let softness = max(params.param0 * 0.03, 0.001);
+        var dist: f32;
+        if params.param1 > 0.5 {
+            let cy = f32(params.height) * 0.5;
+            dist = abs(f32(y) - cy) / max(cy, 1.0);
+        } else {
+            let cx = f32(params.width) * 0.5;
+            dist = abs(f32(x) - cx) / max(cx, 1.0);
+        }
+        var t_bd: f32;
+        if params.kind_id == 17u {
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            t_bd = 1.0 - smoothstep(threshold - softness, threshold + softness, dist);
+        } else {
+            let threshold = (1.0 - p) * (1.0 + 2.0 * softness) - softness;
+            t_bd = smoothstep(threshold - softness, threshold + softness, dist);
+        }
+        result = lerp_pixel(from_px, to_px, t_bd);
+    } else if params.kind_id == 19u {
+        // Pixelate: block size peaks at midpoint.
+        // param0 = max block size, param1 = mode (0 = pixelate+dissolve, 1 = cross)
+        let max_block = max(params.param0, 2.0);
+        let triangle = 1.0 - abs(p * 2.0 - 1.0);
+        let block_f = max(max_block * triangle, 1.0);
+        let block = max(u32(block_f), 1u);
+        let bx = min((x / block) * block + block / 2u, params.width - 1u);
+        let by = min((y / block) * block + block / 2u, params.height - 1u);
+        let block_idx = by * params.width + bx;
+        let from_block = unpack(from_buf[block_idx]);
+        if params.param1 > 0.5 {
+            let to_block = unpack(to_buf[block_idx]);
+            result = lerp_pixel(from_block, to_block, p);
+        } else if p < 0.5 {
+            result = from_block;
+        } else {
+            let t_px = (p - 0.5) * 2.0;
+            result = lerp_pixel(from_block, to_px, t_px);
+        }
+    } else if params.kind_id == 20u {
+        // Ripple: radial sine displacement, envelope peaks at midpoint.
+        // param0=amplitude, param1=frequency, param2=speed
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let dist = length(vec2<f32>(dx, dy));
+        let amplitude = params.param0;
+        let frequency = params.param1;
+        let speed = params.param2;
+        let envelope = sin(p * 3.14159265) * amplitude;
+        let phase = dist * frequency * 0.1 - p * speed * 10.0;
+        let ripple = sin(phase) * envelope;
+        var nx: f32 = 0.0;
+        var ny: f32 = 0.0;
+        if dist > 0.1 {
+            nx = dx / dist;
+            ny = dy / dist;
+        }
+        let sx = clamp(f32(x) + nx * ripple, 0.0, f32(params.width) - 1.0);
+        let sy = clamp(f32(y) + ny * ripple, 0.0, f32(params.height) - 1.0);
+        let sample_idx = u32(sy) * params.width + u32(sx);
+        let from_distorted = unpack(from_buf[sample_idx]);
+        result = lerp_pixel(from_distorted, to_px, p);
+    } else if params.kind_id == 21u || params.kind_id == 22u {
+        // Page Turn (21) / Page Turn Reverse (22): peel from one side with fold shadow.
+        // param0 = shadow intensity, param1 = direction (0=RTL, 1=LTR) for PageTurn.
+        let shadow_intensity = params.param0;
+        var fx: f32 = f32(x);
+        if params.kind_id == 22u || params.param1 > 0.5 {
+            fx = f32(params.width) - 1.0 - fx;
+        }
+        let norm_x = fx / f32(params.width);
+        let fold_x = 1.0 - p;
+        let denom = max(p * 0.3, 0.01);
+        if norm_x > fold_x {
+            let shadow_dist = (norm_x - fold_x) / denom;
+            let shadow = shadow_intensity * exp(-shadow_dist * 3.0);
+            let t = clamp(1.0 - shadow, 0.0, 1.0);
+            result = vec4<f32>(to_px.x * t, to_px.y * t, to_px.z * t, 255.0);
+        } else {
+            let shadow_dist = (fold_x - norm_x) / denom;
+            let shadow = shadow_intensity * 0.5 * exp(-shadow_dist * 2.0);
+            let t = clamp(1.0 - shadow, 0.0, 1.0);
+            result = vec4<f32>(from_px.x * t, from_px.y * t, from_px.z * t, 255.0);
+        }
     } else {
         result = lerp_pixel(from_px, to_px, p);
     }

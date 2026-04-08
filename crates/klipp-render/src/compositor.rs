@@ -343,6 +343,213 @@ fn render_transition(
                 output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
             }
         }
+        TransitionKind::LuminanceDissolve => {
+            // Bright pixels of `from` dissolve to `to` first, dark pixels last.
+            let softness = 0.15_f32;
+            for i in (0..byte_count).step_by(4) {
+                let r = from[i] as f32 / 255.0;
+                let g = from[i + 1] as f32 / 255.0;
+                let b = from[i + 2] as f32 / 255.0;
+                let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                let lo = p - softness;
+                let hi = p + softness;
+                let t = ((luma - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                let t = t * t * (3.0 - 2.0 * t);
+                output[i] = (from[i] as f32 * (1.0 - t) + to[i] as f32 * t + 0.5) as u8;
+                output[i + 1] = (from[i + 1] as f32 * (1.0 - t) + to[i + 1] as f32 * t + 0.5) as u8;
+                output[i + 2] = (from[i + 2] as f32 * (1.0 - t) + to[i + 2] as f32 * t + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::CircleWipeIn | TransitionKind::CircleWipeOut => {
+            // Circle expanding/contracting from frame center (export uses default center).
+            let cx = 0.5 * width as f32;
+            let cy = 0.5 * height as f32;
+            let max_r = ((cx.max(width as f32 - cx)).powi(2)
+                + (cy.max(height as f32 - cy)).powi(2))
+                .sqrt()
+                .max(1.0);
+            let softness = 0.04_f32;
+            let is_in = matches!(kind, TransitionKind::CircleWipeIn);
+            let radius = if is_in {
+                p * (1.0 + 2.0 * softness) - softness
+            } else {
+                (1.0 - p) * (1.0 + 2.0 * softness) - softness
+            };
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt() / max_r;
+                    let lo = radius - softness;
+                    let hi = radius + softness;
+                    let t_raw = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = t_raw * t_raw * (3.0 - 2.0 * t_raw);
+                    let t = if is_in { 1.0 - s_val } else { s_val };
+                    for c in 0..3 {
+                        output[idx + c] =
+                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
+                                as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::ClockWipe => {
+            // Clockwise sweep from 12 o'clock around frame center (export uses defaults).
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let softness = 0.02_f32;
+            let two_pi = std::f32::consts::TAU;
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let mut angle = dx.atan2(-dy);
+                    angle = ((angle % two_pi) + two_pi) % two_pi;
+                    let norm_angle = angle / two_pi;
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let t_raw = ((norm_angle - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = t_raw * t_raw * (3.0 - 2.0 * t_raw);
+                    let t = 1.0 - s_val;
+                    for c in 0..3 {
+                        output[idx + c] =
+                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
+                                as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::BarnDoorOpen | TransitionKind::BarnDoorClose => {
+            // Horizontal barn door split from frame center (export uses defaults).
+            let softness = 0.03_f32;
+            let cx = width as f32 * 0.5;
+            let is_open = matches!(kind, TransitionKind::BarnDoorOpen);
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dist = (x as f32 - cx).abs() / cx.max(1.0);
+                    let t = if is_open {
+                        let threshold = p * (1.0 + 2.0 * softness) - softness;
+                        let lo = threshold - softness;
+                        let hi = threshold + softness;
+                        let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                        1.0 - tr * tr * (3.0 - 2.0 * tr)
+                    } else {
+                        let threshold = (1.0 - p) * (1.0 + 2.0 * softness) - softness;
+                        let lo = threshold - softness;
+                        let hi = threshold + softness;
+                        let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                        tr * tr * (3.0 - 2.0 * tr)
+                    };
+                    for c in 0..3 {
+                        output[idx + c] =
+                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
+                                as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Pixelate => {
+            // Block size grows to 32 at midpoint (export uses default max block + from-only mode).
+            let max_block = 32_usize;
+            let triangle = 1.0 - (p * 2.0 - 1.0).abs();
+            let block = ((max_block as f32 * triangle) as usize).max(1);
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let bx = ((x / block) * block + block / 2).min(w - 1);
+                    let by = ((y / block) * block + block / 2).min(h - 1);
+                    let bi = (by * w + bx) * 4;
+                    if p < 0.5 {
+                        output[fi..fi + 4].copy_from_slice(&from[bi..bi + 4]);
+                    } else {
+                        let t = (p - 0.5) * 2.0;
+                        for c in 0..3 {
+                            output[fi + c] = (from[bi + c] as f32 * (1.0 - t)
+                                + to[fi + c] as f32 * t
+                                + 0.5) as u8;
+                        }
+                        output[fi + 3] = 255;
+                    }
+                }
+            }
+        }
+        TransitionKind::Ripple => {
+            // Water ripple export fallback (uses default amplitude/frequency/speed).
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let amplitude = 20.0_f32;
+            let frequency = 8.0_f32;
+            let speed = 1.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let phase = dist * frequency * 0.1 - p * speed * 10.0;
+                    let ripple = phase.sin() * envelope;
+                    let (nx, ny) = if dist > 0.1 {
+                        (dx / dist, dy / dist)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let sx = (x as f32 + nx * ripple).clamp(0.0, w as f32 - 1.0) as usize;
+                    let sy = (y as f32 + ny * ripple).clamp(0.0, h as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] = (from[si + c] as f32 * (1.0 - p)
+                            + to[fi + c] as f32 * p
+                            + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::PageTurn | TransitionKind::PageTurnReverse => {
+            // Page peel export (uses default shadow=0.6, right-to-left; Reverse flips).
+            let shadow_intensity = 0.6_f32;
+            let flip = matches!(kind, TransitionKind::PageTurnReverse);
+            let fold_x = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            let denom = (p * 0.3).max(0.01);
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let fx = if flip { w - 1 - x } else { x };
+                    let norm_x = fx as f32 / w as f32;
+                    if norm_x > fold_x {
+                        let shadow_dist = (norm_x - fold_x) / denom;
+                        let shadow = shadow_intensity * (-shadow_dist * 3.0).exp();
+                        let t = (1.0 - shadow).clamp(0.0, 1.0);
+                        for c in 0..3 {
+                            output[fi + c] = (to[fi + c] as f32 * t) as u8;
+                        }
+                    } else {
+                        let shadow_dist = (fold_x - norm_x) / denom;
+                        let shadow = shadow_intensity * 0.5 * (-shadow_dist * 2.0).exp();
+                        let t = (1.0 - shadow).clamp(0.0, 1.0);
+                        for c in 0..3 {
+                            output[fi + c] = (from[fi + c] as f32 * t) as u8;
+                        }
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
             let inv = 1.0 - p;

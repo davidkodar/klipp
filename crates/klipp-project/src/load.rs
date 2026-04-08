@@ -238,6 +238,16 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         Flash => 10,
         Spin => 11,
         LightLeak => 12,
+        LuminanceDissolve => 13,
+        CircleWipeIn => 14,
+        CircleWipeOut => 15,
+        ClockWipe => 16,
+        BarnDoorOpen => 17,
+        BarnDoorClose => 18,
+        Pixelate => 19,
+        Ripple => 20,
+        PageTurn => 21,
+        PageTurnReverse => 22,
     }
 }
 
@@ -283,6 +293,16 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "Flash" => klipp_timeline::TransitionKind::Flash,
                     "Spin" => klipp_timeline::TransitionKind::Spin,
                     "LightLeak" => klipp_timeline::TransitionKind::LightLeak,
+                    "LuminanceDissolve" => klipp_timeline::TransitionKind::LuminanceDissolve,
+                    "CircleWipeIn" => klipp_timeline::TransitionKind::CircleWipeIn,
+                    "CircleWipeOut" => klipp_timeline::TransitionKind::CircleWipeOut,
+                    "ClockWipe" => klipp_timeline::TransitionKind::ClockWipe,
+                    "BarnDoorOpen" => klipp_timeline::TransitionKind::BarnDoorOpen,
+                    "BarnDoorClose" => klipp_timeline::TransitionKind::BarnDoorClose,
+                    "Pixelate" => klipp_timeline::TransitionKind::Pixelate,
+                    "Ripple" => klipp_timeline::TransitionKind::Ripple,
+                    "PageTurn" => klipp_timeline::TransitionKind::PageTurn,
+                    "PageTurnReverse" => klipp_timeline::TransitionKind::PageTurnReverse,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

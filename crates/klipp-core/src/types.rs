@@ -290,6 +290,35 @@ impl TransitionUserParams {
                 color: [1.0, 0.706, 0.235, 1.0],
                 ..Self::default()
             },
+            // LuminanceDissolve: param0 = softness
+            13 => Self { param0: 1.0, ..Self::default() },
+            // CircleWipe In/Out: param0=softness, param1=center x, param2=center y
+            14 | 15 => Self {
+                param0: 1.0,
+                param1: 0.5,
+                param2: 0.5,
+                ..Self::default()
+            },
+            // ClockWipe: param0=softness, param1=start angle deg, param2=direction (0=CW)
+            16 => Self {
+                param0: 1.0,
+                param1: 0.0,
+                param2: 0.0,
+                ..Self::default()
+            },
+            // Barn Door Open/Close: param0=softness, param1=orientation (0=horizontal)
+            17 | 18 => Self { param0: 1.0, param1: 0.0, ..Self::default() },
+            // Pixelate: param0 = max block size (px), param1 = mode (0=pixelate+dissolve)
+            19 => Self { param0: 32.0, param1: 0.0, ..Self::default() },
+            // Ripple: param0=amplitude, param1=frequency, param2=speed
+            20 => Self {
+                param0: 20.0,
+                param1: 8.0,
+                param2: 1.0,
+                ..Self::default()
+            },
+            // Page Turn / Page Turn Reverse: param0=shadow intensity, param1=direction
+            21 | 22 => Self { param0: 0.6, param1: 0.0, ..Self::default() },
             _ => Self::default(),
         }
     }

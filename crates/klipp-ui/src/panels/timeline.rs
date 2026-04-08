@@ -6655,6 +6655,16 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::Flash => "Flash",
                                 klipp_timeline::TransitionKind::Spin => "Spin",
                                 klipp_timeline::TransitionKind::LightLeak => "Leak",
+                                klipp_timeline::TransitionKind::LuminanceDissolve => "Luma",
+                                klipp_timeline::TransitionKind::CircleWipeIn => "Circle In",
+                                klipp_timeline::TransitionKind::CircleWipeOut => "Circle Out",
+                                klipp_timeline::TransitionKind::ClockWipe => "Clock",
+                                klipp_timeline::TransitionKind::BarnDoorOpen => "Barn Opn",
+                                klipp_timeline::TransitionKind::BarnDoorClose => "Barn Cls",
+                                klipp_timeline::TransitionKind::Pixelate => "Pixel",
+                                klipp_timeline::TransitionKind::Ripple => "Ripple",
+                                klipp_timeline::TransitionKind::PageTurn => "Page",
+                                klipp_timeline::TransitionKind::PageTurnReverse => "Page R",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

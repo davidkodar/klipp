@@ -682,6 +682,16 @@ pub enum TransitionKind {
     Flash,
     Spin,
     LightLeak,
+    LuminanceDissolve,
+    CircleWipeIn,
+    CircleWipeOut,
+    ClockWipe,
+    BarnDoorOpen,
+    BarnDoorClose,
+    Pixelate,
+    Ripple,
+    PageTurn,
+    PageTurnReverse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

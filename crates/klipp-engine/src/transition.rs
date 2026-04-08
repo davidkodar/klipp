@@ -18,6 +18,16 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::Flash => 10,
         TransitionKind::Spin => 11,
         TransitionKind::LightLeak => 12,
+        TransitionKind::LuminanceDissolve => 13,
+        TransitionKind::CircleWipeIn => 14,
+        TransitionKind::CircleWipeOut => 15,
+        TransitionKind::ClockWipe => 16,
+        TransitionKind::BarnDoorOpen => 17,
+        TransitionKind::BarnDoorClose => 18,
+        TransitionKind::Pixelate => 19,
+        TransitionKind::Ripple => 20,
+        TransitionKind::PageTurn => 21,
+        TransitionKind::PageTurnReverse => 22,
     }
 }
 
@@ -37,6 +47,16 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         10 => TransitionKind::Flash,
         11 => TransitionKind::Spin,
         12 => TransitionKind::LightLeak,
+        13 => TransitionKind::LuminanceDissolve,
+        14 => TransitionKind::CircleWipeIn,
+        15 => TransitionKind::CircleWipeOut,
+        16 => TransitionKind::ClockWipe,
+        17 => TransitionKind::BarnDoorOpen,
+        18 => TransitionKind::BarnDoorClose,
+        19 => TransitionKind::Pixelate,
+        20 => TransitionKind::Ripple,
+        21 => TransitionKind::PageTurn,
+        22 => TransitionKind::PageTurnReverse,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -57,6 +77,16 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (10, "Flash"),
         (11, "Spin"),
         (12, "Light Leak"),
+        (13, "Luminance Dissolve"),
+        (14, "Circle Wipe In"),
+        (15, "Circle Wipe Out"),
+        (16, "Clock Wipe"),
+        (17, "Barn Door Open"),
+        (18, "Barn Door Close"),
+        (19, "Pixelate"),
+        (20, "Ripple"),
+        (21, "Page Turn"),
+        (22, "Page Turn Reverse"),
     ]
 }
 
@@ -517,6 +547,231 @@ pub fn render_transition_with_params(
                 output[i + 1] = (g + add_g + 0.5).min(255.0) as u8;
                 output[i + 2] = (b + add_b + 0.5).min(255.0) as u8;
                 output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
+            }
+        }
+        TransitionKind::LuminanceDissolve => {
+            // Bright pixels of `from` dissolve to `to` first, dark pixels last.
+            // param0 = softness (default 1.0, range 0.0-3.0)
+            let softness = (user_params.param0 * 0.15).max(0.01);
+            for i in (0..byte_count).step_by(4) {
+                let r = from[i] as f32 / 255.0;
+                let g = from[i + 1] as f32 / 255.0;
+                let b = from[i + 2] as f32 / 255.0;
+                let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                let t = smoothstep_f32(p - softness, p + softness, luma);
+                output[i] = (from[i] as f32 * (1.0 - t) + to[i] as f32 * t + 0.5) as u8;
+                output[i + 1] = (from[i + 1] as f32 * (1.0 - t) + to[i + 1] as f32 * t + 0.5) as u8;
+                output[i + 2] = (from[i + 2] as f32 * (1.0 - t) + to[i + 2] as f32 * t + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::CircleWipeIn | TransitionKind::CircleWipeOut => {
+            // Circle expanding (In) or contracting (Out) from a normalized center.
+            // param0 = softness, param1 = cx (0..1), param2 = cy (0..1)
+            let cx = user_params.param1 * width as f32;
+            let cy = user_params.param2 * height as f32;
+            let max_r = ((cx.max(width as f32 - cx)).powi(2)
+                + (cy.max(height as f32 - cy)).powi(2))
+                .sqrt()
+                .max(1.0);
+            let softness = (user_params.param0 * 0.04).max(0.001);
+            let is_in = matches!(kind, TransitionKind::CircleWipeIn);
+            // Extend threshold past [0,1] so endpoints fully cover through the soft edge.
+            let radius = if is_in {
+                p * (1.0 + 2.0 * softness) - softness
+            } else {
+                (1.0 - p) * (1.0 + 2.0 * softness) - softness
+            };
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt() / max_r;
+                    let s_val = smoothstep_f32(radius - softness, radius + softness, dist);
+                    let t = if is_in { 1.0 - s_val } else { s_val };
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::PageTurn | TransitionKind::PageTurnReverse => {
+            // Page peels from one side revealing `to` underneath, with fold shadow.
+            let shadow_intensity = user_params.param0;
+            let flip = matches!(kind, TransitionKind::PageTurnReverse) || user_params.param1 > 0.5;
+            let fold_x = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            let denom = (p * 0.3).max(0.01);
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let fx = if flip { w - 1 - x } else { x };
+                    let norm_x = fx as f32 / w as f32;
+                    if norm_x > fold_x {
+                        let shadow_dist = (norm_x - fold_x) / denom;
+                        let shadow = shadow_intensity * (-shadow_dist * 3.0).exp();
+                        let t = (1.0 - shadow).clamp(0.0, 1.0);
+                        for c in 0..3 {
+                            output[fi + c] = (to[fi + c] as f32 * t) as u8;
+                        }
+                    } else {
+                        let shadow_dist = (fold_x - norm_x) / denom;
+                        let shadow = shadow_intensity * 0.5 * (-shadow_dist * 2.0).exp();
+                        let t = (1.0 - shadow).clamp(0.0, 1.0);
+                        for c in 0..3 {
+                            output[fi + c] = (from[fi + c] as f32 * t) as u8;
+                        }
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Ripple => {
+            // Water ripple: radial sine displacement peaking at midpoint.
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let amplitude = user_params.param0;
+            let frequency = user_params.param1;
+            let speed = user_params.param2;
+            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let phase = dist * frequency * 0.1 - p * speed * 10.0;
+                    let ripple = phase.sin() * envelope;
+                    let (nx, ny) = if dist > 0.1 {
+                        (dx / dist, dy / dist)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let sx = (x as f32 + nx * ripple).clamp(0.0, w as f32 - 1.0) as usize;
+                    let sy = (y as f32 + ny * ripple).clamp(0.0, h as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] = (from[si + c] as f32 * (1.0 - p)
+                            + to[fi + c] as f32 * p
+                            + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Pixelate => {
+            // Blocks grow to `max_block` at p=0.5, shrink to 1 at endpoints.
+            // param0 = max block size (px), param1 = mode (0=pixelate then dissolve, 1=cross)
+            let max_block = (user_params.param0.max(2.0)) as usize;
+            let cross = user_params.param1 > 0.5;
+            let triangle = 1.0 - (p * 2.0 - 1.0).abs();
+            let block = ((max_block as f32 * triangle) as usize).max(1);
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let bx = ((x / block) * block + block / 2).min(w - 1);
+                    let by = ((y / block) * block + block / 2).min(h - 1);
+                    let bi = (by * w + bx) * 4;
+                    if cross {
+                        // Cross mode: pixelate both and cross-dissolve through p.
+                        for c in 0..3 {
+                            output[fi + c] = (from[bi + c] as f32 * (1.0 - p)
+                                + to[bi + c] as f32 * p
+                                + 0.5) as u8;
+                        }
+                        output[fi + 3] = 255;
+                    } else if p < 0.5 {
+                        // First half: show pixelated `from` only.
+                        output[fi..fi + 4].copy_from_slice(&from[bi..bi + 4]);
+                    } else {
+                        // Second half: dissolve from pixelated-from to crisp `to`.
+                        let t = (p - 0.5) * 2.0;
+                        for c in 0..3 {
+                            output[fi + c] = (from[bi + c] as f32 * (1.0 - t)
+                                + to[fi + c] as f32 * t
+                                + 0.5) as u8;
+                        }
+                        output[fi + 3] = 255;
+                    }
+                }
+            }
+        }
+        TransitionKind::BarnDoorOpen | TransitionKind::BarnDoorClose => {
+            // Two panels split from center outward (Open) or close from edges inward (Close).
+            // param0 = softness, param1 = orientation (0=horizontal, 1=vertical)
+            let vertical = user_params.param1 > 0.5;
+            let softness = (user_params.param0 * 0.03).max(0.001);
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let is_open = matches!(kind, TransitionKind::BarnDoorOpen);
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dist = if vertical {
+                        (y as f32 - cy).abs() / cy.max(1.0)
+                    } else {
+                        (x as f32 - cx).abs() / cx.max(1.0)
+                    };
+                    let t = if is_open {
+                        // Open: reveal expands from center outward — show `to` where dist<thresh
+                        let threshold = p * (1.0 + 2.0 * softness) - softness;
+                        1.0 - smoothstep_f32(threshold - softness, threshold + softness, dist)
+                    } else {
+                        // Close: reveal sweeps from edges inward — show `to` where dist>thresh
+                        let threshold = (1.0 - p) * (1.0 + 2.0 * softness) - softness;
+                        smoothstep_f32(threshold - softness, threshold + softness, dist)
+                    };
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::ClockWipe => {
+            // Angular sweep from a starting angle around the frame center.
+            // param0 = softness, param1 = start angle deg, param2 = direction (0=CW, 1=CCW)
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let start_rad = user_params.param1 * std::f32::consts::PI / 180.0;
+            let ccw = user_params.param2 > 0.5;
+            let softness = (user_params.param0 * 0.02).max(0.001);
+            let two_pi = std::f32::consts::TAU;
+            // Extend threshold so endpoints fully cover through the soft edge.
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    // atan2(dx, -dy): 0 at 12 o'clock, increasing clockwise.
+                    let mut angle = dx.atan2(-dy) - start_rad;
+                    angle = ((angle % two_pi) + two_pi) % two_pi;
+                    if ccw {
+                        angle = two_pi - angle;
+                    }
+                    let norm_angle = angle / two_pi;
+                    let s_val =
+                        smoothstep_f32(threshold - softness, threshold + softness, norm_angle);
+                    let t = 1.0 - s_val;
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
             }
         }
     }
@@ -1122,11 +1377,21 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::Flash), 10);
         assert_eq!(transition_kind_to_id(TransitionKind::Spin), 11);
         assert_eq!(transition_kind_to_id(TransitionKind::LightLeak), 12);
+        assert_eq!(transition_kind_to_id(TransitionKind::LuminanceDissolve), 13);
+        assert_eq!(transition_kind_to_id(TransitionKind::CircleWipeIn), 14);
+        assert_eq!(transition_kind_to_id(TransitionKind::CircleWipeOut), 15);
+        assert_eq!(transition_kind_to_id(TransitionKind::ClockWipe), 16);
+        assert_eq!(transition_kind_to_id(TransitionKind::BarnDoorOpen), 17);
+        assert_eq!(transition_kind_to_id(TransitionKind::BarnDoorClose), 18);
+        assert_eq!(transition_kind_to_id(TransitionKind::Pixelate), 19);
+        assert_eq!(transition_kind_to_id(TransitionKind::Ripple), 20);
+        assert_eq!(transition_kind_to_id(TransitionKind::PageTurn), 21);
+        assert_eq!(transition_kind_to_id(TransitionKind::PageTurnReverse), 22);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=12u8 {
+        for id in 0..=22u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -1135,12 +1400,185 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(13), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(23), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_13() {
-        assert_eq!(all_transition_kinds().len(), 13);
+    fn all_transition_kinds_returns_23() {
+        assert_eq!(all_transition_kinds().len(), 23);
+    }
+
+    // ========================================================================
+    // LuminanceDissolve
+    // ========================================================================
+
+    #[test]
+    fn luminance_dissolve_bright_transitions_first() {
+        // White pixel (luma=1.0) at progress=0.9 should be mostly `to` (black).
+        let from = make_solid(255, 255, 255, 255, 1, 1);
+        let to = make_solid(0, 0, 0, 255, 1, 1);
+        let result = render_transition(TransitionKind::LuminanceDissolve, &from, &to, 0.9, 1, 1);
+        assert!(
+            result[0] < 50,
+            "bright pixel should be mostly `to` at p=0.9, got {}",
+            result[0]
+        );
+    }
+
+    #[test]
+    fn luminance_dissolve_dark_transitions_last() {
+        // Near-black pixel (luma≈0.04) at progress=0.1 should still be mostly `from`.
+        let from = make_solid(10, 10, 10, 255, 1, 1);
+        let to = make_solid(200, 200, 200, 255, 1, 1);
+        let result = render_transition(TransitionKind::LuminanceDissolve, &from, &to, 0.1, 1, 1);
+        assert!(
+            result[0] < 70,
+            "dark pixel should still be mostly `from` at p=0.1, got {}",
+            result[0]
+        );
+    }
+
+    // ========================================================================
+    // CircleWipe In/Out
+    // ========================================================================
+
+    #[test]
+    fn circle_wipe_in_full_progress_is_to() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
+        assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn page_turn_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::PageTurn, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn page_turn_at_one_right_side_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::PageTurn, &from, &to, 1.0, 8, 8);
+        // Pixel at x=1 should be mostly `to` (some shadow darkening allowed).
+        assert!(
+            result[1 * 4 + 1] > 150,
+            "right-side pixel should show `to` at p=1.0, got G={}",
+            result[1 * 4 + 1]
+        );
+    }
+
+    #[test]
+    fn page_turn_reverse_mirrors_direction() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::PageTurnReverse, &from, &to, 0.5, 8, 8);
+        // Left pixel (x=0) should be `to` (green), right pixel (x=7) should be `from` (red).
+        let left_g = result[0 * 4 + 1];
+        let right_g = result[7 * 4 + 1];
+        assert!(
+            left_g > right_g,
+            "left G ({}) should exceed right G ({}) in reverse at p=0.5",
+            left_g,
+            right_g
+        );
+    }
+
+    #[test]
+    fn ripple_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Ripple, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn ripple_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Ripple, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn pixelate_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 4, 4);
+        let to = make_solid(0, 255, 0, 255, 4, 4);
+        let result = render_transition(TransitionKind::Pixelate, &from, &to, 0.0, 4, 4);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn pixelate_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 4, 4);
+        let to = make_solid(0, 255, 0, 255, 4, 4);
+        let result = render_transition(TransitionKind::Pixelate, &from, &to, 1.0, 4, 4);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn pixelate_midpoint_from_only_mode_shows_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::Pixelate, &from, &to, 0.5, 8, 8);
+        assert!(
+            result[0] > 150,
+            "at midpoint in from-only mode R should still be ~200, got {}",
+            result[0]
+        );
+    }
+
+    #[test]
+    fn barn_door_open_center_reveals_first() {
+        // At p=0.5 with a 5-wide frame, center pixel (x=2) should be more `to`
+        // than edge pixel (x=0).
+        let from = make_solid(255, 0, 0, 255, 5, 1);
+        let to = make_solid(0, 255, 0, 255, 5, 1);
+        let result = render_transition(TransitionKind::BarnDoorOpen, &from, &to, 0.5, 5, 1);
+        let center_g = result[2 * 4 + 1];
+        let edge_g = result[0 * 4 + 1];
+        assert!(
+            center_g > edge_g,
+            "center G ({}) should exceed edge G ({}) at p=0.5",
+            center_g,
+            edge_g
+        );
+    }
+
+    #[test]
+    fn barn_door_close_full_progress_is_to() {
+        let from = make_solid(255, 0, 0, 255, 4, 4);
+        let to = make_solid(0, 255, 0, 255, 4, 4);
+        let result = render_transition(TransitionKind::BarnDoorClose, &from, &to, 1.0, 4, 4);
+        assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn clock_wipe_full_progress_is_to() {
+        let from = make_solid(255, 0, 0, 255, 4, 4);
+        let to = make_solid(0, 255, 0, 255, 4, 4);
+        let result = render_transition(TransitionKind::ClockWipe, &from, &to, 1.0, 4, 4);
+        assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn clock_wipe_zero_progress_is_from() {
+        let from = make_solid(255, 0, 0, 255, 4, 4);
+        let to = make_solid(0, 255, 0, 255, 4, 4);
+        let result = render_transition(TransitionKind::ClockWipe, &from, &to, 0.0, 4, 4);
+        assert_approx_rgb(&result, 255, 0, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn circle_wipe_out_zero_progress_is_from() {
+        let from = make_solid(255, 0, 0, 255, W, H);
+        let to = make_solid(0, 255, 0, 255, W, H);
+        let result = render_transition(TransitionKind::CircleWipeOut, &from, &to, 0.0, W, H);
+        assert_approx_rgb(&result, 255, 0, 0, TOLERANCE);
     }
 
     // ========================================================================
@@ -1178,6 +1616,16 @@ mod tests {
             TransitionKind::FilmDissolve, TransitionKind::BlurDissolve,
             TransitionKind::Flash, TransitionKind::Spin,
             TransitionKind::LightLeak,
+            TransitionKind::LuminanceDissolve,
+            TransitionKind::CircleWipeIn,
+            TransitionKind::CircleWipeOut,
+            TransitionKind::ClockWipe,
+            TransitionKind::BarnDoorOpen,
+            TransitionKind::BarnDoorClose,
+            TransitionKind::Pixelate,
+            TransitionKind::Ripple,
+            TransitionKind::PageTurn,
+            TransitionKind::PageTurnReverse,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -1197,6 +1645,16 @@ mod tests {
             TransitionKind::FilmDissolve, TransitionKind::BlurDissolve,
             TransitionKind::Flash, TransitionKind::Spin,
             TransitionKind::LightLeak,
+            TransitionKind::LuminanceDissolve,
+            TransitionKind::CircleWipeIn,
+            TransitionKind::CircleWipeOut,
+            TransitionKind::ClockWipe,
+            TransitionKind::BarnDoorOpen,
+            TransitionKind::BarnDoorClose,
+            TransitionKind::Pixelate,
+            TransitionKind::Ripple,
+            TransitionKind::PageTurn,
+            TransitionKind::PageTurnReverse,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
