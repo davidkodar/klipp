@@ -216,3 +216,69 @@ pub struct AudioEffectInstance {
 
 fn default_audio_fx_enabled() -> bool { true }
 fn default_audio_fx_wet_dry() -> f32 { 1.0 }
+
+/// Generic per-transition user-tunable parameters.
+///
+/// The four scalar slots and RGBA colour are interpreted per `TransitionKind`
+/// by the shader and CPU fallback. This struct is intentionally untyped so
+/// the shader uniform layout stays a fixed size — the meaning of each slot
+/// is a per-transition contract.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TransitionUserParams {
+    pub param0: f32,
+    pub param1: f32,
+    pub param2: f32,
+    pub param3: f32,
+    /// RGBA in 0.0–1.0 range.
+    pub color: [f32; 4],
+}
+
+impl Default for TransitionUserParams {
+    fn default() -> Self {
+        Self {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
+impl TransitionUserParams {
+    /// Kind-specific default values. Call at creation time so a fresh transition
+    /// gets parameters tuned for its kind instead of the kind-neutral `Default`.
+    pub fn default_for_kind(kind_id: u8) -> Self {
+        match kind_id {
+            // CrossDissolve: param0 = easing curve (0=Linear)
+            0 => Self { param0: 0.0, ..Self::default() },
+            // Wipes: param0 = feather width in pixels (0=hard edge)
+            1 | 2 | 3 | 4 => Self { param0: 0.0, ..Self::default() },
+            // DipToBlack: param0 = hold duration, color = black
+            5 => Self { param0: 0.0, color: [0.0, 0.0, 0.0, 1.0], ..Self::default() },
+            // DipToWhite: param0 = hold duration, color = white (already default)
+            6 => Self { param0: 0.0, color: [1.0, 1.0, 1.0, 1.0], ..Self::default() },
+            // Push: param0 = direction (0=Left, 1=Right, 2=Up, 3=Down)
+            7 => Self { param0: 0.0, ..Self::default() },
+            // BlurDissolve: param0 = max blur radius in pixels (default 32)
+            9 => Self { param0: 32.0, ..Self::default() },
+            // Flash: param0 = intensity, param1 = peak position, color = flash colour
+            10 => Self {
+                param0: 1.0,
+                param1: 0.5,
+                color: [1.0, 1.0, 1.0, 1.0],
+                ..Self::default()
+            },
+            // Spin: param0 = number of rotations (1.0 = one full turn),
+            //       param1 = zoom bloom amount (0.3 = current default look)
+            11 => Self { param0: 1.0, param1: 0.3, ..Self::default() },
+            // LightLeak: param0 = intensity, color = warm amber by default
+            12 => Self {
+                param0: 1.0,
+                color: [1.0, 0.706, 0.235, 1.0],
+                ..Self::default()
+            },
+            _ => Self::default(),
+        }
+    }
+}

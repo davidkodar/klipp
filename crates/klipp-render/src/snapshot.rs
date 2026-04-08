@@ -1038,6 +1038,7 @@ mod tests {
             duration: make_rational(12, 24), // 0.5 sec
             clip_a_id,
             clip_b_id,
+            user_params: Default::default(),
         };
 
         let mut seq = make_sequence();

@@ -9660,6 +9660,7 @@ impl KlippApp {
                         duration,
                         clip_a_id: *clip_a_id,
                         clip_b_id: *clip_b_id,
+                        user_params: klipp_core::TransitionUserParams::default_for_kind(*kind_id),
                     });
                     // Set audio crossfade: fade_out on clip_a, fade_in on clip_b
                     if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
@@ -9733,6 +9734,16 @@ impl KlippApp {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
                         t.kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
+                    }
+                }
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTransitionParam { track_index, transition_id, user_params } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
+                        t.user_params = *user_params;
                     }
                 }
                 self.sync_sequence_to_engine();

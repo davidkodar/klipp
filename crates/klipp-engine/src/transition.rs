@@ -73,6 +73,8 @@ pub struct ActiveTransition {
     /// Callers use this to order blend arguments as clip_a → clip_b regardless of
     /// which clip the main decoder is currently on.
     pub past_cut: bool,
+    /// Per-kind tunable parameters copied from the source `Transition`.
+    pub user_params: klipp_core::TransitionUserParams,
 }
 
 /// Check if the playhead is within a transition region on any video track.
@@ -125,6 +127,7 @@ pub fn find_active_transition(
                     partner_clip: clip_b.clone(),
                     track_index: track_idx,
                     past_cut,
+                    user_params: transition.user_params,
                 });
             }
         }
@@ -133,6 +136,11 @@ pub fn find_active_transition(
 }
 
 /// Render a transition between two RGBA frames on the CPU.
+///
+/// This is a thin wrapper over [`render_transition_with_params`] that passes
+/// default (kind-neutral) user parameters. Callers that want per-kind tunable
+/// parameters (feather, colour, rotations, …) should use the `_with_params`
+/// variant directly.
 pub fn render_transition(
     kind: TransitionKind,
     from: &[u8],
@@ -141,6 +149,61 @@ pub fn render_transition(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
+    // Use kind-specific defaults so callers that don't supply params still get
+    // sensible behaviour for kinds whose look depends on the colour or other
+    // tunables (e.g. DipToBlack vs DipToWhite distinguishable by colour).
+    let user_params =
+        klipp_core::TransitionUserParams::default_for_kind(transition_kind_to_id(kind) as u8);
+    render_transition_with_params(kind, from, to, progress, width, height, &user_params)
+}
+
+/// Render a transition between two RGBA frames on the CPU, honouring per-kind
+/// user parameters. Currently no built-in kind reads `user_params` — the shader
+/// and CPU paths still use hardcoded constants — but the plumbing is in place
+/// so individual kinds can opt in one at a time.
+/// GLSL-style smoothstep: 0 below `edge0`, 1 above `edge1`, smooth Hermite in between.
+fn smoothstep_f32(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Linear blend of two RGBA pixels into `out`. `t=0` → from, `t=1` → to.
+fn blend_pixel(from: &[u8], to: &[u8], t: f32, out: &mut [u8]) {
+    let inv = 1.0 - t;
+    out[0] = (from[0] as f32 * inv + to[0] as f32 * t + 0.5) as u8;
+    out[1] = (from[1] as f32 * inv + to[1] as f32 * t + 0.5) as u8;
+    out[2] = (from[2] as f32 * inv + to[2] as f32 * t + 0.5) as u8;
+    out[3] = (from[3] as f32 * inv + to[3] as f32 * t + 0.5) as u8;
+}
+
+/// Remap a linear [0,1] `t` through an easing curve selected by `curve` (0..=4).
+/// Used by CrossDissolve for user-selectable easing. Exposed so the engine's
+/// GPU path can reshape progress before dispatching the shader.
+pub fn apply_easing(t: f32, curve: f32) -> f32 {
+    match curve as u32 {
+        1 => t * t,                                                 // Ease In
+        2 => t * (2.0 - t),                                         // Ease Out
+        3 => if t < 0.5 { 2.0 * t * t } else { -1.0 + (4.0 - 2.0 * t) * t }, // In-Out
+        4 => (-(t * std::f32::consts::PI).cos() + 1.0) * 0.5,       // Sine
+        _ => t,                                                     // Linear
+    }
+}
+
+pub fn render_transition_with_params(
+    kind: TransitionKind,
+    from: &[u8],
+    to: &[u8],
+    progress: f32,
+    width: u32,
+    height: u32,
+    user_params: &klipp_core::TransitionUserParams,
+) -> Vec<u8> {
+    // CrossDissolve: reshape progress via user-selected easing curve.
+    let progress = if matches!(kind, TransitionKind::CrossDissolve) {
+        apply_easing(progress, user_params.param0)
+    } else {
+        progress
+    };
     let pixel_count = (width * height) as usize;
     let byte_count = pixel_count * 4;
     debug_assert_eq!(from.len(), byte_count);
@@ -157,115 +220,144 @@ pub fn render_transition(
             }
         }
         TransitionKind::WipeLeft => {
-            let threshold = (p * width as f32) as u32;
+            let feather = user_params.param0.max(0.001);
+            let threshold = p * (width as f32 + 2.0 * feather) - feather;
             for y in 0..height {
                 for x in 0..width {
                     let idx = (y * width + x) as usize * 4;
-                    if x < threshold {
-                        output[idx..idx + 4].copy_from_slice(&to[idx..idx + 4]);
-                    } else {
-                        output[idx..idx + 4].copy_from_slice(&from[idx..idx + 4]);
-                    }
+                    let t = 1.0 - smoothstep_f32(threshold - feather, threshold + feather, x as f32);
+                    blend_pixel(&from[idx..idx + 4], &to[idx..idx + 4], t, &mut output[idx..idx + 4]);
                 }
             }
         }
         TransitionKind::WipeRight => {
-            let threshold = ((1.0 - p) * width as f32) as u32;
+            let feather = user_params.param0.max(0.001);
+            let threshold = (1.0 - p) * (width as f32 + 2.0 * feather) - feather;
             for y in 0..height {
                 for x in 0..width {
                     let idx = (y * width + x) as usize * 4;
-                    if x >= threshold {
-                        output[idx..idx + 4].copy_from_slice(&to[idx..idx + 4]);
-                    } else {
-                        output[idx..idx + 4].copy_from_slice(&from[idx..idx + 4]);
-                    }
+                    let t = smoothstep_f32(threshold - feather, threshold + feather, x as f32);
+                    blend_pixel(&from[idx..idx + 4], &to[idx..idx + 4], t, &mut output[idx..idx + 4]);
                 }
             }
         }
         TransitionKind::WipeUp => {
-            let threshold = (p * height as f32) as u32;
+            let feather = user_params.param0.max(0.001);
+            let threshold = p * (height as f32 + 2.0 * feather) - feather;
             for y in 0..height {
                 for x in 0..width {
                     let idx = (y * width + x) as usize * 4;
-                    if y < threshold {
-                        output[idx..idx + 4].copy_from_slice(&to[idx..idx + 4]);
-                    } else {
-                        output[idx..idx + 4].copy_from_slice(&from[idx..idx + 4]);
-                    }
+                    let t = 1.0 - smoothstep_f32(threshold - feather, threshold + feather, y as f32);
+                    blend_pixel(&from[idx..idx + 4], &to[idx..idx + 4], t, &mut output[idx..idx + 4]);
                 }
             }
         }
         TransitionKind::WipeDown => {
-            let threshold = ((1.0 - p) * height as f32) as u32;
+            let feather = user_params.param0.max(0.001);
+            let threshold = (1.0 - p) * (height as f32 + 2.0 * feather) - feather;
             for y in 0..height {
                 for x in 0..width {
                     let idx = (y * width + x) as usize * 4;
-                    if y >= threshold {
-                        output[idx..idx + 4].copy_from_slice(&to[idx..idx + 4]);
-                    } else {
-                        output[idx..idx + 4].copy_from_slice(&from[idx..idx + 4]);
-                    }
+                    let t = smoothstep_f32(threshold - feather, threshold + feather, y as f32);
+                    blend_pixel(&from[idx..idx + 4], &to[idx..idx + 4], t, &mut output[idx..idx + 4]);
                 }
             }
         }
-        TransitionKind::DipToBlack => {
-            if p < 0.5 {
-                let t = p * 2.0;
-                let inv = 1.0 - t;
-                for i in (0..byte_count).step_by(4) {
-                    output[i] = (from[i] as f32 * inv + 0.5) as u8;
-                    output[i + 1] = (from[i + 1] as f32 * inv + 0.5) as u8;
-                    output[i + 2] = (from[i + 2] as f32 * inv + 0.5) as u8;
-                    output[i + 3] = (from[i + 3] as f32 * inv + 255.0 * t + 0.5) as u8;
-                }
-            } else {
-                let t = (p - 0.5) * 2.0;
-                let inv = 1.0 - t;
-                for i in (0..byte_count).step_by(4) {
-                    output[i] = (to[i] as f32 * t + 0.5) as u8;
-                    output[i + 1] = (to[i + 1] as f32 * t + 0.5) as u8;
-                    output[i + 2] = (to[i + 2] as f32 * t + 0.5) as u8;
-                    output[i + 3] = (to[i + 3] as f32 * t + 255.0 * inv + 0.5) as u8;
-                }
-            }
-        }
-        TransitionKind::DipToWhite => {
-            if p < 0.5 {
-                let t = p * 2.0;
-                let inv = 1.0 - t;
-                for i in (0..byte_count).step_by(4) {
-                    output[i] = (from[i] as f32 * inv + 255.0 * t + 0.5) as u8;
-                    output[i + 1] = (from[i + 1] as f32 * inv + 255.0 * t + 0.5) as u8;
-                    output[i + 2] = (from[i + 2] as f32 * inv + 255.0 * t + 0.5) as u8;
-                    output[i + 3] = from[i + 3];
-                }
-            } else {
-                let t = (p - 0.5) * 2.0;
-                let inv = 1.0 - t;
-                for i in (0..byte_count).step_by(4) {
-                    output[i] = (255.0 * inv + to[i] as f32 * t + 0.5) as u8;
-                    output[i + 1] = (255.0 * inv + to[i + 1] as f32 * t + 0.5) as u8;
-                    output[i + 2] = (255.0 * inv + to[i + 2] as f32 * t + 0.5) as u8;
-                    output[i + 3] = to[i + 3];
+        TransitionKind::DipToBlack | TransitionKind::DipToWhite => {
+            // Unified dip-to-colour. param0 = hold duration at midpoint,
+            // color = dip colour (default black for DipToBlack, white for DipToWhite).
+            let dip_r = (user_params.color[0] * 255.0).clamp(0.0, 255.0);
+            let dip_g = (user_params.color[1] * 255.0).clamp(0.0, 255.0);
+            let dip_b = (user_params.color[2] * 255.0).clamp(0.0, 255.0);
+            let dip_pixel = [dip_r as u8, dip_g as u8, dip_b as u8, 255u8];
+            let hold = user_params.param0.clamp(0.0, 0.45);
+            let mid_start = 0.5 - hold * 0.5;
+            let mid_end = 0.5 + hold * 0.5;
+            for i in (0..byte_count).step_by(4) {
+                if p <= mid_start {
+                    let t = p / mid_start.max(0.001);
+                    blend_pixel(&from[i..i + 4], &dip_pixel, t, &mut output[i..i + 4]);
+                } else if p >= mid_end {
+                    let t = (p - mid_end) / (1.0 - mid_end).max(0.001);
+                    blend_pixel(&dip_pixel, &to[i..i + 4], t, &mut output[i..i + 4]);
+                } else {
+                    output[i..i + 4].copy_from_slice(&dip_pixel);
                 }
             }
         }
         TransitionKind::PushLeft => {
-            // Outgoing frame slides left, incoming frame enters from right
-            let offset = (p * width as f32) as i32;
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    let src_x = x as i32 + offset;
-                    if src_x < width as i32 {
-                        // Still showing from-frame (shifted left)
-                        let src_idx = (y as i32 * width as i32 + src_x) as usize * 4;
-                        output[idx..idx + 4].copy_from_slice(&from[src_idx..src_idx + 4]);
-                    } else {
-                        // Incoming to-frame from right
-                        let src_x2 = src_x - width as i32;
-                        let src_idx = (y as i32 * width as i32 + src_x2) as usize * 4;
-                        output[idx..idx + 4].copy_from_slice(&to[src_idx..src_idx + 4]);
+            // Push: hard slide, no blending. param0 = direction.
+            // 0 = Left (default), 1 = Right, 2 = Up, 3 = Down
+            let dir = user_params.param0.round() as i32;
+            let w = width as i32;
+            let h = height as i32;
+            match dir {
+                1 => {
+                    // Push Right
+                    let offset = (p * w as f32) as i32;
+                    for y in 0..h {
+                        for x in 0..w {
+                            let idx = (y * w + x) as usize * 4;
+                            let src_x = x - offset;
+                            let (src, sx) = if src_x >= 0 {
+                                (from, src_x)
+                            } else {
+                                (to, src_x + w)
+                            };
+                            let src_idx = (y * w + sx) as usize * 4;
+                            output[idx..idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                        }
+                    }
+                }
+                2 => {
+                    // Push Up
+                    let offset = (p * h as f32) as i32;
+                    for y in 0..h {
+                        for x in 0..w {
+                            let idx = (y * w + x) as usize * 4;
+                            let src_y = y + offset;
+                            let (src, sy) = if src_y < h {
+                                (from, src_y)
+                            } else {
+                                (to, src_y - h)
+                            };
+                            let src_idx = (sy * w + x) as usize * 4;
+                            output[idx..idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                        }
+                    }
+                }
+                3 => {
+                    // Push Down
+                    let offset = (p * h as f32) as i32;
+                    for y in 0..h {
+                        for x in 0..w {
+                            let idx = (y * w + x) as usize * 4;
+                            let src_y = y - offset;
+                            let (src, sy) = if src_y >= 0 {
+                                (from, src_y)
+                            } else {
+                                (to, src_y + h)
+                            };
+                            let src_idx = (sy * w + x) as usize * 4;
+                            output[idx..idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                        }
+                    }
+                }
+                _ => {
+                    // Push Left (default — matches the original PushLeft behaviour)
+                    let offset = (p * w as f32) as i32;
+                    for y in 0..h {
+                        for x in 0..w {
+                            let idx = (y * w + x) as usize * 4;
+                            let src_x = x + offset;
+                            let (src, sx) = if src_x < w {
+                                (from, src_x)
+                            } else {
+                                (to, src_x - w)
+                            };
+                            let src_idx = (y * w + sx) as usize * 4;
+                            output[idx..idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                        }
                     }
                 }
             }
@@ -294,7 +386,9 @@ pub fn render_transition(
                 output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
             }
             // Second pass: horizontal box blur (radius proportional to progress)
-            let radius = ((p * (1.0 - p) * 4.0) * 16.0) as i32; // peaks at p=0.5
+            // param0 = max blur radius in pixels
+            let max_radius = user_params.param0.max(1.0);
+            let radius = (p * (1.0 - p) * 4.0 * max_radius) as i32; // peaks at p=0.5
             if radius > 0 {
                 let temp = output.clone();
                 for y in 0..height as i32 {
@@ -321,41 +415,52 @@ pub fn render_transition(
             }
         }
         TransitionKind::Flash => {
-            // Quick flash to white at midpoint, then reveal incoming
-            let white_intensity = if p < 0.3 {
-                // Ramp to white
-                (p / 0.3).min(1.0)
-            } else if p < 0.5 {
-                // Hold white
+            // Bright colour flash with parameterized peak.
+            // param0 = intensity, param1 = peak position, color = flash colour.
+            let flash_r = (user_params.color[0] * 255.0).clamp(0.0, 255.0);
+            let flash_g = (user_params.color[1] * 255.0).clamp(0.0, 255.0);
+            let flash_b = (user_params.color[2] * 255.0).clamp(0.0, 255.0);
+            let intensity = user_params.param0.clamp(0.0, 2.0);
+            let peak = user_params.param1.clamp(0.05, 0.95);
+            let ramp_up = peak * 0.6;
+            let ramp_down = peak + (1.0 - peak) * 0.4;
+            let dissolve_start = peak * 0.8;
+
+            let flash_t = if p < ramp_up {
+                p / ramp_up.max(0.001)
+            } else if p < peak {
                 1.0
-            } else if p < 0.7 {
-                // Fade from white to incoming
-                1.0 - ((p - 0.5) / 0.2).min(1.0)
+            } else if p < ramp_down {
+                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
             } else {
                 0.0
             };
-            let src = if p < 0.4 { from } else { to };
-            let blend_p = if p < 0.4 { 0.0 } else { ((p - 0.4) / 0.6).min(1.0) };
+            let flash_t = (flash_t * intensity).clamp(0.0, 1.0);
+            let dissolve_t = ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001))
+                .clamp(0.0, 1.0);
+
             for i in (0..byte_count).step_by(4) {
-                for c in 0..3 {
-                    let base = if p < 0.4 {
-                        from[i + c] as f32
-                    } else {
-                        from[i + c] as f32 * (1.0 - blend_p) + to[i + c] as f32 * blend_p
-                    };
-                    output[i + c] = (base * (1.0 - white_intensity) + 255.0 * white_intensity + 0.5).min(255.0) as u8;
-                }
-                output[i + 3] = src[i + 3];
+                let base_r = from[i] as f32 * (1.0 - dissolve_t) + to[i] as f32 * dissolve_t;
+                let base_g = from[i + 1] as f32 * (1.0 - dissolve_t) + to[i + 1] as f32 * dissolve_t;
+                let base_b = from[i + 2] as f32 * (1.0 - dissolve_t) + to[i + 2] as f32 * dissolve_t;
+                let base_a = from[i + 3] as f32 * (1.0 - dissolve_t) + to[i + 3] as f32 * dissolve_t;
+                output[i] = (base_r * (1.0 - flash_t) + flash_r * flash_t + 0.5).min(255.0) as u8;
+                output[i + 1] = (base_g * (1.0 - flash_t) + flash_g * flash_t + 0.5).min(255.0) as u8;
+                output[i + 2] = (base_b * (1.0 - flash_t) + flash_b * flash_t + 0.5).min(255.0) as u8;
+                output[i + 3] = base_a as u8;
             }
         }
         TransitionKind::Spin => {
-            // Rotation dissolve: sample pixels with rotation transform
-            let angle = p * std::f32::consts::PI * 2.0; // full rotation
+            // Rotation dissolve: sample pixels with rotation transform.
+            // param0 = rotations (1.0 = one full turn), param1 = zoom bloom amount.
+            let rotations = user_params.param0.max(0.05);
+            let zoom_amount = user_params.param1.clamp(0.0, 1.0);
+            let angle = p * rotations * std::f32::consts::PI * 2.0;
             let cx = width as f32 * 0.5;
             let cy = height as f32 * 0.5;
             let cos_a = angle.cos();
             let sin_a = angle.sin();
-            let scale = 1.0 + (p * (1.0 - p) * 4.0) * 0.3; // slight zoom at midpoint
+            let scale = 1.0 + (p * (1.0 - p) * 4.0) * zoom_amount;
             let inv_scale = 1.0 / scale;
             for y in 0..height {
                 for x in 0..width {
@@ -377,18 +482,25 @@ pub fn render_transition(
             }
         }
         TransitionKind::LightLeak => {
-            // Warm light leak: orange/amber glow that peaks at midpoint
-            let leak_intensity = (p * (1.0 - p) * 4.0).powf(0.7); // peaks at 0.5
+            // Additive coloured glow that peaks at midpoint.
+            // param0 = intensity, color = leak colour (default warm amber).
+            let leak_r = user_params.color[0] * 255.0;
+            let leak_g = user_params.color[1] * 255.0;
+            let leak_b = user_params.color[2] * 255.0;
+            let intensity = user_params.param0.clamp(0.0, 2.0);
+            let leak_t = (p * (1.0 - p) * 4.0).powf(0.7) * intensity;
             let inv = 1.0 - p;
+            // Pure additive — leak colour added uniformly so non-amber leaks look right.
+            let add_r = leak_r * leak_t;
+            let add_g = leak_g * leak_t;
+            let add_b = leak_b * leak_t;
             for i in (0..byte_count).step_by(4) {
-                // Base dissolve
                 let r = from[i] as f32 * inv + to[i] as f32 * p;
                 let g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
                 let b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
-                // Add warm light leak (amber: R=255, G=180, B=60)
-                output[i] = (r + (255.0 - r) * leak_intensity * 0.7 + 0.5).min(255.0) as u8;
-                output[i + 1] = (g + (180.0 - g).max(0.0) * leak_intensity * 0.5 + 0.5).min(255.0) as u8;
-                output[i + 2] = (b + (60.0 - b).max(0.0) * leak_intensity * 0.3 + 0.5).min(255.0) as u8;
+                output[i] = (r + add_r + 0.5).min(255.0) as u8;
+                output[i + 1] = (g + add_g + 0.5).min(255.0) as u8;
+                output[i + 2] = (b + add_b + 0.5).min(255.0) as u8;
                 output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
             }
         }

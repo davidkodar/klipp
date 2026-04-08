@@ -178,12 +178,28 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     }
 
     // Reconstruct all sequences
-    let sequences: Vec<Sequence> = project.sequences.iter()
+    let mut sequences: Vec<Sequence> = project.sequences.iter()
         .filter_map(|seq_json| load_sequence_from_json(seq_json).ok())
         .collect();
 
     if sequences.is_empty() {
         return Err("Project contains no valid sequences".into());
+    }
+
+    // Migrate transitions saved before per-kind defaults were introduced.
+    // Any transition whose user_params is the all-default value gets upgraded
+    // to default_for_kind, which is a no-op for kinds with no specific defaults
+    // and silently fixes BlurDissolve/Spin/etc as their defaults are added.
+    let default_params = klipp_core::TransitionUserParams::default();
+    for sequence in &mut sequences {
+        for track in &mut sequence.tracks {
+            for transition in &mut track.transitions {
+                if transition.user_params == default_params {
+                    transition.user_params =
+                        klipp_core::TransitionUserParams::default_for_kind(transition_kind_id(transition.kind));
+                }
+            }
+        }
     }
 
     // Use color settings from the first sequence (global LUT is project-wide)
@@ -201,6 +217,28 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
     Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at))
+}
+
+/// Map a `TransitionKind` enum to its stable `kind_id` byte. Mirrors
+/// `klipp_engine::transition::transition_kind_to_id`, duplicated here so
+/// klipp-project doesn't need to depend on klipp-engine.
+fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
+    use klipp_timeline::TransitionKind::*;
+    match kind {
+        CrossDissolve => 0,
+        WipeLeft => 1,
+        WipeRight => 2,
+        WipeUp => 3,
+        WipeDown => 4,
+        DipToBlack => 5,
+        DipToWhite => 6,
+        PushLeft => 7,
+        FilmDissolve => 8,
+        BlurDissolve => 9,
+        Flash => 10,
+        Spin => 11,
+        LightLeak => 12,
+    }
 }
 
 fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> {
@@ -253,6 +291,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     duration: RationalTime { value: tr.duration.value, rate: tr.duration.rate },
                     clip_a_id: ClipId(parse_uuid(&tr.clip_a_id).ok()?),
                     clip_b_id: ClipId(parse_uuid(&tr.clip_b_id).ok()?),
+                    user_params: Default::default(),
                 })
             }).collect();
             track.clips = t.clips.iter().map(|c| {

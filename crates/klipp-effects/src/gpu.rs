@@ -2566,6 +2566,11 @@ impl GpuEffectsPipeline {
         progress: f32,
         width: u32,
         height: u32,
+        user_param0: f32,
+        user_param1: f32,
+        user_param2: f32,
+        user_param3: f32,
+        user_color: [f32; 4],
     ) -> Vec<u8> {
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
@@ -2583,6 +2588,14 @@ impl GpuEffectsPipeline {
             height,
             progress,
             kind_id,
+            param0: user_param0,
+            param1: user_param1,
+            param2: user_param2,
+            param3: user_param3,
+            color_r: user_color[0],
+            color_g: user_color[1],
+            color_b: user_color[2],
+            color_a: user_color[3],
         });
 
         // Create transition bind group (from, to, output, params)
@@ -2837,6 +2850,16 @@ struct TransitionParams {
     height: u32,
     progress: f32,
     kind_id: u32, // 0=CrossDissolve, 1=WipeLeft, 2=WipeRight, 3=WipeUp, 4=WipeDown, 5=DipToBlack, 6=DipToWhite
+    // Generic per-kind user params. Meaning is a per-kind contract — see the
+    // WGSL shader branches. Keep field layout identical to the WGSL struct.
+    param0: f32,
+    param1: f32,
+    param2: f32,
+    param3: f32,
+    color_r: f32,
+    color_g: f32,
+    color_b: f32,
+    color_a: f32,
 }
 
 #[repr(C)]
@@ -3746,6 +3769,14 @@ struct Params {
     height: u32,
     progress: f32,
     kind_id: u32,
+    param0: f32,
+    param1: f32,
+    param2: f32,
+    param3: f32,
+    color_r: f32,
+    color_g: f32,
+    color_b: f32,
+    color_a: f32,
 }
 
 @group(0) @binding(0) var<storage, read> from_buf: array<u32>;
@@ -3790,61 +3821,95 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         result = lerp_pixel(from_px, to_px, p);
     } else if params.kind_id == 1u {
         // Wipe Left (reveals to-frame from left to right)
-        let threshold = p * f32(params.width);
-        if f32(x) < threshold {
-            result = to_px;
-        } else {
-            result = from_px;
-        }
+        // param0 = feather radius in pixels (0 = hard edge)
+        // threshold expanded by ±feather so endpoints fully clear/cover the frame
+        let feather = max(params.param0, 0.001);
+        let threshold = p * (f32(params.width) + 2.0 * feather) - feather;
+        let t = 1.0 - smoothstep(threshold - feather, threshold + feather, f32(x));
+        result = mix(from_px, to_px, t);
     } else if params.kind_id == 2u {
         // Wipe Right (reveals to-frame from right to left)
-        let threshold = (1.0 - p) * f32(params.width);
-        if f32(x) >= threshold {
-            result = to_px;
-        } else {
-            result = from_px;
-        }
+        let feather = max(params.param0, 0.001);
+        let threshold = (1.0 - p) * (f32(params.width) + 2.0 * feather) - feather;
+        let t = smoothstep(threshold - feather, threshold + feather, f32(x));
+        result = mix(from_px, to_px, t);
     } else if params.kind_id == 3u {
         // Wipe Up (reveals to-frame from top to bottom)
-        let threshold = p * f32(params.height);
-        if f32(y) < threshold {
-            result = to_px;
-        } else {
-            result = from_px;
-        }
+        let feather = max(params.param0, 0.001);
+        let threshold = p * (f32(params.height) + 2.0 * feather) - feather;
+        let t = 1.0 - smoothstep(threshold - feather, threshold + feather, f32(y));
+        result = mix(from_px, to_px, t);
     } else if params.kind_id == 4u {
         // Wipe Down (reveals to-frame from bottom to top)
-        let threshold = (1.0 - p) * f32(params.height);
-        if f32(y) >= threshold {
-            result = to_px;
+        let feather = max(params.param0, 0.001);
+        let threshold = (1.0 - p) * (f32(params.height) + 2.0 * feather) - feather;
+        let t = smoothstep(threshold - feather, threshold + feather, f32(y));
+        result = mix(from_px, to_px, t);
+    } else if params.kind_id == 5u || params.kind_id == 6u {
+        // Dip to colour. param0 = hold duration (0..0.45) at the midpoint.
+        // colour = dip colour (default black for kind 5, white for kind 6).
+        let dip_color = vec4<f32>(
+            params.color_r * 255.0,
+            params.color_g * 255.0,
+            params.color_b * 255.0,
+            255.0,
+        );
+        let hold = clamp(params.param0, 0.0, 0.45);
+        let mid_start = 0.5 - hold * 0.5;
+        let mid_end = 0.5 + hold * 0.5;
+        if p <= mid_start {
+            let t = p / max(mid_start, 0.001);
+            result = lerp_pixel(from_px, dip_color, t);
+        } else if p >= mid_end {
+            let t = (p - mid_end) / max(1.0 - mid_end, 0.001);
+            result = lerp_pixel(dip_color, to_px, t);
         } else {
-            result = from_px;
-        }
-    } else if params.kind_id == 5u {
-        // Dip to Black
-        let black = vec4<f32>(0.0, 0.0, 0.0, 255.0);
-        if p < 0.5 {
-            result = lerp_pixel(from_px, black, p * 2.0);
-        } else {
-            result = lerp_pixel(black, to_px, (p - 0.5) * 2.0);
-        }
-    } else if params.kind_id == 6u {
-        // Dip to White
-        let white = vec4<f32>(255.0, 255.0, 255.0, 255.0);
-        if p < 0.5 {
-            result = lerp_pixel(from_px, white, p * 2.0);
-        } else {
-            result = lerp_pixel(white, to_px, (p - 0.5) * 2.0);
+            result = dip_color;
         }
     } else if params.kind_id == 7u {
-        // Push Left: outgoing slides left, incoming enters from right
-        let offset = u32(p * f32(params.width));
-        let src_x = x + offset;
-        if src_x < params.width {
-            result = unpack(from_buf[y * params.width + src_x]);
+        // Push: outgoing slides off, incoming slides on. Hard slide, no blend.
+        // param0 = direction (0=Left, 1=Right, 2=Up, 3=Down)
+        let dir = u32(params.param0 + 0.5);
+        if dir == 1u {
+            // Push Right: outgoing slides right, incoming enters from left
+            let offset = i32(p * f32(params.width));
+            let src_x = i32(x) - offset;
+            if src_x >= 0 {
+                result = unpack(from_buf[y * params.width + u32(src_x)]);
+            } else {
+                let in_x = u32(src_x + i32(params.width));
+                result = unpack(to_buf[y * params.width + in_x]);
+            }
+        } else if dir == 2u {
+            // Push Up: outgoing slides up, incoming enters from bottom
+            let offset = u32(p * f32(params.height));
+            let src_y = y + offset;
+            if src_y < params.height {
+                result = unpack(from_buf[src_y * params.width + x]);
+            } else {
+                let in_y = src_y - params.height;
+                result = unpack(to_buf[in_y * params.width + x]);
+            }
+        } else if dir == 3u {
+            // Push Down: outgoing slides down, incoming enters from top
+            let offset = i32(p * f32(params.height));
+            let src_y = i32(y) - offset;
+            if src_y >= 0 {
+                result = unpack(from_buf[u32(src_y) * params.width + x]);
+            } else {
+                let in_y = u32(src_y + i32(params.height));
+                result = unpack(to_buf[in_y * params.width + x]);
+            }
         } else {
-            let in_x = src_x - params.width;
-            result = unpack(to_buf[y * params.width + in_x]);
+            // Push Left (default): outgoing slides left, incoming enters from right
+            let offset = u32(p * f32(params.width));
+            let src_x = x + offset;
+            if src_x < params.width {
+                result = unpack(from_buf[y * params.width + src_x]);
+            } else {
+                let in_x = src_x - params.width;
+                result = unpack(to_buf[y * params.width + in_x]);
+            }
         }
     } else if params.kind_id == 8u {
         // Film Dissolve: perceptual gamma-aware dissolve (sqrt blending)
@@ -3855,8 +3920,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         result.w = from_px.w * (1.0 - p) + to_px.w * p;
     } else if params.kind_id == 9u {
         // Blur Dissolve: dissolve + horizontal box blur peaking at midpoint
-        // GPU approximation: sample 5 neighbors weighted by progress
-        let blur_r = i32(p * (1.0 - p) * 4.0 * 16.0);
+        // param0 = max blur radius in pixels
+        let max_radius = max(params.param0, 1.0);
+        let blur_r = i32(p * (1.0 - p) * 4.0 * max_radius);
         var acc = vec4<f32>(0.0);
         var count = 0.0;
         let ix = i32(x);
@@ -3875,32 +3941,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             result = lerp_pixel(from_px, to_px, p);
         }
     } else if params.kind_id == 10u {
-        // Flash: bright white flash at midpoint
-        var white_i: f32;
-        if p < 0.3 {
-            white_i = p / 0.3;
-        } else if p < 0.5 {
-            white_i = 1.0;
-        } else if p < 0.7 {
-            white_i = 1.0 - (p - 0.5) / 0.2;
+        // Flash: bright colour flash with parameterized peak.
+        // param0 = intensity, param1 = peak position, color = flash colour.
+        let flash_color = vec4<f32>(
+            params.color_r * 255.0,
+            params.color_g * 255.0,
+            params.color_b * 255.0,
+            255.0,
+        );
+        let intensity = clamp(params.param0, 0.0, 2.0);
+        let peak = clamp(params.param1, 0.05, 0.95);
+        let ramp_up = peak * 0.6;
+        let ramp_down = peak + (1.0 - peak) * 0.4;
+        var flash_t: f32;
+        if p < ramp_up {
+            flash_t = p / max(ramp_up, 0.001);
+        } else if p < peak {
+            flash_t = 1.0;
+        } else if p < ramp_down {
+            flash_t = 1.0 - (p - peak) / max(ramp_down - peak, 0.001);
         } else {
-            white_i = 0.0;
+            flash_t = 0.0;
         }
-        var blend_p: f32;
-        if p < 0.4 { blend_p = 0.0; } else { blend_p = (p - 0.4) / 0.6; }
-        let base = lerp_pixel(from_px, to_px, blend_p);
+        flash_t = clamp(flash_t * intensity, 0.0, 1.0);
+        let dissolve_start = peak * 0.8;
+        let dissolve_t = clamp((p - dissolve_start) / max(1.0 - dissolve_start, 0.001), 0.0, 1.0);
+        let base = lerp_pixel(from_px, to_px, dissolve_t);
         result = vec4<f32>(
-            min(base.x * (1.0 - white_i) + 255.0 * white_i, 255.0),
-            min(base.y * (1.0 - white_i) + 255.0 * white_i, 255.0),
-            min(base.z * (1.0 - white_i) + 255.0 * white_i, 255.0),
+            min(base.x * (1.0 - flash_t) + flash_color.x * flash_t, 255.0),
+            min(base.y * (1.0 - flash_t) + flash_color.y * flash_t, 255.0),
+            min(base.z * (1.0 - flash_t) + flash_color.z * flash_t, 255.0),
             base.w,
         );
     } else if params.kind_id == 11u {
         // Spin: rotation dissolve around center
+        // param0 = rotations (1.0 = one full turn), param1 = zoom bloom amount
+        let rotations = max(params.param0, 0.05);
+        let zoom_amount = clamp(params.param1, 0.0, 1.0);
         let cx = f32(params.width) * 0.5;
         let cy = f32(params.height) * 0.5;
-        let angle = p * 6.283185; // 2*PI
-        let scale = 1.0 + p * (1.0 - p) * 4.0 * 0.3;
+        let angle = p * rotations * 6.283185; // 2*PI
+        let scale = 1.0 + p * (1.0 - p) * 4.0 * zoom_amount;
         let inv_s = 1.0 / scale;
         let dx = f32(x) - cx;
         let dy = f32(y) - cy;
@@ -3912,13 +3993,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rotated_from = unpack(from_buf[src_idx]);
         result = lerp_pixel(rotated_from, to_px, p);
     } else if params.kind_id == 12u {
-        // Light Leak: warm amber glow peaking at midpoint
-        let leak = pow(p * (1.0 - p) * 4.0, 0.7);
+        // Light Leak: additive coloured glow peaking at midpoint.
+        // param0 = intensity, color = leak colour (default warm amber).
+        let leak_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let intensity = clamp(params.param0, 0.0, 2.0);
+        let leak_t = pow(p * (1.0 - p) * 4.0, 0.7) * intensity;
         let base = lerp_pixel(from_px, to_px, p);
+        // Pure additive — leak colour added uniformly so non-amber leaks look right.
+        let add = leak_color * leak_t;
         result = vec4<f32>(
-            min(base.x + (255.0 - base.x) * leak * 0.7, 255.0),
-            min(base.y + max(180.0 - base.y, 0.0) * leak * 0.5, 255.0),
-            min(base.z + max(60.0 - base.z, 0.0) * leak * 0.3, 255.0),
+            min(base.x + add.x, 255.0),
+            min(base.y + add.y, 255.0),
+            min(base.z + add.z, 255.0),
             base.w,
         );
     } else {

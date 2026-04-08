@@ -3541,10 +3541,24 @@ impl PlaybackEngine {
                 }
             };
             self.transition_clip_a_last_frame = Some(from_rgba.clone());
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.render_transition(&from_rgba, &to_rgba, kind_id, active.progress, width, height)
+            let up = active.user_params;
+            // CrossDissolve progress reshaping must happen before the GPU call
+            // (the shader receives progress as-is). The CPU fallback wrapper
+            // reshapes internally, so we pass the raw value there.
+            let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
+                crate::transition::apply_easing(active.progress, up.param0)
             } else {
-                crate::transition::render_transition(active.kind, &from_rgba, &to_rgba, active.progress, width, height)
+                active.progress
+            };
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.render_transition(
+                    &from_rgba, &to_rgba, kind_id, gpu_progress, width, height,
+                    up.param0, up.param1, up.param2, up.param3, up.color,
+                )
+            } else {
+                crate::transition::render_transition_with_params(
+                    active.kind, &from_rgba, &to_rgba, active.progress, width, height, &up,
+                )
             }
         } else {
             // Second half: main decoder has advanced to clip_b. Use the cached
@@ -3559,10 +3573,21 @@ impl PlaybackEngine {
                     return from_rgba;
                 }
             };
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.render_transition(&blend_from, &from_rgba, kind_id, active.progress, width, height)
+            let up = active.user_params;
+            let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
+                crate::transition::apply_easing(active.progress, up.param0)
             } else {
-                crate::transition::render_transition(active.kind, &blend_from, &from_rgba, active.progress, width, height)
+                active.progress
+            };
+            if let Some(gpu) = &mut self.gpu_effects {
+                gpu.render_transition(
+                    &blend_from, &from_rgba, kind_id, gpu_progress, width, height,
+                    up.param0, up.param1, up.param2, up.param3, up.color,
+                )
+            } else {
+                crate::transition::render_transition_with_params(
+                    active.kind, &blend_from, &from_rgba, active.progress, width, height, &up,
+                )
             }
         }
     }

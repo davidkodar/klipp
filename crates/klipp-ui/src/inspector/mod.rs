@@ -1533,6 +1533,349 @@ fn show_transition_inspector(
                 }
             });
 
+            // Per-kind parameters
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::WipeLeft
+                    | klipp_timeline::TransitionKind::WipeRight
+                    | klipp_timeline::TransitionKind::WipeUp
+                    | klipp_timeline::TransitionKind::WipeDown
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Feather")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut feather = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut feather)
+                            .range(0.0..=32.0)
+                            .speed(0.5)
+                            .suffix(" px"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = feather;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::BlurDissolve) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Blur Radius")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut radius = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut radius)
+                            .range(4.0..=128.0)
+                            .speed(1.0)
+                            .suffix(" px"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = radius;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::DipToBlack | klipp_timeline::TransitionKind::DipToWhite
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Dip Color")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut color = egui::Color32::from_rgb(
+                        (transition.user_params.color[0] * 255.0) as u8,
+                        (transition.user_params.color[1] * 255.0) as u8,
+                        (transition.user_params.color[2] * 255.0) as u8,
+                    );
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.color = [
+                            color.r() as f32 / 255.0,
+                            color.g() as f32 / 255.0,
+                            color.b() as f32 / 255.0,
+                            1.0,
+                        ];
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Hold")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut hold = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut hold)
+                            .range(0.0..=0.45)
+                            .speed(0.01),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = hold;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::Flash) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Flash Color")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut color = egui::Color32::from_rgb(
+                        (transition.user_params.color[0] * 255.0) as u8,
+                        (transition.user_params.color[1] * 255.0) as u8,
+                        (transition.user_params.color[2] * 255.0) as u8,
+                    );
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.color = [
+                            color.r() as f32 / 255.0,
+                            color.g() as f32 / 255.0,
+                            color.b() as f32 / 255.0,
+                            1.0,
+                        ];
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Intensity")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut intensity = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut intensity)
+                            .range(0.0..=2.0)
+                            .speed(0.05),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = intensity;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Peak Position")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut peak = transition.user_params.param1;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut peak)
+                            .range(0.1..=0.9)
+                            .speed(0.01),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param1 = peak;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::LightLeak) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Leak Color")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut color = egui::Color32::from_rgb(
+                        (transition.user_params.color[0] * 255.0) as u8,
+                        (transition.user_params.color[1] * 255.0) as u8,
+                        (transition.user_params.color[2] * 255.0) as u8,
+                    );
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.color = [
+                            color.r() as f32 / 255.0,
+                            color.g() as f32 / 255.0,
+                            color.b() as f32 / 255.0,
+                            1.0,
+                        ];
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Intensity")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut intensity = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut intensity)
+                            .range(0.0..=2.0)
+                            .speed(0.05),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = intensity;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::PushLeft) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Direction")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    const DIRECTIONS: &[&str] = &["Left", "Right", "Up", "Down"];
+                    let current_idx =
+                        (transition.user_params.param0.round() as usize).min(DIRECTIONS.len() - 1);
+                    egui::ComboBox::from_id_salt("push_direction")
+                        .selected_text(DIRECTIONS[current_idx])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in DIRECTIONS.iter().enumerate() {
+                                let is_current = i == current_idx;
+                                if ui.selectable_label(is_current, *name).clicked() && !is_current {
+                                    let mut new_params = transition.user_params;
+                                    new_params.param0 = i as f32;
+                                    cmds.push(AppCommand::SetTransitionParam {
+                                        track_index: track_idx,
+                                        transition_id: transition.id,
+                                        user_params: new_params,
+                                    });
+                                }
+                            }
+                        });
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::Spin) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Rotations")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut rotations = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut rotations)
+                            .range(0.25..=3.0)
+                            .speed(0.05)
+                            .suffix("\u{00D7}"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = rotations;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Zoom")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut zoom = transition.user_params.param1;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut zoom)
+                            .range(0.0..=1.0)
+                            .speed(0.01),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param1 = zoom;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::CrossDissolve) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Easing")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    const CURVES: &[&str] = &["Linear", "Ease In", "Ease Out", "Ease In-Out", "Sine"];
+                    let current_idx = (transition.user_params.param0 as usize).min(CURVES.len() - 1);
+                    egui::ComboBox::from_id_salt("transition_easing")
+                        .selected_text(CURVES[current_idx])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in CURVES.iter().enumerate() {
+                                let is_current = i == current_idx;
+                                if ui.selectable_label(is_current, *name).clicked() && !is_current {
+                                    let mut new_params = transition.user_params;
+                                    new_params.param0 = i as f32;
+                                    cmds.push(AppCommand::SetTransitionParam {
+                                        track_index: track_idx,
+                                        transition_id: transition.id,
+                                        user_params: new_params,
+                                    });
+                                }
+                            }
+                        });
+                });
+            }
+
             ui.add_space(12.0);
 
             // Delete button

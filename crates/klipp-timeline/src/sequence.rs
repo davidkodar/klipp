@@ -657,6 +657,10 @@ pub struct Transition {
     pub duration: Timecode,
     pub clip_a_id: ClipId,
     pub clip_b_id: ClipId,
+    /// Per-kind tunable parameters (feather, colour, rotations, etc.).
+    /// Missing from older project files — defaults are kind-neutral.
+    #[serde(default)]
+    pub user_params: klipp_core::TransitionUserParams,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
