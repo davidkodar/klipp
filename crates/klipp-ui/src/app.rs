@@ -2181,15 +2181,16 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
-                AppCommand::CreateGeneratorClip { generator_type } => {
+                AppCommand::CreateGeneratorClip { data } => {
                     let ph = self.state.playhead;
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let duration = klipp_core::RationalTime::from_frames(120, fps_rate);
                     let timeline_out = ph + duration;
-                    let gen_data = match generator_type.as_str() {
-                        "Color Bars" => klipp_timeline::GeneratorData::ColorBars,
-                        "Black" => klipp_timeline::GeneratorData::SolidColor { color: [0, 0, 0, 255] },
-                        _ => klipp_timeline::GeneratorData::SolidColor { color: [128, 128, 128, 255] }, // Solid Color default = grey
+                    let label = match &data {
+                        klipp_core::GeneratorData::SolidColor { .. } => "Solid Color",
+                        klipp_core::GeneratorData::Gradient { .. } => "Gradient",
+                        klipp_core::GeneratorData::ColorBars => "Color Bars",
+                        klipp_core::GeneratorData::Countdown => "Countdown",
                     };
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     let track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -2199,7 +2200,7 @@ impl KlippApp {
                         });
                     let clip = klipp_timeline::Clip {
                         id: klipp_core::ClipId::new(),
-                        kind: klipp_timeline::ClipKind::Generator(gen_data),
+                        kind: klipp_timeline::ClipKind::Generator(data.clone()),
                         timeline_in: ph,
                         timeline_out,
                         source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
@@ -2210,7 +2211,7 @@ impl KlippApp {
                     seq.tracks[track_idx].clips.push(clip);
                     seq.tracks[track_idx].sort_clips();
                     self.state.selected_clip = Some(clip_id);
-                    self.state.toast.show(format!("{generator_type} generator created"));
+                    self.state.toast.show(format!("{label} generator created"));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
                     return true;

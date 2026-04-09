@@ -82,28 +82,36 @@ pub enum ClipKind {
     AdjustmentLayer,
 }
 
-/// Data for a generator clip.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum GeneratorData {
-    /// Solid color fill.
-    SolidColor { color: [u8; 4] },
-    /// Vertical gradient between two colors.
-    Gradient { top: [u8; 4], bottom: [u8; 4] },
-    /// SMPTE color bars (broadcast test pattern).
-    ColorBars,
-    /// Countdown timer (seconds remaining overlaid on black).
-    Countdown,
-}
-
-impl Default for GeneratorData {
-    fn default() -> Self {
-        GeneratorData::SolidColor { color: [0, 0, 0, 255] }
-    }
-}
+// GeneratorData is defined in klipp-core and re-exported here for convenience.
+pub use klipp_core::GeneratorData;
 
 impl ClipKind {
     pub fn is_gap(&self) -> bool {
         matches!(self, ClipKind::Gap)
+    }
+
+    /// Returns true if the playback engine should produce frames for this clip kind.
+    /// Non-playable kinds are structural: Gap produces no frames, AdjustmentLayer
+    /// is a layer effect applied to other clips.
+    pub fn is_playable(&self) -> bool {
+        match self {
+            ClipKind::Media { .. }
+            | ClipKind::Title(_)
+            | ClipKind::Generator(_)
+            | ClipKind::Sequence { .. } => true,
+            ClipKind::Gap | ClipKind::AdjustmentLayer => false,
+        }
+    }
+
+    /// Returns true if this clip kind needs a decoder to produce frames.
+    /// Media clips and nested sequences go through decoders. Synthetic clips
+    /// (Title, Generator) produce frames directly without one.
+    pub fn needs_decoder(&self) -> bool {
+        match self {
+            ClipKind::Media { .. } | ClipKind::Sequence { .. } => true,
+            ClipKind::Title(_) | ClipKind::Generator(_) => false,
+            ClipKind::Gap | ClipKind::AdjustmentLayer => false,
+        }
     }
 }
 
@@ -472,5 +480,29 @@ pub fn adjust_style_runs_for_text_change(style_runs: &mut Vec<StyleRun>, new_tex
     merge_adjacent(style_runs);
     if style_runs.iter().all(|r| r.is_all_inherited()) {
         style_runs.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::{GeneratorData, MediaId, SequenceId};
+
+    #[test]
+    fn clip_kind_playability() {
+        assert!(ClipKind::Media { media_id: MediaId::new() }.is_playable());
+        assert!(ClipKind::Title(TitleData::default()).is_playable());
+        assert!(ClipKind::Generator(GeneratorData::default()).is_playable());
+        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.is_playable());
+        assert!(!ClipKind::Gap.is_playable());
+        assert!(!ClipKind::AdjustmentLayer.is_playable());
+    }
+
+    #[test]
+    fn clip_kind_decoder_need() {
+        assert!(ClipKind::Media { media_id: MediaId::new() }.needs_decoder());
+        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.needs_decoder());
+        assert!(!ClipKind::Title(TitleData::default()).needs_decoder());
+        assert!(!ClipKind::Generator(GeneratorData::default()).needs_decoder());
     }
 }

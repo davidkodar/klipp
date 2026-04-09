@@ -14,7 +14,14 @@ impl Default for TransportBar {
 impl TransportBar {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
-        let enabled = state.playback != PlaybackState::Idle;
+        // Transport is enabled if there's something to play: either the engine
+        // has a file loaded (Stopped/Paused/Playing) or the timeline has clips
+        // (the sequence has at least one non-empty track — handles generator-only timelines
+        // where the engine never leaves Idle because no media file was loaded).
+        let has_clips = state.sequences.get(state.active_sequence_idx)
+            .map(|seq| seq.tracks.iter().any(|t| !t.clips.is_empty()))
+            .unwrap_or(false);
+        let enabled = state.playback != PlaybackState::Idle || has_clips;
         let fps_val = state.fps.as_f64();
 
         ui.horizontal_centered(|ui| {
@@ -328,7 +335,10 @@ impl TransportBar {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        if state.playback == PlaybackState::Idle {
+        let has_clips = state.sequences.get(state.active_sequence_idx)
+            .map(|seq| seq.tracks.iter().any(|t| !t.clips.is_empty()))
+            .unwrap_or(false);
+        if state.playback == PlaybackState::Idle && !has_clips {
             return cmds;
         }
 

@@ -75,6 +75,7 @@ impl ExportJob {
                 let kind = match &clip.kind {
                     ClipKindSnapshot::Media { path, .. } => format!("Media({})", path.file_name().unwrap_or_default().to_string_lossy()),
                     ClipKindSnapshot::Title(_) => "Title".to_string(),
+                    ClipKindSnapshot::Generator(_) => "Generator".to_string(),
                     ClipKindSnapshot::Gap => "Gap".to_string(),
                 };
                 info!(

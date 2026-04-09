@@ -581,6 +581,7 @@ impl PlaybackEngine {
                     (self.repaint_cb)();
                 } else if self.state == PlaybackState::Paused
                     || self.state == PlaybackState::Stopped
+                    || self.state == PlaybackState::Idle
                 {
                     self.handle_play();
                 }
@@ -895,7 +896,7 @@ impl PlaybackEngine {
     }
 
     fn handle_play(&mut self) {
-        // Check if no media clip exists at playhead but a title clip does (standalone title)
+        // Check if no media clip exists at playhead but a title or generator clip does
         {
             let seq = self.sequence.read().unwrap();
             let has_media_clip = seq.tracks.iter()
@@ -911,13 +912,31 @@ impl PlaybackEngine {
                     .find_map(|track| {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             if !clip.enabled { return None; }
-                            let td = clip.title_data()?.clone();
-                            Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
+                            // Check for title clip
+                            if let Some(td) = clip.title_data() {
+                                return Some((idx, td.clone(), clip.timeline_in, clip.source_in.to_secs_f64()));
+                            }
+                            None
                         })
                     })
             } else {
                 None
             };
+            // Check for standalone generator clip (no media, no title)
+            let generator_info = if !has_media_clip && title_info.is_none() {
+                seq.tracks.iter()
+                    .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+                    .find_map(|track| {
+                        track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
+                            if !clip.enabled { return None; }
+                            let gd = clip.generator_data()?.clone();
+                            Some((idx, gd, clip.timeline_in, clip.timeline_out))
+                        })
+                    })
+            } else {
+                None
+            };
+            let res = seq.resolution;
             drop(seq);
 
             if let Some((idx, _title_data, timeline_in, clip_source_in)) = title_info {
@@ -952,6 +971,46 @@ impl PlaybackEngine {
 
                 self.state = PlaybackState::Playing;
                 self.maybe_open_v2_decoder(self.playhead);
+                self.dropped_frames = 0;
+                self.frames_consumed = 0;
+                self.last_playback_log = std::time::Instant::now();
+                self.last_frame_time = std::time::Instant::now();
+                let _ = self.event_tx.send(AppEvent::PlaybackStarted);
+                (self.repaint_cb)();
+                return;
+            }
+
+            // Standalone generator clip at playhead — render and display
+            if let Some((idx, gen_data, timeline_in, timeline_out)) = generator_info {
+                info!("handle_play: generator clip {idx} at playhead");
+                self.v1_decoder = None;
+                self.current_clip_index = idx;
+                self.current_file = None;
+                self.clip_source_start = 0.0;
+                self.clip_timeline_start = timeline_in;
+
+                let clip_relative_secs = (self.playhead - timeline_in).to_secs_f64().max(0.0);
+                let total_secs = (timeline_out - timeline_in).to_secs_f64();
+                let rgba = klipp_core::generator::render_generator(
+                    &gen_data,
+                    res.width,
+                    res.height,
+                    clip_relative_secs,
+                    total_secs,
+                );
+                let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+                let mut fb = self.frame_buffer.lock().unwrap();
+                fb.write_frame(final_rgba, res.width, res.height);
+                drop(fb);
+
+                // Start audio + clock for playback
+                self.start_all_audio(self.playhead);
+                let source_secs = self.playhead.to_secs_f64();
+                let source_us = (source_secs * 1_000_000.0) as u64;
+                self.master_clock.seek(source_us);
+                self.master_clock.resume();
+
+                self.state = PlaybackState::Playing;
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
@@ -1472,44 +1531,51 @@ impl PlaybackEngine {
         let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
         let _clock_running = self.master_clock.is_running();
 
-        // Title clip path — standalone title on V1 (no media decoder active)
+        // Title / Generator clip path — standalone non-media clip on V1 (no decoder active)
         if self.v1_decoder.is_none() && self.current_file.is_none() {
             let seq = self.sequence.read().unwrap();
-            let title_clip = seq.tracks.iter()
+            let synth_clip = seq.tracks.iter()
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .find_map(|track| {
                     track.clips.get(self.current_clip_index).and_then(|clip| {
-                        clip.title_data().map(|td| (clip.clone(), td.clone()))
+                        if clip.title_data().is_some() || clip.generator_data().is_some() {
+                            Some(clip.clone())
+                        } else {
+                            None
+                        }
                     })
                 });
+            let res = seq.resolution;
             drop(seq);
 
-            if let Some((clip, title_data)) = title_clip {
-                // Update playhead from clock (divide by speed for timeline time)
+            if let Some(clip) = synth_clip {
+                // Update playhead from clock
                 let elapsed_secs = current_source_secs - self.clip_source_start;
                 let speed = self.clip_speed.max(0.001);
                 let elapsed_tc = RationalTime::from_secs_f64((elapsed_secs / speed).max(0.0), self.fps.rate());
                 self.playhead = clip.timeline_in + elapsed_tc;
 
-                // Check if past end of title clip
+                // Check if past end of clip
                 if self.playhead >= clip.timeline_out {
                     self.playhead = clip.timeline_out;
                     self.advance_to_next_clip();
                     return;
                 }
 
-                // Render title frame at sequence resolution
-                let seq = self.sequence.read().unwrap();
-                let (w, h) = (seq.resolution.width, seq.resolution.height);
-                drop(seq);
-                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let rgba = self.title_renderer.render_with_gpu(&title_data, w, h, gpu);
+                let (w, h) = (res.width, res.height);
+                let rgba = if let Some(title_data) = clip.title_data() {
+                    let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                    let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                    self.title_renderer.render_with_gpu(title_data, w, h, gpu)
+                } else if let Some(gen_data) = clip.generator_data() {
+                    let clip_relative = (self.playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                    let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
+                    klipp_core::generator::render_generator(gen_data, w, h, clip_relative, total)
+                } else {
+                    return;
+                };
 
-                // Apply post-processing (color grade, effects, LUT)
                 let final_rgba = self.post_process_rgba(rgba, w, h);
-
-                // Write to frame buffer
                 let mut fb = self.frame_buffer.lock().unwrap();
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -1804,22 +1870,21 @@ impl PlaybackEngine {
     fn advance_to_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap();
 
-        // Find the track that contains the current clip, then look for the next clip
-        // on the SAME track. This ensures contiguous detection compares adjacent clips
-        // on one track, not clips at the same index across different tracks.
+        // Find the track that contains the current clip (by index + is_playable),
+        // then look for the next playable clip on the SAME track.
         let next_idx = self.current_clip_index + 1;
         let (current_clip_info, next_clip_info) = {
-            let mut cur_info = None;
-            let mut next_info = None;
+            let mut cur_info: Option<(klipp_timeline::ClipKind, Option<klipp_core::MediaId>, f64)> = None;
+            let mut next_info: Option<(usize, klipp_timeline::Clip)> = None;
             for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
                 if let Some(c) = track.clips.get(self.current_clip_index) {
-                    if let Some(mid) = c.media_id() {
-                        cur_info = Some((mid, c.source_out.to_secs_f64()));
-                        // Search for next non-gap clip on THIS SAME track
+                    if c.kind.is_playable() {
+                        cur_info = Some((c.kind.clone(), c.media_id(), c.source_out.to_secs_f64()));
+                        // Search for next playable clip on THIS SAME track
                         for idx in next_idx..track.clips.len() {
                             let clip = &track.clips[idx];
-                            if let Some(media_id) = clip.media_id() {
-                                next_info = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.timeline_in, clip.speed, clip.source_rotation));
+                            if clip.kind.is_playable() {
+                                next_info = Some((idx, clip.clone()));
                                 break;
                             }
                         }
@@ -1831,198 +1896,132 @@ impl PlaybackEngine {
         };
         drop(seq);
 
-        if let Some((actual_idx, media_id, source_in_secs, timeline_in, next_clip_speed, source_rotation)) = next_clip_info {
-            // Contiguous clip optimization: if the next clip uses the same media file
-            // and its source_in matches the current clip's source_out (e.g. after a blade cut),
-            // keep the decoder running — no seek, no flush, no stall.
-            let is_contiguous = current_clip_info.as_ref().is_some_and(|(cur_media_id, cur_source_out)| {
-                *cur_media_id == media_id && (*cur_source_out - source_in_secs).abs() < 0.02
-            });
+        let Some((actual_idx, next_clip)) = next_clip_info else {
+            self.stop_at_end();
+            return;
+        };
+
+        let timeline_in = next_clip.timeline_in;
+        let next_clip_speed = next_clip.speed;
+        let source_rotation = next_clip.source_rotation;
+        let source_in_secs = next_clip.source_in.to_secs_f64();
+
+        // ── Branch: next clip is synthetic (Title, Generator) — no decoder needed ──
+        if !next_clip.kind.needs_decoder() {
             info!(
-                "CUT-DIAG advance: cur_clip={:?} next_idx={} next_media={:?} next_src_in={:.4}s is_contiguous={} has_decoder={}",
-                current_clip_info.as_ref().map(|(mid, so)| format!("media={:?} src_out={:.4}", mid, so)),
-                actual_idx, media_id, source_in_secs, is_contiguous, self.v1_decoder.is_some(),
+                "CUT-DIAG advance: next_idx={} kind={:?} (synthetic, no decoder)",
+                actual_idx,
+                std::mem::discriminant(&next_clip.kind),
             );
-
-            if is_contiguous && self.v1_decoder.is_some() {
-                info!(
-                    "CUT-DIAG CONTIGUOUS: old_idx={} new_idx={} source_in={:.4}s clock={:.4}s",
-                    self.current_clip_index, actual_idx, source_in_secs,
-                    self.master_clock.current_secs(),
-                );
-                self.current_clip_index = actual_idx;
-                self.playhead = timeline_in;
-                self.clip_source_start = source_in_secs;
-                self.clip_timeline_start = timeline_in;
-                self.clip_speed = next_clip_speed;
-                self.current_source_rotation = source_rotation;
-                self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed); // suppress fade-in on next sync
-                self.last_frame_time = std::time::Instant::now();
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-
-                // CRITICAL: Immediately update fade parameters on audio sources so the
-                // PCM feeder produces correct audio going forward. Without this, the feeder
-                // continues with clip A's parameters, applying fade-out to samples past
-                // clip A's end, filling the ring buffer with ~2s of silence.
-                {
-                    let seq = self.sequence.read().unwrap();
-                    for active_src in &self.audio_sources {
-                        if let Some(track) = seq.tracks.get(active_src.track_index) {
-                            if let Some((_idx, new_clip)) = track.clip_at_timecode(self.playhead) {
-                                let new_source_in = new_clip.source_in.to_secs_f64();
-                                let new_clip_dur = new_clip.duration().to_secs_f64();
-                                // Offset source_in backward so fade_envelope doesn't trigger fade-in
-                                active_src.source.set_fade(
-                                    new_source_in - 1.0,
-                                    new_clip_dur + 1.0,
-                                    new_clip.fade_in_secs as f64,
-                                    new_clip.fade_out_secs as f64,
-                                    fade_curve_to_u32(new_clip.fade_in_curve),
-                                    fade_curve_to_u32(new_clip.fade_out_curve),
-                                    new_clip.gain,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Do NOT flush or notify_seek here — that would empty the pipeline
-                // and create a 2-3 second silence while the ring buffer refills.
-                // Instead, let the existing buffered audio play naturally. The immediate
-                // set_fade() above ensures the feeder produces correct audio going forward.
-                // At most ~10-40ms of silence-faded audio may play before new params take effect.
-
-                // V2 may need updating
-                self.maybe_open_v2_decoder(self.playhead);
-                return;
+            // Tear down any active decoder from the current clip
+            if let Some(dec) = &mut self.v1_decoder {
+                dec.stop_detached();
             }
+            self.v1_decoder = None;
+            self.current_file = None;
 
             self.current_clip_index = actual_idx;
             self.playhead = timeline_in;
+            self.clip_source_start = 0.0;
+            self.clip_timeline_start = timeline_in;
+            self.clip_speed = next_clip_speed;
+            self.last_frame_time = std::time::Instant::now();
 
-            // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
-            if self.preroll_clip_index == Some(actual_idx) {
-                if let Some(preroll_dec) = self.preroll_decoder.take() {
-                    info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
-                    // Stop old V1 decoder
-                    if let Some(dec) = &mut self.v1_decoder {
-                        dec.stop_detached();
+            // Seek clock to timeline position so update_playback's synthetic path picks up
+            let source_secs = self.playhead.to_secs_f64();
+            let source_us = (source_secs * 1_000_000.0) as u64;
+            self.master_clock.seek(source_us);
+            self.master_clock.resume();
+
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.maybe_open_v2_decoder(self.playhead);
+            return;
+        }
+
+        // ── Branch: next clip needs a decoder (Media, Sequence) ──
+        let media_id = match next_clip.media_id() {
+            Some(mid) => mid,
+            None => {
+                warn!("Playable clip at idx {} needs decoder but has no media_id", actual_idx);
+                self.stop_at_end();
+                return;
+            }
+        };
+
+        // Contiguous clip optimization: if the next clip uses the same media file
+        // and its source_in matches the current clip's source_out (e.g. after a blade cut),
+        // keep the decoder running — no seek, no flush, no stall.
+        let is_contiguous = current_clip_info.as_ref().is_some_and(|(_, cur_media_id, cur_source_out)| {
+            *cur_media_id == Some(media_id) && (*cur_source_out - source_in_secs).abs() < 0.02
+        });
+        info!(
+            "CUT-DIAG advance: next_idx={} next_media={:?} next_src_in={:.4}s is_contiguous={} has_decoder={}",
+            actual_idx, media_id, source_in_secs, is_contiguous, self.v1_decoder.is_some(),
+        );
+
+        if is_contiguous && self.v1_decoder.is_some() {
+            info!(
+                "CUT-DIAG CONTIGUOUS: old_idx={} new_idx={} source_in={:.4}s clock={:.4}s",
+                self.current_clip_index, actual_idx, source_in_secs,
+                self.master_clock.current_secs(),
+            );
+            self.current_clip_index = actual_idx;
+            self.playhead = timeline_in;
+            self.clip_source_start = source_in_secs;
+            self.clip_timeline_start = timeline_in;
+            self.clip_speed = next_clip_speed;
+            self.current_source_rotation = source_rotation;
+            self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.last_frame_time = std::time::Instant::now();
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+
+            // CRITICAL: Immediately update fade parameters on audio sources
+            {
+                let seq = self.sequence.read().unwrap();
+                for active_src in &self.audio_sources {
+                    if let Some(track) = seq.tracks.get(active_src.track_index) {
+                        if let Some((_idx, new_clip)) = track.clip_at_timecode(self.playhead) {
+                            let new_source_in = new_clip.source_in.to_secs_f64();
+                            let new_clip_dur = new_clip.duration().to_secs_f64();
+                            active_src.source.set_fade(
+                                new_source_in - 1.0,
+                                new_clip_dur + 1.0,
+                                new_clip.fade_in_secs as f64,
+                                new_clip.fade_out_secs as f64,
+                                fade_curve_to_u32(new_clip.fade_in_curve),
+                                fade_curve_to_u32(new_clip.fade_out_curve),
+                                new_clip.gain,
+                            );
+                        }
                     }
-                    self.v1_decoder = Some(preroll_dec);
-                    self.preroll_clip_index = None;
-
-                    // Update file path
-                    if let Some(path) = self.path_for_media(media_id) {
-                        self.current_file = Some(path);
-                    }
-
-                    // Seek audio to the new position
-                    self.seek_all_audio_to_timecode(self.playhead);
-
-                    let start_us = (source_in_secs * 1_000_000.0) as u64;
-                    self.master_clock.seek(start_us);
-                    self.master_clock.resume();
-
-                    self.clip_source_start = source_in_secs;
-                    self.clip_timeline_start = timeline_in;
-                    self.clip_speed = next_clip_speed;
-                    self.current_source_rotation = source_rotation;
-                    self.last_frame_time = std::time::Instant::now();
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                    self.maybe_open_v2_decoder(self.playhead);
-                    return;
                 }
             }
-            // Clear stale preroll if it didn't match
-            if let Some(mut old) = self.preroll_decoder.take() {
-                old.stop_detached();
-            }
-            self.preroll_clip_index = None;
 
-            if let Some(path) = self.path_for_media(media_id) {
-                // Same-file optimization: if next clip is from the same file,
-                // reuse the decoder (just seek) instead of tearing down and reopening.
-                let same_file = self.current_file.as_ref() == Some(&path);
+            self.maybe_open_v2_decoder(self.playhead);
+            return;
+        }
 
-                if same_file && self.v1_decoder.is_some() {
-                    info!("CUT-DIAG SAME-FILE seek: idx={} source_in={:.4}s (reusing decoder)", actual_idx, source_in_secs);
-                    // Seek existing decoder — much faster than close+reopen
-                    if let Some(dec) = &self.v1_decoder {
-                        dec.seek(source_in_secs);
-                        dec.frame_queue().lock().unwrap().clear();
-                    }
+        self.current_clip_index = actual_idx;
+        self.playhead = timeline_in;
 
-                    // Pause clock while waiting for the decoder to produce a post-seek frame.
-                    self.master_clock.pause();
-                    self.wait_for_valid_frame(source_in_secs);
-
-                    // Seek audio to the new clip position
-                    self.seek_all_audio_to_timecode(self.playhead);
-
-                    let start_us = (source_in_secs * 1_000_000.0) as u64;
-                    self.master_clock.seek(start_us);
-                    self.master_clock.resume();
-
-                    self.clip_source_start = source_in_secs;
-                    self.clip_timeline_start = timeline_in;
-                    self.clip_speed = next_clip_speed;
-                    self.current_source_rotation = source_rotation;
-                    self.last_frame_time = std::time::Instant::now();
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                    self.maybe_open_v2_decoder(self.playhead);
-                    return;
-                }
-
-                info!("Advancing to clip {next_idx} ({:?})", path);
-
-                // Stop old decoders (detached)
+        // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
+        if self.preroll_clip_index == Some(actual_idx) {
+            if let Some(preroll_dec) = self.preroll_decoder.take() {
+                info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
                 if let Some(dec) = &mut self.v1_decoder {
                     dec.stop_detached();
                 }
-                self.v1_decoder = None;
-                if let Some(dec) = &mut self.v2_decoder {
-                    dec.stop_detached();
-                }
-                self.v2_decoder = None;
-                self.current_clip_v2 = None;
-                self.v2_frame_cache = None;
-                for active in &mut self.audio_sources {
-                    active.source.stop_detached();
-                }
-                self.audio_sources.clear();
-                self.audio_output = None;
+                self.v1_decoder = Some(preroll_dec);
+                self.preroll_clip_index = None;
 
-                // Open new video decoder
-                match VideoDecoder::open(&path, source_rotation) {
-                    Ok(dec) => {
-                        if source_in_secs > 0.01 {
-                            dec.seek(source_in_secs);
-                        }
-                        dec.resume();
-                        self.v1_decoder = Some(dec);
-                        self.current_file = Some(path.clone());
-                    }
-                    Err(e) => {
-                        error!("Failed to open decoder for next clip: {e}");
-                        self.stop_at_end();
-                        return;
-                    }
+                if let Some(path) = self.path_for_media(media_id) {
+                    self.current_file = Some(path);
                 }
 
-                // Open audio for all tracks at the new clip position
-                // (sources start paused, already seeked — no stale data)
+                self.seek_all_audio_to_timecode(self.playhead);
+
                 let start_us = (source_in_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
-                self.start_all_audio(self.playhead);
-
-                // Pre-fill + resume
-                for active in &self.audio_sources {
-                    active.source.resume();
-                }
-                std::thread::sleep(Duration::from_millis(10));
-                if let Some(aout) = &self.audio_output {
-                    aout.0.resume();
-                }
                 self.master_clock.resume();
 
                 self.clip_source_start = source_in_secs;
@@ -2031,14 +2030,106 @@ impl PlaybackEngine {
                 self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-
-                // Re-check V2 at the new playhead
                 self.maybe_open_v2_decoder(self.playhead);
-            } else {
-                warn!("No path for media {:?}", media_id);
-                self.stop_at_end();
+                return;
             }
+        }
+        // Clear stale preroll if it didn't match
+        if let Some(mut old) = self.preroll_decoder.take() {
+            old.stop_detached();
+        }
+        self.preroll_clip_index = None;
+
+        if let Some(path) = self.path_for_media(media_id) {
+            // Same-file optimization: reuse decoder if same file
+            let same_file = self.current_file.as_ref() == Some(&path);
+
+            if same_file && self.v1_decoder.is_some() {
+                info!("CUT-DIAG SAME-FILE seek: idx={} source_in={:.4}s (reusing decoder)", actual_idx, source_in_secs);
+                if let Some(dec) = &self.v1_decoder {
+                    dec.seek(source_in_secs);
+                    dec.frame_queue().lock().unwrap().clear();
+                }
+
+                self.master_clock.pause();
+                self.wait_for_valid_frame(source_in_secs);
+                self.seek_all_audio_to_timecode(self.playhead);
+
+                let start_us = (source_in_secs * 1_000_000.0) as u64;
+                self.master_clock.seek(start_us);
+                self.master_clock.resume();
+
+                self.clip_source_start = source_in_secs;
+                self.clip_timeline_start = timeline_in;
+                self.clip_speed = next_clip_speed;
+                self.current_source_rotation = source_rotation;
+                self.last_frame_time = std::time::Instant::now();
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.maybe_open_v2_decoder(self.playhead);
+                return;
+            }
+
+            info!("Advancing to clip {} ({:?})", actual_idx, path);
+
+            // Stop old decoders (detached)
+            if let Some(dec) = &mut self.v1_decoder {
+                dec.stop_detached();
+            }
+            self.v1_decoder = None;
+            if let Some(dec) = &mut self.v2_decoder {
+                dec.stop_detached();
+            }
+            self.v2_decoder = None;
+            self.current_clip_v2 = None;
+            self.v2_frame_cache = None;
+            for active in &mut self.audio_sources {
+                active.source.stop_detached();
+            }
+            self.audio_sources.clear();
+            self.audio_output = None;
+
+            // Open new video decoder
+            match VideoDecoder::open(&path, source_rotation) {
+                Ok(dec) => {
+                    if source_in_secs > 0.01 {
+                        dec.seek(source_in_secs);
+                    }
+                    dec.resume();
+                    self.v1_decoder = Some(dec);
+                    self.current_file = Some(path.clone());
+                }
+                Err(e) => {
+                    error!("Failed to open decoder for next clip: {e}");
+                    self.stop_at_end();
+                    return;
+                }
+            }
+
+            // Open audio for all tracks at the new clip position
+            let start_us = (source_in_secs * 1_000_000.0) as u64;
+            self.master_clock.seek(start_us);
+            self.start_all_audio(self.playhead);
+
+            // Pre-fill + resume
+            for active in &self.audio_sources {
+                active.source.resume();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            if let Some(aout) = &self.audio_output {
+                aout.0.resume();
+            }
+            self.master_clock.resume();
+
+            self.clip_source_start = source_in_secs;
+            self.clip_timeline_start = timeline_in;
+            self.clip_speed = next_clip_speed;
+            self.current_source_rotation = source_rotation;
+            self.last_frame_time = std::time::Instant::now();
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+
+            self.maybe_open_v2_decoder(self.playhead);
         } else {
+            warn!("No path for media {:?}", media_id);
             self.stop_at_end();
         }
     }
@@ -2266,6 +2357,34 @@ impl PlaybackEngine {
                         }
                     }
 
+                    self.v2_frame_cache = Some(crate::types::DecodedFrame {
+                        data: crate::types::FrameData::Rgba(rgba),
+                        width: res.width,
+                        height: res.height,
+                        pts: RationalTime::from_frames(0, 24),
+                        is_eof: false,
+                    });
+                    self.current_clip_v2 = Some(idx);
+                    return;
+                }
+
+                // Generator clip on overlay track — render directly to v2_frame_cache
+                if let Some(gen_data) = clip.generator_data() {
+                    if self.v2_decoder.is_some() {
+                        if let Some(dec) = &mut self.v2_decoder {
+                            dec.stop_detached();
+                        }
+                        self.v2_decoder = None;
+                    }
+                    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                    let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
+                    let rgba = klipp_core::generator::render_generator(
+                        gen_data,
+                        res.width,
+                        res.height,
+                        clip_relative_secs,
+                        total_secs,
+                    );
                     self.v2_frame_cache = Some(crate::types::DecodedFrame {
                         data: crate::types::FrameData::Rgba(rgba),
                         width: res.width,

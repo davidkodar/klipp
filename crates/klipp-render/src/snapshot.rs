@@ -77,6 +77,7 @@ pub struct ClipSnapshot {
 pub enum ClipKindSnapshot {
     Media { path: PathBuf, has_audio: bool },
     Title(TitleData),
+    Generator(klipp_core::GeneratorData),
     Gap,
 }
 
@@ -442,7 +443,8 @@ fn flatten_compound_video_clips(
                     }
                 }
                 ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
-                ClipKind::Gap | ClipKind::Generator(_) | ClipKind::AdjustmentLayer => continue,
+                ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
+                ClipKind::Gap | ClipKind::AdjustmentLayer => continue,
                 ClipKind::Sequence { .. } => unreachable!(), // handled above
             };
 
@@ -683,7 +685,7 @@ fn snapshot_clip(
         // Compound clips are flattened at the track level. This fallback
         // is only reached if nesting depth exceeds MAX_COMPOUND_DEPTH.
         ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
-        ClipKind::Generator(_) => ClipKindSnapshot::Gap,
+        ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
         ClipKind::AdjustmentLayer => ClipKindSnapshot::Gap,
     };
 

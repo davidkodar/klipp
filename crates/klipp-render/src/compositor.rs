@@ -52,11 +52,11 @@ impl FrameCompositor {
             let layer_frame = match clip {
                 None => continue, // No clip at this frame on this track
                 Some(c) => {
-                    let raw = self.decode_clip_frame(c, decoders, w, h)?;
+                    let raw = self.decode_clip_frame(c, decoders, frame_num, snapshot.fps, w, h)?;
 
                     // Check for active transition on this track (Gap 6)
                     if let Some(transitioned) =
-                        self.apply_transition(raw.as_ref(), frame_num, c, track, decoders, w, h)?
+                        self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, c, track, decoders, w, h)?
                     {
                         transitioned
                     } else {
@@ -84,11 +84,13 @@ impl FrameCompositor {
         Ok(base)
     }
 
-    /// Decode a single frame from a clip (media, title, or gap).
+    /// Decode a single frame from a clip (media, title, generator, or gap).
     fn decode_clip_frame(
         &mut self,
         clip: &ClipSnapshot,
         decoders: &mut HashMap<ClipId, RenderDecoder>,
+        frame_num: u64,
+        fps: f64,
         width: u32,
         height: u32,
     ) -> Result<Option<Vec<u8>>, RenderError> {
@@ -96,6 +98,19 @@ impl FrameCompositor {
             ClipKindSnapshot::Gap => Ok(None),
             ClipKindSnapshot::Title(data) => {
                 Ok(Some(self.title_renderer.render(data, width, height)))
+            }
+            ClipKindSnapshot::Generator(data) => {
+                let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
+                let elapsed_secs = clip_frame as f64 / fps.max(1.0);
+                let total_frames = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame);
+                let total_secs = total_frames as f64 / fps.max(1.0);
+                Ok(Some(klipp_core::generator::render_generator(
+                    data,
+                    width,
+                    height,
+                    elapsed_secs,
+                    total_secs,
+                )))
             }
             ClipKindSnapshot::Media { .. } => {
                 if let Some(decoder) = decoders.get_mut(&clip.id) {
@@ -114,6 +129,7 @@ impl FrameCompositor {
         &mut self,
         current_frame: Option<&Vec<u8>>,
         frame_num: u64,
+        fps: f64,
         current_clip: &ClipSnapshot,
         track: &VideoTrackSnapshot,
         decoders: &mut HashMap<ClipId, RenderDecoder>,
@@ -147,7 +163,7 @@ impl FrameCompositor {
             None => black_frame(width, height),
         };
 
-        let to_frame = match self.decode_clip_frame(partner_clip, decoders, width, height)? {
+        let to_frame = match self.decode_clip_frame(partner_clip, decoders, frame_num, fps, width, height)? {
             Some(f) => f,
             None => black_frame(width, height),
         };

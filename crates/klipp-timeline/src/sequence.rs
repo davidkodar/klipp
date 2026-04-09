@@ -828,6 +828,13 @@ impl Clip {
         }
     }
 
+    pub fn generator_data(&self) -> Option<&klipp_core::GeneratorData> {
+        match &self.kind {
+            ClipKind::Generator(data) => Some(data),
+            _ => None,
+        }
+    }
+
     pub fn duration(&self) -> Timecode {
         self.timeline_out - self.timeline_in
     }

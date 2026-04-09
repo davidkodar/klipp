@@ -2,6 +2,7 @@ pub mod color_grade;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod generator;
 pub mod keyframe;
 pub mod export_preset;
 pub mod id;
@@ -21,6 +22,6 @@ pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, Tra
 pub use time::{Fps, RationalTime, TimeRange, Timecode};
 pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use ofx_value::OfxValue;
-pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution, TrackPoint, TransitionAlignment, TransitionUserParams};
+pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, GeneratorData, LogFormat, PixelFormat, Resolution, TrackPoint, TransitionAlignment, TransitionUserParams};
 pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{GpuPreference, LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality};
