@@ -258,6 +258,14 @@ pub struct PlaybackEngine {
     /// window. Reused as the "from" frame during the second half, after the main
     /// decoder has advanced to clip_b. Cleared when the transition ends.
     transition_clip_a_last_frame: Option<Vec<u8>>,
+    /// True when the partner decoder has signaled EOF during the current
+    /// transition — the clip ran out of source material. This is the ONLY
+    /// trigger for tagging frames as `Frozen`. Transient cache reuse
+    /// (priming, seeking, underrun) does NOT set this flag.
+    transition_partner_eof: bool,
+    /// Per-transition degradation counter. Reset when the active transition
+    /// changes or ends.
+    pub transition_degradation: crate::transition::TransitionDegradation,
     // Title renderer — generates RGBA frames for title clips
     title_renderer: klipp_title::TitleRenderer,
     // VU metering — emit peak levels at ~30Hz
@@ -393,6 +401,8 @@ impl PlaybackEngine {
             transition_clip_id: None,
             transition_frame_cache: None,
             transition_clip_a_last_frame: None,
+            transition_partner_eof: false,
+            transition_degradation: Default::default(),
             title_renderer: klipp_title::TitleRenderer::new(),
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
@@ -2345,6 +2355,8 @@ impl PlaybackEngine {
         self.transition_clip_id = None;
         self.transition_frame_cache = None;
         self.transition_clip_a_last_frame = None;
+        self.transition_partner_eof = false;
+        self.transition_degradation = Default::default();
         self.stop_all_audio();
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
@@ -3458,6 +3470,8 @@ impl PlaybackEngine {
                     self.transition_frame_cache = None;
                 }
                 self.transition_clip_a_last_frame = None;
+                self.transition_partner_eof = false;
+                self.transition_degradation = Default::default();
                 return from_rgba;
             }
         };
@@ -3471,6 +3485,8 @@ impl PlaybackEngine {
             }
             self.transition_decoder = None;
             self.transition_frame_cache = None;
+            self.transition_partner_eof = false;
+            self.transition_degradation = Default::default();
 
             // Open new decoder for the partner clip
             if let Some(media_id) = active.partner_clip.media_id() {
@@ -3509,6 +3525,11 @@ impl PlaybackEngine {
             while let Some(f) = queue.front() {
                 if f.is_eof {
                     let _ = queue.pop();
+                    // EOF from the partner decoder — the source file has no
+                    // more frames. Any subsequent use of transition_frame_cache
+                    // is a freeze-frame. This flag is the ONLY trigger for
+                    // tagging frames as Frozen.
+                    self.transition_partner_eof = true;
                     break;
                 }
                 let pts = f.pts_secs();
@@ -3540,6 +3561,10 @@ impl PlaybackEngine {
                     return from_rgba;
                 }
             };
+            // Track degradation: partner provides the B-side in first half.
+            if self.transition_partner_eof {
+                self.transition_degradation.frozen_b_count += 1;
+            }
             self.transition_clip_a_last_frame = Some(from_rgba.clone());
             let up = active.user_params;
             // CrossDissolve progress reshaping must happen before the GPU call
@@ -3573,7 +3598,13 @@ impl PlaybackEngine {
             let blend_from = if active.alignment == klipp_core::TransitionAlignment::StartAtCut {
                 // partner decoder frame for clip_a tail
                 match &self.transition_frame_cache {
-                    Some(f) => f.to_rgba(),
+                    Some(f) => {
+                        // Track degradation: partner provides the A-side in StartAtCut.
+                        if self.transition_partner_eof {
+                            self.transition_degradation.frozen_a_count += 1;
+                        }
+                        f.to_rgba()
+                    }
                     None => return from_rgba,
                 }
             } else {

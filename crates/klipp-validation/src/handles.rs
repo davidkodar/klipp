@@ -125,6 +125,21 @@ fn compute_tail_handle(clip: &Clip, pool: &MediaPool, target_rate: u32) -> Optio
     Some(tail_at_rate.value.max(0))
 }
 
+/// Convenience: resolve clips from a sequence and compute handle availability.
+///
+/// Returns `None` if either clip can't be found (data bug in the sequence).
+pub fn compute_for_transition(
+    transition: &Transition,
+    sequence: &klipp_timeline::Sequence,
+    media_pool: &MediaPool,
+) -> Option<HandleAvailability> {
+    let (ti_a, ci_a) = sequence.find_clip(transition.clip_a_id)?;
+    let (ti_b, ci_b) = sequence.find_clip(transition.clip_b_id)?;
+    let clip_a = &sequence.tracks[ti_a].clips[ci_a];
+    let clip_b = &sequence.tracks[ti_b].clips[ci_b];
+    Some(compute_handle_availability(transition, clip_a, clip_b, media_pool))
+}
+
 /// Head handle: frames available before `source_in` in the source file,
 /// expressed in `target_rate`.
 fn compute_head_handle(clip: &Clip, pool: &MediaPool, target_rate: u32) -> Option<i64> {
@@ -736,5 +751,89 @@ mod tests {
         assert_eq!(h.shortfall_b(), 0);
         assert!(!h.has_shortfall());
         assert!(h.has_unknown());
+    }
+
+    // ── compute_for_transition wrapper tests ──────────────────────────
+
+    fn make_sequence_with_clips(clips: Vec<Clip>, transitions: Vec<Transition>) -> klipp_timeline::Sequence {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = clips;
+        seq.tracks[0].transitions = transitions;
+        seq
+    }
+
+    #[test]
+    fn for_transition_resolves_clips_and_computes() {
+        let mid = MediaId::new();
+        let mut item = make_media_item(240, 24);
+        item.id = mid;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        let clip_a = make_media_clip(mid, 0, 180, 24); // tail = 60
+        let clip_b = make_media_clip(mid, 60, 240, 24); // head = 60
+        let mut trans = make_transition(24, 24, TransitionAlignment::Center);
+        trans.clip_a_id = clip_a.id;
+        trans.clip_b_id = clip_b.id;
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+
+        let result = compute_for_transition(&trans, &seq, &pool);
+        assert!(result.is_some());
+        let ha = result.unwrap();
+        assert!(!ha.has_shortfall());
+    }
+
+    #[test]
+    fn for_transition_with_shortfall() {
+        let mid = MediaId::new();
+        let mut item = make_media_item(240, 24);
+        item.id = mid;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        let clip_a = make_media_clip(mid, 0, 240, 24); // tail = 0
+        let clip_b = make_media_clip(mid, 0, 240, 24); // head = 0
+        let mut trans = make_transition(24, 24, TransitionAlignment::Center);
+        trans.clip_a_id = clip_a.id;
+        trans.clip_b_id = clip_b.id;
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+
+        let ha = compute_for_transition(&trans, &seq, &pool).unwrap();
+        assert!(ha.has_shortfall());
+        assert_eq!(ha.shortfall_a(), 12);
+        assert_eq!(ha.shortfall_b(), 12);
+    }
+
+    #[test]
+    fn for_transition_missing_clip_a() {
+        let mid = MediaId::new();
+        let mut item = make_media_item(240, 24);
+        item.id = mid;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        let clip_b = make_media_clip(mid, 60, 240, 24);
+        let mut trans = make_transition(24, 24, TransitionAlignment::Center);
+        trans.clip_a_id = ClipId::new(); // doesn't exist in sequence
+        trans.clip_b_id = clip_b.id;
+        let seq = make_sequence_with_clips(vec![clip_b], vec![trans.clone()]);
+
+        assert!(compute_for_transition(&trans, &seq, &pool).is_none());
+    }
+
+    #[test]
+    fn for_transition_gap_clip_unknown() {
+        let mid = MediaId::new();
+        let mut item = make_media_item(240, 24);
+        item.id = mid;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        let clip_a = make_gap_clip(24);
+        let clip_b = make_media_clip(mid, 60, 240, 24);
+        let mut trans = make_transition(24, 24, TransitionAlignment::Center);
+        trans.clip_a_id = clip_a.id;
+        trans.clip_b_id = clip_b.id;
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+
+        let ha = compute_for_transition(&trans, &seq, &pool).unwrap();
+        assert!(ha.has_unknown());
+        assert!(!ha.has_shortfall());
     }
 }

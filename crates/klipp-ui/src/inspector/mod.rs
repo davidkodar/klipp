@@ -33,7 +33,7 @@ impl NewInspectorPanel {
         if let Some((track_idx, trans_id)) = state.selected_transition {
             if let Some(track) = state.sequence().tracks.get(track_idx) {
                 if let Some(transition) = track.transitions.iter().find(|t| t.id == trans_id) {
-                    show_transition_inspector(ui, theme, track_idx, transition, &mut cmds);
+                    show_transition_inspector(ui, theme, track_idx, transition, state, &mut cmds);
                     return cmds;
                 }
             }
@@ -1416,6 +1416,7 @@ fn show_transition_inspector(
     theme: &KlippTheme,
     track_idx: usize,
     transition: &klipp_timeline::Transition,
+    state: &crate::state::AppState,
     cmds: &mut Vec<AppCommand>,
 ) {
     // Header
@@ -3309,6 +3310,101 @@ fn show_transition_inspector(
                 });
             }
         });
+
+    // ── Handle shortfall warning ──
+    let seq = state.sequence();
+    if let Some((ti_a, ci_a)) = seq.find_clip(transition.clip_a_id) {
+        if let Some((ti_b, ci_b)) = seq.find_clip(transition.clip_b_id) {
+            let clip_a = &seq.tracks[ti_a].clips[ci_a];
+            let clip_b = &seq.tracks[ti_b].clips[ci_b];
+            let ha = klipp_validation::handles::compute_handle_availability(
+                transition, clip_a, clip_b, &state.media_pool,
+            );
+            let warn_color = egui::Color32::from_rgb(220, 60, 60);
+            let amber_color = egui::Color32::from_rgb(255, 195, 50);
+            let rate = transition.duration.rate.max(1) as f64;
+
+            if ha.has_shortfall() || ha.has_unknown() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                if ha.has_shortfall() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("\u{26a0} Handle shortfall")
+                                .color(warn_color)
+                                .size(11.0)
+                                .strong(),
+                        );
+                    });
+                    ui.add_space(4.0);
+
+                    for (label, needed, avail_opt, shortfall) in [
+                        ("Clip A (left)", ha.clip_a_needed, ha.clip_a_available, ha.shortfall_a()),
+                        ("Clip B (right)", ha.clip_b_needed, ha.clip_b_available, ha.shortfall_b()),
+                    ] {
+                        if shortfall > 0 {
+                            if let Some(avail) = avail_opt {
+                                let ms = (shortfall as f64 / rate * 1000.0).round() as i64;
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .color(theme.text_secondary)
+                                        .size(10.0),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(format!(
+                                        "Needed: {}  Available: {}  Short by: {} ({} ms)",
+                                        needed, avail, shortfall, ms
+                                    )).color(warn_color).size(10.0));
+                                });
+                                ui.add_space(2.0);
+                            }
+                        }
+                    }
+
+                    ui.add_space(4.0);
+                    let fix_target = if ha.shortfall_a() > 0 && ha.shortfall_b() > 0 {
+                        "both clips"
+                    } else if ha.shortfall_a() > 0 {
+                        "clip A"
+                    } else {
+                        "clip B"
+                    };
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Fix: Trim {} later, shorten this transition, or accept freeze-frame.",
+                            fix_target
+                        ))
+                        .color(theme.text_dim)
+                        .size(9.0)
+                        .italics(),
+                    );
+                }
+
+                // Unknown availability (non-media clips)
+                for (label, avail) in [
+                    ("Clip A (left)", ha.clip_a_available),
+                    ("Clip B (right)", ha.clip_b_available),
+                ] {
+                    if avail.is_none() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}: handle availability unknown (not a media clip)",
+                                    label
+                                ))
+                                .color(amber_color)
+                                .size(9.0)
+                                .italics(),
+                            );
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn no_selection(ui: &mut egui::Ui, theme: &KlippTheme) {

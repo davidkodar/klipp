@@ -11,6 +11,7 @@ klipp-engine = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
+klipp-validation = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-export = { workspace = true }

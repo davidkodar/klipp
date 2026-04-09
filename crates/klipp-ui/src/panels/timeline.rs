@@ -6568,6 +6568,7 @@ impl TimelinePanel {
     #[allow(clippy::too_many_arguments)]
     fn draw_transition_overlays(
         &self,
+        ui: &mut egui::Ui,
         painter: &egui::Painter,
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
@@ -6650,9 +6651,88 @@ impl TimelinePanel {
                                 egui::Color32::from_rgb(255, 220, 100),
                             );
                         }
+
+                        // Handle shortfall warning stripes
+                        let clip_a = track.find_clip(transition.clip_a_id);
+                        if let (Some(clip_a), Some(clip_b)) = (clip_a, Some(clip_b)) {
+                            let ha = klipp_validation::handles::compute_handle_availability(
+                                transition, clip_a, clip_b, &state.media_pool,
+                            );
+                            if ha.has_shortfall() {
+                                let stripe_color = egui::Color32::from_rgba_premultiplied(220, 60, 60, 160);
+                                let stripe_spacing = 8.0_f32;
+                                let stripe_width = 4.0_f32;
+                                let cut_x = cx; // diamond position = cut point
+
+                                // Compute side widths
+                                let left_w = (cut_x - trans_start_x).max(0.0);
+                                let right_w = (trans_end_x - cut_x).max(0.0);
+
+                                // A-side stripe (left of cut)
+                                if ha.shortfall_a() > 0 && ha.clip_a_needed > 0 && left_w > 1.0 {
+                                    let frac = (ha.shortfall_a() as f32 / ha.clip_a_needed as f32).min(1.0);
+                                    let stripe_w = (left_w * frac).max(2.0);
+                                    // Starts from the LEFT edge (outer), toward cut
+                                    let stripe_rect = egui::Rect::from_min_size(
+                                        egui::pos2(trans_start_x, track_rect.top()),
+                                        egui::vec2(stripe_w, track_height),
+                                    );
+                                    Self::draw_diagonal_stripes(painter, stripe_rect, stripe_color, stripe_spacing, stripe_width);
+                                }
+
+                                // B-side stripe (right of cut)
+                                if ha.shortfall_b() > 0 && ha.clip_b_needed > 0 && right_w > 1.0 {
+                                    let frac = (ha.shortfall_b() as f32 / ha.clip_b_needed as f32).min(1.0);
+                                    let stripe_w = (right_w * frac).max(2.0);
+                                    // Starts from the RIGHT edge (outer), toward cut
+                                    let stripe_rect = egui::Rect::from_min_size(
+                                        egui::pos2(trans_end_x - stripe_w, track_rect.top()),
+                                        egui::vec2(stripe_w, track_height),
+                                    );
+                                    Self::draw_diagonal_stripes(painter, stripe_rect, stripe_color, stripe_spacing, stripe_width);
+                                }
+
+                                // Hover tooltip over the full ribbon
+                                let tooltip = format_shortfall_tooltip(&ha, transition.duration.rate);
+                                let hover_resp = ui.allocate_rect(indicator_rect, egui::Sense::hover());
+                                hover_resp.on_hover_text(tooltip);
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// Draw diagonal 45-degree stripes within the given rect.
+    fn draw_diagonal_stripes(
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        color: egui::Color32,
+        spacing: f32,
+        width: f32,
+    ) {
+        if rect.width() < 1.0 || rect.height() < 1.0 {
+            return;
+        }
+        let stroke = egui::Stroke::new(width, color);
+        // Diagonal lines from top-left to bottom-right, offset across the rect.
+        // Start from before the rect to ensure coverage of the leftmost stripe.
+        let h = rect.height();
+        let mut x = rect.left() - h;
+        while x < rect.right() {
+            // Line from (x, top) to (x + h, bottom), clipped to the rect.
+            let x0 = x.max(rect.left());
+            let y0 = rect.top() + (x0 - x);
+            let x1 = (x + h).min(rect.right());
+            let y1 = rect.top() + (x1 - x);
+            if x1 > rect.left() && x0 < rect.right() && y0 < rect.bottom() {
+                painter.line_segment(
+                    [egui::pos2(x0, y0.min(rect.bottom())), egui::pos2(x1, y1.min(rect.bottom()))],
+                    stroke,
+                );
+            }
+            x += spacing;
         }
     }
 
@@ -6940,7 +7020,7 @@ impl TimelinePanel {
         }
 
         // Draw transition indicators between clips
-        self.draw_transition_overlays(painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
+        self.draw_transition_overlays(ui, painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
 
         self.draw_audio_crossfade_indicators(painter, &clips, content_rect, track_rect, state, track_kind, fps, zoom, scroll);
 
@@ -9761,6 +9841,28 @@ fn truncate_text(text: &str, max_width: f32, font_size: f32) -> String {
     }
 }
 
+/// Format a concise tooltip string for a transition handle shortfall.
+fn format_shortfall_tooltip(
+    ha: &klipp_validation::handles::HandleAvailability,
+    rate: u32,
+) -> String {
+    let mut lines = vec!["Insufficient handle".to_string()];
+    let rate_f = rate.max(1) as f64;
+    if ha.shortfall_a() > 0 {
+        let ms = (ha.shortfall_a() as f64 / rate_f * 1000.0).round() as i64;
+        lines.push(format!("Clip A short by {} frames ({} ms)", ha.shortfall_a(), ms));
+    } else if ha.clip_a_available.is_none() && ha.clip_a_needed > 0 {
+        lines.push("Clip A: availability unknown".to_string());
+    }
+    if ha.shortfall_b() > 0 {
+        let ms = (ha.shortfall_b() as f64 / rate_f * 1000.0).round() as i64;
+        lines.push(format!("Clip B short by {} frames ({} ms)", ha.shortfall_b(), ms));
+    } else if ha.clip_b_available.is_none() && ha.clip_b_needed > 0 {
+        lines.push("Clip B: availability unknown".to_string());
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10004,5 +10106,66 @@ mod tests {
         for t in &tracks {
             assert_eq!(effective_track_height(t), 80.0);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // format_shortfall_tooltip
+    // ═══════════════════════════════════════════════════════════════
+
+    use klipp_validation::handles::HandleAvailability;
+
+    #[test]
+    fn tooltip_clip_a_short_only() {
+        let ha = HandleAvailability {
+            clip_a_needed: 12, clip_a_available: Some(8),
+            clip_b_needed: 12, clip_b_available: Some(20),
+        };
+        let s = format_shortfall_tooltip(&ha, 24);
+        assert!(s.contains("Clip A short by 4 frames (167 ms)"));
+        assert!(!s.contains("Clip B short"));
+    }
+
+    #[test]
+    fn tooltip_clip_b_short_only() {
+        let ha = HandleAvailability {
+            clip_a_needed: 12, clip_a_available: Some(20),
+            clip_b_needed: 12, clip_b_available: Some(10),
+        };
+        let s = format_shortfall_tooltip(&ha, 24);
+        assert!(!s.contains("Clip A short"));
+        assert!(s.contains("Clip B short by 2 frames (83 ms)"));
+    }
+
+    #[test]
+    fn tooltip_both_short() {
+        let ha = HandleAvailability {
+            clip_a_needed: 12, clip_a_available: Some(8),
+            clip_b_needed: 12, clip_b_available: Some(6),
+        };
+        let s = format_shortfall_tooltip(&ha, 24);
+        assert!(s.contains("Clip A short by 4 frames"));
+        assert!(s.contains("Clip B short by 6 frames"));
+    }
+
+    #[test]
+    fn tooltip_a_unknown_b_short() {
+        let ha = HandleAvailability {
+            clip_a_needed: 12, clip_a_available: None,
+            clip_b_needed: 12, clip_b_available: Some(8),
+        };
+        let s = format_shortfall_tooltip(&ha, 24);
+        assert!(s.contains("Clip A: availability unknown"));
+        assert!(s.contains("Clip B short by 4 frames"));
+    }
+
+    #[test]
+    fn tooltip_both_unknown() {
+        let ha = HandleAvailability {
+            clip_a_needed: 12, clip_a_available: None,
+            clip_b_needed: 12, clip_b_available: None,
+        };
+        let s = format_shortfall_tooltip(&ha, 24);
+        assert!(s.contains("Clip A: availability unknown"));
+        assert!(s.contains("Clip B: availability unknown"));
     }
 }
