@@ -287,6 +287,8 @@ pub enum AppCommand {
     // Media
     LoadMediaFile { path: PathBuf, media_id: MediaId },
     ImportMedia { path: PathBuf },
+    /// Recursively import all media files from a directory.
+    ImportMediaFolder { directory: PathBuf },
 
     // Loop
     ToggleLoopPlayback,

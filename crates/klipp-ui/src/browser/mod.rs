@@ -383,7 +383,7 @@ impl BrowserPanel {
                             &mut self.media_sort_by,
                             &mut self.media_sort_ascending,
                             &mut self.media_selected_bin,
-                            &self.browser_view_mode,
+                            &mut self.browser_view_mode,
                             &mut self.renaming_bin,
                             &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
@@ -414,7 +414,7 @@ impl BrowserPanel {
                         &mut self.media_sort_by,
                         &mut self.media_sort_ascending,
                         &mut self.media_selected_bin,
-                        &self.browser_view_mode,
+                        &mut self.browser_view_mode,
                         &mut self.renaming_bin,
                         &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
@@ -800,7 +800,7 @@ impl BrowserPanel {
     }
 }
 
-const MEDIA_EXTENSIONS: &[&str] = &[
+pub(super) const MEDIA_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
     "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
     "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
@@ -872,5 +872,96 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MEDIA_EXTENSIONS;
+
+    /// Helper: walk a directory and collect media file paths, mirroring the
+    /// ImportMediaFolder handler logic in app.rs.
+    fn collect_media_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for entry in walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_type().is_file() {
+                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    if MEDIA_EXTENSIONS.iter().any(|me| me.eq_ignore_ascii_case(ext)) {
+                        files.push(entry.path().to_path_buf());
+                    }
+                }
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn import_folder_finds_media_files() {
+        let dir = std::env::temp_dir().join("klipp_test_import_folder");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create media files
+        std::fs::write(dir.join("clip.mp4"), b"fake").unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"fake").unwrap();
+        std::fs::write(dir.join("audio.wav"), b"fake").unwrap();
+
+        // Create non-media files
+        std::fs::write(dir.join("readme.txt"), b"text").unwrap();
+        std::fs::write(dir.join("project.json"), b"{}").unwrap();
+
+        let files = collect_media_files(&dir);
+        assert_eq!(files.len(), 3, "should find exactly 3 media files");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_folder_recurses_subdirectories() {
+        let dir = std::env::temp_dir().join("klipp_test_import_recurse");
+        let _ = std::fs::remove_dir_all(&dir);
+        let sub = dir.join("sub");
+        let subsub = sub.join("deep");
+        std::fs::create_dir_all(&subsub).unwrap();
+
+        std::fs::write(dir.join("root.mov"), b"fake").unwrap();
+        std::fs::write(sub.join("mid.mkv"), b"fake").unwrap();
+        std::fs::write(subsub.join("deep.png"), b"fake").unwrap();
+
+        let files = collect_media_files(&dir);
+        assert_eq!(files.len(), 3, "should recurse into subdirectories");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_folder_case_insensitive_extensions() {
+        let dir = std::env::temp_dir().join("klipp_test_import_case");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("video.MP4"), b"fake").unwrap();
+        std::fs::write(dir.join("image.JPG"), b"fake").unwrap();
+        std::fs::write(dir.join("audio.Wav"), b"fake").unwrap();
+
+        let files = collect_media_files(&dir);
+        assert_eq!(files.len(), 3, "should match extensions case-insensitively");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_folder_empty_directory() {
+        let dir = std::env::temp_dir().join("klipp_test_import_empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let files = collect_media_files(&dir);
+        assert_eq!(files.len(), 0, "empty directory should yield no files");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

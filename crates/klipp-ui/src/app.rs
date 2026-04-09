@@ -6158,6 +6158,36 @@ impl KlippApp {
                     });
                     true
                 }
+                AppCommand::ImportMediaFolder { ref directory } => {
+                    let media_extensions: &[&str] = &[
+                        "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
+                        "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
+                        "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
+                    ];
+                    let mut imported = 0u32;
+                    for entry in walkdir::WalkDir::new(directory)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        if entry.file_type().is_file() {
+                            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                                if media_extensions.iter().any(|me| me.eq_ignore_ascii_case(ext)) {
+                                    let media_id = klipp_core::MediaId::new();
+                                    let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                                        path: entry.path().to_path_buf(),
+                                        media_id,
+                                    });
+                                    imported += 1;
+                                }
+                            }
+                        }
+                    }
+                    if imported > 0 {
+                        self.state.toast.show(format!("Importing {imported} files from folder"));
+                    }
+                    tracing::info!("Folder import: {} files from {:?}", imported, directory);
+                    true
+                }
                 AppCommand::AppendClip { media_id } => {
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;

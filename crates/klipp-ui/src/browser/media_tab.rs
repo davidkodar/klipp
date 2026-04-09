@@ -30,7 +30,7 @@ pub fn show(
     sort_by: &mut SortBy,
     sort_ascending: &mut bool,
     selected_bin: &mut Option<String>,
-    view_mode: &BrowserViewMode,
+    view_mode: &mut BrowserViewMode,
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
@@ -161,6 +161,73 @@ pub fn show(
                 }
             }
         }
+
+        // Empty-area context menu: claim remaining space below items
+        let remaining = ui.available_rect_before_wrap();
+        let min_h = 40.0_f32.max(remaining.height());
+        let bg_rect = egui::Rect::from_min_size(remaining.min, egui::vec2(remaining.width(), min_h));
+        let bg_resp = ui.allocate_rect(bg_rect, egui::Sense::click());
+        bg_resp.context_menu(|ui| {
+            ui.set_min_width(180.0);
+
+            if ui.button("New Folder").clicked() {
+                *creating_bin = Some("New Folder".to_string());
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            if ui.button("Import Media\u{2026}").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Media", super::MEDIA_EXTENSIONS)
+                    .pick_file()
+                {
+                    cmds.push(AppCommand::ImportMedia { path });
+                }
+                ui.close_menu();
+            }
+
+            if ui.button("Import Folder\u{2026}").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    cmds.push(AppCommand::ImportMediaFolder { directory: dir });
+                }
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            ui.menu_button("Sort By", |ui| {
+                ui.selectable_value(sort_by, SortBy::Name, "Name");
+                ui.selectable_value(sort_by, SortBy::DateAdded, "Date Added");
+                ui.selectable_value(sort_by, SortBy::ShootDate, "Shoot Date");
+                ui.selectable_value(sort_by, SortBy::Duration, "Duration");
+                ui.selectable_value(sort_by, SortBy::Rating, "Rating");
+                ui.selectable_value(sort_by, SortBy::Codec, "Codec");
+                ui.selectable_value(sort_by, SortBy::FileSize, "File Size");
+            });
+
+            ui.menu_button("View", |ui| {
+                if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
+                    ui.close_menu();
+                }
+                if ui.selectable_value(view_mode, BrowserViewMode::Grid, "Grid").clicked() {
+                    ui.close_menu();
+                }
+            });
+
+            let (sort_icon, sort_text) = if *sort_ascending {
+                (Icon::SortAscending, "Ascending")
+            } else {
+                (Icon::SortDescending, "Descending")
+            };
+            if ui.add(egui::Button::image_and_text(
+                sort_icon.image(12.0),
+                sort_text,
+            )).clicked() {
+                *sort_ascending = !*sort_ascending;
+                ui.close_menu();
+            }
+        });
     });
 
 
@@ -206,9 +273,37 @@ fn render_list_view(
     all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
-    _creating_bin: &mut Option<String>,
+    creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
 ) {
+    // Inline edit for new bin creation (triggered by "New Folder" context menu item)
+    if creating_bin.is_some() {
+        let mut should_clear = false;
+        if let Some(ref mut edit_text) = creating_bin {
+            let resp = ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
+                let text_resp = ui.add(
+                    egui::TextEdit::singleline(edit_text)
+                        .desired_width(120.0)
+                        .font(egui::FontId::proportional(10.0)),
+                );
+                if text_resp.lost_focus() {
+                    let name = edit_text.trim().to_string();
+                    if !name.is_empty() {
+                        cmds.push(AppCommand::CreateBin { name });
+                    }
+                    should_clear = true;
+                }
+                text_resp.request_focus();
+            });
+            let _ = resp;
+        }
+        if should_clear {
+            *creating_bin = None;
+        }
+    }
+
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
 
@@ -218,6 +313,16 @@ fn render_list_view(
         // Bin header context menu (only for named bins)
         if let Some(bin_name) = bin {
             header_resp.context_menu(|ui| {
+                if ui.button("New Sub-Folder").clicked() {
+                    if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
+                        cmds.push(AppCommand::CreateSubBin {
+                            parent_id: bin_record.id,
+                            name: "New Sub-Folder".to_string(),
+                        });
+                    }
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("Rename Bin").clicked() {
                     *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
                     ui.close_menu();
@@ -447,7 +552,7 @@ fn render_grid_view(
     all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
-    _creating_bin: &mut Option<String>,
+    creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
 ) {
     let avail_w = ui.available_width() - GRID_PADDING * 2.0;
@@ -456,6 +561,33 @@ fn render_grid_view(
     let thumb_h = (card_w / GRID_THUMB_ASPECT).round();
     let card_h = thumb_h + GRID_INFO_H;
 
+    // Inline edit for new bin creation (triggered by "New Folder" context menu item)
+    if creating_bin.is_some() {
+        let mut should_clear = false;
+        if let Some(ref mut edit_text) = creating_bin {
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
+                let text_resp = ui.add(
+                    egui::TextEdit::singleline(edit_text)
+                        .desired_width(120.0)
+                        .font(egui::FontId::proportional(10.0)),
+                );
+                if text_resp.lost_focus() {
+                    let name = edit_text.trim().to_string();
+                    if !name.is_empty() {
+                        cmds.push(AppCommand::CreateBin { name });
+                    }
+                    should_clear = true;
+                }
+                text_resp.request_focus();
+            });
+        }
+        if should_clear {
+            *creating_bin = None;
+        }
+    }
+
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
 
@@ -463,6 +595,16 @@ fn render_grid_view(
         let header_resp = render_bin_header(ui, theme, bin, renaming_bin, cmds);
         if let Some(bin_name) = bin {
             header_resp.context_menu(|ui| {
+                if ui.button("New Sub-Folder").clicked() {
+                    if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
+                        cmds.push(AppCommand::CreateSubBin {
+                            parent_id: bin_record.id,
+                            name: "New Sub-Folder".to_string(),
+                        });
+                    }
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("Rename Bin").clicked() {
                     *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
                     ui.close_menu();
