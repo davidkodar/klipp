@@ -617,6 +617,199 @@ fn render_transition(
                 }
             }
         }
+        TransitionKind::StarWipe => {
+            // 5-point star export (defaults).
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let points = 5.0_f32;
+            let inner_ratio = 0.4_f32;
+            let softness = 0.03_f32;
+            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+            let sector = std::f32::consts::PI / points;
+            let two_sector = 2.0 * sector;
+            let max_norm = 1.0 / inner_ratio;
+            let threshold = p * (max_norm + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let angle = dy.atan2(dx);
+                    let sector_angle = ((angle % two_sector) + two_sector) % two_sector;
+                    let offset = ((sector_angle - sector).abs() / sector).clamp(0.0, 1.0);
+                    let s_off = offset * offset * (3.0 - 2.0 * offset);
+                    let star_r_norm = inner_ratio + (1.0 - inner_ratio) * s_off;
+                    let norm_dist = dist / (max_r * star_r_norm.max(0.01));
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((norm_dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let t = 1.0 - tr * tr * (3.0 - 2.0 * tr);
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::SplitWipeHorizontal | TransitionKind::SplitWipeVertical => {
+            // Center-outward reveal.
+            let softness = 0.03_f32;
+            let horizontal = matches!(kind, TransitionKind::SplitWipeHorizontal);
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dist = if horizontal {
+                        (x as f32 - cx).abs() / cx.max(1.0)
+                    } else {
+                        (y as f32 - cy).abs() / cy.max(1.0)
+                    };
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = tr * tr * (3.0 - 2.0 * tr);
+                    let t = 1.0 - s_val;
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::VenetianBlindHorizontal | TransitionKind::VenetianBlindVertical => {
+            // 8 parallel strips wipe simultaneously (default blind count).
+            let softness = 0.04_f32;
+            let blinds = 8.0_f32;
+            let horizontal = matches!(kind, TransitionKind::VenetianBlindHorizontal);
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let strip_pos = if horizontal {
+                        (y as f32 / height as f32 * blinds).fract()
+                    } else {
+                        (x as f32 / width as f32 * blinds).fract()
+                    };
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((strip_pos - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = tr * tr * (3.0 - 2.0 * tr);
+                    let t = 1.0 - s_val;
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::CheckerboardWipe => {
+            // Alternating squares wipe in opposite directions (default 8x8 grid).
+            let softness = 0.04_f32;
+            let grid = 8.0_f32;
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let fx = x as f32 / width as f32 * grid;
+                    let fy = y as f32 / height as f32 * grid;
+                    let col = fx as usize;
+                    let row = fy as usize;
+                    let local_x = fx.fract();
+                    let is_even = (col + row) % 2 == 0;
+                    let local_pos = if is_even { local_x } else { 1.0 - local_x };
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((local_pos - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = tr * tr * (3.0 - 2.0 * tr);
+                    let t = 1.0 - s_val;
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::DiagonalWipeTLBR | TransitionKind::DiagonalWipeTRBL => {
+            let softness = 0.03_f32;
+            let tlbr = matches!(kind, TransitionKind::DiagonalWipeTLBR);
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let nx = x as f32 / width as f32;
+                    let ny = y as f32 / height as f32;
+                    let diag = if tlbr {
+                        (nx + ny) * 0.5
+                    } else {
+                        ((1.0 - nx) + ny) * 0.5
+                    };
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((diag - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = tr * tr * (3.0 - 2.0 * tr);
+                    let t = 1.0 - s_val;
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::BoxWipeIn | TransitionKind::BoxWipeOut => {
+            let softness = 0.03_f32;
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let is_in = matches!(kind, TransitionKind::BoxWipeIn);
+            let threshold = if is_in {
+                p * (1.0 + 2.0 * softness) - softness
+            } else {
+                (1.0 - p) * (1.0 + 2.0 * softness) - softness
+            };
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dx = (x as f32 - cx).abs() / cx.max(1.0);
+                    let dy = (y as f32 - cy).abs() / cy.max(1.0);
+                    let dist = dx.max(dy);
+                    let lo = threshold - softness;
+                    let hi = threshold + softness;
+                    let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+                    let s_val = tr * tr * (3.0 - 2.0 * tr);
+                    let t = if is_in { 1.0 - s_val } else { s_val };
+                    for c in 0..3 {
+                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
+                            + to[idx + c] as f32 * t
+                            + 0.5) as u8;
+                    }
+                    output[idx + 3] = 255;
+                }
+            }
+        }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
             let inv = 1.0 - p;

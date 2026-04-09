@@ -694,6 +694,16 @@ pub enum TransitionKind {
     PageTurnReverse,
     ChromaticAberration,
     FilmBurn,
+    StarWipe,
+    SplitWipeHorizontal,
+    SplitWipeVertical,
+    VenetianBlindHorizontal,
+    VenetianBlindVertical,
+    CheckerboardWipe,
+    DiagonalWipeTLBR,
+    DiagonalWipeTRBL,
+    BoxWipeIn,
+    BoxWipeOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -30,6 +30,16 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::PageTurnReverse => 22,
         TransitionKind::ChromaticAberration => 23,
         TransitionKind::FilmBurn => 24,
+        TransitionKind::StarWipe => 25,
+        TransitionKind::SplitWipeHorizontal => 26,
+        TransitionKind::SplitWipeVertical => 27,
+        TransitionKind::VenetianBlindHorizontal => 28,
+        TransitionKind::VenetianBlindVertical => 29,
+        TransitionKind::CheckerboardWipe => 30,
+        TransitionKind::DiagonalWipeTLBR => 31,
+        TransitionKind::DiagonalWipeTRBL => 32,
+        TransitionKind::BoxWipeIn => 33,
+        TransitionKind::BoxWipeOut => 34,
     }
 }
 
@@ -61,6 +71,16 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         22 => TransitionKind::PageTurnReverse,
         23 => TransitionKind::ChromaticAberration,
         24 => TransitionKind::FilmBurn,
+        25 => TransitionKind::StarWipe,
+        26 => TransitionKind::SplitWipeHorizontal,
+        27 => TransitionKind::SplitWipeVertical,
+        28 => TransitionKind::VenetianBlindHorizontal,
+        29 => TransitionKind::VenetianBlindVertical,
+        30 => TransitionKind::CheckerboardWipe,
+        31 => TransitionKind::DiagonalWipeTLBR,
+        32 => TransitionKind::DiagonalWipeTRBL,
+        33 => TransitionKind::BoxWipeIn,
+        34 => TransitionKind::BoxWipeOut,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -93,6 +113,16 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (22, "Page Turn Reverse"),
         (23, "Chromatic Aberration"),
         (24, "Film Burn"),
+        (25, "Star Wipe"),
+        (26, "Split Wipe H"),
+        (27, "Split Wipe V"),
+        (28, "Venetian Blind H"),
+        (29, "Venetian Blind V"),
+        (30, "Checkerboard Wipe"),
+        (31, "Diagonal TL-BR"),
+        (32, "Diagonal TR-BL"),
+        (33, "Box Wipe In"),
+        (34, "Box Wipe Out"),
     ]
 }
 
@@ -596,6 +626,228 @@ pub fn render_transition_with_params(
                     let dist = (dx * dx + dy * dy).sqrt() / max_r;
                     let s_val = smoothstep_f32(radius - softness, radius + softness, dist);
                     let t = if is_in { 1.0 - s_val } else { s_val };
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::BoxWipeIn | TransitionKind::BoxWipeOut => {
+            // Rectangle expanding from center (In) or contracting to center (Out).
+            // param0 = softness, param1 = square blend (0 = frame aspect, 1 = square)
+            let softness = (user_params.param0 * 0.03).max(0.001);
+            let square = user_params.param1.clamp(0.0, 1.0);
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let is_in = matches!(kind, TransitionKind::BoxWipeIn);
+            // In square mode, landscape frames produce norm_dist up to cx/cy>1.
+            // Scale threshold to max possible distance so corners are fully revealed.
+            let aspect = (cx / cy.max(1.0)).max(1.0);
+            let max_norm = 1.0 + (aspect - 1.0) * square;
+            let threshold = if is_in {
+                p * (max_norm + 2.0 * softness) - softness
+            } else {
+                (1.0 - p) * (max_norm + 2.0 * softness) - softness
+            };
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dx = (x as f32 - cx).abs() / cx.max(1.0);
+                    let dy = (y as f32 - cy).abs() / cy.max(1.0);
+                    let box_dist = dx.max(dy);
+                    let sq_dist = (dx * cx / cy.max(1.0)).max(dy);
+                    let dist = box_dist + (sq_dist - box_dist) * square;
+                    let s_val = smoothstep_f32(
+                        threshold - softness,
+                        threshold + softness,
+                        dist,
+                    );
+                    // In: reveal where dist < threshold → invert.
+                    // Out: reveal where dist > threshold → use directly (with flipped threshold).
+                    let t = if is_in { 1.0 - s_val } else { s_val };
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::DiagonalWipeTLBR | TransitionKind::DiagonalWipeTRBL => {
+            // Diagonal sweep from one corner to its opposite.
+            // param0 = softness
+            let softness = (user_params.param0 * 0.03).max(0.001);
+            let tlbr = matches!(kind, TransitionKind::DiagonalWipeTLBR);
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let nx = x as f32 / width as f32;
+                    let ny = y as f32 / height as f32;
+                    let diag = if tlbr {
+                        (nx + ny) * 0.5
+                    } else {
+                        ((1.0 - nx) + ny) * 0.5
+                    };
+                    let s_val = smoothstep_f32(
+                        threshold - softness,
+                        threshold + softness,
+                        diag,
+                    );
+                    let t = 1.0 - s_val;
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::CheckerboardWipe => {
+            // Alternating squares wipe left-to-right or right-to-left.
+            // param0 = softness, param1 = grid size (squares per axis)
+            let softness = (user_params.param0 * 0.04).max(0.001);
+            let grid = user_params.param1.max(1.0);
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let fx = x as f32 / width as f32 * grid;
+                    let fy = y as f32 / height as f32 * grid;
+                    let col = fx as usize;
+                    let row = fy as usize;
+                    let local_x = fx.fract();
+                    let is_even = (col + row) % 2 == 0;
+                    let local_pos = if is_even { local_x } else { 1.0 - local_x };
+                    // Reveal `to` where local_pos < threshold (same pattern as BarnDoorOpen).
+                    let s_val = smoothstep_f32(
+                        threshold - softness,
+                        threshold + softness,
+                        local_pos,
+                    );
+                    let t = 1.0 - s_val;
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::VenetianBlindHorizontal | TransitionKind::VenetianBlindVertical => {
+            // N parallel strips wipe simultaneously.
+            // param0 = softness, param1 = blind count
+            let softness = (user_params.param0 * 0.04).max(0.001);
+            let blinds = user_params.param1.max(1.0);
+            let horizontal = matches!(kind, TransitionKind::VenetianBlindHorizontal);
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let strip_pos = if horizontal {
+                        (y as f32 / height as f32 * blinds).fract()
+                    } else {
+                        (x as f32 / width as f32 * blinds).fract()
+                    };
+                    let s_val = smoothstep_f32(
+                        threshold - softness,
+                        threshold + softness,
+                        strip_pos,
+                    );
+                    // Blinds reveal `to` where strip_pos < threshold.
+                    let t = 1.0 - s_val;
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::SplitWipeHorizontal | TransitionKind::SplitWipeVertical => {
+            // Split from center outward — `to` reveals in the center first.
+            // param0 = softness
+            let softness = (user_params.param0 * 0.03).max(0.001);
+            let horizontal = matches!(kind, TransitionKind::SplitWipeHorizontal);
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let threshold = p * (1.0 + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dist = if horizontal {
+                        (x as f32 - cx).abs() / cx.max(1.0)
+                    } else {
+                        (y as f32 - cy).abs() / cy.max(1.0)
+                    };
+                    let s_val = smoothstep_f32(
+                        threshold - softness,
+                        threshold + softness,
+                        dist,
+                    );
+                    let t = 1.0 - s_val;
+                    blend_pixel(
+                        &from[idx..idx + 4],
+                        &to[idx..idx + 4],
+                        t,
+                        &mut output[idx..idx + 4],
+                    );
+                }
+            }
+        }
+        TransitionKind::StarWipe => {
+            // N-pointed star expanding from center.
+            // param0 = softness, param1 = point count, param2 = inner radius ratio
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let points = user_params.param1.max(3.0);
+            let inner_ratio = user_params.param2.clamp(0.2, 0.8);
+            let softness = (user_params.param0 * 0.03).max(0.001);
+            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+            let sector = std::f32::consts::PI / points;
+            let two_sector = 2.0 * sector;
+            // Corners of the frame can reach norm_dist = 1/inner_ratio in the star's
+            // concave sectors, so scale the threshold to that range for full coverage.
+            let max_norm = 1.0 / inner_ratio;
+            let threshold = p * (max_norm + 2.0 * softness) - softness;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let angle = dy.atan2(dx);
+                    let sector_angle =
+                        ((angle % two_sector) + two_sector) % two_sector;
+                    let star_r_norm = inner_ratio
+                        + (1.0 - inner_ratio)
+                            * smoothstep_f32(0.0, sector, (sector_angle - sector).abs());
+                    let norm_dist = dist / (max_r * star_r_norm.max(0.01));
+                    let t = 1.0
+                        - smoothstep_f32(
+                            threshold - softness,
+                            threshold + softness,
+                            norm_dist,
+                        );
                     blend_pixel(
                         &from[idx..idx + 4],
                         &to[idx..idx + 4],
@@ -1485,11 +1737,21 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::PageTurnReverse), 22);
         assert_eq!(transition_kind_to_id(TransitionKind::ChromaticAberration), 23);
         assert_eq!(transition_kind_to_id(TransitionKind::FilmBurn), 24);
+        assert_eq!(transition_kind_to_id(TransitionKind::StarWipe), 25);
+        assert_eq!(transition_kind_to_id(TransitionKind::SplitWipeHorizontal), 26);
+        assert_eq!(transition_kind_to_id(TransitionKind::SplitWipeVertical), 27);
+        assert_eq!(transition_kind_to_id(TransitionKind::VenetianBlindHorizontal), 28);
+        assert_eq!(transition_kind_to_id(TransitionKind::VenetianBlindVertical), 29);
+        assert_eq!(transition_kind_to_id(TransitionKind::CheckerboardWipe), 30);
+        assert_eq!(transition_kind_to_id(TransitionKind::DiagonalWipeTLBR), 31);
+        assert_eq!(transition_kind_to_id(TransitionKind::DiagonalWipeTRBL), 32);
+        assert_eq!(transition_kind_to_id(TransitionKind::BoxWipeIn), 33);
+        assert_eq!(transition_kind_to_id(TransitionKind::BoxWipeOut), 34);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=24u8 {
+        for id in 0..=34u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -1498,12 +1760,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(25), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(35), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_25() {
-        assert_eq!(all_transition_kinds().len(), 25);
+    fn all_transition_kinds_returns_35() {
+        assert_eq!(all_transition_kinds().len(), 35);
     }
 
     // ========================================================================
@@ -1546,6 +1808,192 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    #[test]
+    fn box_wipe_in_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::BoxWipeIn, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn box_wipe_in_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::BoxWipeIn, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn box_wipe_out_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::BoxWipeOut, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn box_wipe_out_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::BoxWipeOut, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn diagonal_tlbr_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DiagonalWipeTLBR, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn diagonal_tlbr_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DiagonalWipeTLBR, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn diagonal_trbl_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DiagonalWipeTRBL, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn diagonal_trbl_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DiagonalWipeTRBL, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn checkerboard_wipe_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::CheckerboardWipe, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn checkerboard_wipe_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::CheckerboardWipe, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn venetian_blind_h_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(
+            TransitionKind::VenetianBlindHorizontal,
+            &from,
+            &to,
+            0.0,
+            8,
+            8,
+        );
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn venetian_blind_h_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(
+            TransitionKind::VenetianBlindHorizontal,
+            &from,
+            &to,
+            1.0,
+            8,
+            8,
+        );
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn venetian_blind_v_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::VenetianBlindVertical, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn venetian_blind_v_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::VenetianBlindVertical, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn split_wipe_h_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::SplitWipeHorizontal, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn split_wipe_h_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::SplitWipeHorizontal, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn split_wipe_v_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::SplitWipeVertical, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn split_wipe_v_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::SplitWipeVertical, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn star_wipe_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::StarWipe, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn star_wipe_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::StarWipe, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
     }
 
     #[test]
@@ -1782,6 +2230,16 @@ mod tests {
             TransitionKind::PageTurnReverse,
             TransitionKind::ChromaticAberration,
             TransitionKind::FilmBurn,
+            TransitionKind::StarWipe,
+            TransitionKind::SplitWipeHorizontal,
+            TransitionKind::SplitWipeVertical,
+            TransitionKind::VenetianBlindHorizontal,
+            TransitionKind::VenetianBlindVertical,
+            TransitionKind::CheckerboardWipe,
+            TransitionKind::DiagonalWipeTLBR,
+            TransitionKind::DiagonalWipeTRBL,
+            TransitionKind::BoxWipeIn,
+            TransitionKind::BoxWipeOut,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -1813,6 +2271,16 @@ mod tests {
             TransitionKind::PageTurnReverse,
             TransitionKind::ChromaticAberration,
             TransitionKind::FilmBurn,
+            TransitionKind::StarWipe,
+            TransitionKind::SplitWipeHorizontal,
+            TransitionKind::SplitWipeVertical,
+            TransitionKind::VenetianBlindHorizontal,
+            TransitionKind::VenetianBlindVertical,
+            TransitionKind::CheckerboardWipe,
+            TransitionKind::DiagonalWipeTLBR,
+            TransitionKind::DiagonalWipeTRBL,
+            TransitionKind::BoxWipeIn,
+            TransitionKind::BoxWipeOut,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

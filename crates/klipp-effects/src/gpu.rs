@@ -4205,6 +4205,122 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let gn = clamp(base_gn + (burn_g - base_gn) * burn_t + grain_val, 0.0, 1.0);
         let bn = clamp(base_bn + (burn_b - base_bn) * burn_t + grain_val, 0.0, 1.0);
         result = vec4<f32>(rn * 255.0, gn * 255.0, bn * 255.0, 255.0);
+    } else if params.kind_id == 25u {
+        // Star Wipe: N-pointed star expanding from center.
+        // param0=softness, param1=point count, param2=inner radius ratio
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let points = max(params.param1, 3.0);
+        let inner_ratio = clamp(params.param2, 0.2, 0.8);
+        let softness = max(params.param0 * 0.03, 0.001);
+        let dist = length(vec2<f32>(dx, dy));
+        let angle = atan2(dy, dx);
+        let sector = 3.14159265 / points;
+        let two_sector = 2.0 * sector;
+        // WGSL has no float %, use floor-based modulo. Apply twice to normalize negatives.
+        var sector_angle = angle - floor(angle / two_sector) * two_sector;
+        sector_angle = sector_angle - floor(sector_angle / two_sector) * two_sector;
+        let star_r_norm = mix(
+            inner_ratio,
+            1.0,
+            smoothstep(0.0, sector, abs(sector_angle - sector)),
+        );
+        let max_r = max(length(vec2<f32>(cx, cy)), 1.0);
+        let norm_dist = dist / (max_r * max(star_r_norm, 0.01));
+        let max_norm = 1.0 / inner_ratio;
+        let threshold = p * (max_norm + 2.0 * softness) - softness;
+        let s_val = smoothstep(threshold - softness, threshold + softness, norm_dist);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_val);
+    } else if params.kind_id == 26u || params.kind_id == 27u {
+        // Split Wipe H (26) / V (27): reveal `to` expanding from the center line outward.
+        let softness = max(params.param0 * 0.03, 0.001);
+        var dist: f32;
+        if params.kind_id == 26u {
+            let cx = f32(params.width) * 0.5;
+            dist = abs(f32(x) - cx) / max(cx, 1.0);
+        } else {
+            let cy = f32(params.height) * 0.5;
+            dist = abs(f32(y) - cy) / max(cy, 1.0);
+        }
+        let threshold = p * (1.0 + 2.0 * softness) - softness;
+        let s_sp = smoothstep(threshold - softness, threshold + softness, dist);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_sp);
+    } else if params.kind_id == 28u || params.kind_id == 29u {
+        // Venetian Blind H (28) / V (29): N parallel strips wipe simultaneously.
+        let softness = max(params.param0 * 0.04, 0.001);
+        let blinds = max(params.param1, 1.0);
+        var strip_pos: f32;
+        if params.kind_id == 28u {
+            strip_pos = fract(f32(y) / f32(params.height) * blinds);
+        } else {
+            strip_pos = fract(f32(x) / f32(params.width) * blinds);
+        }
+        let threshold = p * (1.0 + 2.0 * softness) - softness;
+        let s_vb = smoothstep(threshold - softness, threshold + softness, strip_pos);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_vb);
+    } else if params.kind_id == 30u {
+        // Checkerboard Wipe: alternating squares wipe LTR / RTL.
+        // param0 = softness, param1 = grid size (squares per axis)
+        let softness = max(params.param0 * 0.04, 0.001);
+        let grid = max(params.param1, 1.0);
+        let fx = f32(x) / f32(params.width) * grid;
+        let fy = f32(y) / f32(params.height) * grid;
+        let col = u32(fx);
+        let row = u32(fy);
+        let local_x = fract(fx);
+        var local_pos: f32;
+        if (col + row) % 2u == 0u {
+            local_pos = local_x;
+        } else {
+            local_pos = 1.0 - local_x;
+        }
+        let threshold = p * (1.0 + 2.0 * softness) - softness;
+        let s_cb = smoothstep(threshold - softness, threshold + softness, local_pos);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_cb);
+    } else if params.kind_id == 31u || params.kind_id == 32u {
+        // Diagonal wipe TL-BR (31) / TR-BL (32).
+        let softness = max(params.param0 * 0.03, 0.001);
+        let nx = f32(x) / f32(params.width);
+        let ny = f32(y) / f32(params.height);
+        var diag: f32;
+        if params.kind_id == 31u {
+            diag = (nx + ny) * 0.5;
+        } else {
+            diag = ((1.0 - nx) + ny) * 0.5;
+        }
+        let threshold = p * (1.0 + 2.0 * softness) - softness;
+        let s_diag = smoothstep(threshold - softness, threshold + softness, diag);
+        result = lerp_pixel(from_px, to_px, 1.0 - s_diag);
+    } else if params.kind_id == 33u || params.kind_id == 34u {
+        // Box Wipe In (33) / Out (34): rectangle expanding from / contracting to center.
+        // param0 = softness, param1 = square blend (0 = frame aspect, 1 = square)
+        let softness = max(params.param0 * 0.03, 0.001);
+        let square = clamp(params.param1, 0.0, 1.0);
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = abs(f32(x) - cx) / max(cx, 1.0);
+        let dy = abs(f32(y) - cy) / max(cy, 1.0);
+        let box_dist = max(dx, dy);
+        let sq_dist = max(dx * cx / max(cy, 1.0), dy);
+        let dist = box_dist + (sq_dist - box_dist) * square;
+        let aspect = max(cx / max(cy, 1.0), 1.0);
+        let max_norm = 1.0 + (aspect - 1.0) * square;
+        var threshold: f32;
+        if params.kind_id == 33u {
+            threshold = p * (max_norm + 2.0 * softness) - softness;
+        } else {
+            threshold = (1.0 - p) * (max_norm + 2.0 * softness) - softness;
+        }
+        let s_box = smoothstep(threshold - softness, threshold + softness, dist);
+        var t_box: f32;
+        if params.kind_id == 33u {
+            t_box = 1.0 - s_box;
+        } else {
+            t_box = s_box;
+        }
+        result = lerp_pixel(from_px, to_px, t_box);
     } else {
         result = lerp_pixel(from_px, to_px, p);
     }

@@ -309,6 +309,202 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Box Wipe In",
+        kind_id: 33,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let inner = r.shrink(r.width() * 0.2);
+            p.rect_filled(inner, 0.0, PREVIEW_B);
+        },
+    },
+    TransitionDef {
+        name: "Box Wipe Out",
+        kind_id: 34,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let inner = r.shrink(r.width() * 0.2);
+            p.rect_filled(inner, 0.0, PREVIEW_A);
+        },
+    },
+    TransitionDef {
+        name: "Diagonal TL-BR",
+        kind_id: 31,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let pts = vec![r.min, egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)];
+            p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
+            p.line_segment(
+                [egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)],
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(100)),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Diagonal TR-BL",
+        kind_id: 32,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let pts = vec![r.min, r.max, egui::pos2(r.max.x, r.min.y)];
+            p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
+            p.line_segment(
+                [r.min, r.max],
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(100)),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Checkerboard Wipe",
+        kind_id: 30,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            let grid = 4usize;
+            let cell_w = r.width() / grid as f32;
+            let cell_h = r.height() / grid as f32;
+            for row in 0..grid {
+                for col in 0..grid {
+                    let color = if (row + col) % 2 == 0 { PREVIEW_A } else { PREVIEW_B };
+                    p.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(
+                                r.min.x + col as f32 * cell_w,
+                                r.min.y + row as f32 * cell_h,
+                            ),
+                            egui::vec2(cell_w, cell_h),
+                        ),
+                        0.0,
+                        color,
+                    );
+                }
+            }
+        },
+    },
+    TransitionDef {
+        name: "Venetian Blind H",
+        kind_id: 28,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            let strips = 5;
+            let strip_h = r.height() / strips as f32;
+            for i in 0..strips {
+                let y = r.min.y + i as f32 * strip_h;
+                let color = if i % 2 == 0 { PREVIEW_A } else { PREVIEW_B };
+                p.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x, y),
+                        egui::vec2(r.width(), strip_h - 1.0),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Venetian Blind V",
+        kind_id: 29,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            let strips = 5;
+            let strip_w = r.width() / strips as f32;
+            for i in 0..strips {
+                let x = r.min.x + i as f32 * strip_w;
+                let color = if i % 2 == 0 { PREVIEW_A } else { PREVIEW_B };
+                p.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(x, r.min.y),
+                        egui::vec2(strip_w - 1.0, r.height()),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Split Wipe H",
+        kind_id: 26,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let center_w = r.width() * 0.35;
+            p.rect_filled(
+                egui::Rect::from_center_size(r.center(), egui::vec2(center_w, r.height())),
+                0.0,
+                PREVIEW_B,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.center().x - center_w * 0.5, r.min.y),
+                    egui::pos2(r.center().x - center_w * 0.5, r.max.y),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.center().x + center_w * 0.5, r.min.y),
+                    egui::pos2(r.center().x + center_w * 0.5, r.max.y),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Split Wipe V",
+        kind_id: 27,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let center_h = r.height() * 0.35;
+            p.rect_filled(
+                egui::Rect::from_center_size(r.center(), egui::vec2(r.width(), center_h)),
+                0.0,
+                PREVIEW_B,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.min.x, r.center().y - center_h * 0.5),
+                    egui::pos2(r.max.x, r.center().y - center_h * 0.5),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.min.x, r.center().y + center_h * 0.5),
+                    egui::pos2(r.max.x, r.center().y + center_h * 0.5),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Star Wipe",
+        kind_id: 25,
+        category: TransitionCategory::Wipe,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let cx = r.center();
+            let outer_r = r.height() * 0.42;
+            let inner_r = outer_r * 0.4;
+            let points = 5usize;
+            let mut pts = Vec::new();
+            for i in 0..points * 2 {
+                let angle = i as f32 * std::f32::consts::PI / points as f32
+                    - std::f32::consts::FRAC_PI_2;
+                let radius = if i % 2 == 0 { outer_r } else { inner_r };
+                pts.push(egui::pos2(
+                    cx.x + angle.cos() * radius,
+                    cx.y + angle.sin() * radius,
+                ));
+            }
+            // Star isn't strictly convex, but convex_polygon renders it as a fan from pts[0].
+            p.add(egui::Shape::convex_polygon(pts, PREVIEW_B, egui::Stroke::NONE));
+        },
+    },
+    TransitionDef {
         name: "Clock Wipe",
         kind_id: 16,
         category: TransitionCategory::Wipe,

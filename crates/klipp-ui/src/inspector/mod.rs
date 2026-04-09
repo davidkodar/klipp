@@ -1435,6 +1435,16 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         PageTurnReverse => 22,
         ChromaticAberration => 23,
         FilmBurn => 24,
+        StarWipe => 25,
+        SplitWipeHorizontal => 26,
+        SplitWipeVertical => 27,
+        VenetianBlindHorizontal => 28,
+        VenetianBlindVertical => 29,
+        CheckerboardWipe => 30,
+        DiagonalWipeTLBR => 31,
+        DiagonalWipeTRBL => 32,
+        BoxWipeIn => 33,
+        BoxWipeOut => 34,
     }
 }
 
@@ -1948,6 +1958,207 @@ fn show_transition_inspector(
                         });
                     }
                 });
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::BoxWipeIn
+                    | klipp_timeline::TransitionKind::BoxWipeOut
+            ) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Softness", 0u8, 0.0..=4.0, 0.05),
+                    ("Square", 1u8, 0.0..=1.0, 0.01),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::DiagonalWipeTLBR
+                    | klipp_timeline::TransitionKind::DiagonalWipeTRBL
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Softness")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v).range(0.0..=4.0).speed(0.05),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::CheckerboardWipe) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Softness", 0u8, 0.0..=4.0, 0.05),
+                    ("Grid Size", 1u8, 2.0..=24.0, 0.5),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::VenetianBlindHorizontal
+                    | klipp_timeline::TransitionKind::VenetianBlindVertical
+            ) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Softness", 0u8, 0.0..=4.0, 0.05),
+                    ("Blinds", 1u8, 2.0..=20.0, 0.5),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::SplitWipeHorizontal
+                    | klipp_timeline::TransitionKind::SplitWipeVertical
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Softness")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v).range(0.0..=4.0).speed(0.05),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::StarWipe) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Softness", 0u8, 0.0..=4.0, 0.05),
+                    ("Points", 1u8, 3.0..=12.0, 0.5),
+                    ("Pointiness", 2u8, 0.2..=0.8, 0.01),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            1 => transition.user_params.param1,
+                            _ => transition.user_params.param2,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                1 => new_params.param1 = v,
+                                _ => new_params.param2 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
             }
             if matches!(transition.kind, klipp_timeline::TransitionKind::FilmBurn) {
                 ui.add_space(6.0);

@@ -250,6 +250,16 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         PageTurnReverse => 22,
         ChromaticAberration => 23,
         FilmBurn => 24,
+        StarWipe => 25,
+        SplitWipeHorizontal => 26,
+        SplitWipeVertical => 27,
+        VenetianBlindHorizontal => 28,
+        VenetianBlindVertical => 29,
+        CheckerboardWipe => 30,
+        DiagonalWipeTLBR => 31,
+        DiagonalWipeTRBL => 32,
+        BoxWipeIn => 33,
+        BoxWipeOut => 34,
     }
 }
 
@@ -307,6 +317,16 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "PageTurnReverse" => klipp_timeline::TransitionKind::PageTurnReverse,
                     "ChromaticAberration" => klipp_timeline::TransitionKind::ChromaticAberration,
                     "FilmBurn" => klipp_timeline::TransitionKind::FilmBurn,
+                    "StarWipe" => klipp_timeline::TransitionKind::StarWipe,
+                    "SplitWipeHorizontal" => klipp_timeline::TransitionKind::SplitWipeHorizontal,
+                    "SplitWipeVertical" => klipp_timeline::TransitionKind::SplitWipeVertical,
+                    "VenetianBlindHorizontal" => klipp_timeline::TransitionKind::VenetianBlindHorizontal,
+                    "VenetianBlindVertical" => klipp_timeline::TransitionKind::VenetianBlindVertical,
+                    "CheckerboardWipe" => klipp_timeline::TransitionKind::CheckerboardWipe,
+                    "DiagonalWipeTLBR" => klipp_timeline::TransitionKind::DiagonalWipeTLBR,
+                    "DiagonalWipeTRBL" => klipp_timeline::TransitionKind::DiagonalWipeTRBL,
+                    "BoxWipeIn" => klipp_timeline::TransitionKind::BoxWipeIn,
+                    "BoxWipeOut" => klipp_timeline::TransitionKind::BoxWipeOut,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

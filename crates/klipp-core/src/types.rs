@@ -328,6 +328,23 @@ impl TransitionUserParams {
                 param2: 0.4,
                 ..Self::default()
             },
+            // StarWipe: param0=softness, param1=point count, param2=inner radius ratio
+            25 => Self {
+                param0: 1.0,
+                param1: 5.0,
+                param2: 0.4,
+                ..Self::default()
+            },
+            // SplitWipe H/V: param0=softness
+            26 | 27 => Self { param0: 1.0, ..Self::default() },
+            // Venetian Blind H/V: param0=softness, param1=blind count
+            28 | 29 => Self { param0: 1.0, param1: 8.0, ..Self::default() },
+            // Checkerboard: param0=softness, param1=grid size
+            30 => Self { param0: 1.0, param1: 8.0, ..Self::default() },
+            // Diagonal wipes: param0=softness
+            31 | 32 => Self { param0: 1.0, ..Self::default() },
+            // Box Wipe In/Out: param0=softness, param1=square blend
+            33 | 34 => Self { param0: 1.0, param1: 0.0, ..Self::default() },
             _ => Self::default(),
         }
     }
