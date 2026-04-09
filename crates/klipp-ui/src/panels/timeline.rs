@@ -1303,8 +1303,31 @@ impl TimelinePanel {
                                 let duration_frames = fps_rate * 5;
                                 state.pending_title_data = Some(title_data);
                                 state.pending_title_animation = animation;
+                                // If dropped on a Video track, redirect to a Text track so the
+                                // title composites correctly as an overlay instead of replacing
+                                // the primary video decoder.
+                                let actual_track_idx = if track_kind == TrackKind::Video {
+                                    // Find or create a Text track
+                                    let text_idx = state.sequences[state.active_sequence_idx].tracks.iter()
+                                        .position(|t| t.kind == TrackKind::Text && t.clip_at_timecode(timeline_in).is_none());
+                                    match text_idx {
+                                        Some(idx) => idx,
+                                        None => {
+                                            let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
+                                                .filter(|t| t.kind == TrackKind::Text).count() + 1;
+                                            let track = klipp_timeline::Track::new(
+                                                &format!("Text {track_num}"),
+                                                TrackKind::Text,
+                                            );
+                                            state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                                            0
+                                        }
+                                    }
+                                } else {
+                                    track_idx
+                                };
                                 cmds.push(AppCommand::CreateTitleClip {
-                                    track_index: track_idx,
+                                    track_index: actual_track_idx,
                                     timeline_in,
                                     duration_frames,
                                 });
@@ -1328,7 +1351,7 @@ impl TimelinePanel {
         ui: &mut egui::Ui,
         state: &mut AppState,
         _track_idx: usize,
-        track_kind: TrackKind,
+        _track_kind: TrackKind,
         track_rect: egui::Rect,
         _content_rect: egui::Rect,
         painter: &egui::Painter,
@@ -1339,27 +1362,18 @@ impl TimelinePanel {
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
                 if track_rect.contains(pos) {
-                    let compatible = track_kind == TrackKind::Video;
-                    if compatible {
-                        painter.rect_stroke(
-                            track_rect,
-                            0.0,
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 160)),
-                        );
-                        if !any_down {
-                            if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
-                                // Generator clips use CreateGeneratorClip which handles
-                                // track creation and playhead positioning internally.
-                                cmds.push(AppCommand::CreateGeneratorClip { data });
-                                state.toast.show(format!("\"{}\" generator added to timeline", name));
-                            }
+                    // Accept drop on any track — CreateGeneratorClip handler
+                    // finds or creates the correct Video track internally.
+                    painter.rect_stroke(
+                        track_rect,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 160)),
+                    );
+                    if !any_down {
+                        if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
+                            cmds.push(AppCommand::CreateGeneratorClip { data });
+                            state.toast.show(format!("\"{}\" generator added to timeline", name));
                         }
-                    } else {
-                        painter.rect_stroke(
-                            track_rect,
-                            0.0,
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
-                        );
                     }
                 }
             }
@@ -1517,6 +1531,25 @@ impl TimelinePanel {
                     }
                 } else if !on_any_track {
                     // Released outside content area — cancel drag
+                    state.drag_drop.end();
+                }
+            } else {
+                state.drag_drop.end();
+            }
+        }
+
+        // Generator drag released outside any track — CreateGeneratorClip handles track creation
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Generator { .. }))
+            && !ui.input(|i| i.pointer.any_down())
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                if !on_any_track && content_rect.contains(cursor_pos) {
+                    if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
+                        cmds.push(AppCommand::CreateGeneratorClip { data });
+                        state.toast.show(format!("\"{}\" generator added to timeline", name));
+                    }
+                } else if !on_any_track {
                     state.drag_drop.end();
                 }
             } else {

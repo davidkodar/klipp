@@ -1318,7 +1318,7 @@ impl ViewerPanel {
         let disabled_fg = egui::Color32::from_rgb(80, 80, 90);
 
         // Skip back
-        x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(AppCommand::SeekTo(klipp_core::Timecode::zero())));
+        x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate()))));
         // Rewind
         x += self.playbar_nav_btn(ui, Icon::Rewind, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Rewind (J)", cmds, Some(AppCommand::SeekRelative(-(fps_val * 10.0) as i64)));
         // Step back

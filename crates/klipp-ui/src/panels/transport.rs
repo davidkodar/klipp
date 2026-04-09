@@ -35,7 +35,7 @@ impl TransportBar {
                 .on_hover_text("Go to start")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero()));
+                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
             }
 
             // -10s
@@ -374,7 +374,7 @@ impl TransportBar {
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::Home) {
-                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::zero()));
+                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
             }
             if !text_editing && i.key_pressed(egui::Key::End) {
                 let dur = state.sequence_duration();

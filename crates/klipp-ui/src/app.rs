@@ -8512,10 +8512,11 @@ impl KlippApp {
                     // Switch
                     self.state.active_sequence_idx = *sequence_idx;
                     // Restore playhead from incoming sequence
+                    let seq_rate = self.state.sequences[*sequence_idx].fps.rate();
                     let restored = self.state.sequences[*sequence_idx]
                         .last_playhead
                         .map(|rt| Timecode { value: rt.value, rate: rt.rate })
-                        .unwrap_or(Timecode::zero());
+                        .unwrap_or(klipp_core::RationalTime::from_frames(0, seq_rate));
                     self.state.playhead = restored;
                     self.state.playhead_smooth_secs = restored.to_secs_f64();
                     self.state.playhead_anchor = restored;

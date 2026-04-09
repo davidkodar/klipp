@@ -348,7 +348,7 @@ impl PlaybackEngine {
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
             duration: Timecode::zero(),
             fps: Fps::film_24(),
-            playhead: Timecode::zero(),
+            playhead: RationalTime::from_frames(0, 24),
             sequence,
             media_pool,
             repaint_cb,
@@ -625,7 +625,7 @@ impl PlaybackEngine {
                     self.current_clip_v2 = None;
                     self.v2_frame_cache = None;
                     self.stop_all_audio();
-                    self.playhead = Timecode::zero();
+                    self.playhead = RationalTime::from_frames(0, self.fps.rate());
                     self.last_synth_frame_rendered = None;
                     self.state = PlaybackState::Stopped;
                     self.pre_seek_generation += 1;
@@ -4827,7 +4827,7 @@ impl PlaybackEngine {
 
                 self.fps = fps_from_float(container_fps);
                 self.duration = RationalTime::from_secs_f64(duration_secs, self.fps.rate());
-                self.playhead = Timecode::zero();
+                self.playhead = RationalTime::from_frames(0, self.fps.rate());
                 self.current_file = Some(path.clone());
                 self.current_clip_index = 0;
                 self.state = PlaybackState::Stopped;
