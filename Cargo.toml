@@ -11,6 +11,7 @@ members = [
     "crates/klipp-effects",
     "crates/klipp-nodes",
     "crates/klipp-title",
+    "crates/klipp-transitions",
     "crates/klipp-render",
     "crates/klipp-export",
     "crates/klipp-ui",
@@ -102,6 +103,7 @@ pollster = "0.4"
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
 klipp-timeline = { path = "crates/klipp-timeline" }
+klipp-transitions = { path = "crates/klipp-transitions" }
 klipp-media   = { path = "crates/klipp-media" }
 klipp-audio   = { path = "crates/klipp-audio" }
 klipp-color   = { path = "crates/klipp-color" }

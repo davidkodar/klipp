@@ -106,6 +106,8 @@ pub struct TransitionSnapshot {
     pub duration_frames: u64,
     pub clip_a_id: ClipId,
     pub clip_b_id: ClipId,
+    pub user_params: klipp_core::TransitionUserParams,
+    pub alignment: klipp_core::TransitionAlignment,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -709,7 +711,18 @@ fn snapshot_transition(t: &Transition, fps: f64) -> TransitionSnapshot {
         duration_frames: time_to_frame(&t.duration, fps).max(1),
         clip_a_id: t.clip_a_id,
         clip_b_id: t.clip_b_id,
+        user_params: t.user_params,
+        alignment: t.alignment,
     }
+}
+
+/// Test-only access to `snapshot_transition`.
+#[cfg(test)]
+pub fn snapshot_transition_for_test(
+    t: &klipp_timeline::Transition,
+    fps: f64,
+) -> TransitionSnapshot {
+    snapshot_transition(t, fps)
 }
 
 /// Convert a RationalTime to a frame number at the given fps.

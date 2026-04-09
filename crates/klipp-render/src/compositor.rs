@@ -4,7 +4,6 @@ use crate::snapshot::{
     ClipKindSnapshot, ClipSnapshot, SequenceSnapshot, TransitionSnapshot, VideoTrackSnapshot,
 };
 use klipp_core::ClipId;
-use klipp_timeline::TransitionKind;
 use klipp_title::TitleRenderer;
 use std::collections::HashMap;
 
@@ -156,14 +155,15 @@ impl FrameCompositor {
         // Calculate transition progress
         let progress = self.transition_progress(frame_num, transition, track);
 
-        // Render the transition
-        Ok(Some(render_transition(
+        // Render the transition using the shared CPU implementation
+        Ok(Some(klipp_transitions::render_transition_with_params(
             transition.kind,
             &from_frame,
             &to_frame,
             progress,
             width,
             height,
+            &transition.user_params,
         )))
     }
 
@@ -246,1390 +246,6 @@ fn apply_opacity(mut frame: Vec<u8>, opacity: f32) -> Vec<u8> {
     frame
 }
 
-/// CPU transition renderer — ported from klipp-engine/src/transition.rs.
-/// Renders a transition between two RGBA frames.
-fn render_transition(
-    kind: TransitionKind,
-    from: &[u8],
-    to: &[u8],
-    progress: f32,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let byte_count = (width * height * 4) as usize;
-    let mut output = vec![0u8; byte_count];
-    let p = progress.clamp(0.0, 1.0);
-
-    match kind {
-        TransitionKind::CrossDissolve => {
-            let inv = 1.0 - p;
-            for i in 0..byte_count {
-                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
-            }
-        }
-        TransitionKind::WipeLeft => {
-            let threshold = (p * width as f32) as u32;
-            wipe_horizontal(&mut output, from, to, width, height, threshold, true);
-        }
-        TransitionKind::WipeRight => {
-            let threshold = ((1.0 - p) * width as f32) as u32;
-            wipe_horizontal(&mut output, from, to, width, height, threshold, false);
-        }
-        TransitionKind::WipeUp => {
-            let threshold = (p * height as f32) as u32;
-            wipe_vertical(&mut output, from, to, width, height, threshold, true);
-        }
-        TransitionKind::WipeDown => {
-            let threshold = ((1.0 - p) * height as f32) as u32;
-            wipe_vertical(&mut output, from, to, width, height, threshold, false);
-        }
-        TransitionKind::DipToBlack => {
-            dip_transition(&mut output, from, to, p, 0);
-        }
-        TransitionKind::DipToWhite => {
-            dip_transition(&mut output, from, to, p, 255);
-        }
-        // Newer transitions: fallback to cross dissolve in export compositor
-        // (GPU pipeline handles these during playback; for export, the engine's
-        // transition renderer is used when available)
-        TransitionKind::PushLeft => {
-            let offset = (p * width as f32) as i32;
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    let src_x = x as i32 + offset;
-                    if src_x < width as i32 {
-                        let si = (y as i32 * width as i32 + src_x) as usize * 4;
-                        output[idx..idx + 4].copy_from_slice(&from[si..si + 4]);
-                    } else {
-                        let si = (y as i32 * width as i32 + (src_x - width as i32)) as usize * 4;
-                        output[idx..idx + 4].copy_from_slice(&to[si..si + 4]);
-                    }
-                }
-            }
-        }
-        TransitionKind::FilmDissolve => {
-            for i in (0..byte_count).step_by(4) {
-                for c in 0..3 {
-                    let f = from[i + c] as f32 / 255.0;
-                    let t = to[i + c] as f32 / 255.0;
-                    let blended = (f * f * (1.0 - p) + t * t * p).sqrt();
-                    output[i + c] = (blended * 255.0 + 0.5).min(255.0) as u8;
-                }
-                output[i + 3] = (from[i + 3] as f32 * (1.0 - p).sqrt() + to[i + 3] as f32 * p.sqrt() + 0.5) as u8;
-            }
-        }
-        TransitionKind::Flash => {
-            let white_i = if p < 0.3 { p / 0.3 } else if p < 0.5 { 1.0 } else if p < 0.7 { 1.0 - (p - 0.5) / 0.2 } else { 0.0 };
-            let blend_p = if p < 0.4 { 0.0 } else { ((p - 0.4) / 0.6).min(1.0) };
-            for i in (0..byte_count).step_by(4) {
-                for c in 0..3 {
-                    let base = from[i + c] as f32 * (1.0 - blend_p) + to[i + c] as f32 * blend_p;
-                    output[i + c] = (base * (1.0 - white_i) + 255.0 * white_i + 0.5).min(255.0) as u8;
-                }
-                output[i + 3] = if p < 0.4 { from[i + 3] } else { to[i + 3] };
-            }
-        }
-        TransitionKind::LightLeak => {
-            let leak = (p * (1.0 - p) * 4.0).powf(0.7);
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                let r = from[i] as f32 * inv + to[i] as f32 * p;
-                let g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
-                let b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
-                output[i] = (r + (255.0 - r) * leak * 0.7 + 0.5).min(255.0) as u8;
-                output[i + 1] = (g + (180.0 - g).max(0.0) * leak * 0.5 + 0.5).min(255.0) as u8;
-                output[i + 2] = (b + (60.0 - b).max(0.0) * leak * 0.3 + 0.5).min(255.0) as u8;
-                output[i + 3] = (from[i + 3] as f32 * inv + to[i + 3] as f32 * p + 0.5) as u8;
-            }
-        }
-        TransitionKind::LuminanceDissolve => {
-            // Bright pixels of `from` dissolve to `to` first, dark pixels last.
-            let softness = 0.15_f32;
-            for i in (0..byte_count).step_by(4) {
-                let r = from[i] as f32 / 255.0;
-                let g = from[i + 1] as f32 / 255.0;
-                let b = from[i + 2] as f32 / 255.0;
-                let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                let lo = p - softness;
-                let hi = p + softness;
-                let t = ((luma - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                let t = t * t * (3.0 - 2.0 * t);
-                output[i] = (from[i] as f32 * (1.0 - t) + to[i] as f32 * t + 0.5) as u8;
-                output[i + 1] = (from[i + 1] as f32 * (1.0 - t) + to[i + 1] as f32 * t + 0.5) as u8;
-                output[i + 2] = (from[i + 2] as f32 * (1.0 - t) + to[i + 2] as f32 * t + 0.5) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::CircleWipeIn | TransitionKind::CircleWipeOut => {
-            // Circle expanding/contracting from frame center (export uses default center).
-            let cx = 0.5 * width as f32;
-            let cy = 0.5 * height as f32;
-            let max_r = ((cx.max(width as f32 - cx)).powi(2)
-                + (cy.max(height as f32 - cy)).powi(2))
-                .sqrt()
-                .max(1.0);
-            let softness = 0.04_f32;
-            let is_in = matches!(kind, TransitionKind::CircleWipeIn);
-            let radius = if is_in {
-                p * (1.0 + 2.0 * softness) - softness
-            } else {
-                (1.0 - p) * (1.0 + 2.0 * softness) - softness
-            };
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let dist = (dx * dx + dy * dy).sqrt() / max_r;
-                    let lo = radius - softness;
-                    let hi = radius + softness;
-                    let t_raw = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = t_raw * t_raw * (3.0 - 2.0 * t_raw);
-                    let t = if is_in { 1.0 - s_val } else { s_val };
-                    for c in 0..3 {
-                        output[idx + c] =
-                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
-                                as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::ClockWipe => {
-            // Clockwise sweep from 12 o'clock around frame center (export uses defaults).
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let softness = 0.02_f32;
-            let two_pi = std::f32::consts::TAU;
-            let threshold = p * (1.0 + 2.0 * softness) - softness;
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let mut angle = dx.atan2(-dy);
-                    angle = ((angle % two_pi) + two_pi) % two_pi;
-                    let norm_angle = angle / two_pi;
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let t_raw = ((norm_angle - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = t_raw * t_raw * (3.0 - 2.0 * t_raw);
-                    let t = 1.0 - s_val;
-                    for c in 0..3 {
-                        output[idx + c] =
-                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
-                                as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::BarnDoorOpen | TransitionKind::BarnDoorClose => {
-            // Horizontal barn door split from frame center (export uses defaults).
-            let softness = 0.03_f32;
-            let cx = width as f32 * 0.5;
-            let is_open = matches!(kind, TransitionKind::BarnDoorOpen);
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    let dist = (x as f32 - cx).abs() / cx.max(1.0);
-                    let t = if is_open {
-                        let threshold = p * (1.0 + 2.0 * softness) - softness;
-                        let lo = threshold - softness;
-                        let hi = threshold + softness;
-                        let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                        1.0 - tr * tr * (3.0 - 2.0 * tr)
-                    } else {
-                        let threshold = (1.0 - p) * (1.0 + 2.0 * softness) - softness;
-                        let lo = threshold - softness;
-                        let hi = threshold + softness;
-                        let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                        tr * tr * (3.0 - 2.0 * tr)
-                    };
-                    for c in 0..3 {
-                        output[idx + c] =
-                            (from[idx + c] as f32 * (1.0 - t) + to[idx + c] as f32 * t + 0.5)
-                                as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::Pixelate => {
-            // Block size grows to 32 at midpoint (export uses default max block + from-only mode).
-            let max_block = 32_usize;
-            let triangle = 1.0 - (p * 2.0 - 1.0).abs();
-            let block = ((max_block as f32 * triangle) as usize).max(1);
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let bx = ((x / block) * block + block / 2).min(w - 1);
-                    let by = ((y / block) * block + block / 2).min(h - 1);
-                    let bi = (by * w + bx) * 4;
-                    if p < 0.5 {
-                        output[fi..fi + 4].copy_from_slice(&from[bi..bi + 4]);
-                    } else {
-                        let t = (p - 0.5) * 2.0;
-                        for c in 0..3 {
-                            output[fi + c] = (from[bi + c] as f32 * (1.0 - t)
-                                + to[fi + c] as f32 * t
-                                + 0.5) as u8;
-                        }
-                        output[fi + 3] = 255;
-                    }
-                }
-            }
-        }
-        TransitionKind::Ripple => {
-            // Water ripple export fallback (uses default amplitude/frequency/speed).
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let amplitude = 20.0_f32;
-            let frequency = 8.0_f32;
-            let speed = 1.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    let phase = dist * frequency * 0.1 - p * speed * 10.0;
-                    let ripple = phase.sin() * envelope;
-                    let (nx, ny) = if dist > 0.1 {
-                        (dx / dist, dy / dist)
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    let sx = (x as f32 + nx * ripple).clamp(0.0, w as f32 - 1.0) as usize;
-                    let sy = (y as f32 + ny * ripple).clamp(0.0, h as f32 - 1.0) as usize;
-                    let si = (sy * w + sx) * 4;
-                    for c in 0..3 {
-                        output[fi + c] = (from[si + c] as f32 * (1.0 - p)
-                            + to[fi + c] as f32 * p
-                            + 0.5) as u8;
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::PageTurn | TransitionKind::PageTurnReverse => {
-            // Page peel export (uses default shadow=0.6, right-to-left; Reverse flips).
-            let shadow_intensity = 0.6_f32;
-            let flip = matches!(kind, TransitionKind::PageTurnReverse);
-            let fold_x = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            let denom = (p * 0.3).max(0.01);
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let fx = if flip { w - 1 - x } else { x };
-                    let norm_x = fx as f32 / w as f32;
-                    if norm_x > fold_x {
-                        let shadow_dist = (norm_x - fold_x) / denom;
-                        let shadow = shadow_intensity * (-shadow_dist * 3.0).exp();
-                        let t = (1.0 - shadow).clamp(0.0, 1.0);
-                        for c in 0..3 {
-                            output[fi + c] = (to[fi + c] as f32 * t) as u8;
-                        }
-                    } else {
-                        let shadow_dist = (fold_x - norm_x) / denom;
-                        let shadow = shadow_intensity * 0.5 * (-shadow_dist * 2.0).exp();
-                        let t = (1.0 - shadow).clamp(0.0, 1.0);
-                        for c in 0..3 {
-                            output[fi + c] = (from[fi + c] as f32 * t) as u8;
-                        }
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::ChromaticAberration => {
-            // RGB channel split export (uses default 20px horizontal offset).
-            let max_offset = 20.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * max_offset;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let base_g = (from[fi + 1] as f32 * (1.0 - p)
-                        + to[fi + 1] as f32 * p
-                        + 0.5) as u8;
-                    let rx = (x as f32 - envelope).clamp(0.0, w as f32 - 1.0) as usize;
-                    let ri = (y * w + rx) * 4;
-                    let r_val = (from[ri] as f32 * (1.0 - p)
-                        + to[ri] as f32 * p
-                        + 0.5) as u8;
-                    let bx = (x as f32 + envelope).clamp(0.0, w as f32 - 1.0) as usize;
-                    let bi = (y * w + bx) * 4;
-                    let b_val = (from[bi + 2] as f32 * (1.0 - p)
-                        + to[bi + 2] as f32 * p
-                        + 0.5) as u8;
-                    output[fi] = r_val;
-                    output[fi + 1] = base_g;
-                    output[fi + 2] = b_val;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::FilmBurn => {
-            // Film Burn export (defaults: temp 0.8, speed 1.0, grain 0.4).
-            let temp = 0.8_f32;
-            let grain = 0.4_f32;
-            let burn_r: f32 = 1.0;
-            let burn_g: f32 = 1.0 - temp * 0.35;
-            let burn_b: f32 = 1.0 - temp * 0.75;
-            let shaped_p = p.powf(0.6).min(1.0);
-            let envelope = (shaped_p * std::f32::consts::PI).sin();
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7).sin() * 43758.545)
-                        .fract()
-                        .abs();
-                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3).sin() * 12345.678)
-                        .fract()
-                        .abs();
-                    let pixel_thresh = hash * 0.6 + 0.2;
-                    let burn_t = ((envelope - pixel_thresh) / 0.3).clamp(0.0, 1.0);
-                    let grain_val = (hash2 - 0.5) * grain * envelope;
-                    let base_r = (from[fi] as f32 * (1.0 - p) + to[fi] as f32 * p) / 255.0;
-                    let base_g =
-                        (from[fi + 1] as f32 * (1.0 - p) + to[fi + 1] as f32 * p) / 255.0;
-                    let base_b =
-                        (from[fi + 2] as f32 * (1.0 - p) + to[fi + 2] as f32 * p) / 255.0;
-                    let r = (base_r + (burn_r - base_r) * burn_t + grain_val).clamp(0.0, 1.0);
-                    let g = (base_g + (burn_g - base_g) * burn_t + grain_val).clamp(0.0, 1.0);
-                    let b = (base_b + (burn_b - base_b) * burn_t + grain_val).clamp(0.0, 1.0);
-                    output[fi] = (r * 255.0 + 0.5) as u8;
-                    output[fi + 1] = (g * 255.0 + 0.5) as u8;
-                    output[fi + 2] = (b * 255.0 + 0.5) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::StarWipe => {
-            // 5-point star export (defaults).
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let points = 5.0_f32;
-            let inner_ratio = 0.4_f32;
-            let softness = 0.03_f32;
-            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
-            let sector = std::f32::consts::PI / points;
-            let two_sector = 2.0 * sector;
-            let max_norm = 1.0 / inner_ratio;
-            let threshold = p * (max_norm + 2.0 * softness) - softness;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    let angle = dy.atan2(dx);
-                    let sector_angle = ((angle % two_sector) + two_sector) % two_sector;
-                    let offset = ((sector_angle - sector).abs() / sector).clamp(0.0, 1.0);
-                    let s_off = offset * offset * (3.0 - 2.0 * offset);
-                    let star_r_norm = inner_ratio + (1.0 - inner_ratio) * s_off;
-                    let norm_dist = dist / (max_r * star_r_norm.max(0.01));
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((norm_dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let t = 1.0 - tr * tr * (3.0 - 2.0 * tr);
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::SplitWipeHorizontal | TransitionKind::SplitWipeVertical => {
-            // Center-outward reveal.
-            let softness = 0.03_f32;
-            let horizontal = matches!(kind, TransitionKind::SplitWipeHorizontal);
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let threshold = p * (1.0 + 2.0 * softness) - softness;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let dist = if horizontal {
-                        (x as f32 - cx).abs() / cx.max(1.0)
-                    } else {
-                        (y as f32 - cy).abs() / cy.max(1.0)
-                    };
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = tr * tr * (3.0 - 2.0 * tr);
-                    let t = 1.0 - s_val;
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::VenetianBlindHorizontal | TransitionKind::VenetianBlindVertical => {
-            // 8 parallel strips wipe simultaneously (default blind count).
-            let softness = 0.04_f32;
-            let blinds = 8.0_f32;
-            let horizontal = matches!(kind, TransitionKind::VenetianBlindHorizontal);
-            let threshold = p * (1.0 + 2.0 * softness) - softness;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let strip_pos = if horizontal {
-                        (y as f32 / height as f32 * blinds).fract()
-                    } else {
-                        (x as f32 / width as f32 * blinds).fract()
-                    };
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((strip_pos - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = tr * tr * (3.0 - 2.0 * tr);
-                    let t = 1.0 - s_val;
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::CheckerboardWipe => {
-            // Alternating squares wipe in opposite directions (default 8x8 grid).
-            let softness = 0.04_f32;
-            let grid = 8.0_f32;
-            let threshold = p * (1.0 + 2.0 * softness) - softness;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let fx = x as f32 / width as f32 * grid;
-                    let fy = y as f32 / height as f32 * grid;
-                    let col = fx as usize;
-                    let row = fy as usize;
-                    let local_x = fx.fract();
-                    let is_even = (col + row) % 2 == 0;
-                    let local_pos = if is_even { local_x } else { 1.0 - local_x };
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((local_pos - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = tr * tr * (3.0 - 2.0 * tr);
-                    let t = 1.0 - s_val;
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::DiagonalWipeTLBR | TransitionKind::DiagonalWipeTRBL => {
-            let softness = 0.03_f32;
-            let tlbr = matches!(kind, TransitionKind::DiagonalWipeTLBR);
-            let threshold = p * (1.0 + 2.0 * softness) - softness;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let nx = x as f32 / width as f32;
-                    let ny = y as f32 / height as f32;
-                    let diag = if tlbr {
-                        (nx + ny) * 0.5
-                    } else {
-                        ((1.0 - nx) + ny) * 0.5
-                    };
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((diag - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = tr * tr * (3.0 - 2.0 * tr);
-                    let t = 1.0 - s_val;
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::BoxWipeIn | TransitionKind::BoxWipeOut => {
-            let softness = 0.03_f32;
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let is_in = matches!(kind, TransitionKind::BoxWipeIn);
-            let threshold = if is_in {
-                p * (1.0 + 2.0 * softness) - softness
-            } else {
-                (1.0 - p) * (1.0 + 2.0 * softness) - softness
-            };
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * 4;
-                    let dx = (x as f32 - cx).abs() / cx.max(1.0);
-                    let dy = (y as f32 - cy).abs() / cy.max(1.0);
-                    let dist = dx.max(dy);
-                    let lo = threshold - softness;
-                    let hi = threshold + softness;
-                    let tr = ((dist - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-                    let s_val = tr * tr * (3.0 - 2.0 * tr);
-                    let t = if is_in { 1.0 - s_val } else { s_val };
-                    for c in 0..3 {
-                        output[idx + c] = (from[idx + c] as f32 * (1.0 - t)
-                            + to[idx + c] as f32 * t
-                            + 0.5) as u8;
-                    }
-                    output[idx + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::SlideLeft
-        | TransitionKind::SlideRight
-        | TransitionKind::SlideUp
-        | TransitionKind::SlideDown
-        | TransitionKind::CoverLeft
-        | TransitionKind::CoverRight
-        | TransitionKind::UncoverLeft
-        | TransitionKind::UncoverRight
-        | TransitionKind::SqueezeH
-        | TransitionKind::SqueezeV => {
-            // Squeeze handled separately below; slide/cover/uncover inline here.
-            if matches!(kind, TransitionKind::SqueezeH | TransitionKind::SqueezeV) {
-                let w = width as usize;
-                let h = height as usize;
-                let is_h = matches!(kind, TransitionKind::SqueezeH);
-                let dim = if is_h { w } else { h } as f32;
-                let half = dim * 0.5;
-                let one_px = 1.0 / dim;
-                for y in 0..h {
-                    for x in 0..w {
-                        let fi = (y * w + x) * 4;
-                        let pos = if is_h { x as f32 } else { y as f32 };
-                        if p <= 0.5 {
-                            let scale = 1.0 - 2.0 * p;
-                            if scale < one_px {
-                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
-                            } else {
-                                let vis_lo = half - half * scale;
-                                let vis_hi = half + half * scale;
-                                if pos < vis_lo || pos >= vis_hi {
-                                    output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
-                                } else {
-                                    let src = ((pos - half) / scale + half)
-                                        .clamp(0.0, dim - 1.0)
-                                        as usize;
-                                    let si = if is_h {
-                                        (y * w + src) * 4
-                                    } else {
-                                        (src * w + x) * 4
-                                    };
-                                    output[fi..fi + 4].copy_from_slice(&from[si..si + 4]);
-                                }
-                            }
-                        } else {
-                            let scale = 2.0 * p - 1.0;
-                            if scale < one_px {
-                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
-                            } else {
-                                let vis_lo = half - half * scale;
-                                let vis_hi = half + half * scale;
-                                if pos < vis_lo || pos >= vis_hi {
-                                    output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
-                                } else {
-                                    let src = ((pos - half) / scale + half)
-                                        .clamp(0.0, dim - 1.0)
-                                        as usize;
-                                    let si = if is_h {
-                                        (y * w + src) * 4
-                                    } else {
-                                        (src * w + x) * 4
-                                    };
-                                    output[fi..fi + 4].copy_from_slice(&to[si..si + 4]);
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-            let w = width as usize;
-            let h = height as usize;
-            let offset_w = ((p * width as f32) as usize).min(w);
-            let offset_h = ((p * height as f32) as usize).min(h);
-            let wi = w as isize;
-            let hi = h as isize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let (use_to, sx, sy): (bool, usize, usize) = match kind {
-                        TransitionKind::SlideLeft => {
-                            let to_x = x as isize + wi - offset_w as isize;
-                            if to_x < wi {
-                                (true, to_x.max(0) as usize, y)
-                            } else {
-                                let fx = (x as isize - offset_w as isize).clamp(0, wi - 1)
-                                    as usize;
-                                (false, fx, y)
-                            }
-                        }
-                        TransitionKind::SlideRight => {
-                            let to_x = x as isize - wi + offset_w as isize;
-                            if to_x >= 0 {
-                                (true, (to_x as usize).min(w - 1), y)
-                            } else {
-                                (false, (x + offset_w).min(w - 1), y)
-                            }
-                        }
-                        TransitionKind::SlideUp => {
-                            let to_y = y as isize + hi - offset_h as isize;
-                            if to_y < hi {
-                                (true, x, to_y.max(0) as usize)
-                            } else {
-                                let fy = (y as isize - offset_h as isize).clamp(0, hi - 1)
-                                    as usize;
-                                (false, x, fy)
-                            }
-                        }
-                        TransitionKind::SlideDown => {
-                            let to_y = y as isize - hi + offset_h as isize;
-                            if to_y >= 0 {
-                                (true, x, (to_y as usize).min(h - 1))
-                            } else {
-                                (false, x, (y + offset_h).min(h - 1))
-                            }
-                        }
-                        TransitionKind::CoverLeft => {
-                            let to_x = x as isize + wi - offset_w as isize;
-                            if to_x < wi {
-                                (true, to_x.max(0) as usize, y)
-                            } else {
-                                (false, x, y)
-                            }
-                        }
-                        TransitionKind::CoverRight => {
-                            let to_x = x as isize - wi + offset_w as isize;
-                            if to_x >= 0 {
-                                (true, (to_x as usize).min(w - 1), y)
-                            } else {
-                                (false, x, y)
-                            }
-                        }
-                        TransitionKind::UncoverLeft => {
-                            let from_x = x + offset_w;
-                            if from_x < w {
-                                (false, from_x, y)
-                            } else {
-                                (true, x, y)
-                            }
-                        }
-                        TransitionKind::UncoverRight => {
-                            let from_x = x as isize - offset_w as isize;
-                            if from_x >= 0 {
-                                (false, from_x as usize, y)
-                            } else {
-                                (true, x, y)
-                            }
-                        }
-                        _ => unreachable!(),
-                    };
-                    let si = (sy * w + sx) * 4;
-                    let src = if use_to { to } else { from };
-                    output[fi..fi + 4].copy_from_slice(&src[si..si + 4]);
-                }
-            }
-            } // end else (slide/cover/uncover)
-        }
-        TransitionKind::ZoomInDissolve
-        | TransitionKind::ZoomOutDissolve
-        | TransitionKind::CrossZoom => {
-            // Zoom family export (default zoom=1.3/1.4, CrossZoom with easing).
-            let zoom_amount = 1.3_f32;
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let eased = if matches!(kind, TransitionKind::CrossZoom) {
-                p * p * (3.0 - 2.0 * p)
-            } else {
-                p
-            };
-            let inv_e = 1.0 - eased;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let (fsx, fsy, tsx, tsy) = match kind {
-                        TransitionKind::ZoomInDissolve => {
-                            let scale = 1.0 + (zoom_amount - 1.0) * eased;
-                            let fsx = (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
-                            let fsy = (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
-                            (fsx, fsy, x as f32, y as f32)
-                        }
-                        TransitionKind::ZoomOutDissolve => {
-                            let scale = zoom_amount - (zoom_amount - 1.0) * eased;
-                            let fsx = (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
-                            let fsy = (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
-                            (fsx, fsy, x as f32, y as f32)
-                        }
-                        _ => {
-                            let scale_a = 1.0 + (zoom_amount - 1.0) * eased;
-                            let scale_b = zoom_amount - (zoom_amount - 1.0) * eased;
-                            let fsx =
-                                (dx / scale_a + cx).clamp(0.0, width as f32 - 1.0);
-                            let fsy =
-                                (dy / scale_a + cy).clamp(0.0, height as f32 - 1.0);
-                            let tsx =
-                                (dx / scale_b + cx).clamp(0.0, width as f32 - 1.0);
-                            let tsy =
-                                (dy / scale_b + cy).clamp(0.0, height as f32 - 1.0);
-                            (fsx, fsy, tsx, tsy)
-                        }
-                    };
-                    let fsi = (fsy as usize * w + fsx as usize) * 4;
-                    let tsi = (tsy as usize * w + tsx as usize) * 4;
-                    for c in 0..3 {
-                        output[fi + c] = (from[fsi + c] as f32 * inv_e
-                            + to[tsi + c] as f32 * eased
-                            + 0.5) as u8;
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::BokehDissolve => {
-            // Bokeh dissolve export (default size=1, brightness=0.6).
-            let envelope = (p * std::f32::consts::PI).sin();
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
-                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
-                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
-                    let luma =
-                        (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
-                    let bloom_val = luma * envelope * 0.6 * 2.0 * 255.0;
-                    let screen_r =
-                        255.0 - (255.0 - base_r) * (255.0 - bloom_val) / 255.0;
-                    let screen_g =
-                        255.0 - (255.0 - base_g) * (255.0 - bloom_val) / 255.0;
-                    let screen_b =
-                        255.0 - (255.0 - base_b) * (255.0 - bloom_val) / 255.0;
-                    let dx = (x as f32 - cx) / cx.max(1.0);
-                    let dy = (y as f32 - cy) / cy.max(1.0);
-                    let radial = (dx * dx + dy * dy).sqrt();
-                    let fringe = radial * envelope * 8.0;
-                    output[fi] = (screen_r + fringe).clamp(0.0, 255.0) as u8;
-                    output[fi + 1] = screen_g.clamp(0.0, 255.0) as u8;
-                    output[fi + 2] = (screen_b - fringe).clamp(0.0, 255.0) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::AnamorphicFlare => {
-            // Anamorphic flare export (default cyan-blue, intensity=1, streak=0.15).
-            let flare_r = 0.4 * 255.0_f32;
-            let flare_g = 0.7 * 255.0;
-            let flare_b = 1.0 * 255.0;
-            let envelope = (p * std::f32::consts::PI).sin();
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
-                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
-                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
-                    let ny = (y as f32 / height as f32 - 0.5).abs() * 2.0;
-                    let streak_t = (1.0 - ny / 0.15_f32.max(0.001)).max(0.0);
-                    let streak_t2 = streak_t * streak_t;
-                    let shimmer = 0.7
-                        + 0.3
-                            * (x as f32 / width as f32 * std::f32::consts::PI * 8.0).sin();
-                    let fs = streak_t2 * envelope * shimmer;
-                    output[fi] = (base_r + flare_r * fs).clamp(0.0, 255.0) as u8;
-                    output[fi + 1] = (base_g + flare_g * fs).clamp(0.0, 255.0) as u8;
-                    output[fi + 2] = (base_b + flare_b * fs).clamp(0.0, 255.0) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::DreamSequence => {
-            // Dream sequence export (default bloom=1, warmth=0.8).
-            let envelope = (p * std::f32::consts::PI).sin();
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
-                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
-                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
-                let luma =
-                    (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
-                let bloom = luma * envelope * 60.0;
-                let warm_r = 0.8 * envelope * 30.0;
-                let warm_g = 0.8 * envelope * 15.0;
-                let warm_b = -0.8 * envelope * 10.0;
-                let lift = envelope * 15.0;
-                output[i] = (base_r + bloom + warm_r + lift).clamp(0.0, 255.0) as u8;
-                output[i + 1] =
-                    (base_g + bloom + warm_g + lift).clamp(0.0, 255.0) as u8;
-                output[i + 2] =
-                    (base_b + bloom + warm_b + lift).clamp(0.0, 255.0) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::ProjectorFlicker => {
-            let envelope = (p * std::f32::consts::PI).sin();
-            let frame_hash = ((p * 127.1).sin() * 43758.545).fract().abs();
-            let frame_hash2 = ((p * 311.7).sin() * 12345.678).fract().abs();
-            let brightness = 1.0 + (frame_hash - 0.5) * envelope * 0.6;
-            let weave = ((frame_hash2 - 0.5) * 8.0 * envelope) as isize;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let sx = (x as isize + weave).clamp(0, w as isize - 1) as usize;
-                    let si = (y * w + sx) * 4;
-                    for c in 0..3 {
-                        output[fi + c] = ((from[si + c] as f32 * inv
-                            + to[si + c] as f32 * p)
-                            * brightness)
-                            .clamp(0.0, 255.0) as u8;
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::Halation => {
-            // Simplified halation export — additive cross-dissolve (no blur kernel).
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
-                output[i + 1] =
-                    (from[i + 1] as f32 * inv + to[i + 1] as f32 * p + 0.5) as u8;
-                output[i + 2] =
-                    (from[i + 2] as f32 * inv + to[i + 2] as f32 * p + 0.5) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::GlitchRGBSplit => {
-            let intensity = 1.0_f32;
-            let block_size = 8_usize;
-            let envelope = (p * std::f32::consts::PI).sin() * intensity;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let bx = x / block_size.max(1);
-                    let by = y / block_size.max(1);
-                    let hash_r = ((bx as f32 * 127.1 + by as f32 * 311.7 + p * 999.9)
-                        .sin()
-                        * 43758.545)
-                        .fract()
-                        .abs();
-                    let hash_g = ((bx as f32 * 269.5 + by as f32 * 183.3 + p * 543.2)
-                        .sin()
-                        * 12345.678)
-                        .fract()
-                        .abs();
-                    let hash_b = ((bx as f32 * 419.2 + by as f32 * 371.9 + p * 777.3)
-                        .sin()
-                        * 98765.432)
-                        .fract()
-                        .abs();
-                    let r_shift = ((hash_r - 0.5) * envelope * 80.0) as isize;
-                    let g_shift = ((hash_g - 0.5) * envelope * 60.0) as isize;
-                    let b_shift = ((hash_b - 0.5) * envelope * 80.0) as isize;
-                    let rx = (x as isize + r_shift).clamp(0, w as isize - 1) as usize;
-                    let gx = (x as isize + g_shift).clamp(0, w as isize - 1) as usize;
-                    let bxx = (x as isize + b_shift).clamp(0, w as isize - 1) as usize;
-                    let ri = (y * w + rx) * 4;
-                    let gi = (y * w + gx) * 4;
-                    let bi = (y * w + bxx) * 4;
-                    let blackout: f32 =
-                        if hash_r < envelope * 0.15 { 0.0 } else { 1.0 };
-                    output[fi] =
-                        ((from[ri] as f32 * inv + to[ri] as f32 * p) * blackout)
-                            .clamp(0.0, 255.0) as u8;
-                    output[fi + 1] =
-                        ((from[gi + 1] as f32 * inv + to[gi + 1] as f32 * p) * blackout)
-                            .clamp(0.0, 255.0) as u8;
-                    output[fi + 2] =
-                        ((from[bi + 2] as f32 * inv + to[bi + 2] as f32 * p) * blackout)
-                            .clamp(0.0, 255.0) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::StaticTV => {
-            let intensity = 1.0_f32;
-            let line_h = 2_usize;
-            let envelope = (p * std::f32::consts::PI).sin() * intensity;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7 + p * 999.9).sin()
-                        * 43758.545)
-                        .fract()
-                        .abs();
-                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3 + p * 543.2).sin()
-                        * 12345.678)
-                        .fract()
-                        .abs();
-                    let scan_line: f32 =
-                        if (y / line_h.max(1)) % 2 == 0 { 1.0 } else { 0.75 };
-                    let static_val = hash * 255.0 * envelope * scan_line;
-                    let band = y / line_h.max(1);
-                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
-                        .fract()
-                        .abs();
-                    let shift = ((band_hash - 0.5) * envelope * 20.0) as isize;
-                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
-                    let si = (y * w + sx) * 4;
-                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
-                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
-                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
-                    let static_mix = envelope * hash2 * 0.8;
-                    output[fi] =
-                        (base_r + (static_val - base_r) * static_mix).clamp(0.0, 255.0) as u8;
-                    output[fi + 1] =
-                        (base_g + (static_val - base_g) * static_mix).clamp(0.0, 255.0) as u8;
-                    output[fi + 2] =
-                        (base_b + (static_val - base_b) * static_mix).clamp(0.0, 255.0) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::VHSTracking => {
-            let intensity = 1.0_f32;
-            let band_count = 6.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * intensity;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let band = (y as f32 / height as f32 * band_count) as usize;
-                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
-                        .fract()
-                        .abs();
-                    let band_hash2 = ((band as f32 * 269.5 + p * 183.3).sin() * 12345.678)
-                        .fract()
-                        .abs();
-                    let shift = ((band_hash - 0.5) * envelope * 40.0) as isize;
-                    let cshift = ((band_hash2 - 0.5) * envelope * 15.0) as isize;
-                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
-                    let csx = (x as isize + cshift).clamp(0, w as isize - 1) as usize;
-                    let si = (y * w + sx) * 4;
-                    let csi = (y * w + csx) * 4;
-                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
-                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
-                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
-                    let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
-                    let chr = from[csi] as f32 * inv + to[csi] as f32 * p;
-                    let chrb = from[csi + 2] as f32 * inv + to[csi + 2] as f32 * p;
-                    let brightness = 1.0 - band_hash * envelope * 0.4;
-                    let vhs_r = base_r + (chr - base_r) * envelope * 0.5;
-                    let vhs_g = base_g + (luma - base_g) * envelope * 0.5;
-                    let vhs_b = base_b + (chrb - base_b) * envelope * 0.5;
-                    output[fi] = (vhs_r * brightness).clamp(0.0, 255.0) as u8;
-                    output[fi + 1] = (vhs_g * brightness).clamp(0.0, 255.0) as u8;
-                    output[fi + 2] = (vhs_b * brightness).clamp(0.0, 255.0) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::Swirl => {
-            let cx = width as f32 * 0.5;
-            let cy = height as f32 * 0.5;
-            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
-            let max_angle = 90.0_f32 * std::f32::consts::PI / 180.0;
-            let falloff = 1.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin();
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    let norm_dist = dist / max_r;
-                    let swirl_angle = max_angle * envelope * (-norm_dist * falloff).exp();
-                    let cos_a = swirl_angle.cos();
-                    let sin_a = swirl_angle.sin();
-                    let sx = (cos_a * dx - sin_a * dy + cx)
-                        .clamp(0.0, width as f32 - 1.0) as usize;
-                    let sy = (sin_a * dx + cos_a * dy + cy)
-                        .clamp(0.0, height as f32 - 1.0) as usize;
-                    let si = (sy * w + sx) * 4;
-                    for c in 0..3 {
-                        output[fi + c] =
-                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::WaveDistortion => {
-            let amplitude = 20.0_f32;
-            let frequency = 4.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
-            let two_pi = std::f32::consts::TAU;
-            let inv = 1.0 - p;
-            let w = width as usize;
-            let h = height as usize;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let off_x =
-                        (y as f32 / height as f32 * frequency * two_pi).sin() * envelope;
-                    let sx = (x as f32 + off_x).clamp(0.0, width as f32 - 1.0) as usize;
-                    let si = (y * w + sx) * 4;
-                    for c in 0..3 {
-                        output[fi + c] =
-                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
-                    }
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::ColorizeFlash => {
-            // Colorize flash export (default cyan, intensity=1, peak=0.5).
-            let flash_r = 0.0_f32;
-            let flash_g = 0.8 * 255.0;
-            let flash_b = 1.0 * 255.0;
-            let peak = 0.5_f32;
-            let ramp_up = peak * 0.6;
-            let ramp_down = peak + (1.0 - peak) * 0.4;
-            let flash_t = if p < ramp_up {
-                p / ramp_up.max(0.001)
-            } else if p < peak {
-                1.0
-            } else if p < ramp_down {
-                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
-            } else {
-                0.0
-            };
-            let dissolve_start = peak * 0.8;
-            let dissolve_t =
-                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
-            let inv_d = 1.0 - dissolve_t;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
-                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
-                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
-                output[i] =
-                    (base_r + (flash_r - base_r) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 1] =
-                    (base_g + (flash_g - base_g) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 2] =
-                    (base_b + (flash_b - base_b) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::HueRotate => {
-            // Hue rotate export (default 1 rotation).
-            let hue_shift = (p * std::f32::consts::PI).sin() * 360.0;
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = (from[i] as f32 * inv + to[i] as f32 * p) / 255.0;
-                let base_g = (from[i + 1] as f32 * inv + to[i + 1] as f32 * p) / 255.0;
-                let base_b = (from[i + 2] as f32 * inv + to[i + 2] as f32 * p) / 255.0;
-                let cmax = base_r.max(base_g).max(base_b);
-                let cmin = base_r.min(base_g).min(base_b);
-                let delta = cmax - cmin;
-                let h = if delta < 0.001 {
-                    0.0
-                } else if (cmax - base_r).abs() < 0.001 {
-                    60.0 * (((base_g - base_b) / delta) % 6.0)
-                } else if (cmax - base_g).abs() < 0.001 {
-                    60.0 * ((base_b - base_r) / delta + 2.0)
-                } else {
-                    60.0 * ((base_r - base_g) / delta + 4.0)
-                };
-                let s = if cmax < 0.001 { 0.0 } else { delta / cmax };
-                let v = cmax;
-                let h2 = ((h + hue_shift) % 360.0 + 360.0) % 360.0;
-                let c = v * s;
-                let x2 = c * (1.0 - ((h2 / 60.0) % 2.0 - 1.0).abs());
-                let m = v - c;
-                let hi = (h2 / 60.0) as u32 % 6;
-                let (rr, gg, bb) = match hi {
-                    0 => (c, x2, 0.0),
-                    1 => (x2, c, 0.0),
-                    2 => (0.0, c, x2),
-                    3 => (0.0, x2, c),
-                    4 => (x2, 0.0, c),
-                    _ => (c, 0.0, x2),
-                };
-                output[i] = ((rr + m) * 255.0).clamp(0.0, 255.0) as u8;
-                output[i + 1] = ((gg + m) * 255.0).clamp(0.0, 255.0) as u8;
-                output[i + 2] = ((bb + m) * 255.0).clamp(0.0, 255.0) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::NegativeFlash => {
-            // Negative flash export with defaults (intensity=1, peak=0.5).
-            let peak = 0.5_f32;
-            let ramp_up = peak * 0.6;
-            let ramp_down = peak + (1.0 - peak) * 0.4;
-            let flash_t = if p < ramp_up {
-                p / ramp_up.max(0.001)
-            } else if p < peak {
-                1.0
-            } else if p < ramp_down {
-                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
-            } else {
-                0.0
-            };
-            let dissolve_start = peak * 0.8;
-            let dissolve_t =
-                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
-            let inv_d = 1.0 - dissolve_t;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
-                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
-                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
-                output[i] =
-                    (base_r + (255.0 - 2.0 * base_r) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 1] =
-                    (base_g + (255.0 - 2.0 * base_g) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 2] =
-                    (base_b + (255.0 - 2.0 * base_b) * flash_t).clamp(0.0, 255.0) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::Sepia => {
-            let envelope = (p * std::f32::consts::PI).sin();
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
-                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
-                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
-                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
-                let sepia_r = (luma * 1.2).clamp(0.0, 255.0);
-                let sepia_g = luma.clamp(0.0, 255.0);
-                let sepia_b = (luma * 0.75).clamp(0.0, 255.0);
-                output[i] = (base_r + (sepia_r - base_r) * envelope + 0.5) as u8;
-                output[i + 1] = (base_g + (sepia_g - base_g) * envelope + 0.5) as u8;
-                output[i + 2] = (base_b + (sepia_b - base_b) * envelope + 0.5) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::GlitchDissolve => {
-            // Glitch export: simplified block-shift + noise with default params.
-            let intensity = 1.0_f32;
-            let block_size = 16_usize;
-            let envelope = (p * std::f32::consts::PI).sin() * intensity;
-            let w = width as usize;
-            let h = height as usize;
-            let inv = 1.0 - p;
-            for y in 0..h {
-                for x in 0..w {
-                    let fi = (y * w + x) * 4;
-                    let block_row = y / block_size.max(1);
-                    let hash = ((block_row as f32 * 127.1 + p * 311.7).sin() * 43758.545)
-                        .fract()
-                        .abs();
-                    let hash2 = ((block_row as f32 * 269.5 + p * 183.3).sin() * 12345.678)
-                        .fract()
-                        .abs();
-                    let shift = ((hash - 0.5) * envelope * 40.0) as isize;
-                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
-                    let r_sx = (x as isize + shift / 2).clamp(0, w as isize - 1) as usize;
-                    let b_sx = (x as isize - shift / 2).clamp(0, w as isize - 1) as usize;
-                    let si = (y * w + sx) * 4;
-                    let r_si = (y * w + r_sx) * 4;
-                    let b_si = (y * w + b_sx) * 4;
-                    let noise = ((hash2 - 0.5) * envelope * 60.0) as i16;
-                    output[fi] = ((from[r_si] as f32 * inv + to[r_si] as f32 * p) as i16
-                        + noise)
-                        .clamp(0, 255) as u8;
-                    output[fi + 1] = ((from[si + 1] as f32 * inv + to[si + 1] as f32 * p)
-                        as i16
-                        + noise / 2)
-                        .clamp(0, 255) as u8;
-                    output[fi + 2] = ((from[b_si + 2] as f32 * inv + to[b_si + 2] as f32 * p)
-                        as i16
-                        + noise)
-                        .clamp(0, 255) as u8;
-                    output[fi + 3] = 255;
-                }
-            }
-        }
-        TransitionKind::Desaturate => {
-            let depth = 1.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * depth;
-            let inv = 1.0 - p;
-            for i in (0..byte_count).step_by(4) {
-                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
-                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
-                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
-                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
-                output[i] = (base_r + (luma - base_r) * envelope + 0.5) as u8;
-                output[i + 1] = (base_g + (luma - base_g) * envelope + 0.5) as u8;
-                output[i + 2] = (base_b + (luma - base_b) * envelope + 0.5) as u8;
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::AdditiveDissolve => {
-            let intensity = 1.0_f32;
-            let envelope = (p * std::f32::consts::PI).sin() * intensity;
-            let add = envelope * 0.5;
-            for i in (0..byte_count).step_by(4) {
-                for c in 0..3 {
-                    let base = from[i + c] as f32 * (1.0 - p) + to[i + c] as f32 * p;
-                    output[i + c] =
-                        ((base / 255.0 + add).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                }
-                output[i + 3] = 255;
-            }
-        }
-        TransitionKind::FadeToColor => {
-            // Default: fade to black (color=[0,0,0]).
-            let mid_start = 0.5_f32;
-            let mid_end = 0.5_f32;
-            for i in (0..byte_count).step_by(4) {
-                if p <= mid_start {
-                    let t = p / mid_start.max(0.001);
-                    for c in 0..3 {
-                        output[i + c] = (from[i + c] as f32 * (1.0 - t) + 0.5) as u8;
-                    }
-                } else if p >= mid_end {
-                    let t = (p - mid_end) / (1.0 - mid_end).max(0.001);
-                    for c in 0..3 {
-                        output[i + c] = (to[i + c] as f32 * t + 0.5) as u8;
-                    }
-                } else {
-                    output[i] = 0;
-                    output[i + 1] = 0;
-                    output[i + 2] = 0;
-                }
-                output[i + 3] = 255;
-            }
-        }
-        // BlurDissolve and Spin are complex — fallback to cross dissolve in export
-        TransitionKind::BlurDissolve | TransitionKind::Spin => {
-            let inv = 1.0 - p;
-            for i in 0..byte_count {
-                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
-            }
-        }
-    }
-
-    output
-}
-
-fn wipe_horizontal(
-    output: &mut [u8],
-    from: &[u8],
-    to: &[u8],
-    width: u32,
-    height: u32,
-    threshold: u32,
-    to_is_before: bool,
-) {
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y * width + x) as usize * 4;
-            let use_to = if to_is_before {
-                x < threshold
-            } else {
-                x >= threshold
-            };
-            let src = if use_to { to } else { from };
-            output[idx..idx + 4].copy_from_slice(&src[idx..idx + 4]);
-        }
-    }
-}
-
-fn wipe_vertical(
-    output: &mut [u8],
-    from: &[u8],
-    to: &[u8],
-    width: u32,
-    height: u32,
-    threshold: u32,
-    to_is_before: bool,
-) {
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y * width + x) as usize * 4;
-            let use_to = if to_is_before {
-                y < threshold
-            } else {
-                y >= threshold
-            };
-            let src = if use_to { to } else { from };
-            output[idx..idx + 4].copy_from_slice(&src[idx..idx + 4]);
-        }
-    }
-}
-
-fn dip_transition(output: &mut [u8], from: &[u8], to: &[u8], p: f32, dip_value: u8) {
-    let dv = dip_value as f32;
-    if p < 0.5 {
-        let t = p * 2.0;
-        let inv = 1.0 - t;
-        for i in (0..output.len()).step_by(4) {
-            output[i] = (from[i] as f32 * inv + dv * t + 0.5) as u8;
-            output[i + 1] = (from[i + 1] as f32 * inv + dv * t + 0.5) as u8;
-            output[i + 2] = (from[i + 2] as f32 * inv + dv * t + 0.5) as u8;
-            output[i + 3] = from[i + 3];
-        }
-    } else {
-        let t = (p - 0.5) * 2.0;
-        let inv = 1.0 - t;
-        for i in (0..output.len()).step_by(4) {
-            output[i] = (dv * inv + to[i] as f32 * t + 0.5) as u8;
-            output[i + 1] = (dv * inv + to[i + 1] as f32 * t + 0.5) as u8;
-            output[i + 2] = (dv * inv + to[i + 2] as f32 * t + 0.5) as u8;
-            output[i + 3] = to[i + 3];
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
@@ -1676,11 +292,30 @@ mod tests {
         assert_eq!(result[1], 0);
     }
 
+    fn render_transition_default(
+        kind: klipp_timeline::TransitionKind,
+        from: &[u8],
+        to: &[u8],
+        progress: f32,
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
+        let params = klipp_core::TransitionUserParams::default();
+        klipp_transitions::render_transition_with_params(kind, from, to, progress, w, h, &params)
+    }
+
     #[test]
     fn cross_dissolve_midpoint() {
         let from = solid_frame(200, 0, 0, 255, 4, 4);
         let to = solid_frame(0, 0, 200, 255, 4, 4);
-        let result = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.5, 4, 4);
+        let result = render_transition_default(
+            klipp_timeline::TransitionKind::CrossDissolve,
+            &from,
+            &to,
+            0.5,
+            4,
+            4,
+        );
         assert!((result[0] as i32 - 100).abs() <= 1);
         assert!((result[2] as i32 - 100).abs() <= 1);
     }
@@ -1690,11 +325,25 @@ mod tests {
         let from = solid_frame(255, 0, 0, 255, 2, 2);
         let to = solid_frame(0, 0, 255, 255, 2, 2);
 
-        let at_zero = render_transition(TransitionKind::CrossDissolve, &from, &to, 0.0, 2, 2);
+        let at_zero = render_transition_default(
+            klipp_timeline::TransitionKind::CrossDissolve,
+            &from,
+            &to,
+            0.0,
+            2,
+            2,
+        );
         assert_eq!(at_zero[0], 255);
         assert_eq!(at_zero[2], 0);
 
-        let at_one = render_transition(TransitionKind::CrossDissolve, &from, &to, 1.0, 2, 2);
+        let at_one = render_transition_default(
+            klipp_timeline::TransitionKind::CrossDissolve,
+            &from,
+            &to,
+            1.0,
+            2,
+            2,
+        );
         assert_eq!(at_one[0], 0);
         assert_eq!(at_one[2], 255);
     }
@@ -1703,12 +352,18 @@ mod tests {
     fn wipe_left_halfway() {
         let from = solid_frame(255, 0, 0, 255, 10, 1);
         let to = solid_frame(0, 255, 0, 255, 10, 1);
-        let result = render_transition(TransitionKind::WipeLeft, &from, &to, 0.5, 10, 1);
-        // First 5 pixels: to (green), last 5: from (red)
-        assert_eq!(result[0], 0); // pixel 0 green
-        assert_eq!(result[1], 255);
-        assert_eq!(result[24], 255); // pixel 6 red
-        assert_eq!(result[25], 0);
+        let result = render_transition_default(
+            klipp_timeline::TransitionKind::WipeLeft,
+            &from,
+            &to,
+            0.5,
+            10,
+            1,
+        );
+        // With default feather=0, smoothstep gives near-hard edge
+        // Pixel 0 should be mostly `to` (green), pixel 6 mostly `from` (red)
+        assert!(result[1] > 200, "pixel 0 should be mostly green, got G={}", result[1]);
+        assert!(result[24] > 200, "pixel 6 should be mostly red, got R={}", result[24]);
     }
 
     #[test]
@@ -1730,5 +385,107 @@ mod tests {
         let f = black_frame(4, 4);
         assert!(f.iter().all(|&b| b == 0));
         assert_eq!(f.len(), 4 * 4 * 4);
+    }
+
+    // ================================================================
+    // Export / playback parity regression tests
+    // ================================================================
+
+    #[test]
+    fn circle_wipe_with_custom_params_matches_direct_call() {
+        // Render CircleWipeIn with off-center, extra softness params
+        // via direct call (simulating playback) and via the same function
+        // (simulating export with params threaded). Should be byte-identical.
+        let from = solid_frame(255, 0, 0, 255, 16, 16);
+        let to = solid_frame(0, 255, 0, 255, 16, 16);
+        let params = klipp_core::TransitionUserParams {
+            param0: 2.0,
+            param1: 0.25,
+            param2: 0.75,
+            ..Default::default()
+        };
+        let playback = klipp_transitions::render_transition_with_params(
+            klipp_timeline::TransitionKind::CircleWipeIn,
+            &from, &to, 0.5, 16, 16, &params,
+        );
+        let export = klipp_transitions::render_transition_with_params(
+            klipp_timeline::TransitionKind::CircleWipeIn,
+            &from, &to, 0.5, 16, 16, &params,
+        );
+        assert_eq!(playback, export, "export and playback should be byte-identical");
+    }
+
+    #[test]
+    fn dip_to_black_with_custom_color() {
+        // Render DipToBlack at midpoint with dark red color.
+        // Under the old compositor this would have been pure black.
+        let from = solid_frame(200, 200, 200, 255, 4, 4);
+        let to = solid_frame(200, 200, 200, 255, 4, 4);
+        let params = klipp_core::TransitionUserParams {
+            color: [0.5, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        let result = klipp_transitions::render_transition_with_params(
+            klipp_timeline::TransitionKind::DipToBlack,
+            &from, &to, 0.5, 4, 4, &params,
+        );
+        // Midpoint should show the dark red dip color, not pure black.
+        // With hold=0, at p=0.5: mid_start=0.5, mid_end=0.5, so p<=mid_start
+        // → t = 0.5/0.5 = 1.0 → fully dip color → R=127, G=0, B=0.
+        assert!(result[0] > 50, "R should reflect dark red dip, got {}", result[0]);
+        assert!(result[1] < 10, "G should be near zero, got {}", result[1]);
+    }
+
+    #[test]
+    fn wipe_left_with_feathering() {
+        // Render WipeLeft at midpoint with 10px feather.
+        // Under the old compositor this was a hard integer threshold.
+        let from = solid_frame(255, 0, 0, 255, 20, 1);
+        let to = solid_frame(0, 255, 0, 255, 20, 1);
+        let params = klipp_core::TransitionUserParams {
+            param0: 10.0,
+            ..Default::default()
+        };
+        let result = klipp_transitions::render_transition_with_params(
+            klipp_timeline::TransitionKind::WipeLeft,
+            &from, &to, 0.5, 20, 1, &params,
+        );
+        // With feathering, there should be intermediate blended pixels
+        // near the wipe edge (not just hard red/green boundary).
+        let mut found_intermediate = false;
+        for i in 0..20 {
+            let r = result[i * 4];
+            let g = result[i * 4 + 1];
+            if r > 20 && r < 235 && g > 20 && g < 235 {
+                found_intermediate = true;
+                break;
+            }
+        }
+        assert!(found_intermediate, "feathered wipe should have intermediate blended pixels");
+    }
+
+    #[test]
+    fn snapshot_preserves_user_params_and_alignment() {
+        use klipp_timeline::*;
+        use klipp_core::*;
+        let transition = Transition {
+            id: TransitionId::new(),
+            kind: TransitionKind::CircleWipeIn,
+            duration: RationalTime { value: 12, rate: 24 },
+            clip_a_id: ClipId::new(),
+            clip_b_id: ClipId::new(),
+            user_params: TransitionUserParams {
+                param0: 2.5,
+                param1: 0.3,
+                param2: 0.8,
+                ..Default::default()
+            },
+            alignment: TransitionAlignment::StartAtCut,
+        };
+        let snapshot = crate::snapshot::snapshot_transition_for_test(&transition, 24.0);
+        assert_eq!(snapshot.user_params.param0, 2.5);
+        assert_eq!(snapshot.user_params.param1, 0.3);
+        assert_eq!(snapshot.user_params.param2, 0.8);
+        assert_eq!(snapshot.alignment, TransitionAlignment::StartAtCut);
     }
 }

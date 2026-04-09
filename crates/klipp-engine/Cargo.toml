@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 klipp-core = { workspace = true }
+klipp-transitions = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }

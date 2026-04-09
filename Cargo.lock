@@ -2166,6 +2166,7 @@ dependencies = [
  "klipp-plugin",
  "klipp-timeline",
  "klipp-title",
+ "klipp-transitions",
  "lz4_flex",
  "ringbuf",
  "rubato",
@@ -2258,6 +2259,7 @@ dependencies = [
  "klipp-plugin",
  "klipp-timeline",
  "klipp-title",
+ "klipp-transitions",
  "thiserror 1.0.69",
  "tracing",
  "uuid",
@@ -2285,6 +2287,14 @@ dependencies = [
  "image",
  "klipp-timeline",
  "tracing",
+]
+
+[[package]]
+name = "klipp-transitions"
+version = "0.1.0"
+dependencies = [
+ "klipp-core",
+ "klipp-timeline",
 ]
 
 [[package]]
