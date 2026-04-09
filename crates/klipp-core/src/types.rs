@@ -382,6 +382,26 @@ impl TransitionUserParams {
             56 => Self { param0: 1.0, param1: 6.0, ..Self::default() },
             // GlitchRGBSplit: param0=intensity, param1=block size
             57 => Self { param0: 1.0, param1: 8.0, ..Self::default() },
+            // ProjectorFlicker: param0=flicker intensity, param1=gate weave px
+            58 => Self { param0: 1.0, param1: 8.0, ..Self::default() },
+            // Halation: param0=threshold, param1=spread, color=halo color (warm orange)
+            59 => Self {
+                param0: 0.3,
+                param1: 1.0,
+                color: [1.0, 0.4, 0.1, 1.0],
+                ..Self::default()
+            },
+            // AnamorphicFlare: param0=intensity, param1=streak width, color=flare color
+            60 => Self {
+                param0: 1.0,
+                param1: 0.15,
+                color: [0.4, 0.7, 1.0, 1.0],
+                ..Self::default()
+            },
+            // DreamSequence: param0=bloom intensity, param1=warmth
+            61 => Self { param0: 1.0, param1: 0.8, ..Self::default() },
+            // BokehDissolve: param0=bokeh size, param1=brightness boost
+            62 => Self { param0: 1.0, param1: 0.6, ..Self::default() },
             _ => Self::default(),
         }
     }

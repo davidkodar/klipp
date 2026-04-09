@@ -63,6 +63,11 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::StaticTV => 55,
         TransitionKind::VHSTracking => 56,
         TransitionKind::GlitchRGBSplit => 57,
+        TransitionKind::ProjectorFlicker => 58,
+        TransitionKind::Halation => 59,
+        TransitionKind::AnamorphicFlare => 60,
+        TransitionKind::DreamSequence => 61,
+        TransitionKind::BokehDissolve => 62,
     }
 }
 
@@ -127,6 +132,11 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         55 => TransitionKind::StaticTV,
         56 => TransitionKind::VHSTracking,
         57 => TransitionKind::GlitchRGBSplit,
+        58 => TransitionKind::ProjectorFlicker,
+        59 => TransitionKind::Halation,
+        60 => TransitionKind::AnamorphicFlare,
+        61 => TransitionKind::DreamSequence,
+        62 => TransitionKind::BokehDissolve,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -192,6 +202,11 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (55, "Static TV"),
         (56, "VHS Tracking"),
         (57, "Glitch RGB Split"),
+        (58, "Projector Flicker"),
+        (59, "Halation"),
+        (60, "Anamorphic Flare"),
+        (61, "Dream Sequence"),
+        (62, "Bokeh Dissolve"),
     ]
 }
 
@@ -702,6 +717,179 @@ pub fn render_transition_with_params(
                         &mut output[idx..idx + 4],
                     );
                 }
+            }
+        }
+        TransitionKind::BokehDissolve => {
+            // Out-of-focus bokeh bloom with chromatic fringe.
+            // param0 = bokeh size, param1 = brightness boost
+            let bokeh_size = user_params.param0;
+            let brightness_boost = user_params.param1;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
+                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
+                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
+                    let luma =
+                        (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
+                    let bloom_strength =
+                        luma * bokeh_size * envelope * brightness_boost * 2.0;
+                    let bloom_val = bloom_strength * 255.0;
+                    // Screen blend
+                    let screen_r =
+                        255.0 - (255.0 - base_r) * (255.0 - bloom_val) / 255.0;
+                    let screen_g =
+                        255.0 - (255.0 - base_g) * (255.0 - bloom_val) / 255.0;
+                    let screen_b =
+                        255.0 - (255.0 - base_b) * (255.0 - bloom_val) / 255.0;
+                    // Chromatic fringe
+                    let dx = (x as f32 - cx) / cx.max(1.0);
+                    let dy = (y as f32 - cy) / cy.max(1.0);
+                    let radial = (dx * dx + dy * dy).sqrt();
+                    let fringe = radial * bokeh_size * envelope * 8.0;
+                    output[fi] = (screen_r + fringe).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = screen_g.clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = (screen_b - fringe).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::AnamorphicFlare => {
+            // Horizontal lens flare streak sweeping across at the cut.
+            // param0 = intensity, param1 = streak width, color = flare color
+            let intensity = user_params.param0;
+            let streak_width = user_params.param1;
+            let flare_r = user_params.color[0] * 255.0;
+            let flare_g = user_params.color[1] * 255.0;
+            let flare_b = user_params.color[2] * 255.0;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
+                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
+                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
+                    let ny = (y as f32 / height as f32 - 0.5).abs() * 2.0;
+                    let streak_t =
+                        (1.0 - ny / streak_width.max(0.001)).max(0.0);
+                    let streak_t2 = streak_t * streak_t;
+                    let shimmer = 0.7
+                        + 0.3
+                            * (x as f32 / width as f32 * std::f32::consts::PI * 8.0)
+                                .sin();
+                    let flare_strength = streak_t2 * envelope * shimmer;
+                    output[fi] =
+                        (base_r + flare_r * flare_strength).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] =
+                        (base_g + flare_g * flare_strength).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] =
+                        (base_b + flare_b * flare_strength).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::DreamSequence => {
+            // Heavy bloom + warm glow + overexposure — dreamy look.
+            // param0 = bloom intensity, param1 = warmth
+            let bloom_intensity = user_params.param0;
+            let warmth = user_params.param1;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma =
+                    (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
+                let bloom = luma * bloom_intensity * envelope * 60.0;
+                let warm_r = warmth * envelope * 30.0;
+                let warm_g = warmth * envelope * 15.0;
+                let warm_b = -warmth * envelope * 10.0;
+                let lift = envelope * bloom_intensity * 15.0;
+                output[i] =
+                    (base_r + bloom + warm_r + lift).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + bloom + warm_g + lift).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + bloom + warm_b + lift).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::ProjectorFlicker => {
+            // Old film projector: brightness flicker, gate weave, frame jump.
+            // param0 = flicker intensity, param1 = gate weave px
+            let flicker_intensity = user_params.param0;
+            let weave_amount = user_params.param1;
+            let envelope = (p * std::f32::consts::PI).sin() * flicker_intensity;
+            let frame_hash =
+                ((p * 127.1).sin() * 43758.545).fract().abs();
+            let frame_hash2 =
+                ((p * 311.7).sin() * 12345.678).fract().abs();
+            let frame_hash3 =
+                ((p * 543.2).sin() * 98765.432).fract().abs();
+            let brightness = 1.0 + (frame_hash - 0.5) * envelope * 0.6;
+            let weave = ((frame_hash2 - 0.5) * weave_amount * envelope) as isize;
+            let jump = if frame_hash3 < envelope * 0.1 {
+                ((frame_hash3 - 0.5) * 8.0) as isize
+            } else {
+                0
+            };
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let sx = (x as isize + weave).clamp(0, w as isize - 1) as usize;
+                    let sy = (y as isize + jump).clamp(0, h as isize - 1) as usize;
+                    let si = (sy * w + sx) * 4;
+                    let r = (from[si] as f32 * inv + to[si] as f32 * p) * brightness;
+                    let g =
+                        (from[si + 1] as f32 * inv + to[si + 1] as f32 * p) * brightness;
+                    let b =
+                        (from[si + 2] as f32 * inv + to[si + 2] as f32 * p) * brightness;
+                    output[fi] = r.clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = g.clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = b.clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Halation => {
+            // Film halation: per-pixel brightness-threshold additive glow. O(1).
+            // param0 = threshold, param1 = spread, color = halo color
+            let threshold = user_params.param0;
+            let spread = user_params.param1;
+            let halo_r = user_params.color[0] * 255.0;
+            let halo_g = user_params.color[1] * 255.0;
+            let halo_b = user_params.color[2] * 255.0;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma =
+                    (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
+                let excess =
+                    (luma - threshold).max(0.0) / (1.0 - threshold).max(0.001);
+                let halo_strength = excess * spread * envelope * 3.0;
+                output[i] =
+                    (base_r + halo_r * halo_strength).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + halo_g * halo_strength).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + halo_b * halo_strength).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
             }
         }
         TransitionKind::GlitchRGBSplit => {
@@ -2462,11 +2650,16 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::StaticTV), 55);
         assert_eq!(transition_kind_to_id(TransitionKind::VHSTracking), 56);
         assert_eq!(transition_kind_to_id(TransitionKind::GlitchRGBSplit), 57);
+        assert_eq!(transition_kind_to_id(TransitionKind::ProjectorFlicker), 58);
+        assert_eq!(transition_kind_to_id(TransitionKind::Halation), 59);
+        assert_eq!(transition_kind_to_id(TransitionKind::AnamorphicFlare), 60);
+        assert_eq!(transition_kind_to_id(TransitionKind::DreamSequence), 61);
+        assert_eq!(transition_kind_to_id(TransitionKind::BokehDissolve), 62);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=57u8 {
+        for id in 0..=62u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -2475,12 +2668,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(58), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(63), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_58() {
-        assert_eq!(all_transition_kinds().len(), 58);
+    fn all_transition_kinds_returns_63() {
+        assert_eq!(all_transition_kinds().len(), 63);
     }
 
     // ========================================================================
@@ -2523,6 +2716,134 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    // ========================================================================
+    // Bokeh Dissolve
+    // ========================================================================
+
+    #[test]
+    fn bokeh_dissolve_at_zero_is_from() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(150, 150, 150, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::BokehDissolve, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 100, 100, 5);
+    }
+
+    #[test]
+    fn bokeh_dissolve_at_one_is_to() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(150, 150, 150, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::BokehDissolve, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 150, 150, 150, 5);
+    }
+
+    #[test]
+    fn bokeh_dissolve_midpoint_brightens() {
+        let from = make_solid(120, 120, 120, 255, 8, 8);
+        let to = make_solid(120, 120, 120, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::BokehDissolve, &from, &to, 0.5, 8, 8);
+        let avg: f32 = result.chunks(4).map(|px| px[0] as f32).sum::<f32>() / 64.0;
+        assert!(
+            avg > 120.0,
+            "bokeh should brighten at midpoint, got {}",
+            avg
+        );
+    }
+
+    // ========================================================================
+    // Anamorphic Flare / Dream Sequence
+    // ========================================================================
+
+    #[test]
+    fn anamorphic_flare_at_zero_is_from() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(150, 150, 150, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::AnamorphicFlare, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 100, 100, 5);
+    }
+
+    #[test]
+    fn anamorphic_flare_at_one_is_to() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(150, 150, 150, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::AnamorphicFlare, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 150, 150, 150, 5);
+    }
+
+    #[test]
+    fn dream_sequence_at_zero_is_from() {
+        let from = make_solid(100, 80, 60, 255, 8, 8);
+        let to = make_solid(60, 80, 100, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DreamSequence, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 80, 60, 5);
+    }
+
+    #[test]
+    fn dream_sequence_at_one_is_to() {
+        let from = make_solid(100, 80, 60, 255, 8, 8);
+        let to = make_solid(60, 80, 100, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DreamSequence, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 60, 80, 100, 5);
+    }
+
+    #[test]
+    fn dream_sequence_midpoint_is_brighter() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(100, 100, 100, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::DreamSequence, &from, &to, 0.5, 8, 8);
+        let avg: f32 = result.chunks(4).map(|px| px[0] as f32).sum::<f32>() / 64.0;
+        assert!(
+            avg > 100.0,
+            "dream should brighten at midpoint, got {}",
+            avg
+        );
+    }
+
+    // ========================================================================
+    // Projector Flicker / Halation
+    // ========================================================================
+
+    #[test]
+    fn projector_flicker_at_zero_is_from() {
+        let from = make_solid(200, 150, 100, 255, 8, 8);
+        let to = make_solid(100, 150, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ProjectorFlicker, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 150, 100, 10);
+    }
+
+    #[test]
+    fn projector_flicker_at_one_is_to() {
+        let from = make_solid(200, 150, 100, 255, 8, 8);
+        let to = make_solid(100, 150, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ProjectorFlicker, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 100, 150, 200, 10);
+    }
+
+    #[test]
+    fn halation_at_zero_is_from() {
+        let from = make_solid(100, 80, 60, 255, 8, 8);
+        let to = make_solid(60, 80, 100, 255, 8, 8);
+        let result = render_transition(TransitionKind::Halation, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 80, 60, 5);
+    }
+
+    #[test]
+    fn halation_at_one_is_to() {
+        let from = make_solid(100, 80, 60, 255, 8, 8);
+        let to = make_solid(60, 80, 100, 255, 8, 8);
+        let result = render_transition(TransitionKind::Halation, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 60, 80, 100, 5);
     }
 
     // ========================================================================
@@ -3317,6 +3638,11 @@ mod tests {
             TransitionKind::StaticTV,
             TransitionKind::VHSTracking,
             TransitionKind::GlitchRGBSplit,
+            TransitionKind::ProjectorFlicker,
+            TransitionKind::Halation,
+            TransitionKind::AnamorphicFlare,
+            TransitionKind::DreamSequence,
+            TransitionKind::BokehDissolve,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -3381,6 +3707,11 @@ mod tests {
             TransitionKind::StaticTV,
             TransitionKind::VHSTracking,
             TransitionKind::GlitchRGBSplit,
+            TransitionKind::ProjectorFlicker,
+            TransitionKind::Halation,
+            TransitionKind::AnamorphicFlare,
+            TransitionKind::DreamSequence,
+            TransitionKind::BokehDissolve,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

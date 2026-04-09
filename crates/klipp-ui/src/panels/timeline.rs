@@ -6700,6 +6700,11 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::StaticTV => "Static",
                                 klipp_timeline::TransitionKind::VHSTracking => "VHS",
                                 klipp_timeline::TransitionKind::GlitchRGBSplit => "RGB Spl",
+                                klipp_timeline::TransitionKind::ProjectorFlicker => "Flicker",
+                                klipp_timeline::TransitionKind::Halation => "Halat",
+                                klipp_timeline::TransitionKind::AnamorphicFlare => "Flare",
+                                klipp_timeline::TransitionKind::DreamSequence => "Dream",
+                                klipp_timeline::TransitionKind::BokehDissolve => "Bokeh",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

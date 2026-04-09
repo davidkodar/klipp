@@ -965,6 +965,128 @@ fn render_transition(
             }
             } // end else (slide/cover/uncover)
         }
+        TransitionKind::BokehDissolve => {
+            // Bokeh dissolve export (default size=1, brightness=0.6).
+            let envelope = (p * std::f32::consts::PI).sin();
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
+                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
+                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
+                    let luma =
+                        (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
+                    let bloom_val = luma * envelope * 0.6 * 2.0 * 255.0;
+                    let screen_r =
+                        255.0 - (255.0 - base_r) * (255.0 - bloom_val) / 255.0;
+                    let screen_g =
+                        255.0 - (255.0 - base_g) * (255.0 - bloom_val) / 255.0;
+                    let screen_b =
+                        255.0 - (255.0 - base_b) * (255.0 - bloom_val) / 255.0;
+                    let dx = (x as f32 - cx) / cx.max(1.0);
+                    let dy = (y as f32 - cy) / cy.max(1.0);
+                    let radial = (dx * dx + dy * dy).sqrt();
+                    let fringe = radial * envelope * 8.0;
+                    output[fi] = (screen_r + fringe).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = screen_g.clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = (screen_b - fringe).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::AnamorphicFlare => {
+            // Anamorphic flare export (default cyan-blue, intensity=1, streak=0.15).
+            let flare_r = 0.4 * 255.0_f32;
+            let flare_g = 0.7 * 255.0;
+            let flare_b = 1.0 * 255.0;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let base_r = from[fi] as f32 * inv + to[fi] as f32 * p;
+                    let base_g = from[fi + 1] as f32 * inv + to[fi + 1] as f32 * p;
+                    let base_b = from[fi + 2] as f32 * inv + to[fi + 2] as f32 * p;
+                    let ny = (y as f32 / height as f32 - 0.5).abs() * 2.0;
+                    let streak_t = (1.0 - ny / 0.15_f32.max(0.001)).max(0.0);
+                    let streak_t2 = streak_t * streak_t;
+                    let shimmer = 0.7
+                        + 0.3
+                            * (x as f32 / width as f32 * std::f32::consts::PI * 8.0).sin();
+                    let fs = streak_t2 * envelope * shimmer;
+                    output[fi] = (base_r + flare_r * fs).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = (base_g + flare_g * fs).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = (base_b + flare_b * fs).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::DreamSequence => {
+            // Dream sequence export (default bloom=1, warmth=0.8).
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma =
+                    (0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b) / 255.0;
+                let bloom = luma * envelope * 60.0;
+                let warm_r = 0.8 * envelope * 30.0;
+                let warm_g = 0.8 * envelope * 15.0;
+                let warm_b = -0.8 * envelope * 10.0;
+                let lift = envelope * 15.0;
+                output[i] = (base_r + bloom + warm_r + lift).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + bloom + warm_g + lift).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + bloom + warm_b + lift).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::ProjectorFlicker => {
+            let envelope = (p * std::f32::consts::PI).sin();
+            let frame_hash = ((p * 127.1).sin() * 43758.545).fract().abs();
+            let frame_hash2 = ((p * 311.7).sin() * 12345.678).fract().abs();
+            let brightness = 1.0 + (frame_hash - 0.5) * envelope * 0.6;
+            let weave = ((frame_hash2 - 0.5) * 8.0 * envelope) as isize;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let sx = (x as isize + weave).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] = ((from[si + c] as f32 * inv
+                            + to[si + c] as f32 * p)
+                            * brightness)
+                            .clamp(0.0, 255.0) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Halation => {
+            // Simplified halation export — additive cross-dissolve (no blur kernel).
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                output[i] = (from[i] as f32 * inv + to[i] as f32 * p + 0.5) as u8;
+                output[i + 1] =
+                    (from[i + 1] as f32 * inv + to[i + 1] as f32 * p + 0.5) as u8;
+                output[i + 2] =
+                    (from[i + 2] as f32 * inv + to[i + 2] as f32 * p + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
         TransitionKind::GlitchRGBSplit => {
             let intensity = 1.0_f32;
             let block_size = 8_usize;

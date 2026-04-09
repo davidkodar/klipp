@@ -283,6 +283,11 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         StaticTV => 55,
         VHSTracking => 56,
         GlitchRGBSplit => 57,
+        ProjectorFlicker => 58,
+        Halation => 59,
+        AnamorphicFlare => 60,
+        DreamSequence => 61,
+        BokehDissolve => 62,
     }
 }
 
@@ -373,6 +378,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "StaticTV" => klipp_timeline::TransitionKind::StaticTV,
                     "VHSTracking" => klipp_timeline::TransitionKind::VHSTracking,
                     "GlitchRGBSplit" => klipp_timeline::TransitionKind::GlitchRGBSplit,
+                    "ProjectorFlicker" => klipp_timeline::TransitionKind::ProjectorFlicker,
+                    "Halation" => klipp_timeline::TransitionKind::Halation,
+                    "AnamorphicFlare" => klipp_timeline::TransitionKind::AnamorphicFlare,
+                    "DreamSequence" => klipp_timeline::TransitionKind::DreamSequence,
+                    "BokehDissolve" => klipp_timeline::TransitionKind::BokehDissolve,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

@@ -757,6 +757,164 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Bokeh Dissolve",
+        kind_id: 62,
+        category: TransitionCategory::Cinematic,
+        preview: |pa, r, _| {
+            preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
+            let circles: [(f32, f32, f32, u8); 5] = [
+                (0.3, 0.4, 14.0, 60),
+                (0.6, 0.6, 10.0, 80),
+                (0.5, 0.3, 18.0, 50),
+                (0.75, 0.5, 8.0, 70),
+                (0.2, 0.65, 12.0, 55),
+            ];
+            for (fx, fy, radius, alpha) in circles {
+                let cx = r.min.x + fx * r.width();
+                let cy = r.min.y + fy * r.height();
+                pa.circle_stroke(
+                    egui::pos2(cx, cy),
+                    radius,
+                    egui::Stroke::new(
+                        1.5,
+                        egui::Color32::from_rgba_unmultiplied(255, 240, 200, alpha),
+                    ),
+                );
+                pa.circle_filled(
+                    egui::pos2(cx, cy),
+                    radius * 0.3,
+                    egui::Color32::from_rgba_unmultiplied(255, 250, 230, alpha / 2),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Anamorphic Flare",
+        kind_id: 60,
+        category: TransitionCategory::Cinematic,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_A);
+            let streak_h = r.height() * 0.12;
+            let streak_rect = egui::Rect::from_center_size(
+                r.center(),
+                egui::vec2(r.width(), streak_h),
+            );
+            pa.rect_filled(
+                streak_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(100, 180, 255, 180),
+            );
+            let core_rect = egui::Rect::from_center_size(
+                r.center(),
+                egui::vec2(r.width(), streak_h * 0.3),
+            );
+            pa.rect_filled(
+                core_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(200, 230, 255, 240),
+            );
+            for i in 0..5 {
+                let x = r.min.x + r.width() * (i as f32 + 0.5) / 5.0;
+                pa.circle_filled(
+                    egui::pos2(x, r.center().y),
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Dream Sequence",
+        kind_id: 61,
+        category: TransitionCategory::Cinematic,
+        preview: |pa, r, _| {
+            preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
+            pa.rect_filled(
+                r,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 220, 150, 60),
+            );
+            preview_circle(
+                pa,
+                r,
+                0.7,
+                egui::Color32::from_rgba_unmultiplied(255, 240, 200, 40),
+            );
+            preview_circle(
+                pa,
+                r,
+                0.4,
+                egui::Color32::from_rgba_unmultiplied(255, 250, 230, 60),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Projector Flicker",
+        kind_id: 58,
+        category: TransitionCategory::Cinematic,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, egui::Color32::from_rgb(40, 35, 25));
+            for i in 0..3 {
+                let y = r.min.y + r.height() * (i as f32 + 0.5) / 3.0;
+                pa.rect_filled(
+                    egui::Rect::from_center_size(
+                        egui::pos2(r.min.x + 6.0, y),
+                        egui::vec2(4.0, 6.0),
+                    ),
+                    1.0,
+                    egui::Color32::from_rgb(20, 18, 12),
+                );
+            }
+            pa.rect_filled(
+                r.shrink2(egui::vec2(12.0, 4.0)),
+                0.0,
+                PREVIEW_A,
+            );
+            pa.rect_filled(
+                r.shrink2(egui::vec2(12.0, 4.0)),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 240, 200, 40),
+            );
+            let sx = r.min.x + r.width() * 0.7;
+            pa.line_segment(
+                [egui::pos2(sx, r.min.y), egui::pos2(sx + 1.0, r.max.y)],
+                egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 200, 120),
+                ),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Halation",
+        kind_id: 59,
+        category: TransitionCategory::Cinematic,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_A);
+            let cx = egui::pos2(r.min.x + r.width() * 0.65, r.min.y + r.height() * 0.35);
+            pa.circle_filled(
+                cx,
+                r.height() * 0.5,
+                egui::Color32::from_rgba_unmultiplied(255, 100, 30, 30),
+            );
+            pa.circle_filled(
+                cx,
+                r.height() * 0.3,
+                egui::Color32::from_rgba_unmultiplied(255, 140, 60, 60),
+            );
+            pa.circle_filled(
+                cx,
+                r.height() * 0.15,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 150, 140),
+            );
+            pa.circle_filled(
+                cx,
+                r.height() * 0.06,
+                egui::Color32::from_rgba_unmultiplied(255, 240, 220, 240),
+            );
+        },
+    },
+    TransitionDef {
         name: "Glitch RGB Split",
         kind_id: 57,
         category: TransitionCategory::Effect,

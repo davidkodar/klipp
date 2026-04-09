@@ -727,6 +727,11 @@ pub enum TransitionKind {
     StaticTV,
     VHSTracking,
     GlitchRGBSplit,
+    ProjectorFlicker,
+    Halation,
+    AnamorphicFlare,
+    DreamSequence,
+    BokehDissolve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

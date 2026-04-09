@@ -4471,6 +4471,110 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 result = unpack(from_buf[sidx]);
             }
         }
+    } else if params.kind_id == 62u {
+        // Bokeh Dissolve: screen-blend bloom + chromatic fringe.
+        let bokeh_size = params.param0;
+        let brightness_boost = params.param1;
+        let envelope = sin(p * 3.14159265);
+        let base = lerp_pixel(from_px, to_px, p);
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) / 255.0;
+        let bloom_strength = luma * bokeh_size * envelope * brightness_boost * 2.0;
+        let bloom_val = bloom_strength * 255.0;
+        let screen_r = 255.0 - (255.0 - base.x) * (255.0 - bloom_val) / 255.0;
+        let screen_g = 255.0 - (255.0 - base.y) * (255.0 - bloom_val) / 255.0;
+        let screen_b = 255.0 - (255.0 - base.z) * (255.0 - bloom_val) / 255.0;
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = (f32(x) - cx) / max(cx, 1.0);
+        let dy = (f32(y) - cy) / max(cy, 1.0);
+        let radial = length(vec2<f32>(dx, dy));
+        let fringe = radial * bokeh_size * envelope * 8.0;
+        result = vec4<f32>(
+            clamp(screen_r + fringe, 0.0, 255.0),
+            clamp(screen_g, 0.0, 255.0),
+            clamp(screen_b - fringe, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 60u {
+        // Anamorphic Flare: horizontal streak across frame center.
+        let intensity = params.param0;
+        let streak_width = params.param1;
+        let flare_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let envelope = sin(p * 3.14159265) * intensity;
+        let base = lerp_pixel(from_px, to_px, p);
+        let ny = abs(f32(y) / f32(params.height) - 0.5) * 2.0;
+        let streak_t = max(1.0 - ny / max(streak_width, 0.001), 0.0);
+        let streak_t2 = streak_t * streak_t;
+        let shimmer = 0.7 + 0.3 * sin(f32(x) / f32(params.width) * 3.14159265 * 8.0);
+        let flare_strength = streak_t2 * envelope * shimmer;
+        let flare = flare_color * flare_strength;
+        result = vec4<f32>(
+            clamp(base.x + flare.x, 0.0, 255.0),
+            clamp(base.y + flare.y, 0.0, 255.0),
+            clamp(base.z + flare.z, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 61u {
+        // Dream Sequence: bloom + warm glow + overexposure.
+        let bloom_intensity = params.param0;
+        let warmth = params.param1;
+        let envelope = sin(p * 3.14159265);
+        let base = lerp_pixel(from_px, to_px, p);
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) / 255.0;
+        let bloom = luma * bloom_intensity * envelope * 60.0;
+        let warm_r = warmth * envelope * 30.0;
+        let warm_g = warmth * envelope * 15.0;
+        let warm_b = -warmth * envelope * 10.0;
+        let lift = envelope * bloom_intensity * 15.0;
+        result = vec4<f32>(
+            clamp(base.x + bloom + warm_r + lift, 0.0, 255.0),
+            clamp(base.y + bloom + warm_g + lift, 0.0, 255.0),
+            clamp(base.z + bloom + warm_b + lift, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 58u {
+        // Projector Flicker: brightness flicker + gate weave + frame jump.
+        let flicker_intensity = params.param0;
+        let weave_amount = params.param1;
+        let envelope = sin(p * 3.14159265) * flicker_intensity;
+        let frame_hash = fract(sin(p * 127.1) * 43758.545);
+        let frame_hash2 = fract(sin(p * 311.7) * 12345.678);
+        let frame_hash3 = fract(sin(p * 543.2) * 98765.432);
+        let brightness = 1.0 + (frame_hash - 0.5) * envelope * 0.6;
+        let weave = (frame_hash2 - 0.5) * weave_amount * envelope;
+        let sx = clamp(f32(x) + weave, 0.0, f32(params.width) - 1.0);
+        var jump: f32 = 0.0;
+        if frame_hash3 < envelope * 0.1 {
+            jump = (frame_hash3 - 0.5) * 8.0;
+        }
+        let sy = clamp(f32(y) + jump, 0.0, f32(params.height) - 1.0);
+        let sample_idx = u32(sy) * params.width + u32(sx);
+        let from_s = unpack(from_buf[sample_idx]);
+        let to_s = unpack(to_buf[sample_idx]);
+        let base = lerp_pixel(from_s, to_s, p);
+        result = vec4<f32>(
+            clamp(base.x * brightness, 0.0, 255.0),
+            clamp(base.y * brightness, 0.0, 255.0),
+            clamp(base.z * brightness, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 59u {
+        // Halation: per-pixel brightness-threshold additive glow. O(1) per pixel.
+        let threshold = params.param0;
+        let spread = params.param1;
+        let halo_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let envelope = sin(p * 3.14159265);
+        let base = lerp_pixel(from_px, to_px, p);
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) / 255.0;
+        let excess = max(luma - threshold, 0.0) / max(1.0 - threshold, 0.001);
+        let halo_strength = excess * spread * envelope * 3.0;
+        let halo = halo_color * halo_strength;
+        result = vec4<f32>(
+            clamp(base.x + halo.x, 0.0, 255.0),
+            clamp(base.y + halo.y, 0.0, 255.0),
+            clamp(base.z + halo.z, 0.0, 255.0),
+            255.0,
+        );
     } else if params.kind_id == 57u {
         // Glitch RGB Split: per-block RGB channel separation with blackouts.
         let intensity = params.param0;
