@@ -4391,31 +4391,85 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 use_to = true;
             }
         } else if params.kind_id == 43u {
+            // Squeeze H: proper collapse/expand with black outside.
             let half = wf * 0.5;
-            if p > 0.5 {
-                use_to = true;
-                let to_src = (f32(x) - half) / max(p, 0.001) + half;
-                sx = i32(clamp(to_src, 0.0, wf - 1.0));
+            let one_px = 1.0 / wf;
+            var out_color: vec4<f32>;
+            if p <= 0.5 {
+                let scale = 1.0 - 2.0 * p;
+                if scale < one_px {
+                    out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                } else {
+                    let vis_left = half - half * scale;
+                    let vis_right = half + half * scale;
+                    if f32(x) < vis_left || f32(x) >= vis_right {
+                        out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                    } else {
+                        let src_x = clamp((f32(x) - half) / scale + half, 0.0, wf - 1.0);
+                        out_color = unpack(from_buf[u32(y) * params.width + u32(src_x)]);
+                    }
+                }
             } else {
-                let src_x = (f32(x) - half) / max(1.0 - p, 0.001) + half;
-                sx = i32(clamp(src_x, 0.0, wf - 1.0));
+                let scale = 2.0 * p - 1.0;
+                if scale < one_px {
+                    out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                } else {
+                    let vis_left = half - half * scale;
+                    let vis_right = half + half * scale;
+                    if f32(x) < vis_left || f32(x) >= vis_right {
+                        out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                    } else {
+                        let src_x = clamp((f32(x) - half) / scale + half, 0.0, wf - 1.0);
+                        out_color = unpack(to_buf[u32(y) * params.width + u32(src_x)]);
+                    }
+                }
             }
-        } else {
+            result = out_color;
+        } else if params.kind_id == 44u {
+            // Squeeze V: proper collapse/expand with black outside.
             let half = hf * 0.5;
-            if p > 0.5 {
-                use_to = true;
-                let to_src = (f32(y) - half) / max(p, 0.001) + half;
-                sy = i32(clamp(to_src, 0.0, hf - 1.0));
+            let one_px = 1.0 / hf;
+            var out_color: vec4<f32>;
+            if p <= 0.5 {
+                let scale = 1.0 - 2.0 * p;
+                if scale < one_px {
+                    out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                } else {
+                    let vis_top = half - half * scale;
+                    let vis_bottom = half + half * scale;
+                    if f32(y) < vis_top || f32(y) >= vis_bottom {
+                        out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                    } else {
+                        let src_y = clamp((f32(y) - half) / scale + half, 0.0, hf - 1.0);
+                        out_color = unpack(from_buf[u32(src_y) * params.width + u32(x)]);
+                    }
+                }
             } else {
-                let src_y = (f32(y) - half) / max(1.0 - p, 0.001) + half;
-                sy = i32(clamp(src_y, 0.0, hf - 1.0));
+                let scale = 2.0 * p - 1.0;
+                if scale < one_px {
+                    out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                } else {
+                    let vis_top = half - half * scale;
+                    let vis_bottom = half + half * scale;
+                    if f32(y) < vis_top || f32(y) >= vis_bottom {
+                        out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
+                    } else {
+                        let src_y = clamp((f32(y) - half) / scale + half, 0.0, hf - 1.0);
+                        out_color = unpack(to_buf[u32(src_y) * params.width + u32(x)]);
+                    }
+                }
             }
+            result = out_color;
         }
-        let sidx = u32(sy) * params.width + u32(sx);
-        if use_to {
-            result = unpack(to_buf[sidx]);
-        } else {
-            result = unpack(from_buf[sidx]);
+        // For slide/cover/uncover (35–42), apply the shared sx/sy lookup.
+        // Squeeze (43–44) already set result directly above.
+        if params.kind_id <= 42u {
+            let sidx = u32(sy) * params.width + u32(sx);
+            if use_to {
+                result = unpack(to_buf[sidx]);
+            } else {
+                result = unpack(from_buf[sidx]);
+            }
         }
     } else {
         result = lerp_pixel(from_px, to_px, p);

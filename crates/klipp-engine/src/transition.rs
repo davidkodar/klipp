@@ -665,6 +665,60 @@ pub fn render_transition_with_params(
                 }
             }
         }
+        TransitionKind::SqueezeH | TransitionKind::SqueezeV => {
+            // Proper squeeze: from collapses to a 1-pixel center line at p=0.5,
+            // then to expands from that line to full frame. Black outside.
+            let w = width as usize;
+            let h = height as usize;
+            let is_h = matches!(kind, TransitionKind::SqueezeH);
+            let dim = if is_h { w } else { h } as f32;
+            let half = dim * 0.5;
+            let one_px = 1.0 / dim;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let pos = if is_h { x as f32 } else { y as f32 };
+                    if p <= 0.5 {
+                        let scale = 1.0 - 2.0 * p;
+                        if scale < one_px {
+                            // Collapsed below one pixel — all black.
+                            output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                        } else {
+                            let vis_lo = half - half * scale;
+                            let vis_hi = half + half * scale;
+                            if pos < vis_lo || pos >= vis_hi {
+                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                            } else {
+                                let src = ((pos - half) / scale + half)
+                                    .clamp(0.0, dim - 1.0)
+                                    as usize;
+                                let si =
+                                    if is_h { (y * w + src) * 4 } else { (src * w + x) * 4 };
+                                output[fi..fi + 4].copy_from_slice(&from[si..si + 4]);
+                            }
+                        }
+                    } else {
+                        let scale = 2.0 * p - 1.0;
+                        if scale < one_px {
+                            output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                        } else {
+                            let vis_lo = half - half * scale;
+                            let vis_hi = half + half * scale;
+                            if pos < vis_lo || pos >= vis_hi {
+                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                            } else {
+                                let src = ((pos - half) / scale + half)
+                                    .clamp(0.0, dim - 1.0)
+                                    as usize;
+                                let si =
+                                    if is_h { (y * w + src) * 4 } else { (src * w + x) * 4 };
+                                output[fi..fi + 4].copy_from_slice(&to[si..si + 4]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         TransitionKind::SlideLeft
         | TransitionKind::SlideRight
         | TransitionKind::SlideUp
@@ -672,11 +726,8 @@ pub fn render_transition_with_params(
         | TransitionKind::CoverLeft
         | TransitionKind::CoverRight
         | TransitionKind::UncoverLeft
-        | TransitionKind::UncoverRight
-        | TransitionKind::SqueezeH
-        | TransitionKind::SqueezeV => {
-            // Pixel-offset sampling family. For each output pixel, decide which
-            // source buffer to sample and at what coordinate.
+        | TransitionKind::UncoverRight => {
+            // Pixel-offset sampling family.
             let w = width as usize;
             let h = height as usize;
             let offset_w = ((p * width as f32) as usize).min(w);
@@ -686,7 +737,6 @@ pub fn render_transition_with_params(
             for y in 0..h {
                 for x in 0..w {
                     let fi = (y * w + x) * 4;
-                    // Returns (src_is_to, sx, sy).
                     let (use_to, sx, sy): (bool, usize, usize) = match kind {
                         TransitionKind::SlideLeft => {
                             let to_x = x as isize + wi - offset_w as isize;
@@ -756,36 +806,6 @@ pub fn render_transition_with_params(
                                 (false, from_x as usize, y)
                             } else {
                                 (true, x, y)
-                            }
-                        }
-                        TransitionKind::SqueezeH => {
-                            let half = w as f32 * 0.5;
-                            if p > 0.5 {
-                                let to_src = ((x as f32 - half) / p.max(0.001) + half)
-                                    .clamp(0.0, w as f32 - 1.0)
-                                    as usize;
-                                (true, to_src, y)
-                            } else {
-                                let src_x = ((x as f32 - half) / (1.0 - p).max(0.001)
-                                    + half)
-                                    .clamp(0.0, w as f32 - 1.0)
-                                    as usize;
-                                (false, src_x, y)
-                            }
-                        }
-                        TransitionKind::SqueezeV => {
-                            let half = h as f32 * 0.5;
-                            if p > 0.5 {
-                                let to_src = ((y as f32 - half) / p.max(0.001) + half)
-                                    .clamp(0.0, h as f32 - 1.0)
-                                    as usize;
-                                (true, x, to_src)
-                            } else {
-                                let src_y = ((y as f32 - half) / (1.0 - p).max(0.001)
-                                    + half)
-                                    .clamp(0.0, h as f32 - 1.0)
-                                    as usize;
-                                (false, x, src_y)
                             }
                         }
                         _ => unreachable!(),
@@ -2011,6 +2031,15 @@ mod tests {
     slide_family_endpoint_test!(uncover_right_endpoints, UncoverRight);
     slide_family_endpoint_test!(squeeze_h_endpoints, SqueezeH);
     slide_family_endpoint_test!(squeeze_v_endpoints, SqueezeV);
+
+    #[test]
+    fn squeeze_h_midpoint_is_black_at_edges() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::SqueezeH, &from, &to, 0.5, 8, 8);
+        // At p=0.5, visible region collapses to ~0 width — all pixels should be black.
+        assert_approx_rgb(&result, 0, 0, 0, 10);
+    }
 
     #[test]
     fn box_wipe_in_at_zero_is_from() {

@@ -820,6 +820,64 @@ fn render_transition(
         | TransitionKind::UncoverRight
         | TransitionKind::SqueezeH
         | TransitionKind::SqueezeV => {
+            // Squeeze handled separately below; slide/cover/uncover inline here.
+            if matches!(kind, TransitionKind::SqueezeH | TransitionKind::SqueezeV) {
+                let w = width as usize;
+                let h = height as usize;
+                let is_h = matches!(kind, TransitionKind::SqueezeH);
+                let dim = if is_h { w } else { h } as f32;
+                let half = dim * 0.5;
+                let one_px = 1.0 / dim;
+                for y in 0..h {
+                    for x in 0..w {
+                        let fi = (y * w + x) * 4;
+                        let pos = if is_h { x as f32 } else { y as f32 };
+                        if p <= 0.5 {
+                            let scale = 1.0 - 2.0 * p;
+                            if scale < one_px {
+                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                            } else {
+                                let vis_lo = half - half * scale;
+                                let vis_hi = half + half * scale;
+                                if pos < vis_lo || pos >= vis_hi {
+                                    output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                                } else {
+                                    let src = ((pos - half) / scale + half)
+                                        .clamp(0.0, dim - 1.0)
+                                        as usize;
+                                    let si = if is_h {
+                                        (y * w + src) * 4
+                                    } else {
+                                        (src * w + x) * 4
+                                    };
+                                    output[fi..fi + 4].copy_from_slice(&from[si..si + 4]);
+                                }
+                            }
+                        } else {
+                            let scale = 2.0 * p - 1.0;
+                            if scale < one_px {
+                                output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                            } else {
+                                let vis_lo = half - half * scale;
+                                let vis_hi = half + half * scale;
+                                if pos < vis_lo || pos >= vis_hi {
+                                    output[fi..fi + 4].copy_from_slice(&[0, 0, 0, 255]);
+                                } else {
+                                    let src = ((pos - half) / scale + half)
+                                        .clamp(0.0, dim - 1.0)
+                                        as usize;
+                                    let si = if is_h {
+                                        (y * w + src) * 4
+                                    } else {
+                                        (src * w + x) * 4
+                                    };
+                                    output[fi..fi + 4].copy_from_slice(&to[si..si + 4]);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
             let w = width as usize;
             let h = height as usize;
             let offset_w = ((p * width as f32) as usize).min(w);
@@ -898,36 +956,6 @@ fn render_transition(
                                 (true, x, y)
                             }
                         }
-                        TransitionKind::SqueezeH => {
-                            let half = w as f32 * 0.5;
-                            if p > 0.5 {
-                                let to_src = ((x as f32 - half) / p.max(0.001) + half)
-                                    .clamp(0.0, w as f32 - 1.0)
-                                    as usize;
-                                (true, to_src, y)
-                            } else {
-                                let src_x = ((x as f32 - half) / (1.0 - p).max(0.001)
-                                    + half)
-                                    .clamp(0.0, w as f32 - 1.0)
-                                    as usize;
-                                (false, src_x, y)
-                            }
-                        }
-                        TransitionKind::SqueezeV => {
-                            let half = h as f32 * 0.5;
-                            if p > 0.5 {
-                                let to_src = ((y as f32 - half) / p.max(0.001) + half)
-                                    .clamp(0.0, h as f32 - 1.0)
-                                    as usize;
-                                (true, x, to_src)
-                            } else {
-                                let src_y = ((y as f32 - half) / (1.0 - p).max(0.001)
-                                    + half)
-                                    .clamp(0.0, h as f32 - 1.0)
-                                    as usize;
-                                (false, x, src_y)
-                            }
-                        }
                         _ => unreachable!(),
                     };
                     let si = (sy * w + sx) * 4;
@@ -935,6 +963,7 @@ fn render_transition(
                     output[fi..fi + 4].copy_from_slice(&src[si..si + 4]);
                 }
             }
+            } // end else (slide/cover/uncover)
         }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
