@@ -1284,7 +1284,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             playback: PlaybackState::Idle,
-            playhead: Timecode::zero(),
+            playhead: Timecode { value: 0, rate: 24 },
             fps: Fps::film_24(),
             playback_speed: 1.0,
             loop_playback_enabled: false,

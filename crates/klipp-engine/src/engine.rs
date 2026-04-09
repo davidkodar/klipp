@@ -204,6 +204,9 @@ pub struct PlaybackEngine {
     clip_timeline_start: Timecode, // timeline position of clip_source_start
     clip_speed: f64, // per-clip speed multiplier (1.0 = normal)
     current_source_rotation: i32, // source rotation in degrees (0, 90, 180, 270)
+    /// Last sequence-frame number rendered by the synthetic playback path.
+    /// Avoids re-rendering the same generator/title frame ~1000x per second.
+    last_synth_frame_rendered: Option<i64>,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -367,6 +370,7 @@ impl PlaybackEngine {
             clip_timeline_start: Timecode::zero(),
             clip_speed: 1.0,
             current_source_rotation: 0,
+            last_synth_frame_rendered: None,
             expected_audio_generation: 0,
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
@@ -622,6 +626,7 @@ impl PlaybackEngine {
                     self.v2_frame_cache = None;
                     self.stop_all_audio();
                     self.playhead = Timecode::zero();
+                    self.last_synth_frame_rendered = None;
                     self.state = PlaybackState::Stopped;
                     self.pre_seek_generation += 1;
                     self.pre_seek_started = false;
@@ -896,6 +901,14 @@ impl PlaybackEngine {
     }
 
     fn handle_play(&mut self) {
+        // Sync fps from the active sequence so synthetic clips play at the correct rate.
+        // Without this, a generator-only timeline plays at the engine's default 24fps
+        // because self.fps is only updated by load_file() and generators never trigger it.
+        {
+            let seq = self.sequence.read().unwrap();
+            self.fps = seq.fps;
+        }
+
         // Check if no media clip exists at playhead but a title or generator clip does
         {
             let seq = self.sequence.read().unwrap();
@@ -1558,9 +1571,23 @@ impl PlaybackEngine {
                 // Check if past end of clip
                 if self.playhead >= clip.timeline_out {
                     self.playhead = clip.timeline_out;
+                    self.last_synth_frame_rendered = None;
                     self.advance_to_next_clip();
                     return;
                 }
+
+                // Frame throttle: only render when the sequence frame has actually changed.
+                // Without this, the synthetic path renders ~1000 times per second (once per
+                // engine tick), allocating ~8 GB/s of RGBA for content that only needs to
+                // update at 24-30 Hz. When the frame hasn't changed, just update the playhead
+                // for smooth UI display and skip the expensive render work.
+                let current_frame = self.playhead.value;
+                if Some(current_frame) == self.last_synth_frame_rendered {
+                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    (self.repaint_cb)();
+                    return;
+                }
+                self.last_synth_frame_rendered = Some(current_frame);
 
                 let (w, h) = (res.width, res.height);
                 let rgba = if let Some(title_data) = clip.title_data() {
@@ -1922,6 +1949,7 @@ impl PlaybackEngine {
 
             self.current_clip_index = actual_idx;
             self.playhead = timeline_in;
+            self.last_synth_frame_rendered = None;
             self.clip_source_start = 0.0;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
@@ -1967,6 +1995,7 @@ impl PlaybackEngine {
             );
             self.current_clip_index = actual_idx;
             self.playhead = timeline_in;
+            self.last_synth_frame_rendered = None;
             self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
@@ -2003,6 +2032,7 @@ impl PlaybackEngine {
 
         self.current_clip_index = actual_idx;
         self.playhead = timeline_in;
+        self.last_synth_frame_rendered = None;
 
         // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
         if self.preroll_clip_index == Some(actual_idx) {
@@ -2477,6 +2507,7 @@ impl PlaybackEngine {
         self.transition_partner_eof = false;
         self.transition_degradation = Default::default();
         self.stop_all_audio();
+        self.last_synth_frame_rendered = None;
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
         (self.repaint_cb)();
@@ -2891,6 +2922,7 @@ impl PlaybackEngine {
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
         // Clear frame cache on explicit seek (cache is only valid for sequential stepping)
         self.frame_cache.clear();
+        self.last_synth_frame_rendered = None;
         // Check for standalone title clip (no media clip at this timecode on any track)
         {
             let seq = self.sequence.read().unwrap();

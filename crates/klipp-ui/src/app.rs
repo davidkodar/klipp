@@ -8438,7 +8438,8 @@ impl KlippApp {
                 self.state.selected_clips.clear();
                 self.state.hovered_clip = None;
                 self.state.playback = PlaybackState::Idle;
-                self.state.playhead = Timecode::zero();
+                let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 self.state.thumbnail_textures.clear();
                 self.state.filmstrip_textures.clear();
@@ -9892,7 +9893,8 @@ impl KlippApp {
         self.state.selected_clips.clear();
         self.state.hovered_clip = None;
         self.state.playback = PlaybackState::Idle;
-        self.state.playhead = Timecode::zero();
+        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+        self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
         self.state.thumbnail_textures.clear();
         self.state.filmstrip_textures.clear();
@@ -9917,7 +9919,8 @@ impl KlippApp {
         self.state.selected_clips.clear();
         self.state.hovered_clip = None;
         self.state.playback = PlaybackState::Idle;
-        self.state.playhead = Timecode::zero();
+        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+        self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
         self.state.thumbnail_textures.clear();
         self.state.filmstrip_textures.clear();
@@ -11062,7 +11065,8 @@ impl KlippApp {
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
                 self.state.playback = PlaybackState::Idle;
-                self.state.playhead = Timecode::zero();
+                let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 self.state.thumbnail_textures.clear();
                 self.state.filmstrip_textures.clear();
