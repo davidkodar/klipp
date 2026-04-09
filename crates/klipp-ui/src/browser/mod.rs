@@ -5,6 +5,7 @@ pub mod effects_tab;
 pub mod audio_fx_tab;
 pub mod titles_tab;
 pub mod transitions_tab;
+pub mod generators_tab;
 
 use crate::icons::Icon;
 use crate::layout_state::{BrowserTab, LibraryCategory};
@@ -197,6 +198,7 @@ impl BrowserPanel {
                 LibraryCategory::AudioFx => "Search audio effects\u{2026}",
                 LibraryCategory::Titles => "Search titles\u{2026}",
                 LibraryCategory::Transitions => "Search transitions\u{2026}",
+                LibraryCategory::Generators => "Search generators\u{2026}",
             },
         };
 
@@ -750,6 +752,7 @@ impl BrowserPanel {
                 (LibraryCategory::AudioFx, "Audio FX"),
                 (LibraryCategory::Titles, "Titles"),
                 (LibraryCategory::Transitions, "Transitions"),
+                (LibraryCategory::Generators, "Generators"),
             ];
             for (cat, label) in &categories {
                 let is_active = self.library_category == *cat;
@@ -795,6 +798,9 @@ impl BrowserPanel {
             }
             LibraryCategory::Transitions => {
                 transitions_tab::show(ui, state, theme, &self.search_query)
+            }
+            LibraryCategory::Generators => {
+                generators_tab::show(ui, state, theme, &self.search_query)
             }
         }
     }

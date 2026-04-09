@@ -1706,6 +1706,26 @@ impl KlippApp {
         }
     }
 
+    fn snapshot_generator(&self, clip_id: klipp_core::ClipId) -> Option<klipp_core::GeneratorData> {
+        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.generator_data())
+            .cloned()
+    }
+
+    fn push_generator_undo(&mut self, clip_id: klipp_core::ClipId, old: klipp_core::GeneratorData) {
+        if let Some(new) = self.snapshot_generator(clip_id) {
+            if old != new {
+                self.state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: self.state.active_sequence_idx,
+                    command: crate::history::EditCommand::EditGenerator {
+                        clip_id, old_data: old, new_data: new,
+                    },
+                });
+            }
+        }
+    }
+
     /// Mark a title clip for overlay texture refresh on the next frame.
     fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
         // Clear old overlay immediately to prevent ghosting during position/alignment changes
@@ -2152,8 +2172,8 @@ impl KlippApp {
                 // Subtitles/FCPXML/EDL — handled by handle_export_commands
                 // Create adjustment layer at playhead
                 AppCommand::CreateAdjustmentLayer => {
-                    let ph = self.state.playhead;
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                    let ph = self.state.playhead.rescale_to(fps_rate);
                     let duration = klipp_core::RationalTime::from_frames(120, fps_rate); // 5 seconds at 24fps
                     let timeline_out = ph + duration;
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -2182,8 +2202,8 @@ impl KlippApp {
                     return true;
                 }
                 AppCommand::CreateGeneratorClip { data } => {
-                    let ph = self.state.playhead;
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                    let ph = self.state.playhead.rescale_to(fps_rate);
                     let duration = klipp_core::RationalTime::from_frames(120, fps_rate);
                     let timeline_out = ph + duration;
                     let label = match &data {
@@ -3005,6 +3025,26 @@ impl KlippApp {
         if self.handle_clip_basic_ops(cmd, needs_refresh) { return true; }
         if self.handle_clip_selection_role(cmd, needs_refresh) { return true; }
         if self.handle_clip_edit_misc(cmd, needs_refresh) { return true; }
+
+        // Generator parameter editing
+        if let AppCommand::UpdateGeneratorData { clip_id, data } = cmd {
+            let old = self.snapshot_generator(*clip_id);
+            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    if let klipp_timeline::ClipKind::Generator(ref mut gd) = clip.kind {
+                        *gd = data.clone();
+                    }
+                }
+            }
+            if let Some(old_data) = old {
+                self.push_generator_undo(*clip_id, old_data);
+            }
+            self.sync_sequence_to_engine();
+            let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+            self.state.dirty = true;
+            return true;
+        }
+
         false
     }
 
@@ -7630,14 +7670,15 @@ impl KlippApp {
                     .get(ti)
                     .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
                 let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                let timeline_in = timeline_in.rescale_to(fps_rate);
                 let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
-                let timeline_out = *timeline_in + duration;
+                let timeline_out = timeline_in + duration;
                 let title_data = self.state.pending_title_data.take()
                     .unwrap_or_default();
                 let mut clip = klipp_timeline::Clip {
                     id: klipp_core::ClipId::new(),
                     kind: klipp_timeline::ClipKind::Title(title_data),
-                    timeline_in: *timeline_in,
+                    timeline_in,
                     timeline_out,
                     source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
                     source_out: duration,
@@ -10309,6 +10350,16 @@ impl KlippApp {
                 }
                 self.render_title_to_viewer(*clip_id);
             }
+            EditCommand::EditGenerator { clip_id, old_data, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Generator(old_data.clone());
+                        break;
+                    }
+                }
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+            }
         }
     }
 
@@ -10651,6 +10702,16 @@ impl KlippApp {
                     }
                 }
                 self.render_title_to_viewer(*clip_id);
+            }
+            EditCommand::EditGenerator { clip_id, new_data, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Generator(new_data.clone());
+                        break;
+                    }
+                }
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
             }
         }
     }

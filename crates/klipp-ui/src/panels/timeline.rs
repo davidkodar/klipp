@@ -466,6 +466,7 @@ impl TimelinePanel {
             self.handle_audio_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
             self.handle_transition_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
             self.handle_title_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
+            self.handle_generator_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
             } // end if track_visible (clip rendering + drag-drop)
 
             if !self.embedded && track_visible {
@@ -1322,6 +1323,49 @@ impl TimelinePanel {
         }
     }
 
+    fn handle_generator_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        _track_idx: usize,
+        track_kind: TrackKind,
+        track_rect: egui::Rect,
+        _content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Generator { .. })) {
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_down = ui.input(|i| i.pointer.any_down());
+            if let Some(pos) = hover_pos {
+                if track_rect.contains(pos) {
+                    let compatible = track_kind == TrackKind::Video;
+                    if compatible {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 160)),
+                        );
+                        if !any_down {
+                            if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
+                                // Generator clips use CreateGeneratorClip which handles
+                                // track creation and playhead positioning internally.
+                                cmds.push(AppCommand::CreateGeneratorClip { data });
+                                state.toast.show(format!("\"{}\" generator added to timeline", name));
+                            }
+                        }
+                    } else {
+                        painter.rect_stroke(
+                            track_rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_track_resize_handle(
         &mut self,
         ui: &mut egui::Ui,
@@ -1970,6 +2014,60 @@ impl TimelinePanel {
                     &truncated,
                     egui::FontId::proportional(11.0),
                     egui::Color32::from_rgb(20, 10, 0),
+                );
+
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Draw generator drag ghost — pill colored by the generator's own content
+        if let Some(crate::drag_drop::DragPayload::Generator { ref name, ref data }) = state.drag_drop.payload
+        {
+            if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let ghost_w = 140.0;
+                let ghost_h = 32.0;
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(cursor_pos.x - ghost_w * 0.5, cursor_pos.y - ghost_h * 0.5),
+                    egui::vec2(ghost_w, ghost_h),
+                );
+
+                let pill_color = match data {
+                    klipp_core::GeneratorData::SolidColor { color } =>
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
+                    klipp_core::GeneratorData::Gradient { top, .. } =>
+                        egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], 220),
+                    klipp_core::GeneratorData::ColorBars =>
+                        egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220),
+                    klipp_core::GeneratorData::Countdown =>
+                        egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
+                };
+                let lum = 0.299 * pill_color.r() as f32 + 0.587 * pill_color.g() as f32 + 0.114 * pill_color.b() as f32;
+                let text_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
+
+                let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    ui.id().with("generator_drag_ghost"),
+                ));
+
+                ghost_painter.rect_filled(ghost_rect, 4.0, pill_color);
+                ghost_painter.rect_stroke(ghost_rect, 4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(180, 220, 180, 220)));
+
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "G",
+                    egui::FontId::proportional(14.0),
+                    text_color,
+                );
+
+                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                ghost_painter.text(
+                    egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &truncated,
+                    egui::FontId::proportional(11.0),
+                    text_color,
                 );
 
                 ui.ctx().request_repaint();

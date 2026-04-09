@@ -453,6 +453,8 @@ pub enum AppCommand {
     CreateAdjustmentLayer,
     /// Create a generator clip on the top video track at playhead.
     CreateGeneratorClip { data: crate::GeneratorData },
+    /// Update a generator clip's data (color, gradient, etc.).
+    UpdateGeneratorData { clip_id: ClipId, data: crate::GeneratorData },
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.

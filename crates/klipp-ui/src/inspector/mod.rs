@@ -168,9 +168,17 @@ impl NewInspectorPanel {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
+                let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
                 let tabs: Vec<(InspectorTab, &str)> = if is_title_clip {
                     vec![
                         (InspectorTab::Title, "TITLE"),
+                        (InspectorTab::Video, "VIDEO"),
+                        (InspectorTab::Effects, "EFFECTS"),
+                        (InspectorTab::Info, "INFO"),
+                    ]
+                } else if is_generator_clip {
+                    vec![
+                        (InspectorTab::Generator, "GENERATOR"),
                         (InspectorTab::Video, "VIDEO"),
                         (InspectorTab::Effects, "EFFECTS"),
                         (InspectorTab::Info, "INFO"),
@@ -224,11 +232,16 @@ impl NewInspectorPanel {
         });
         ui.advance_cursor_after_rect(tab_rect);
 
-        // Auto-switch to Title tab when a title clip is selected (and away when not)
+        // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
         let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
+        let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
         if is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
+        } else if is_generator_clip && *active_tab != InspectorTab::Generator {
+            *active_tab = InspectorTab::Generator;
         } else if !is_title_clip && *active_tab == InspectorTab::Title {
+            *active_tab = InspectorTab::Video;
+        } else if !is_generator_clip && *active_tab == InspectorTab::Generator {
             *active_tab = InspectorTab::Video;
         }
 
@@ -336,6 +349,17 @@ impl NewInspectorPanel {
                     if let Some((_, clip)) = clip_info {
                         if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
                             show_title_editor(ui, theme, clip, state, &mut cmds);
+                        } else {
+                            no_selection(ui, theme);
+                        }
+                    } else {
+                        no_selection(ui, theme);
+                    }
+                }
+                InspectorTab::Generator => {
+                    if let Some((_, clip)) = clip_info {
+                        if let klipp_timeline::ClipKind::Generator(_) = &clip.kind {
+                            show_generator_editor(ui, theme, clip, &mut cmds);
                         } else {
                             no_selection(ui, theme);
                         }
@@ -3415,4 +3439,90 @@ fn no_selection(ui: &mut egui::Ui, theme: &KlippTheme) {
                 .color(theme.text_dim),
         );
     });
+}
+
+fn show_generator_editor(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip: &klipp_timeline::Clip,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let gd = match &clip.kind {
+        klipp_timeline::ClipKind::Generator(gd) => gd.clone(),
+        _ => return,
+    };
+    let clip_id = clip.id;
+
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Generator").strong().size(12.0));
+    ui.add_space(6.0);
+
+    match gd {
+        klipp_core::GeneratorData::SolidColor { color } => {
+            ui.label(egui::RichText::new("Solid Color").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(
+                    color[0], color[1], color[2], color[3],
+                );
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::SolidColor {
+                            color: [c.r(), c.g(), c.b(), c.a()],
+                        },
+                    });
+                }
+            });
+        }
+
+        klipp_core::GeneratorData::Gradient { top, bottom } => {
+            ui.label(egui::RichText::new("Gradient").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Top").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(
+                    top[0], top[1], top[2], top[3],
+                );
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Gradient {
+                            top: [c.r(), c.g(), c.b(), c.a()],
+                            bottom,
+                        },
+                    });
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Bottom").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(
+                    bottom[0], bottom[1], bottom[2], bottom[3],
+                );
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Gradient {
+                            top,
+                            bottom: [c.r(), c.g(), c.b(), c.a()],
+                        },
+                    });
+                }
+            });
+        }
+
+        klipp_core::GeneratorData::ColorBars => {
+            ui.label(egui::RichText::new("SMPTE 75% Color Bars").size(11.0).color(theme.text_secondary));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("No editable parameters.").size(10.0).color(theme.text_dim));
+        }
+
+        klipp_core::GeneratorData::Countdown => {
+            ui.label(egui::RichText::new("Countdown Timer").size(11.0).color(theme.text_secondary));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Duration determined by clip length.").size(10.0).color(theme.text_dim));
+        }
+    }
 }

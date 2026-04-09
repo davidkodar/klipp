@@ -104,6 +104,7 @@ pub enum LibraryCategory {
     AudioFx,
     Titles,
     Transitions,
+    Generators,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +114,7 @@ pub enum InspectorTab {
     Color,
     Effects,
     Title,
+    Generator,
     Info,
 }
 

@@ -290,6 +290,13 @@ pub enum EditCommand {
         new_data: klipp_timeline::TitleData,
     },
 
+    // === GENERATOR EDITING ===
+    EditGenerator {
+        clip_id: ClipId,
+        old_data: klipp_core::GeneratorData,
+        new_data: klipp_core::GeneratorData,
+    },
+
 }
 
 impl EditCommand {
@@ -321,6 +328,7 @@ impl EditCommand {
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
             EditCommand::EditTitle { description, .. } => description,
+            EditCommand::EditGenerator { .. } => "Edit Generator",
         }
     }
 }

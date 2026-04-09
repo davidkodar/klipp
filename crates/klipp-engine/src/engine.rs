@@ -2970,6 +2970,44 @@ impl PlaybackEngine {
                 (self.repaint_cb)();
                 return;
             }
+
+            // Check for standalone generator clip at this timecode
+            if !has_media_clip {
+                let seq = self.sequence.read().unwrap();
+                let gen_info = seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|track| {
+                        track.clip_at_timecode(tc).and_then(|(idx, clip)| {
+                            let gd = clip.generator_data()?.clone();
+                            Some((idx, gd, clip.timeline_in, clip.timeline_out))
+                        })
+                    });
+                let res2 = seq.resolution;
+                drop(seq);
+
+                if let Some((idx, gen_data, timeline_in, timeline_out)) = gen_info {
+                    self.v1_decoder = None;
+                    self.current_clip_index = idx;
+                    self.current_file = None;
+                    self.clip_source_start = 0.0;
+                    self.clip_timeline_start = timeline_in;
+
+                    let elapsed_secs = (tc - timeline_in).to_secs_f64().max(0.0);
+                    let total_secs = (timeline_out - timeline_in).to_secs_f64();
+                    let rgba = klipp_core::generator::render_generator(
+                        &gen_data, res2.width, res2.height, elapsed_secs, total_secs,
+                    );
+                    let final_rgba = self.post_process_rgba(rgba, res2.width, res2.height);
+                    let mut fb = self.frame_buffer.lock().unwrap();
+                    fb.write_frame(final_rgba, res2.width, res2.height);
+                    drop(fb);
+
+                    self.playhead = tc;
+                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
+                    (self.repaint_cb)();
+                    return;
+                }
+            }
         }
 
         let seq = self.sequence.read().unwrap();

@@ -23,6 +23,8 @@ pub enum DragPayload {
     MediaClip { media_id: MediaId },
     /// Dragging a title template from the titles browser tab.
     Title { template_name: String, title_data: TitleData, animation: Option<String> },
+    /// Dragging a generator preset from the generators browser tab.
+    Generator { name: String, data: klipp_core::GeneratorData },
 }
 
 /// Global drag-and-drop state for cross-panel interactions.
