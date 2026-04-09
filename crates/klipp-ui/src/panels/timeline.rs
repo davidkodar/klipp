@@ -6677,6 +6677,16 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::DiagonalWipeTRBL => "Diag /",
                                 klipp_timeline::TransitionKind::BoxWipeIn => "Box In",
                                 klipp_timeline::TransitionKind::BoxWipeOut => "Box Out",
+                                klipp_timeline::TransitionKind::SlideLeft => "Slide L",
+                                klipp_timeline::TransitionKind::SlideRight => "Slide R",
+                                klipp_timeline::TransitionKind::SlideUp => "Slide U",
+                                klipp_timeline::TransitionKind::SlideDown => "Slide D",
+                                klipp_timeline::TransitionKind::CoverLeft => "Cover L",
+                                klipp_timeline::TransitionKind::CoverRight => "Cover R",
+                                klipp_timeline::TransitionKind::UncoverLeft => "Uncvr L",
+                                klipp_timeline::TransitionKind::UncoverRight => "Uncvr R",
+                                klipp_timeline::TransitionKind::SqueezeH => "Sqz H",
+                                klipp_timeline::TransitionKind::SqueezeV => "Sqz V",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

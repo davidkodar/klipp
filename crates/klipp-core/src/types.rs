@@ -345,6 +345,8 @@ impl TransitionUserParams {
             31 | 32 => Self { param0: 1.0, ..Self::default() },
             // Box Wipe In/Out: param0=softness, param1=square blend
             33 | 34 => Self { param0: 1.0, param1: 0.0, ..Self::default() },
+            // Slide / Cover / Uncover / Squeeze family: no per-kind params.
+            35..=44 => Self::default(),
             _ => Self::default(),
         }
     }

@@ -704,6 +704,16 @@ pub enum TransitionKind {
     DiagonalWipeTRBL,
     BoxWipeIn,
     BoxWipeOut,
+    SlideLeft,
+    SlideRight,
+    SlideUp,
+    SlideDown,
+    CoverLeft,
+    CoverRight,
+    UncoverLeft,
+    UncoverRight,
+    SqueezeH,
+    SqueezeV,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

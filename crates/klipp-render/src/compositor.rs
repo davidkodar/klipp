@@ -810,6 +810,132 @@ fn render_transition(
                 }
             }
         }
+        TransitionKind::SlideLeft
+        | TransitionKind::SlideRight
+        | TransitionKind::SlideUp
+        | TransitionKind::SlideDown
+        | TransitionKind::CoverLeft
+        | TransitionKind::CoverRight
+        | TransitionKind::UncoverLeft
+        | TransitionKind::UncoverRight
+        | TransitionKind::SqueezeH
+        | TransitionKind::SqueezeV => {
+            let w = width as usize;
+            let h = height as usize;
+            let offset_w = ((p * width as f32) as usize).min(w);
+            let offset_h = ((p * height as f32) as usize).min(h);
+            let wi = w as isize;
+            let hi = h as isize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let (use_to, sx, sy): (bool, usize, usize) = match kind {
+                        TransitionKind::SlideLeft => {
+                            let to_x = x as isize + wi - offset_w as isize;
+                            if to_x < wi {
+                                (true, to_x.max(0) as usize, y)
+                            } else {
+                                let fx = (x as isize - offset_w as isize).clamp(0, wi - 1)
+                                    as usize;
+                                (false, fx, y)
+                            }
+                        }
+                        TransitionKind::SlideRight => {
+                            let to_x = x as isize - wi + offset_w as isize;
+                            if to_x >= 0 {
+                                (true, (to_x as usize).min(w - 1), y)
+                            } else {
+                                (false, (x + offset_w).min(w - 1), y)
+                            }
+                        }
+                        TransitionKind::SlideUp => {
+                            let to_y = y as isize + hi - offset_h as isize;
+                            if to_y < hi {
+                                (true, x, to_y.max(0) as usize)
+                            } else {
+                                let fy = (y as isize - offset_h as isize).clamp(0, hi - 1)
+                                    as usize;
+                                (false, x, fy)
+                            }
+                        }
+                        TransitionKind::SlideDown => {
+                            let to_y = y as isize - hi + offset_h as isize;
+                            if to_y >= 0 {
+                                (true, x, (to_y as usize).min(h - 1))
+                            } else {
+                                (false, x, (y + offset_h).min(h - 1))
+                            }
+                        }
+                        TransitionKind::CoverLeft => {
+                            let to_x = x as isize + wi - offset_w as isize;
+                            if to_x < wi {
+                                (true, to_x.max(0) as usize, y)
+                            } else {
+                                (false, x, y)
+                            }
+                        }
+                        TransitionKind::CoverRight => {
+                            let to_x = x as isize - wi + offset_w as isize;
+                            if to_x >= 0 {
+                                (true, (to_x as usize).min(w - 1), y)
+                            } else {
+                                (false, x, y)
+                            }
+                        }
+                        TransitionKind::UncoverLeft => {
+                            let from_x = x + offset_w;
+                            if from_x < w {
+                                (false, from_x, y)
+                            } else {
+                                (true, x, y)
+                            }
+                        }
+                        TransitionKind::UncoverRight => {
+                            let from_x = x as isize - offset_w as isize;
+                            if from_x >= 0 {
+                                (false, from_x as usize, y)
+                            } else {
+                                (true, x, y)
+                            }
+                        }
+                        TransitionKind::SqueezeH => {
+                            let half = w as f32 * 0.5;
+                            if p > 0.5 {
+                                let to_src = ((x as f32 - half) / p.max(0.001) + half)
+                                    .clamp(0.0, w as f32 - 1.0)
+                                    as usize;
+                                (true, to_src, y)
+                            } else {
+                                let src_x = ((x as f32 - half) / (1.0 - p).max(0.001)
+                                    + half)
+                                    .clamp(0.0, w as f32 - 1.0)
+                                    as usize;
+                                (false, src_x, y)
+                            }
+                        }
+                        TransitionKind::SqueezeV => {
+                            let half = h as f32 * 0.5;
+                            if p > 0.5 {
+                                let to_src = ((y as f32 - half) / p.max(0.001) + half)
+                                    .clamp(0.0, h as f32 - 1.0)
+                                    as usize;
+                                (true, x, to_src)
+                            } else {
+                                let src_y = ((y as f32 - half) / (1.0 - p).max(0.001)
+                                    + half)
+                                    .clamp(0.0, h as f32 - 1.0)
+                                    as usize;
+                                (false, x, src_y)
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    let si = (sy * w + sx) * 4;
+                    let src = if use_to { to } else { from };
+                    output[fi..fi + 4].copy_from_slice(&src[si..si + 4]);
+                }
+            }
+        }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
             let inv = 1.0 - p;

@@ -309,6 +309,174 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Slide Left",
+        kind_id: 35,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            preview_split_h(p, r, 0.6, PREVIEW_A, PREVIEW_B);
+            p.arrow(
+                egui::pos2(r.center().x + 10.0, r.center().y),
+                egui::vec2(-20.0, 0.0),
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Slide Right",
+        kind_id: 36,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            preview_split_h(p, r, 0.4, PREVIEW_B, PREVIEW_A);
+            p.arrow(
+                egui::pos2(r.center().x - 10.0, r.center().y),
+                egui::vec2(20.0, 0.0),
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Slide Up",
+        kind_id: 37,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            preview_split_v(p, r, 0.6, PREVIEW_A, PREVIEW_B);
+            p.arrow(
+                egui::pos2(r.center().x, r.center().y + 10.0),
+                egui::vec2(0.0, -20.0),
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Slide Down",
+        kind_id: 38,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            preview_split_v(p, r, 0.4, PREVIEW_B, PREVIEW_A);
+            p.arrow(
+                egui::pos2(r.center().x, r.center().y - 10.0),
+                egui::vec2(0.0, 20.0),
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Cover Left",
+        kind_id: 39,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let cover_w = r.width() * 0.55;
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x, r.min.y),
+                    egui::vec2(cover_w, r.height()),
+                ),
+                0.0,
+                PREVIEW_B,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Cover Right",
+        kind_id: 40,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let cover_w = r.width() * 0.55;
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.max.x - cover_w, r.min.y),
+                    egui::vec2(cover_w, r.height()),
+                ),
+                0.0,
+                PREVIEW_B,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Uncover Left",
+        kind_id: 41,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let uncover_w = r.width() * 0.45;
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x, r.min.y),
+                    egui::vec2(uncover_w, r.height()),
+                ),
+                0.0,
+                PREVIEW_A,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Uncover Right",
+        kind_id: 42,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let uncover_w = r.width() * 0.45;
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.max.x - uncover_w, r.min.y),
+                    egui::vec2(uncover_w, r.height()),
+                ),
+                0.0,
+                PREVIEW_A,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Squeeze H",
+        kind_id: 43,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let squeeze_w = r.width() * 0.3;
+            p.rect_filled(
+                egui::Rect::from_center_size(r.center(), egui::vec2(squeeze_w, r.height())),
+                0.0,
+                PREVIEW_A,
+            );
+            p.arrow(
+                egui::pos2(r.center().x - squeeze_w * 0.5 - 8.0, r.center().y),
+                egui::vec2(8.0, 0.0),
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
+            p.arrow(
+                egui::pos2(r.center().x + squeeze_w * 0.5 + 8.0, r.center().y),
+                egui::vec2(-8.0, 0.0),
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Squeeze V",
+        kind_id: 44,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _| {
+            p.rect_filled(r, 0.0, PREVIEW_B);
+            let squeeze_h = r.height() * 0.3;
+            p.rect_filled(
+                egui::Rect::from_center_size(r.center(), egui::vec2(r.width(), squeeze_h)),
+                0.0,
+                PREVIEW_A,
+            );
+            p.arrow(
+                egui::pos2(r.center().x, r.center().y - squeeze_h * 0.5 - 8.0),
+                egui::vec2(0.0, 8.0),
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
+            p.arrow(
+                egui::pos2(r.center().x, r.center().y + squeeze_h * 0.5 + 8.0),
+                egui::vec2(0.0, -8.0),
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
+        },
+    },
+    TransitionDef {
         name: "Box Wipe In",
         kind_id: 33,
         category: TransitionCategory::Wipe,

@@ -4321,6 +4321,102 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             t_box = s_box;
         }
         result = lerp_pixel(from_px, to_px, t_box);
+    } else if params.kind_id >= 35u && params.kind_id <= 44u {
+        // Slide / Cover / Uncover / Squeeze family — pixel-offset sampling.
+        let wf = f32(params.width);
+        let hf = f32(params.height);
+        let wi = i32(params.width);
+        let hi = i32(params.height);
+        let offset_w = i32(p * wf);
+        let offset_h = i32(p * hf);
+        var sx: i32 = i32(x);
+        var sy: i32 = i32(y);
+        var use_to: bool = false;
+        if params.kind_id == 35u {
+            let to_x = i32(x) + wi - offset_w;
+            if to_x < wi {
+                use_to = true;
+                sx = max(to_x, 0);
+            } else {
+                sx = clamp(i32(x) - offset_w, 0, wi - 1);
+            }
+        } else if params.kind_id == 36u {
+            let to_x = i32(x) - wi + offset_w;
+            if to_x >= 0 {
+                use_to = true;
+                sx = min(to_x, wi - 1);
+            } else {
+                sx = min(i32(x) + offset_w, wi - 1);
+            }
+        } else if params.kind_id == 37u {
+            let to_y = i32(y) + hi - offset_h;
+            if to_y < hi {
+                use_to = true;
+                sy = max(to_y, 0);
+            } else {
+                sy = clamp(i32(y) - offset_h, 0, hi - 1);
+            }
+        } else if params.kind_id == 38u {
+            let to_y = i32(y) - hi + offset_h;
+            if to_y >= 0 {
+                use_to = true;
+                sy = min(to_y, hi - 1);
+            } else {
+                sy = min(i32(y) + offset_h, hi - 1);
+            }
+        } else if params.kind_id == 39u {
+            let to_x = i32(x) + wi - offset_w;
+            if to_x < wi {
+                use_to = true;
+                sx = max(to_x, 0);
+            }
+        } else if params.kind_id == 40u {
+            let to_x = i32(x) - wi + offset_w;
+            if to_x >= 0 {
+                use_to = true;
+                sx = min(to_x, wi - 1);
+            }
+        } else if params.kind_id == 41u {
+            let from_x = i32(x) + offset_w;
+            if from_x < wi {
+                sx = from_x;
+            } else {
+                use_to = true;
+            }
+        } else if params.kind_id == 42u {
+            let from_x = i32(x) - offset_w;
+            if from_x >= 0 {
+                sx = from_x;
+            } else {
+                use_to = true;
+            }
+        } else if params.kind_id == 43u {
+            let half = wf * 0.5;
+            if p > 0.5 {
+                use_to = true;
+                let to_src = (f32(x) - half) / max(p, 0.001) + half;
+                sx = i32(clamp(to_src, 0.0, wf - 1.0));
+            } else {
+                let src_x = (f32(x) - half) / max(1.0 - p, 0.001) + half;
+                sx = i32(clamp(src_x, 0.0, wf - 1.0));
+            }
+        } else {
+            let half = hf * 0.5;
+            if p > 0.5 {
+                use_to = true;
+                let to_src = (f32(y) - half) / max(p, 0.001) + half;
+                sy = i32(clamp(to_src, 0.0, hf - 1.0));
+            } else {
+                let src_y = (f32(y) - half) / max(1.0 - p, 0.001) + half;
+                sy = i32(clamp(src_y, 0.0, hf - 1.0));
+            }
+        }
+        let sidx = u32(sy) * params.width + u32(sx);
+        if use_to {
+            result = unpack(to_buf[sidx]);
+        } else {
+            result = unpack(from_buf[sidx]);
+        }
     } else {
         result = lerp_pixel(from_px, to_px, p);
     }

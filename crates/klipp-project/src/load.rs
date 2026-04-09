@@ -260,6 +260,16 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         DiagonalWipeTRBL => 32,
         BoxWipeIn => 33,
         BoxWipeOut => 34,
+        SlideLeft => 35,
+        SlideRight => 36,
+        SlideUp => 37,
+        SlideDown => 38,
+        CoverLeft => 39,
+        CoverRight => 40,
+        UncoverLeft => 41,
+        UncoverRight => 42,
+        SqueezeH => 43,
+        SqueezeV => 44,
     }
 }
 
@@ -327,6 +337,16 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "DiagonalWipeTRBL" => klipp_timeline::TransitionKind::DiagonalWipeTRBL,
                     "BoxWipeIn" => klipp_timeline::TransitionKind::BoxWipeIn,
                     "BoxWipeOut" => klipp_timeline::TransitionKind::BoxWipeOut,
+                    "SlideLeft" => klipp_timeline::TransitionKind::SlideLeft,
+                    "SlideRight" => klipp_timeline::TransitionKind::SlideRight,
+                    "SlideUp" => klipp_timeline::TransitionKind::SlideUp,
+                    "SlideDown" => klipp_timeline::TransitionKind::SlideDown,
+                    "CoverLeft" => klipp_timeline::TransitionKind::CoverLeft,
+                    "CoverRight" => klipp_timeline::TransitionKind::CoverRight,
+                    "UncoverLeft" => klipp_timeline::TransitionKind::UncoverLeft,
+                    "UncoverRight" => klipp_timeline::TransitionKind::UncoverRight,
+                    "SqueezeH" => klipp_timeline::TransitionKind::SqueezeH,
+                    "SqueezeV" => klipp_timeline::TransitionKind::SqueezeV,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

@@ -40,6 +40,16 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::DiagonalWipeTRBL => 32,
         TransitionKind::BoxWipeIn => 33,
         TransitionKind::BoxWipeOut => 34,
+        TransitionKind::SlideLeft => 35,
+        TransitionKind::SlideRight => 36,
+        TransitionKind::SlideUp => 37,
+        TransitionKind::SlideDown => 38,
+        TransitionKind::CoverLeft => 39,
+        TransitionKind::CoverRight => 40,
+        TransitionKind::UncoverLeft => 41,
+        TransitionKind::UncoverRight => 42,
+        TransitionKind::SqueezeH => 43,
+        TransitionKind::SqueezeV => 44,
     }
 }
 
@@ -81,6 +91,16 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         32 => TransitionKind::DiagonalWipeTRBL,
         33 => TransitionKind::BoxWipeIn,
         34 => TransitionKind::BoxWipeOut,
+        35 => TransitionKind::SlideLeft,
+        36 => TransitionKind::SlideRight,
+        37 => TransitionKind::SlideUp,
+        38 => TransitionKind::SlideDown,
+        39 => TransitionKind::CoverLeft,
+        40 => TransitionKind::CoverRight,
+        41 => TransitionKind::UncoverLeft,
+        42 => TransitionKind::UncoverRight,
+        43 => TransitionKind::SqueezeH,
+        44 => TransitionKind::SqueezeV,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -123,6 +143,16 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (32, "Diagonal TR-BL"),
         (33, "Box Wipe In"),
         (34, "Box Wipe Out"),
+        (35, "Slide Left"),
+        (36, "Slide Right"),
+        (37, "Slide Up"),
+        (38, "Slide Down"),
+        (39, "Cover Left"),
+        (40, "Cover Right"),
+        (41, "Uncover Left"),
+        (42, "Uncover Right"),
+        (43, "Squeeze H"),
+        (44, "Squeeze V"),
     ]
 }
 
@@ -632,6 +662,137 @@ pub fn render_transition_with_params(
                         t,
                         &mut output[idx..idx + 4],
                     );
+                }
+            }
+        }
+        TransitionKind::SlideLeft
+        | TransitionKind::SlideRight
+        | TransitionKind::SlideUp
+        | TransitionKind::SlideDown
+        | TransitionKind::CoverLeft
+        | TransitionKind::CoverRight
+        | TransitionKind::UncoverLeft
+        | TransitionKind::UncoverRight
+        | TransitionKind::SqueezeH
+        | TransitionKind::SqueezeV => {
+            // Pixel-offset sampling family. For each output pixel, decide which
+            // source buffer to sample and at what coordinate.
+            let w = width as usize;
+            let h = height as usize;
+            let offset_w = ((p * width as f32) as usize).min(w);
+            let offset_h = ((p * height as f32) as usize).min(h);
+            let wi = w as isize;
+            let hi = h as isize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    // Returns (src_is_to, sx, sy).
+                    let (use_to, sx, sy): (bool, usize, usize) = match kind {
+                        TransitionKind::SlideLeft => {
+                            let to_x = x as isize + wi - offset_w as isize;
+                            if to_x < wi {
+                                (true, to_x.max(0) as usize, y)
+                            } else {
+                                let fx = (x as isize - offset_w as isize)
+                                    .clamp(0, wi - 1) as usize;
+                                (false, fx, y)
+                            }
+                        }
+                        TransitionKind::SlideRight => {
+                            let to_x = x as isize - wi + offset_w as isize;
+                            if to_x >= 0 {
+                                (true, (to_x as usize).min(w - 1), y)
+                            } else {
+                                let fx = (x + offset_w).min(w - 1);
+                                (false, fx, y)
+                            }
+                        }
+                        TransitionKind::SlideUp => {
+                            let to_y = y as isize + hi - offset_h as isize;
+                            if to_y < hi {
+                                (true, x, to_y.max(0) as usize)
+                            } else {
+                                let fy = (y as isize - offset_h as isize)
+                                    .clamp(0, hi - 1) as usize;
+                                (false, x, fy)
+                            }
+                        }
+                        TransitionKind::SlideDown => {
+                            let to_y = y as isize - hi + offset_h as isize;
+                            if to_y >= 0 {
+                                (true, x, (to_y as usize).min(h - 1))
+                            } else {
+                                let fy = (y + offset_h).min(h - 1);
+                                (false, x, fy)
+                            }
+                        }
+                        TransitionKind::CoverLeft => {
+                            let to_x = x as isize + wi - offset_w as isize;
+                            if to_x < wi {
+                                (true, to_x.max(0) as usize, y)
+                            } else {
+                                (false, x, y)
+                            }
+                        }
+                        TransitionKind::CoverRight => {
+                            let to_x = x as isize - wi + offset_w as isize;
+                            if to_x >= 0 {
+                                (true, (to_x as usize).min(w - 1), y)
+                            } else {
+                                (false, x, y)
+                            }
+                        }
+                        TransitionKind::UncoverLeft => {
+                            let from_x = x + offset_w;
+                            if from_x < w {
+                                (false, from_x, y)
+                            } else {
+                                (true, x, y)
+                            }
+                        }
+                        TransitionKind::UncoverRight => {
+                            let from_x = x as isize - offset_w as isize;
+                            if from_x >= 0 {
+                                (false, from_x as usize, y)
+                            } else {
+                                (true, x, y)
+                            }
+                        }
+                        TransitionKind::SqueezeH => {
+                            let half = w as f32 * 0.5;
+                            if p > 0.5 {
+                                let to_src = ((x as f32 - half) / p.max(0.001) + half)
+                                    .clamp(0.0, w as f32 - 1.0)
+                                    as usize;
+                                (true, to_src, y)
+                            } else {
+                                let src_x = ((x as f32 - half) / (1.0 - p).max(0.001)
+                                    + half)
+                                    .clamp(0.0, w as f32 - 1.0)
+                                    as usize;
+                                (false, src_x, y)
+                            }
+                        }
+                        TransitionKind::SqueezeV => {
+                            let half = h as f32 * 0.5;
+                            if p > 0.5 {
+                                let to_src = ((y as f32 - half) / p.max(0.001) + half)
+                                    .clamp(0.0, h as f32 - 1.0)
+                                    as usize;
+                                (true, x, to_src)
+                            } else {
+                                let src_y = ((y as f32 - half) / (1.0 - p).max(0.001)
+                                    + half)
+                                    .clamp(0.0, h as f32 - 1.0)
+                                    as usize;
+                                (false, x, src_y)
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    let si = (sy * w + sx) * 4;
+                    let src = if use_to { to } else { from };
+                    output[fi..fi + 4].copy_from_slice(&src[si..si + 4]);
                 }
             }
         }
@@ -1747,11 +1908,21 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::DiagonalWipeTRBL), 32);
         assert_eq!(transition_kind_to_id(TransitionKind::BoxWipeIn), 33);
         assert_eq!(transition_kind_to_id(TransitionKind::BoxWipeOut), 34);
+        assert_eq!(transition_kind_to_id(TransitionKind::SlideLeft), 35);
+        assert_eq!(transition_kind_to_id(TransitionKind::SlideRight), 36);
+        assert_eq!(transition_kind_to_id(TransitionKind::SlideUp), 37);
+        assert_eq!(transition_kind_to_id(TransitionKind::SlideDown), 38);
+        assert_eq!(transition_kind_to_id(TransitionKind::CoverLeft), 39);
+        assert_eq!(transition_kind_to_id(TransitionKind::CoverRight), 40);
+        assert_eq!(transition_kind_to_id(TransitionKind::UncoverLeft), 41);
+        assert_eq!(transition_kind_to_id(TransitionKind::UncoverRight), 42);
+        assert_eq!(transition_kind_to_id(TransitionKind::SqueezeH), 43);
+        assert_eq!(transition_kind_to_id(TransitionKind::SqueezeV), 44);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=34u8 {
+        for id in 0..=44u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -1760,12 +1931,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(35), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(45), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_35() {
-        assert_eq!(all_transition_kinds().len(), 35);
+    fn all_transition_kinds_returns_45() {
+        assert_eq!(all_transition_kinds().len(), 45);
     }
 
     // ========================================================================
@@ -1809,6 +1980,37 @@ mod tests {
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
     }
+
+    // ========================================================================
+    // Slide / Cover / Uncover / Squeeze family endpoint tests
+    // ========================================================================
+    macro_rules! slide_family_endpoint_test {
+        ($test_name:ident, $kind:ident) => {
+            #[test]
+            fn $test_name() {
+                let from = make_solid(255, 0, 0, 255, 8, 8);
+                let to = make_solid(0, 255, 0, 255, 8, 8);
+                assert_approx_rgb(
+                    &render_transition(TransitionKind::$kind, &from, &to, 0.0, 8, 8),
+                    255, 0, 0, 5,
+                );
+                assert_approx_rgb(
+                    &render_transition(TransitionKind::$kind, &from, &to, 1.0, 8, 8),
+                    0, 255, 0, 5,
+                );
+            }
+        };
+    }
+    slide_family_endpoint_test!(slide_left_endpoints, SlideLeft);
+    slide_family_endpoint_test!(slide_right_endpoints, SlideRight);
+    slide_family_endpoint_test!(slide_up_endpoints, SlideUp);
+    slide_family_endpoint_test!(slide_down_endpoints, SlideDown);
+    slide_family_endpoint_test!(cover_left_endpoints, CoverLeft);
+    slide_family_endpoint_test!(cover_right_endpoints, CoverRight);
+    slide_family_endpoint_test!(uncover_left_endpoints, UncoverLeft);
+    slide_family_endpoint_test!(uncover_right_endpoints, UncoverRight);
+    slide_family_endpoint_test!(squeeze_h_endpoints, SqueezeH);
+    slide_family_endpoint_test!(squeeze_v_endpoints, SqueezeV);
 
     #[test]
     fn box_wipe_in_at_zero_is_from() {
@@ -2240,6 +2442,16 @@ mod tests {
             TransitionKind::DiagonalWipeTRBL,
             TransitionKind::BoxWipeIn,
             TransitionKind::BoxWipeOut,
+            TransitionKind::SlideLeft,
+            TransitionKind::SlideRight,
+            TransitionKind::SlideUp,
+            TransitionKind::SlideDown,
+            TransitionKind::CoverLeft,
+            TransitionKind::CoverRight,
+            TransitionKind::UncoverLeft,
+            TransitionKind::UncoverRight,
+            TransitionKind::SqueezeH,
+            TransitionKind::SqueezeV,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -2281,6 +2493,16 @@ mod tests {
             TransitionKind::DiagonalWipeTRBL,
             TransitionKind::BoxWipeIn,
             TransitionKind::BoxWipeOut,
+            TransitionKind::SlideLeft,
+            TransitionKind::SlideRight,
+            TransitionKind::SlideUp,
+            TransitionKind::SlideDown,
+            TransitionKind::CoverLeft,
+            TransitionKind::CoverRight,
+            TransitionKind::UncoverLeft,
+            TransitionKind::UncoverRight,
+            TransitionKind::SqueezeH,
+            TransitionKind::SqueezeV,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

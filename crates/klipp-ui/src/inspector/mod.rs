@@ -1445,6 +1445,16 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         DiagonalWipeTRBL => 32,
         BoxWipeIn => 33,
         BoxWipeOut => 34,
+        SlideLeft => 35,
+        SlideRight => 36,
+        SlideUp => 37,
+        SlideDown => 38,
+        CoverLeft => 39,
+        CoverRight => 40,
+        UncoverLeft => 41,
+        UncoverRight => 42,
+        SqueezeH => 43,
+        SqueezeV => 44,
     }
 }
 
@@ -1958,6 +1968,27 @@ fn show_transition_inspector(
                         });
                     }
                 });
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::SlideLeft
+                    | klipp_timeline::TransitionKind::SlideRight
+                    | klipp_timeline::TransitionKind::SlideUp
+                    | klipp_timeline::TransitionKind::SlideDown
+                    | klipp_timeline::TransitionKind::CoverLeft
+                    | klipp_timeline::TransitionKind::CoverRight
+                    | klipp_timeline::TransitionKind::UncoverLeft
+                    | klipp_timeline::TransitionKind::UncoverRight
+                    | klipp_timeline::TransitionKind::SqueezeH
+                    | klipp_timeline::TransitionKind::SqueezeV
+            ) {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("No additional parameters")
+                        .color(theme.text_dim)
+                        .size(10.0)
+                        .italics(),
+                );
             }
             if matches!(
                 transition.kind,
