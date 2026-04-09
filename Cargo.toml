@@ -12,6 +12,7 @@ members = [
     "crates/klipp-nodes",
     "crates/klipp-title",
     "crates/klipp-transitions",
+    "crates/klipp-validation",
     "crates/klipp-render",
     "crates/klipp-export",
     "crates/klipp-ui",
@@ -104,6 +105,7 @@ klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
 klipp-timeline = { path = "crates/klipp-timeline" }
 klipp-transitions = { path = "crates/klipp-transitions" }
+klipp-validation  = { path = "crates/klipp-validation" }
 klipp-media   = { path = "crates/klipp-media" }
 klipp-audio   = { path = "crates/klipp-audio" }
 klipp-color   = { path = "crates/klipp-color" }

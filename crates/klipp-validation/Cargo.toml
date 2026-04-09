@@ -1,0 +1,9 @@
+[package]
+name = "klipp-validation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+klipp-core     = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-media    = { workspace = true }
