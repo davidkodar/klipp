@@ -270,6 +270,14 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         UncoverRight => 42,
         SqueezeH => 43,
         SqueezeV => 44,
+        AdditiveDissolve => 45,
+        FadeToColor => 46,
+        GlitchDissolve => 47,
+        Desaturate => 48,
+        NegativeFlash => 49,
+        Sepia => 50,
+        ColorizeFlash => 51,
+        HueRotate => 52,
     }
 }
 
@@ -347,6 +355,14 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "UncoverRight" => klipp_timeline::TransitionKind::UncoverRight,
                     "SqueezeH" => klipp_timeline::TransitionKind::SqueezeH,
                     "SqueezeV" => klipp_timeline::TransitionKind::SqueezeV,
+                    "AdditiveDissolve" => klipp_timeline::TransitionKind::AdditiveDissolve,
+                    "FadeToColor" => klipp_timeline::TransitionKind::FadeToColor,
+                    "GlitchDissolve" => klipp_timeline::TransitionKind::GlitchDissolve,
+                    "Desaturate" => klipp_timeline::TransitionKind::Desaturate,
+                    "NegativeFlash" => klipp_timeline::TransitionKind::NegativeFlash,
+                    "Sepia" => klipp_timeline::TransitionKind::Sepia,
+                    "ColorizeFlash" => klipp_timeline::TransitionKind::ColorizeFlash,
+                    "HueRotate" => klipp_timeline::TransitionKind::HueRotate,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

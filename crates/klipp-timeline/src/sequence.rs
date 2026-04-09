@@ -714,6 +714,14 @@ pub enum TransitionKind {
     UncoverRight,
     SqueezeH,
     SqueezeV,
+    AdditiveDissolve,
+    FadeToColor,
+    GlitchDissolve,
+    Desaturate,
+    NegativeFlash,
+    Sepia,
+    ColorizeFlash,
+    HueRotate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

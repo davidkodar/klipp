@@ -6687,6 +6687,14 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::UncoverRight => "Uncvr R",
                                 klipp_timeline::TransitionKind::SqueezeH => "Sqz H",
                                 klipp_timeline::TransitionKind::SqueezeV => "Sqz V",
+                                klipp_timeline::TransitionKind::AdditiveDissolve => "Add Dis",
+                                klipp_timeline::TransitionKind::FadeToColor => "Fade Clr",
+                                klipp_timeline::TransitionKind::GlitchDissolve => "Glitch",
+                                klipp_timeline::TransitionKind::Desaturate => "Desat",
+                                klipp_timeline::TransitionKind::NegativeFlash => "Neg",
+                                klipp_timeline::TransitionKind::Sepia => "Sepia",
+                                klipp_timeline::TransitionKind::ColorizeFlash => "Colorize",
+                                klipp_timeline::TransitionKind::HueRotate => "Hue Rot",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

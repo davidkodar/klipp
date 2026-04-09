@@ -4461,7 +4461,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             result = out_color;
         }
-        // For slide/cover/uncover (35–42), apply the shared sx/sy lookup.
+        // Shared lookup for slide/cover/uncover (35–42).
         // Squeeze (43–44) already set result directly above.
         if params.kind_id <= 42u {
             let sidx = u32(sy) * params.width + u32(sx);
@@ -4470,6 +4470,187 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else {
                 result = unpack(from_buf[sidx]);
             }
+        }
+    } else if params.kind_id == 51u {
+        // Colorize Flash: user-defined color washes over at the cut.
+        let flash_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let intensity = clamp(params.param0, 0.0, 1.0);
+        let peak = clamp(params.param1, 0.05, 0.95);
+        let ramp_up = peak * 0.6;
+        let ramp_down = peak + (1.0 - peak) * 0.4;
+        var flash_t: f32;
+        if p < ramp_up {
+            flash_t = p / max(ramp_up, 0.001);
+        } else if p < peak {
+            flash_t = 1.0;
+        } else if p < ramp_down {
+            flash_t = 1.0 - (p - peak) / max(ramp_down - peak, 0.001);
+        } else {
+            flash_t = 0.0;
+        }
+        flash_t = flash_t * intensity;
+        let dissolve_start = peak * 0.8;
+        let dissolve_t = clamp(
+            (p - dissolve_start) / max(1.0 - dissolve_start, 0.001),
+            0.0,
+            1.0,
+        );
+        let base = lerp_pixel(from_px, to_px, dissolve_t);
+        result = vec4<f32>(
+            mix(base.x, flash_color.x, flash_t),
+            mix(base.y, flash_color.y, flash_t),
+            mix(base.z, flash_color.z, flash_t),
+            255.0,
+        );
+    } else if params.kind_id == 52u {
+        // Hue Rotate: hue spins through the color wheel at midpoint.
+        let rotations = params.param0;
+        let envelope = sin(p * 3.14159265) * rotations;
+        let hue_shift = envelope * 360.0;
+        let base = lerp_pixel(from_px, to_px, p);
+        let r = base.x / 255.0;
+        let g = base.y / 255.0;
+        let b = base.z / 255.0;
+        let cmax = max(r, max(g, b));
+        let cmin = min(r, min(g, b));
+        let delta = cmax - cmin;
+        // RGB → HSV (hue in degrees)
+        var h: f32 = 0.0;
+        if delta > 0.001 {
+            if abs(cmax - r) < 0.001 {
+                let tmp = (g - b) / delta;
+                h = 60.0 * (tmp - floor(tmp / 6.0) * 6.0);
+            } else if abs(cmax - g) < 0.001 {
+                h = 60.0 * ((b - r) / delta + 2.0);
+            } else {
+                h = 60.0 * ((r - g) / delta + 4.0);
+            }
+        }
+        let s = select(0.0, delta / cmax, cmax > 0.001);
+        let v = cmax;
+        // Shift hue, normalize to [0, 360)
+        var h2 = h + hue_shift;
+        h2 = h2 - floor(h2 / 360.0) * 360.0;
+        h2 = h2 - floor(h2 / 360.0) * 360.0;
+        // HSV → RGB
+        let c = v * s;
+        let h_sector = h2 / 60.0;
+        let h_mod2 = h_sector - floor(h_sector / 2.0) * 2.0;
+        let x2 = c * (1.0 - abs(h_mod2 - 1.0));
+        let m = v - c;
+        let hi = u32(h_sector) % 6u;
+        var rgb: vec3<f32>;
+        if hi == 0u { rgb = vec3<f32>(c, x2, 0.0); }
+        else if hi == 1u { rgb = vec3<f32>(x2, c, 0.0); }
+        else if hi == 2u { rgb = vec3<f32>(0.0, c, x2); }
+        else if hi == 3u { rgb = vec3<f32>(0.0, x2, c); }
+        else if hi == 4u { rgb = vec3<f32>(x2, 0.0, c); }
+        else { rgb = vec3<f32>(c, 0.0, x2); }
+        result = vec4<f32>((rgb + vec3<f32>(m)) * 255.0, 255.0);
+    } else if params.kind_id == 49u {
+        // Negative Flash: brief inversion at the cut point.
+        let intensity = clamp(params.param0, 0.0, 1.0);
+        let peak = clamp(params.param1, 0.05, 0.95);
+        let ramp_up = peak * 0.6;
+        let ramp_down = peak + (1.0 - peak) * 0.4;
+        var flash_t: f32;
+        if p < ramp_up {
+            flash_t = p / max(ramp_up, 0.001);
+        } else if p < peak {
+            flash_t = 1.0;
+        } else if p < ramp_down {
+            flash_t = 1.0 - (p - peak) / max(ramp_down - peak, 0.001);
+        } else {
+            flash_t = 0.0;
+        }
+        flash_t = flash_t * intensity;
+        let dissolve_start = peak * 0.8;
+        let dissolve_t = clamp(
+            (p - dissolve_start) / max(1.0 - dissolve_start, 0.001),
+            0.0,
+            1.0,
+        );
+        let base = lerp_pixel(from_px, to_px, dissolve_t);
+        let negative = vec4<f32>(255.0 - base.x, 255.0 - base.y, 255.0 - base.z, 255.0);
+        result = lerp_pixel(base, negative, flash_t);
+    } else if params.kind_id == 50u {
+        // Sepia Transition: warm sepia tone through the cut.
+        let strength = clamp(params.param0, 0.0, 1.0);
+        let warmth = clamp(params.param1, 0.5, 2.0);
+        let envelope = sin(p * 3.14159265) * strength;
+        let base = lerp_pixel(from_px, to_px, p);
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let sepia_r = clamp(luma * warmth * 1.2, 0.0, 255.0);
+        let sepia_g = clamp(luma * warmth * 1.0, 0.0, 255.0);
+        let sepia_b = clamp(luma * warmth * 0.75, 0.0, 255.0);
+        let sepia = vec4<f32>(sepia_r, sepia_g, sepia_b, 255.0);
+        result = lerp_pixel(base, sepia, envelope);
+    } else if params.kind_id == 47u {
+        // Glitch Dissolve: block shifts + RGB split + noise.
+        let intensity = params.param0;
+        let block_size = max(params.param1, 1.0);
+        let envelope = sin(p * 3.14159265) * intensity;
+        let block_row = u32(f32(y) / block_size);
+        let hash = fract(sin(f32(block_row) * 127.1 + p * 311.7) * 43758.545);
+        let hash2 = fract(sin(f32(block_row) * 269.5 + p * 183.3) * 12345.678);
+        let shift = (hash - 0.5) * envelope * 40.0;
+        let sx_g = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
+        let r_shift = shift * 0.5;
+        let b_shift = -shift * 0.5;
+        let rx = clamp(f32(x) + r_shift, 0.0, f32(params.width) - 1.0);
+        let bx = clamp(f32(x) + b_shift, 0.0, f32(params.width) - 1.0);
+        let g_idx = u32(y) * params.width + u32(sx_g);
+        let r_idx = u32(y) * params.width + u32(rx);
+        let b_idx = u32(y) * params.width + u32(bx);
+        let base_g = lerp_pixel(unpack(from_buf[g_idx]), unpack(to_buf[g_idx]), p);
+        let r_base = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p);
+        let b_base = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p);
+        let noise = (hash2 - 0.5) * envelope * 60.0;
+        result = vec4<f32>(
+            clamp(r_base.x + noise, 0.0, 255.0),
+            clamp(base_g.y + noise * 0.5, 0.0, 255.0),
+            clamp(b_base.z + noise, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 48u {
+        // Desaturate Transition: drain to grey at midpoint.
+        let depth = clamp(params.param0, 0.0, 1.0);
+        let envelope = sin(p * 3.14159265) * depth;
+        let base = lerp_pixel(from_px, to_px, p);
+        // Luma in 0-255 space.
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let grey = vec4<f32>(luma, luma, luma, 255.0);
+        result = mix(base, grey, envelope);
+    } else if params.kind_id == 45u {
+        // Additive Dissolve: cross-dissolve with additive brightness boost.
+        let intensity = params.param0;
+        let envelope = sin(p * 3.14159265) * intensity;
+        let base = lerp_pixel(from_px, to_px, p);
+        let add_val = envelope * 0.5 * 255.0;
+        result = clamp(
+            base + vec4<f32>(add_val, add_val, add_val, 0.0),
+            vec4<f32>(0.0),
+            vec4<f32>(255.0, 255.0, 255.0, 255.0),
+        );
+    } else if params.kind_id == 46u {
+        // Fade to Color: A → solid color → B.
+        let fade_color = vec4<f32>(
+            params.color_r * 255.0,
+            params.color_g * 255.0,
+            params.color_b * 255.0,
+            255.0,
+        );
+        let hold = clamp(params.param0, 0.0, 0.45);
+        let mid_start = 0.5 - hold * 0.5;
+        let mid_end = 0.5 + hold * 0.5;
+        if p <= mid_start {
+            let t = p / max(mid_start, 0.001);
+            result = lerp_pixel(from_px, fade_color, t);
+        } else if p >= mid_end {
+            let t = (p - mid_end) / max(1.0 - mid_end, 0.001);
+            result = lerp_pixel(fade_color, to_px, t);
+        } else {
+            result = fade_color;
         }
     } else {
         result = lerp_pixel(from_px, to_px, p);

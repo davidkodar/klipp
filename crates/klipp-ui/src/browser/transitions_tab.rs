@@ -757,6 +757,218 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Colorize Flash",
+        kind_id: 51,
+        category: TransitionCategory::Effect,
+        preview: |p, r, _| {
+            preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
+            preview_circle(
+                p,
+                r,
+                0.55,
+                egui::Color32::from_rgba_unmultiplied(0, 200, 255, 150),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Hue Rotate",
+        kind_id: 52,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            let steps = 12usize;
+            for i in 0..steps {
+                let t = i as f32 / steps as f32;
+                let hue = t * 360.0;
+                let hi = (hue / 60.0) as u32 % 6;
+                let f = (hue / 60.0) - (hue / 60.0).floor();
+                let v = 0.7_f32;
+                let s = 0.8_f32;
+                let p2 = v * (1.0 - s);
+                let q = v * (1.0 - s * f);
+                let t2 = v * (1.0 - s * (1.0 - f));
+                let (rr, gg, bb) = match hi {
+                    0 => (v, t2, p2),
+                    1 => (q, v, p2),
+                    2 => (p2, v, t2),
+                    3 => (p2, q, v),
+                    4 => (t2, p2, v),
+                    _ => (v, p2, q),
+                };
+                let strip = egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + t * r.width(), r.min.y),
+                    egui::vec2(r.width() / steps as f32 + 1.0, r.height()),
+                );
+                pa.rect_filled(
+                    strip,
+                    0.0,
+                    egui::Color32::from_rgb(
+                        (rr * 255.0) as u8,
+                        (gg * 255.0) as u8,
+                        (bb * 255.0) as u8,
+                    ),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Negative Flash",
+        kind_id: 49,
+        category: TransitionCategory::Effect,
+        preview: |p, r, _| {
+            preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
+            let strip_w = r.width() * 0.25;
+            p.rect_filled(
+                egui::Rect::from_center_size(r.center(), egui::vec2(strip_w, r.height())),
+                0.0,
+                egui::Color32::from_rgb(
+                    255 - PREVIEW_A.r() / 2 - PREVIEW_B.r() / 2,
+                    255 - PREVIEW_A.g() / 2 - PREVIEW_B.g() / 2,
+                    255 - PREVIEW_A.b() / 2 - PREVIEW_B.b() / 2,
+                ),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Sepia",
+        kind_id: 50,
+        category: TransitionCategory::Cinematic,
+        preview: |p, r, _| {
+            let third = r.width() / 3.0;
+            p.rect_filled(
+                egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
+                0.0,
+                PREVIEW_A,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgb(112, 84, 56),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third * 2.0, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                PREVIEW_B,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Glitch Dissolve",
+        kind_id: 47,
+        category: TransitionCategory::Effect,
+        preview: |p, r, _| {
+            let block_h = r.height() / 6.0;
+            for i in 0..6 {
+                let y = r.min.y + i as f32 * block_h;
+                let shift = ((i as f32 * 37.0) % 20.0) - 10.0;
+                let color = if i % 2 == 0 { PREVIEW_A } else { PREVIEW_B };
+                p.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x + shift, y),
+                        egui::vec2(r.width(), block_h - 1.0),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x, r.min.y),
+                    egui::vec2(3.0, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 0, 0, 120),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.max.x - 3.0, r.min.y),
+                    egui::vec2(3.0, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Desaturate",
+        kind_id: 48,
+        category: TransitionCategory::Effect,
+        preview: |p, r, _| {
+            let third = r.width() / 3.0;
+            p.rect_filled(
+                egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
+                0.0,
+                PREVIEW_A,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgb(90, 90, 90),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third * 2.0, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                PREVIEW_B,
+            );
+        },
+    },
+    TransitionDef {
+        name: "Additive Dissolve",
+        kind_id: 45,
+        category: TransitionCategory::Dissolve,
+        preview: |p, r, _| {
+            preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
+            p.rect_filled(
+                egui::Rect::from_center_size(
+                    r.center(),
+                    egui::vec2(r.width() * 0.4, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Fade to Color",
+        kind_id: 46,
+        category: TransitionCategory::Dissolve,
+        preview: |p, r, _| {
+            let third = r.width() / 3.0;
+            p.rect_filled(
+                egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
+                0.0,
+                PREVIEW_A,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                egui::Color32::from_rgb(30, 30, 80),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.min.x + third * 2.0, r.min.y),
+                    egui::vec2(third, r.height()),
+                ),
+                0.0,
+                PREVIEW_B,
+            );
+        },
+    },
+    TransitionDef {
         name: "Film Burn",
         kind_id: 24,
         category: TransitionCategory::Cinematic,

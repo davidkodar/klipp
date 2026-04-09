@@ -965,6 +965,221 @@ fn render_transition(
             }
             } // end else (slide/cover/uncover)
         }
+        TransitionKind::ColorizeFlash => {
+            // Colorize flash export (default cyan, intensity=1, peak=0.5).
+            let flash_r = 0.0_f32;
+            let flash_g = 0.8 * 255.0;
+            let flash_b = 1.0 * 255.0;
+            let peak = 0.5_f32;
+            let ramp_up = peak * 0.6;
+            let ramp_down = peak + (1.0 - peak) * 0.4;
+            let flash_t = if p < ramp_up {
+                p / ramp_up.max(0.001)
+            } else if p < peak {
+                1.0
+            } else if p < ramp_down {
+                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
+            } else {
+                0.0
+            };
+            let dissolve_start = peak * 0.8;
+            let dissolve_t =
+                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
+            let inv_d = 1.0 - dissolve_t;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
+                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
+                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
+                output[i] =
+                    (base_r + (flash_r - base_r) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + (flash_g - base_g) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + (flash_b - base_b) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::HueRotate => {
+            // Hue rotate export (default 1 rotation).
+            let hue_shift = (p * std::f32::consts::PI).sin() * 360.0;
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = (from[i] as f32 * inv + to[i] as f32 * p) / 255.0;
+                let base_g = (from[i + 1] as f32 * inv + to[i + 1] as f32 * p) / 255.0;
+                let base_b = (from[i + 2] as f32 * inv + to[i + 2] as f32 * p) / 255.0;
+                let cmax = base_r.max(base_g).max(base_b);
+                let cmin = base_r.min(base_g).min(base_b);
+                let delta = cmax - cmin;
+                let h = if delta < 0.001 {
+                    0.0
+                } else if (cmax - base_r).abs() < 0.001 {
+                    60.0 * (((base_g - base_b) / delta) % 6.0)
+                } else if (cmax - base_g).abs() < 0.001 {
+                    60.0 * ((base_b - base_r) / delta + 2.0)
+                } else {
+                    60.0 * ((base_r - base_g) / delta + 4.0)
+                };
+                let s = if cmax < 0.001 { 0.0 } else { delta / cmax };
+                let v = cmax;
+                let h2 = ((h + hue_shift) % 360.0 + 360.0) % 360.0;
+                let c = v * s;
+                let x2 = c * (1.0 - ((h2 / 60.0) % 2.0 - 1.0).abs());
+                let m = v - c;
+                let hi = (h2 / 60.0) as u32 % 6;
+                let (rr, gg, bb) = match hi {
+                    0 => (c, x2, 0.0),
+                    1 => (x2, c, 0.0),
+                    2 => (0.0, c, x2),
+                    3 => (0.0, x2, c),
+                    4 => (x2, 0.0, c),
+                    _ => (c, 0.0, x2),
+                };
+                output[i] = ((rr + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 1] = ((gg + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 2] = ((bb + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::NegativeFlash => {
+            // Negative flash export with defaults (intensity=1, peak=0.5).
+            let peak = 0.5_f32;
+            let ramp_up = peak * 0.6;
+            let ramp_down = peak + (1.0 - peak) * 0.4;
+            let flash_t = if p < ramp_up {
+                p / ramp_up.max(0.001)
+            } else if p < peak {
+                1.0
+            } else if p < ramp_down {
+                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
+            } else {
+                0.0
+            };
+            let dissolve_start = peak * 0.8;
+            let dissolve_t =
+                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
+            let inv_d = 1.0 - dissolve_t;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
+                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
+                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
+                output[i] =
+                    (base_r + (255.0 - 2.0 * base_r) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + (255.0 - 2.0 * base_g) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + (255.0 - 2.0 * base_b) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::Sepia => {
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                let sepia_r = (luma * 1.2).clamp(0.0, 255.0);
+                let sepia_g = luma.clamp(0.0, 255.0);
+                let sepia_b = (luma * 0.75).clamp(0.0, 255.0);
+                output[i] = (base_r + (sepia_r - base_r) * envelope + 0.5) as u8;
+                output[i + 1] = (base_g + (sepia_g - base_g) * envelope + 0.5) as u8;
+                output[i + 2] = (base_b + (sepia_b - base_b) * envelope + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::GlitchDissolve => {
+            // Glitch export: simplified block-shift + noise with default params.
+            let intensity = 1.0_f32;
+            let block_size = 16_usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let w = width as usize;
+            let h = height as usize;
+            let inv = 1.0 - p;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let block_row = y / block_size.max(1);
+                    let hash = ((block_row as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((block_row as f32 * 269.5 + p * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let shift = ((hash - 0.5) * envelope * 40.0) as isize;
+                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let r_sx = (x as isize + shift / 2).clamp(0, w as isize - 1) as usize;
+                    let b_sx = (x as isize - shift / 2).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let r_si = (y * w + r_sx) * 4;
+                    let b_si = (y * w + b_sx) * 4;
+                    let noise = ((hash2 - 0.5) * envelope * 60.0) as i16;
+                    output[fi] = ((from[r_si] as f32 * inv + to[r_si] as f32 * p) as i16
+                        + noise)
+                        .clamp(0, 255) as u8;
+                    output[fi + 1] = ((from[si + 1] as f32 * inv + to[si + 1] as f32 * p)
+                        as i16
+                        + noise / 2)
+                        .clamp(0, 255) as u8;
+                    output[fi + 2] = ((from[b_si + 2] as f32 * inv + to[b_si + 2] as f32 * p)
+                        as i16
+                        + noise)
+                        .clamp(0, 255) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Desaturate => {
+            let depth = 1.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * depth;
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                output[i] = (base_r + (luma - base_r) * envelope + 0.5) as u8;
+                output[i + 1] = (base_g + (luma - base_g) * envelope + 0.5) as u8;
+                output[i + 2] = (base_b + (luma - base_b) * envelope + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::AdditiveDissolve => {
+            let intensity = 1.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let add = envelope * 0.5;
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let base = from[i + c] as f32 * (1.0 - p) + to[i + c] as f32 * p;
+                    output[i + c] =
+                        ((base / 255.0 + add).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::FadeToColor => {
+            // Default: fade to black (color=[0,0,0]).
+            let mid_start = 0.5_f32;
+            let mid_end = 0.5_f32;
+            for i in (0..byte_count).step_by(4) {
+                if p <= mid_start {
+                    let t = p / mid_start.max(0.001);
+                    for c in 0..3 {
+                        output[i + c] = (from[i + c] as f32 * (1.0 - t) + 0.5) as u8;
+                    }
+                } else if p >= mid_end {
+                    let t = (p - mid_end) / (1.0 - mid_end).max(0.001);
+                    for c in 0..3 {
+                        output[i + c] = (to[i + c] as f32 * t + 0.5) as u8;
+                    }
+                } else {
+                    output[i] = 0;
+                    output[i + 1] = 0;
+                    output[i + 2] = 0;
+                }
+                output[i + 3] = 255;
+            }
+        }
         // BlurDissolve and Spin are complex — fallback to cross dissolve in export
         TransitionKind::BlurDissolve | TransitionKind::Spin => {
             let inv = 1.0 - p;

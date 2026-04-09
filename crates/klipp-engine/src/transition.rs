@@ -50,6 +50,14 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::UncoverRight => 42,
         TransitionKind::SqueezeH => 43,
         TransitionKind::SqueezeV => 44,
+        TransitionKind::AdditiveDissolve => 45,
+        TransitionKind::FadeToColor => 46,
+        TransitionKind::GlitchDissolve => 47,
+        TransitionKind::Desaturate => 48,
+        TransitionKind::NegativeFlash => 49,
+        TransitionKind::Sepia => 50,
+        TransitionKind::ColorizeFlash => 51,
+        TransitionKind::HueRotate => 52,
     }
 }
 
@@ -101,6 +109,14 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         42 => TransitionKind::UncoverRight,
         43 => TransitionKind::SqueezeH,
         44 => TransitionKind::SqueezeV,
+        45 => TransitionKind::AdditiveDissolve,
+        46 => TransitionKind::FadeToColor,
+        47 => TransitionKind::GlitchDissolve,
+        48 => TransitionKind::Desaturate,
+        49 => TransitionKind::NegativeFlash,
+        50 => TransitionKind::Sepia,
+        51 => TransitionKind::ColorizeFlash,
+        52 => TransitionKind::HueRotate,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -153,6 +169,14 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (42, "Uncover Right"),
         (43, "Squeeze H"),
         (44, "Squeeze V"),
+        (45, "Additive Dissolve"),
+        (46, "Fade to Color"),
+        (47, "Glitch Dissolve"),
+        (48, "Desaturate"),
+        (49, "Negative Flash"),
+        (50, "Sepia"),
+        (51, "Colorize Flash"),
+        (52, "Hue Rotate"),
     ]
 }
 
@@ -663,6 +687,256 @@ pub fn render_transition_with_params(
                         &mut output[idx..idx + 4],
                     );
                 }
+            }
+        }
+        TransitionKind::ColorizeFlash => {
+            // User-defined color washes over the frame at the cut.
+            // param0 = intensity, param1 = peak position, color = flash color
+            let flash_r = user_params.color[0] * 255.0;
+            let flash_g = user_params.color[1] * 255.0;
+            let flash_b = user_params.color[2] * 255.0;
+            let intensity = user_params.param0.clamp(0.0, 1.0);
+            let peak = user_params.param1.clamp(0.05, 0.95);
+            let ramp_up = peak * 0.6;
+            let ramp_down = peak + (1.0 - peak) * 0.4;
+            let flash_t = (if p < ramp_up {
+                p / ramp_up.max(0.001)
+            } else if p < peak {
+                1.0
+            } else if p < ramp_down {
+                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
+            } else {
+                0.0
+            }) * intensity;
+            let dissolve_start = peak * 0.8;
+            let dissolve_t =
+                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
+            let inv_d = 1.0 - dissolve_t;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
+                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
+                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
+                output[i] =
+                    (base_r + (flash_r - base_r) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + (flash_g - base_g) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + (flash_b - base_b) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::HueRotate => {
+            // Hue spins through the color wheel at midpoint while dissolving.
+            // param0 = rotations
+            let rotations = user_params.param0;
+            let envelope = (p * std::f32::consts::PI).sin() * rotations;
+            let hue_shift = envelope * 360.0;
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r =
+                    (from[i] as f32 * inv + to[i] as f32 * p) / 255.0;
+                let base_g =
+                    (from[i + 1] as f32 * inv + to[i + 1] as f32 * p) / 255.0;
+                let base_b =
+                    (from[i + 2] as f32 * inv + to[i + 2] as f32 * p) / 255.0;
+                // RGB → HSV
+                let cmax = base_r.max(base_g).max(base_b);
+                let cmin = base_r.min(base_g).min(base_b);
+                let delta = cmax - cmin;
+                let h = if delta < 0.001 {
+                    0.0
+                } else if (cmax - base_r).abs() < 0.001 {
+                    60.0 * (((base_g - base_b) / delta) % 6.0)
+                } else if (cmax - base_g).abs() < 0.001 {
+                    60.0 * ((base_b - base_r) / delta + 2.0)
+                } else {
+                    60.0 * ((base_r - base_g) / delta + 4.0)
+                };
+                let s = if cmax < 0.001 { 0.0 } else { delta / cmax };
+                let v = cmax;
+                // Shift hue
+                let h2 = ((h + hue_shift) % 360.0 + 360.0) % 360.0;
+                // HSV → RGB
+                let c = v * s;
+                let x2 = c * (1.0 - ((h2 / 60.0) % 2.0 - 1.0).abs());
+                let m = v - c;
+                let hi = (h2 / 60.0) as u32 % 6;
+                let (rr, gg, bb) = match hi {
+                    0 => (c, x2, 0.0),
+                    1 => (x2, c, 0.0),
+                    2 => (0.0, c, x2),
+                    3 => (0.0, x2, c),
+                    4 => (x2, 0.0, c),
+                    _ => (c, 0.0, x2),
+                };
+                output[i] = ((rr + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 1] = ((gg + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 2] = ((bb + m) * 255.0).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::NegativeFlash => {
+            // Brief photographic negative inversion at the cut point.
+            // param0 = intensity, param1 = peak position
+            let intensity = user_params.param0.clamp(0.0, 1.0);
+            let peak = user_params.param1.clamp(0.05, 0.95);
+            let ramp_up = peak * 0.6;
+            let ramp_down = peak + (1.0 - peak) * 0.4;
+            let flash_t = if p < ramp_up {
+                p / ramp_up.max(0.001)
+            } else if p < peak {
+                1.0
+            } else if p < ramp_down {
+                1.0 - (p - peak) / (ramp_down - peak).max(0.001)
+            } else {
+                0.0
+            } * intensity;
+            let dissolve_start = peak * 0.8;
+            let dissolve_t =
+                ((p - dissolve_start) / (1.0 - dissolve_start).max(0.001)).clamp(0.0, 1.0);
+            let inv_d = 1.0 - dissolve_t;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv_d + to[i] as f32 * dissolve_t;
+                let base_g = from[i + 1] as f32 * inv_d + to[i + 1] as f32 * dissolve_t;
+                let base_b = from[i + 2] as f32 * inv_d + to[i + 2] as f32 * dissolve_t;
+                // mix(base, 255-base, flash_t) = base + (255 - 2*base)*flash_t
+                output[i] =
+                    (base_r + (255.0 - 2.0 * base_r) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 1] =
+                    (base_g + (255.0 - 2.0 * base_g) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 2] =
+                    (base_b + (255.0 - 2.0 * base_b) * flash_t).clamp(0.0, 255.0) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::Sepia => {
+            // Warm sepia tone through the cut, peaking at midpoint.
+            // param0 = strength, param1 = warmth
+            let strength = user_params.param0.clamp(0.0, 1.0);
+            let warmth = user_params.param1.clamp(0.5, 2.0);
+            let envelope = (p * std::f32::consts::PI).sin() * strength;
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                let sepia_r = (luma * warmth * 1.2).clamp(0.0, 255.0);
+                let sepia_g = (luma * warmth * 1.0).clamp(0.0, 255.0);
+                let sepia_b = (luma * warmth * 0.75).clamp(0.0, 255.0);
+                output[i] = (base_r + (sepia_r - base_r) * envelope + 0.5) as u8;
+                output[i + 1] = (base_g + (sepia_g - base_g) * envelope + 0.5) as u8;
+                output[i + 2] = (base_b + (sepia_b - base_b) * envelope + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::GlitchDissolve => {
+            // Digital corruption: horizontal block shifts + RGB split + noise.
+            // param0 = intensity, param1 = block size
+            let intensity = user_params.param0;
+            let block_size = user_params.param1.max(1.0) as usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let w = width as usize;
+            let h = height as usize;
+            let inv = 1.0 - p;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let block_row = y / block_size.max(1);
+                    let hash = ((block_row as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((block_row as f32 * 269.5 + p * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let shift = ((hash - 0.5) * envelope * 40.0) as isize;
+                    let sx =
+                        (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let r_sx =
+                        (x as isize + shift / 2).clamp(0, w as isize - 1) as usize;
+                    let b_sx =
+                        (x as isize - shift / 2).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let r_si = (y * w + r_sx) * 4;
+                    let b_si = (y * w + b_sx) * 4;
+                    let noise = ((hash2 - 0.5) * envelope * 60.0) as i16;
+                    let r = ((from[r_si] as f32 * inv + to[r_si] as f32 * p) as i16 + noise)
+                        .clamp(0, 255) as u8;
+                    let g = ((from[si + 1] as f32 * inv + to[si + 1] as f32 * p) as i16
+                        + noise / 2)
+                        .clamp(0, 255) as u8;
+                    let b = ((from[b_si + 2] as f32 * inv + to[b_si + 2] as f32 * p) as i16
+                        + noise)
+                        .clamp(0, 255) as u8;
+                    output[fi] = r;
+                    output[fi + 1] = g;
+                    output[fi + 2] = b;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Desaturate => {
+            // Drain to greyscale at midpoint then resaturate into clip B.
+            // param0 = depth (how fully it desaturates)
+            let depth = user_params.param0.clamp(0.0, 1.0);
+            let envelope = (p * std::f32::consts::PI).sin() * depth;
+            let inv = 1.0 - p;
+            for i in (0..byte_count).step_by(4) {
+                let base_r = from[i] as f32 * inv + to[i] as f32 * p;
+                let base_g = from[i + 1] as f32 * inv + to[i + 1] as f32 * p;
+                let base_b = from[i + 2] as f32 * inv + to[i + 2] as f32 * p;
+                let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                output[i] = (base_r + (luma - base_r) * envelope + 0.5) as u8;
+                output[i + 1] = (base_g + (luma - base_g) * envelope + 0.5) as u8;
+                output[i + 2] = (base_b + (luma - base_b) * envelope + 0.5) as u8;
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::AdditiveDissolve => {
+            // Cross-dissolve with additive brightness boost peaking at midpoint.
+            let intensity = user_params.param0;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let add = envelope * 0.5;
+            for i in (0..byte_count).step_by(4) {
+                for c in 0..3 {
+                    let base = from[i + c] as f32 * (1.0 - p) + to[i + c] as f32 * p;
+                    output[i + c] =
+                        ((base / 255.0 + add).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
+                output[i + 3] = 255;
+            }
+        }
+        TransitionKind::FadeToColor => {
+            // Fade out to a solid color, then fade in from it.
+            let fade_r = (user_params.color[0] * 255.0 + 0.5) as u8;
+            let fade_g = (user_params.color[1] * 255.0 + 0.5) as u8;
+            let fade_b = (user_params.color[2] * 255.0 + 0.5) as u8;
+            let hold = user_params.param0.clamp(0.0, 0.45);
+            let mid_start = 0.5 - hold * 0.5;
+            let mid_end = 0.5 + hold * 0.5;
+            for i in (0..byte_count).step_by(4) {
+                if p <= mid_start {
+                    let t = p / mid_start.max(0.001);
+                    let inv = 1.0 - t;
+                    output[i] = (from[i] as f32 * inv + fade_r as f32 * t + 0.5) as u8;
+                    output[i + 1] =
+                        (from[i + 1] as f32 * inv + fade_g as f32 * t + 0.5) as u8;
+                    output[i + 2] =
+                        (from[i + 2] as f32 * inv + fade_b as f32 * t + 0.5) as u8;
+                } else if p >= mid_end {
+                    let t = (p - mid_end) / (1.0 - mid_end).max(0.001);
+                    let inv = 1.0 - t;
+                    output[i] = (fade_r as f32 * inv + to[i] as f32 * t + 0.5) as u8;
+                    output[i + 1] =
+                        (fade_g as f32 * inv + to[i + 1] as f32 * t + 0.5) as u8;
+                    output[i + 2] =
+                        (fade_b as f32 * inv + to[i + 2] as f32 * t + 0.5) as u8;
+                } else {
+                    output[i] = fade_r;
+                    output[i + 1] = fade_g;
+                    output[i + 2] = fade_b;
+                }
+                output[i + 3] = 255;
             }
         }
         TransitionKind::SqueezeH | TransitionKind::SqueezeV => {
@@ -1938,11 +2212,19 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::UncoverRight), 42);
         assert_eq!(transition_kind_to_id(TransitionKind::SqueezeH), 43);
         assert_eq!(transition_kind_to_id(TransitionKind::SqueezeV), 44);
+        assert_eq!(transition_kind_to_id(TransitionKind::AdditiveDissolve), 45);
+        assert_eq!(transition_kind_to_id(TransitionKind::FadeToColor), 46);
+        assert_eq!(transition_kind_to_id(TransitionKind::GlitchDissolve), 47);
+        assert_eq!(transition_kind_to_id(TransitionKind::Desaturate), 48);
+        assert_eq!(transition_kind_to_id(TransitionKind::NegativeFlash), 49);
+        assert_eq!(transition_kind_to_id(TransitionKind::Sepia), 50);
+        assert_eq!(transition_kind_to_id(TransitionKind::ColorizeFlash), 51);
+        assert_eq!(transition_kind_to_id(TransitionKind::HueRotate), 52);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=44u8 {
+        for id in 0..=52u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -1951,12 +2233,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(45), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(53), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_45() {
-        assert_eq!(all_transition_kinds().len(), 45);
+    fn all_transition_kinds_returns_53() {
+        assert_eq!(all_transition_kinds().len(), 53);
     }
 
     // ========================================================================
@@ -1999,6 +2281,209 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    // ========================================================================
+    // Colorize Flash / Hue Rotate
+    // ========================================================================
+
+    #[test]
+    fn colorize_flash_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ColorizeFlash, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn colorize_flash_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ColorizeFlash, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    #[test]
+    fn hue_rotate_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(255, 0, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::HueRotate, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn hue_rotate_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(255, 0, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::HueRotate, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn hue_rotate_midpoint_produces_valid_output() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(255, 0, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::HueRotate, &from, &to, 0.5, 8, 8);
+        assert_eq!(result.len(), 8 * 8 * 4);
+    }
+
+    // ========================================================================
+    // Negative Flash / Sepia
+    // ========================================================================
+
+    #[test]
+    fn negative_flash_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::NegativeFlash, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn negative_flash_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::NegativeFlash, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    #[test]
+    fn negative_flash_peak_inverts() {
+        let from = make_solid(200, 200, 200, 255, 8, 8);
+        let to = make_solid(200, 200, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::NegativeFlash, &from, &to, 0.3, 8, 8);
+        assert!(
+            result[0] < 150,
+            "bright pixel should invert at peak, got {}",
+            result[0]
+        );
+    }
+
+    #[test]
+    fn sepia_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Sepia, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn sepia_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Sepia, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn sepia_midpoint_is_warm() {
+        let from = make_solid(128, 128, 128, 255, 8, 8);
+        let to = make_solid(128, 128, 128, 255, 8, 8);
+        let result = render_transition(TransitionKind::Sepia, &from, &to, 0.5, 8, 8);
+        assert!(
+            result[0] > result[2],
+            "sepia should be warmer (R > B) at midpoint, R={} B={}",
+            result[0],
+            result[2]
+        );
+    }
+
+    // ========================================================================
+    // Glitch Dissolve / Desaturate
+    // ========================================================================
+
+    #[test]
+    fn glitch_dissolve_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::GlitchDissolve, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn glitch_dissolve_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::GlitchDissolve, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    #[test]
+    fn desaturate_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Desaturate, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn desaturate_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Desaturate, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn desaturate_midpoint_is_grey() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(255, 0, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Desaturate, &from, &to, 0.5, 8, 8);
+        let r = result[0] as i16;
+        let g = result[1] as i16;
+        let b = result[2] as i16;
+        assert!((r - g).abs() < 20, "should be near grey at midpoint, R={r} G={g}");
+        assert!((r - b).abs() < 20, "should be near grey at midpoint, R={r} B={b}");
+    }
+
+    // ========================================================================
+    // Additive Dissolve / Fade to Color
+    // ========================================================================
+
+    #[test]
+    fn additive_dissolve_at_zero_is_from() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(100, 100, 100, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::AdditiveDissolve, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 100, 100, 100, 5);
+    }
+
+    #[test]
+    fn additive_dissolve_midpoint_is_brighter() {
+        let from = make_solid(100, 100, 100, 255, 8, 8);
+        let to = make_solid(100, 100, 100, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::AdditiveDissolve, &from, &to, 0.5, 8, 8);
+        let avg: f32 = result.chunks(4).map(|px| px[0] as f32).sum::<f32>() / 64.0;
+        assert!(
+            avg > 100.0,
+            "additive should brighten at midpoint, got {}",
+            avg
+        );
+    }
+
+    #[test]
+    fn fade_to_color_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::FadeToColor, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn fade_to_color_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::FadeToColor, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
     }
 
     // ========================================================================
@@ -2481,6 +2966,14 @@ mod tests {
             TransitionKind::UncoverRight,
             TransitionKind::SqueezeH,
             TransitionKind::SqueezeV,
+            TransitionKind::AdditiveDissolve,
+            TransitionKind::FadeToColor,
+            TransitionKind::GlitchDissolve,
+            TransitionKind::Desaturate,
+            TransitionKind::NegativeFlash,
+            TransitionKind::Sepia,
+            TransitionKind::ColorizeFlash,
+            TransitionKind::HueRotate,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -2532,6 +3025,14 @@ mod tests {
             TransitionKind::UncoverRight,
             TransitionKind::SqueezeH,
             TransitionKind::SqueezeV,
+            TransitionKind::AdditiveDissolve,
+            TransitionKind::FadeToColor,
+            TransitionKind::GlitchDissolve,
+            TransitionKind::Desaturate,
+            TransitionKind::NegativeFlash,
+            TransitionKind::Sepia,
+            TransitionKind::ColorizeFlash,
+            TransitionKind::HueRotate,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

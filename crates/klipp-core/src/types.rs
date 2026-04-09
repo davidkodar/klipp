@@ -347,6 +347,31 @@ impl TransitionUserParams {
             33 | 34 => Self { param0: 1.0, param1: 0.0, ..Self::default() },
             // Slide / Cover / Uncover / Squeeze family: no per-kind params.
             35..=44 => Self::default(),
+            // AdditiveDissolve: param0=intensity
+            45 => Self { param0: 1.0, ..Self::default() },
+            // FadeToColor: param0=hold, color=fade color (default black)
+            46 => Self {
+                param0: 0.0,
+                color: [0.0, 0.0, 0.0, 1.0],
+                ..Self::default()
+            },
+            // GlitchDissolve: param0=intensity, param1=block size
+            47 => Self { param0: 1.0, param1: 16.0, ..Self::default() },
+            // Desaturate: param0=depth
+            48 => Self { param0: 1.0, ..Self::default() },
+            // NegativeFlash: param0=intensity, param1=peak position
+            49 => Self { param0: 1.0, param1: 0.5, ..Self::default() },
+            // Sepia: param0=strength, param1=warmth
+            50 => Self { param0: 1.0, param1: 1.0, ..Self::default() },
+            // ColorizeFlash: param0=intensity, param1=peak, color=flash color (cyan)
+            51 => Self {
+                param0: 1.0,
+                param1: 0.5,
+                color: [0.0, 0.8, 1.0, 1.0],
+                ..Self::default()
+            },
+            // HueRotate: param0=rotations
+            52 => Self { param0: 1.0, ..Self::default() },
             _ => Self::default(),
         }
     }
