@@ -6641,7 +6641,7 @@ impl TimelinePanel {
                         ));
                         // Label if wide enough
                         if trans_w > 40.0 {
-                            let kind_label = klipp_core::spec_for_kind(transition.kind).display_name;
+                            let kind_label = klipp_core::spec_for_kind(transition.kind).short_label;
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),
                                 egui::Align2::CENTER_BOTTOM,
