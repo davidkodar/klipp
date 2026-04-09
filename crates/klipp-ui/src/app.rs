@@ -6772,6 +6772,7 @@ impl KlippApp {
                     let new_bin_id = bin.as_ref().map(|name| self.state.media_pool.find_or_create_bin(name));
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         let from_bin = item.bin.clone();
+                        let from_bin_id = item.bin_id;
                         if from_bin != *bin {
                             item.bin = bin.clone();
                             item.bin_id = new_bin_id;
@@ -6781,6 +6782,8 @@ impl KlippApp {
                                     media_id: *media_id,
                                     from_bin,
                                     to_bin: bin.clone(),
+                                    from_bin_id,
+                                    to_bin_id: new_bin_id,
                                 },
                             });
                             self.state.dirty = true;
@@ -6789,6 +6792,14 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RenameBin { old_name, new_name } => {
+                    // Rename the Bin record itself
+                    for bin in &mut self.state.media_pool.bins {
+                        if bin.name == *old_name {
+                            bin.name = new_name.clone();
+                            break;
+                        }
+                    }
+                    // Update legacy item.bin field (will be removed when UI migrates to bin_id)
                     let ids: Vec<MediaId> = self.state.media_pool.all()
                         .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
                         .map(|m| m.id)
@@ -6796,9 +6807,9 @@ impl KlippApp {
                     for id in ids {
                         if let Some(item) = self.state.media_pool.get_mut(&id) {
                             item.bin = Some(new_name.clone());
+                            // bin_id intentionally unchanged — rename doesn't change the bin's identity
                         }
                     }
-                    // Record in history for atomic undo
                     self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: crate::history::EditCommand::RenameBin {
                         old_name: old_name.clone(),
                         new_name: new_name.clone(),
@@ -10152,10 +10163,11 @@ impl KlippApp {
                 self.state.media_pool.add(item.clone());
                 self.sync_media_pool_to_engine();
             }
-            EditCommand::MoveMediaToBin { media_id, from_bin, .. } => {
-                // Undo: restore to original bin
+            EditCommand::MoveMediaToBin { media_id, from_bin, from_bin_id, .. } => {
+                // Undo: restore to original bin (both legacy string and bin_id)
                 if let Some(item) = self.state.media_pool.get_mut(media_id) {
                     item.bin = from_bin.clone();
+                    item.bin_id = *from_bin_id;
                 }
             }
             EditCommand::SetMediaTags { media_id, old_tags, .. } => {
@@ -10174,7 +10186,14 @@ impl KlippApp {
                 }
             }
             EditCommand::RenameBin { old_name, new_name } => {
-                // Undo: rename back from new_name to old_name
+                // Undo: rename Bin record back from new_name to old_name
+                for bin in &mut self.state.media_pool.bins {
+                    if bin.name == *new_name {
+                        bin.name = old_name.clone();
+                        break;
+                    }
+                }
+                // Undo: restore legacy item.bin field
                 let ids: Vec<MediaId> = self.state.media_pool.all()
                     .filter(|m| m.bin.as_deref() == Some(new_name.as_str()))
                     .map(|m| m.id)
@@ -10182,6 +10201,7 @@ impl KlippApp {
                 for id in ids {
                     if let Some(item) = self.state.media_pool.get_mut(&id) {
                         item.bin = Some(old_name.clone());
+                        // bin_id intentionally unchanged — rename doesn't change identity
                     }
                 }
             }
@@ -10486,9 +10506,11 @@ impl KlippApp {
                 self.state.media_pool.remove(&item.id);
                 self.sync_media_pool_to_engine();
             }
-            EditCommand::MoveMediaToBin { media_id, to_bin, .. } => {
+            EditCommand::MoveMediaToBin { media_id, to_bin, to_bin_id, .. } => {
+                // Redo: apply both legacy string and bin_id
                 if let Some(item) = self.state.media_pool.get_mut(media_id) {
                     item.bin = to_bin.clone();
+                    item.bin_id = *to_bin_id;
                 }
             }
             EditCommand::SetMediaTags { media_id, new_tags, .. } => {
@@ -10507,7 +10529,14 @@ impl KlippApp {
                 }
             }
             EditCommand::RenameBin { old_name, new_name } => {
-                // Redo: rename from old_name to new_name
+                // Redo: rename Bin record from old_name to new_name
+                for bin in &mut self.state.media_pool.bins {
+                    if bin.name == *old_name {
+                        bin.name = new_name.clone();
+                        break;
+                    }
+                }
+                // Redo: update legacy item.bin field
                 let ids: Vec<MediaId> = self.state.media_pool.all()
                     .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
                     .map(|m| m.id)
@@ -10515,6 +10544,7 @@ impl KlippApp {
                 for id in ids {
                     if let Some(item) = self.state.media_pool.get_mut(&id) {
                         item.bin = Some(new_name.clone());
+                        // bin_id intentionally unchanged — rename doesn't change identity
                     }
                 }
             }

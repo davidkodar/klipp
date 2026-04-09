@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use klipp_core::{ClipId, Keyframe, MediaId, RationalTime};
+use klipp_core::{BinId, ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
 
 /// Snapshot of all keyframe data for a clip (used for undo/redo).
@@ -196,6 +196,8 @@ pub enum EditCommand {
         media_id: MediaId,
         from_bin: Option<String>,
         to_bin: Option<String>,
+        from_bin_id: Option<BinId>,
+        to_bin_id: Option<BinId>,
     },
     SetMediaTags {
         media_id: MediaId,
@@ -504,5 +506,375 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
     HistoryEntry {
         sequence_idx: new_entry.sequence_idx,
         command,
+    }
+}
+
+#[cfg(test)]
+mod bin_undo_tests {
+    use super::*;
+    use klipp_core::{BinId, MediaId, RationalTime};
+    use klipp_media::{MediaItem, MediaPool};
+
+    /// Helper: create a minimal MediaItem for testing bin operations.
+    fn test_media_item(id: MediaId) -> MediaItem {
+        MediaItem {
+            id,
+            path: std::path::PathBuf::from("/test/video.mp4"),
+            filename: "video.mp4".to_string(),
+            duration: RationalTime::from_frames(240, 24),
+            fps: klipp_core::Fps::new(24, 1),
+            resolution: klipp_core::Resolution { width: 1920, height: 1080 },
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+            has_audio: true,
+            file_size_bytes: 1024,
+            sample_rate: None,
+            audio_channels: None,
+            offline: false,
+            is_still: false,
+            proxy_path: None,
+            proxy_ready: false,
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: Default::default(),
+            colour_space: Default::default(),
+            log_format: Default::default(),
+            source_rotation: 0,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: Default::default(),
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
+    /// Simulate MoveItemToBin forward operation (mirrors app.rs handler).
+    fn move_item_to_bin(pool: &mut MediaPool, media_id: MediaId, new_bin: Option<String>) -> EditCommand {
+        let new_bin_id = new_bin.as_ref().map(|name| pool.find_or_create_bin(name));
+        let item = pool.get_mut(&media_id).unwrap();
+        let from_bin = item.bin.clone();
+        let from_bin_id = item.bin_id;
+        item.bin = new_bin.clone();
+        item.bin_id = new_bin_id;
+        EditCommand::MoveMediaToBin {
+            media_id,
+            from_bin,
+            to_bin: new_bin,
+            from_bin_id,
+            to_bin_id: new_bin_id,
+        }
+    }
+
+    /// Simulate MoveItemToBin undo (mirrors app.rs undo handler).
+    fn undo_move_item_to_bin(pool: &mut MediaPool, cmd: &EditCommand) {
+        if let EditCommand::MoveMediaToBin { media_id, from_bin, from_bin_id, .. } = cmd {
+            if let Some(item) = pool.get_mut(media_id) {
+                item.bin = from_bin.clone();
+                item.bin_id = *from_bin_id;
+            }
+        }
+    }
+
+    /// Simulate MoveItemToBin redo (mirrors app.rs redo handler).
+    fn redo_move_item_to_bin(pool: &mut MediaPool, cmd: &EditCommand) {
+        if let EditCommand::MoveMediaToBin { media_id, to_bin, to_bin_id, .. } = cmd {
+            if let Some(item) = pool.get_mut(media_id) {
+                item.bin = to_bin.clone();
+                item.bin_id = *to_bin_id;
+            }
+        }
+    }
+
+    /// Simulate RenameBin forward (mirrors app.rs handler).
+    fn rename_bin(pool: &mut MediaPool, old_name: &str, new_name: &str) -> EditCommand {
+        // Rename the Bin record
+        for bin in &mut pool.bins {
+            if bin.name == old_name {
+                bin.name = new_name.to_string();
+                break;
+            }
+        }
+        // Update legacy item.bin
+        let ids: Vec<MediaId> = pool.all()
+            .filter(|m| m.bin.as_deref() == Some(old_name))
+            .map(|m| m.id)
+            .collect();
+        for id in ids {
+            if let Some(item) = pool.get_mut(&id) {
+                item.bin = Some(new_name.to_string());
+            }
+        }
+        EditCommand::RenameBin {
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+        }
+    }
+
+    /// Simulate RenameBin undo (mirrors app.rs undo handler).
+    fn undo_rename_bin(pool: &mut MediaPool, cmd: &EditCommand) {
+        if let EditCommand::RenameBin { old_name, new_name } = cmd {
+            for bin in &mut pool.bins {
+                if bin.name == *new_name {
+                    bin.name = old_name.clone();
+                    break;
+                }
+            }
+            let ids: Vec<MediaId> = pool.all()
+                .filter(|m| m.bin.as_deref() == Some(new_name.as_str()))
+                .map(|m| m.id)
+                .collect();
+            for id in ids {
+                if let Some(item) = pool.get_mut(&id) {
+                    item.bin = Some(old_name.clone());
+                }
+            }
+        }
+    }
+
+    /// Simulate RenameBin redo (mirrors app.rs redo handler).
+    fn redo_rename_bin(pool: &mut MediaPool, cmd: &EditCommand) {
+        if let EditCommand::RenameBin { old_name, new_name } = cmd {
+            for bin in &mut pool.bins {
+                if bin.name == *old_name {
+                    bin.name = new_name.clone();
+                    break;
+                }
+            }
+            let ids: Vec<MediaId> = pool.all()
+                .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
+                .map(|m| m.id)
+                .collect();
+            for id in ids {
+                if let Some(item) = pool.get_mut(&id) {
+                    item.bin = Some(new_name.clone());
+                }
+            }
+        }
+    }
+
+    /// Helper: assert that bin and bin_id are consistent for an item.
+    fn assert_bin_consistent(pool: &MediaPool, media_id: MediaId, expected_bin: Option<&str>, expected_bin_id: Option<BinId>) {
+        let item = pool.get(&media_id).expect("item not found");
+        assert_eq!(item.bin.as_deref(), expected_bin, "bin string mismatch for {media_id}");
+        assert_eq!(item.bin_id, expected_bin_id, "bin_id mismatch for {media_id}");
+    }
+
+    // ── Test 1: MoveItemToBin full cycle (move → undo → redo → undo) ──
+
+    #[test]
+    fn move_item_to_bin_full_cycle() {
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        let bin_a_id = pool.find_or_create_bin("Bin A");
+
+        let mut item = test_media_item(mid);
+        item.bin = Some("Bin A".to_string());
+        item.bin_id = Some(bin_a_id);
+        pool.add(item);
+
+        // Forward: move to Bin B
+        let cmd = move_item_to_bin(&mut pool, mid, Some("Bin B".to_string()));
+        let bin_b_id = pool.get(&mid).unwrap().bin_id.unwrap();
+        assert_bin_consistent(&pool, mid, Some("Bin B"), Some(bin_b_id));
+
+        // Undo: back to Bin A
+        undo_move_item_to_bin(&mut pool, &cmd);
+        assert_bin_consistent(&pool, mid, Some("Bin A"), Some(bin_a_id));
+
+        // Redo: back to Bin B
+        redo_move_item_to_bin(&mut pool, &cmd);
+        assert_bin_consistent(&pool, mid, Some("Bin B"), Some(bin_b_id));
+
+        // Undo again: back to Bin A
+        undo_move_item_to_bin(&mut pool, &cmd);
+        assert_bin_consistent(&pool, mid, Some("Bin A"), Some(bin_a_id));
+    }
+
+    // ── Test 2: MoveItemToBin with multiple items ──
+
+    #[test]
+    fn move_multiple_items_to_bin_undo() {
+        let mut pool = MediaPool::new();
+        let bin_a_id = pool.find_or_create_bin("Bin A");
+        let mid1 = MediaId::new();
+        let mid2 = MediaId::new();
+
+        let mut item1 = test_media_item(mid1);
+        item1.bin = Some("Bin A".to_string());
+        item1.bin_id = Some(bin_a_id);
+        pool.add(item1);
+
+        let mut item2 = test_media_item(mid2);
+        item2.path = std::path::PathBuf::from("/test/video2.mp4");
+        item2.bin = Some("Bin A".to_string());
+        item2.bin_id = Some(bin_a_id);
+        pool.add(item2);
+
+        // Move both items
+        let cmd1 = move_item_to_bin(&mut pool, mid1, Some("Bin B".to_string()));
+        let bin_b_id = pool.get(&mid1).unwrap().bin_id.unwrap();
+        let cmd2 = move_item_to_bin(&mut pool, mid2, Some("Bin B".to_string()));
+
+        assert_bin_consistent(&pool, mid1, Some("Bin B"), Some(bin_b_id));
+        assert_bin_consistent(&pool, mid2, Some("Bin B"), Some(bin_b_id));
+
+        // Undo both (reverse order)
+        undo_move_item_to_bin(&mut pool, &cmd2);
+        assert_bin_consistent(&pool, mid2, Some("Bin A"), Some(bin_a_id));
+        undo_move_item_to_bin(&mut pool, &cmd1);
+        assert_bin_consistent(&pool, mid1, Some("Bin A"), Some(bin_a_id));
+    }
+
+    // ── Test 3: MoveItemToBin from root (None) to bin and back ──
+
+    #[test]
+    fn move_item_from_root_to_bin_undo() {
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        pool.add(test_media_item(mid));
+
+        // Initially at root (no bin)
+        assert_bin_consistent(&pool, mid, None, None);
+
+        // Move to a bin
+        let cmd = move_item_to_bin(&mut pool, mid, Some("Dailies".to_string()));
+        let dailies_id = pool.get(&mid).unwrap().bin_id.unwrap();
+        assert_bin_consistent(&pool, mid, Some("Dailies"), Some(dailies_id));
+
+        // Undo: back to root
+        undo_move_item_to_bin(&mut pool, &cmd);
+        assert_bin_consistent(&pool, mid, None, None);
+    }
+
+    // ── Test 4: RenameBin forward + undo ──
+
+    #[test]
+    fn rename_bin_forward_and_undo() {
+        let mut pool = MediaPool::new();
+        let bin_id = pool.find_or_create_bin("Old Name");
+        let mid = MediaId::new();
+
+        let mut item = test_media_item(mid);
+        item.bin = Some("Old Name".to_string());
+        item.bin_id = Some(bin_id);
+        pool.add(item);
+
+        // Forward: rename
+        let cmd = rename_bin(&mut pool, "Old Name", "New Name");
+        assert_eq!(pool.get(&mid).unwrap().bin.as_deref(), Some("New Name"));
+        assert_eq!(pool.find_bin(&bin_id).unwrap().name, "New Name");
+
+        // Undo: back to Old Name
+        undo_rename_bin(&mut pool, &cmd);
+        assert_eq!(pool.get(&mid).unwrap().bin.as_deref(), Some("Old Name"));
+        assert_eq!(pool.find_bin(&bin_id).unwrap().name, "Old Name");
+    }
+
+    // ── Test 5: RenameBin does NOT change bin_id ──
+
+    #[test]
+    fn rename_bin_preserves_bin_id() {
+        let mut pool = MediaPool::new();
+        let bin_id = pool.find_or_create_bin("Original");
+        let mid1 = MediaId::new();
+        let mid2 = MediaId::new();
+
+        let mut item1 = test_media_item(mid1);
+        item1.bin = Some("Original".to_string());
+        item1.bin_id = Some(bin_id);
+        pool.add(item1);
+
+        let mut item2 = test_media_item(mid2);
+        item2.path = std::path::PathBuf::from("/test/video2.mp4");
+        item2.bin = Some("Original".to_string());
+        item2.bin_id = Some(bin_id);
+        pool.add(item2);
+
+        // Rename
+        let cmd = rename_bin(&mut pool, "Original", "Renamed");
+
+        // bin_id must be unchanged for both items
+        assert_eq!(pool.get(&mid1).unwrap().bin_id, Some(bin_id));
+        assert_eq!(pool.get(&mid2).unwrap().bin_id, Some(bin_id));
+
+        // Undo
+        undo_rename_bin(&mut pool, &cmd);
+        assert_eq!(pool.get(&mid1).unwrap().bin_id, Some(bin_id));
+        assert_eq!(pool.get(&mid2).unwrap().bin_id, Some(bin_id));
+
+        // Redo
+        redo_rename_bin(&mut pool, &cmd);
+        assert_eq!(pool.get(&mid1).unwrap().bin_id, Some(bin_id));
+        assert_eq!(pool.get(&mid2).unwrap().bin_id, Some(bin_id));
+    }
+
+    // ── Test 6: RenameBin redo restores new name ──
+
+    #[test]
+    fn rename_bin_redo() {
+        let mut pool = MediaPool::new();
+        let bin_id = pool.find_or_create_bin("Alpha");
+        let mid = MediaId::new();
+
+        let mut item = test_media_item(mid);
+        item.bin = Some("Alpha".to_string());
+        item.bin_id = Some(bin_id);
+        pool.add(item);
+
+        let cmd = rename_bin(&mut pool, "Alpha", "Beta");
+        undo_rename_bin(&mut pool, &cmd);
+        assert_eq!(pool.get(&mid).unwrap().bin.as_deref(), Some("Alpha"));
+
+        redo_rename_bin(&mut pool, &cmd);
+        assert_eq!(pool.get(&mid).unwrap().bin.as_deref(), Some("Beta"));
+        assert_eq!(pool.find_bin(&bin_id).unwrap().name, "Beta");
+    }
+
+    // ── Test 7: Move then rename then undo both ──
+
+    #[test]
+    fn move_then_rename_undo_sequence() {
+        let mut pool = MediaPool::new();
+        let bin_a_id = pool.find_or_create_bin("Bin A");
+        let mid = MediaId::new();
+
+        let mut item = test_media_item(mid);
+        item.bin = Some("Bin A".to_string());
+        item.bin_id = Some(bin_a_id);
+        pool.add(item);
+
+        // Move to new bin
+        let move_cmd = move_item_to_bin(&mut pool, mid, Some("Bin B".to_string()));
+        let bin_b_id = pool.get(&mid).unwrap().bin_id.unwrap();
+
+        // Rename that bin
+        let rename_cmd = rename_bin(&mut pool, "Bin B", "Bin B Renamed");
+        assert_bin_consistent(&pool, mid, Some("Bin B Renamed"), Some(bin_b_id));
+
+        // Undo rename
+        undo_rename_bin(&mut pool, &rename_cmd);
+        assert_bin_consistent(&pool, mid, Some("Bin B"), Some(bin_b_id));
+
+        // Undo move
+        undo_move_item_to_bin(&mut pool, &move_cmd);
+        assert_bin_consistent(&pool, mid, Some("Bin A"), Some(bin_a_id));
     }
 }
