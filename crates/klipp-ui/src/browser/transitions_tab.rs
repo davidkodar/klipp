@@ -757,6 +757,92 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Zoom In Dissolve",
+        kind_id: 63,
+        category: TransitionCategory::Zoom,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_B);
+            let shrink = r.shrink(r.width() * 0.15);
+            pa.rect_filled(
+                shrink,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(
+                    PREVIEW_A.r(),
+                    PREVIEW_A.g(),
+                    PREVIEW_A.b(),
+                    180,
+                ),
+            );
+            let c = r.center();
+            for (dx, dy) in [(1.0_f32, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                pa.arrow(
+                    egui::pos2(c.x + dx * 8.0, c.y + dy * 8.0),
+                    egui::vec2(dx * 10.0, dy * 10.0),
+                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(160)),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Zoom Out Dissolve",
+        kind_id: 64,
+        category: TransitionCategory::Zoom,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_B);
+            pa.rect_filled(
+                r,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(
+                    PREVIEW_A.r(),
+                    PREVIEW_A.g(),
+                    PREVIEW_A.b(),
+                    120,
+                ),
+            );
+            let inner = r.shrink(r.width() * 0.2);
+            pa.rect_filled(
+                inner,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(
+                    PREVIEW_A.r(),
+                    PREVIEW_A.g(),
+                    PREVIEW_A.b(),
+                    180,
+                ),
+            );
+            let c = r.center();
+            for (dx, dy) in [(1.0_f32, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                pa.arrow(
+                    egui::pos2(c.x + dx * 18.0, c.y + dy * 18.0),
+                    egui::vec2(-dx * 10.0, -dy * 10.0),
+                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(160)),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Cross Zoom",
+        kind_id: 65,
+        category: TransitionCategory::Zoom,
+        preview: |pa, r, _| {
+            let mid = r.min.x + r.width() * 0.5;
+            let left = egui::Rect::from_min_max(r.min, egui::pos2(mid, r.max.y));
+            pa.rect_filled(left, 0.0, PREVIEW_A);
+            pa.arrow(
+                egui::pos2(left.center().x, left.center().y),
+                egui::vec2(12.0, 0.0),
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+            );
+            let right = egui::Rect::from_min_max(egui::pos2(mid, r.min.y), r.max);
+            pa.rect_filled(right, 0.0, PREVIEW_B);
+            pa.arrow(
+                egui::pos2(right.center().x, right.center().y),
+                egui::vec2(-12.0, 0.0),
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+            );
+        },
+    },
+    TransitionDef {
         name: "Bokeh Dissolve",
         kind_id: 62,
         category: TransitionCategory::Cinematic,

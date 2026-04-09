@@ -6705,6 +6705,9 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::AnamorphicFlare => "Flare",
                                 klipp_timeline::TransitionKind::DreamSequence => "Dream",
                                 klipp_timeline::TransitionKind::BokehDissolve => "Bokeh",
+                                klipp_timeline::TransitionKind::ZoomInDissolve => "Zoom In",
+                                klipp_timeline::TransitionKind::ZoomOutDissolve => "Zoom Out",
+                                klipp_timeline::TransitionKind::CrossZoom => "X Zoom",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

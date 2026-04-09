@@ -288,6 +288,9 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         AnamorphicFlare => 60,
         DreamSequence => 61,
         BokehDissolve => 62,
+        ZoomInDissolve => 63,
+        ZoomOutDissolve => 64,
+        CrossZoom => 65,
     }
 }
 
@@ -383,6 +386,9 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "AnamorphicFlare" => klipp_timeline::TransitionKind::AnamorphicFlare,
                     "DreamSequence" => klipp_timeline::TransitionKind::DreamSequence,
                     "BokehDissolve" => klipp_timeline::TransitionKind::BokehDissolve,
+                    "ZoomInDissolve" => klipp_timeline::TransitionKind::ZoomInDissolve,
+                    "ZoomOutDissolve" => klipp_timeline::TransitionKind::ZoomOutDissolve,
+                    "CrossZoom" => klipp_timeline::TransitionKind::CrossZoom,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {

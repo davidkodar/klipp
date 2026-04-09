@@ -68,6 +68,9 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::AnamorphicFlare => 60,
         TransitionKind::DreamSequence => 61,
         TransitionKind::BokehDissolve => 62,
+        TransitionKind::ZoomInDissolve => 63,
+        TransitionKind::ZoomOutDissolve => 64,
+        TransitionKind::CrossZoom => 65,
     }
 }
 
@@ -137,6 +140,9 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         60 => TransitionKind::AnamorphicFlare,
         61 => TransitionKind::DreamSequence,
         62 => TransitionKind::BokehDissolve,
+        63 => TransitionKind::ZoomInDissolve,
+        64 => TransitionKind::ZoomOutDissolve,
+        65 => TransitionKind::CrossZoom,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -207,6 +213,9 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (60, "Anamorphic Flare"),
         (61, "Dream Sequence"),
         (62, "Bokeh Dissolve"),
+        (63, "Zoom In Dissolve"),
+        (64, "Zoom Out Dissolve"),
+        (65, "Cross Zoom"),
     ]
 }
 
@@ -716,6 +725,70 @@ pub fn render_transition_with_params(
                         t,
                         &mut output[idx..idx + 4],
                     );
+                }
+            }
+        }
+        TransitionKind::ZoomInDissolve
+        | TransitionKind::ZoomOutDissolve
+        | TransitionKind::CrossZoom => {
+            // Zoom sampling family: scale from/to around frame center.
+            let zoom_amount = user_params.param0.max(1.001);
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let eased = if matches!(kind, TransitionKind::CrossZoom)
+                && user_params.param1 > 0.5
+            {
+                p * p * (3.0 - 2.0 * p)
+            } else {
+                p
+            };
+            let inv_e = 1.0 - eased;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let (fsx, fsy, tsx, tsy) = match kind {
+                        TransitionKind::ZoomInDissolve => {
+                            let scale = 1.0 + (zoom_amount - 1.0) * eased;
+                            let fsx =
+                                (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
+                            let fsy =
+                                (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, x as f32, y as f32)
+                        }
+                        TransitionKind::ZoomOutDissolve => {
+                            let scale = zoom_amount - (zoom_amount - 1.0) * eased;
+                            let fsx =
+                                (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
+                            let fsy =
+                                (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, x as f32, y as f32)
+                        }
+                        _ => {
+                            let scale_a = 1.0 + (zoom_amount - 1.0) * eased;
+                            let scale_b = zoom_amount - (zoom_amount - 1.0) * eased;
+                            let fsx = (dx / scale_a + cx)
+                                .clamp(0.0, width as f32 - 1.0);
+                            let fsy = (dy / scale_a + cy)
+                                .clamp(0.0, height as f32 - 1.0);
+                            let tsx = (dx / scale_b + cx)
+                                .clamp(0.0, width as f32 - 1.0);
+                            let tsy = (dy / scale_b + cy)
+                                .clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, tsx, tsy)
+                        }
+                    };
+                    let fsi = (fsy as usize * w + fsx as usize) * 4;
+                    let tsi = (tsy as usize * w + tsx as usize) * 4;
+                    for c in 0..3 {
+                        output[fi + c] = (from[fsi + c] as f32 * inv_e
+                            + to[tsi + c] as f32 * eased
+                            + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
                 }
             }
         }
@@ -2655,11 +2728,14 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::AnamorphicFlare), 60);
         assert_eq!(transition_kind_to_id(TransitionKind::DreamSequence), 61);
         assert_eq!(transition_kind_to_id(TransitionKind::BokehDissolve), 62);
+        assert_eq!(transition_kind_to_id(TransitionKind::ZoomInDissolve), 63);
+        assert_eq!(transition_kind_to_id(TransitionKind::ZoomOutDissolve), 64);
+        assert_eq!(transition_kind_to_id(TransitionKind::CrossZoom), 65);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=62u8 {
+        for id in 0..=65u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -2668,12 +2744,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(63), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(66), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_63() {
-        assert_eq!(all_transition_kinds().len(), 63);
+    fn all_transition_kinds_returns_66() {
+        assert_eq!(all_transition_kinds().len(), 66);
     }
 
     // ========================================================================
@@ -2716,6 +2792,62 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    // ========================================================================
+    // Zoom In / Zoom Out / Cross Zoom
+    // ========================================================================
+
+    #[test]
+    fn zoom_in_dissolve_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ZoomInDissolve, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn zoom_in_dissolve_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ZoomInDissolve, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn zoom_out_dissolve_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ZoomOutDissolve, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn zoom_out_dissolve_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::ZoomOutDissolve, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn cross_zoom_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::CrossZoom, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn cross_zoom_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::CrossZoom, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
     }
 
     // ========================================================================
@@ -3643,6 +3775,9 @@ mod tests {
             TransitionKind::AnamorphicFlare,
             TransitionKind::DreamSequence,
             TransitionKind::BokehDissolve,
+            TransitionKind::ZoomInDissolve,
+            TransitionKind::ZoomOutDissolve,
+            TransitionKind::CrossZoom,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -3712,6 +3847,9 @@ mod tests {
             TransitionKind::AnamorphicFlare,
             TransitionKind::DreamSequence,
             TransitionKind::BokehDissolve,
+            TransitionKind::ZoomInDissolve,
+            TransitionKind::ZoomOutDissolve,
+            TransitionKind::CrossZoom,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

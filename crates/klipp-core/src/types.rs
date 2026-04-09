@@ -402,6 +402,10 @@ impl TransitionUserParams {
             61 => Self { param0: 1.0, param1: 0.8, ..Self::default() },
             // BokehDissolve: param0=bokeh size, param1=brightness boost
             62 => Self { param0: 1.0, param1: 0.6, ..Self::default() },
+            // ZoomInDissolve / ZoomOutDissolve: param0=zoom amount
+            63 | 64 => Self { param0: 1.3, ..Self::default() },
+            // CrossZoom: param0=zoom amount, param1=easing (1=ease in-out)
+            65 => Self { param0: 1.4, param1: 1.0, ..Self::default() },
             _ => Self::default(),
         }
     }

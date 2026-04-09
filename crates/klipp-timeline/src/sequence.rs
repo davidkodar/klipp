@@ -732,6 +732,9 @@ pub enum TransitionKind {
     AnamorphicFlare,
     DreamSequence,
     BokehDissolve,
+    ZoomInDissolve,
+    ZoomOutDissolve,
+    CrossZoom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1473,6 +1473,9 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         AnamorphicFlare => 60,
         DreamSequence => 61,
         BokehDissolve => 62,
+        ZoomInDissolve => 63,
+        ZoomOutDissolve => 64,
+        CrossZoom => 65,
     }
 }
 
@@ -2200,6 +2203,57 @@ fn show_transition_inspector(
                                 1 => new_params.param1 = v,
                                 _ => new_params.param2 = v,
                             }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::ZoomInDissolve
+                    | klipp_timeline::TransitionKind::ZoomOutDissolve
+                    | klipp_timeline::TransitionKind::CrossZoom
+            ) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Zoom Amount")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(1.1..=2.0)
+                            .speed(0.05)
+                            .suffix("×"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                if matches!(transition.kind, klipp_timeline::TransitionKind::CrossZoom) {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Easing")
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let eased = transition.user_params.param1 > 0.5;
+                        let btn_label = if eased { "Ease In-Out" } else { "Linear" };
+                        if ui.button(btn_label).clicked() {
+                            let mut new_params = transition.user_params;
+                            new_params.param1 = if eased { 0.0 } else { 1.0 };
                             cmds.push(AppCommand::SetTransitionParam {
                                 track_index: track_idx,
                                 transition_id: transition.id,

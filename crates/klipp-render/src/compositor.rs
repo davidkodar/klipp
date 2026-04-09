@@ -965,6 +965,64 @@ fn render_transition(
             }
             } // end else (slide/cover/uncover)
         }
+        TransitionKind::ZoomInDissolve
+        | TransitionKind::ZoomOutDissolve
+        | TransitionKind::CrossZoom => {
+            // Zoom family export (default zoom=1.3/1.4, CrossZoom with easing).
+            let zoom_amount = 1.3_f32;
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let eased = if matches!(kind, TransitionKind::CrossZoom) {
+                p * p * (3.0 - 2.0 * p)
+            } else {
+                p
+            };
+            let inv_e = 1.0 - eased;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let (fsx, fsy, tsx, tsy) = match kind {
+                        TransitionKind::ZoomInDissolve => {
+                            let scale = 1.0 + (zoom_amount - 1.0) * eased;
+                            let fsx = (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
+                            let fsy = (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, x as f32, y as f32)
+                        }
+                        TransitionKind::ZoomOutDissolve => {
+                            let scale = zoom_amount - (zoom_amount - 1.0) * eased;
+                            let fsx = (dx / scale + cx).clamp(0.0, width as f32 - 1.0);
+                            let fsy = (dy / scale + cy).clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, x as f32, y as f32)
+                        }
+                        _ => {
+                            let scale_a = 1.0 + (zoom_amount - 1.0) * eased;
+                            let scale_b = zoom_amount - (zoom_amount - 1.0) * eased;
+                            let fsx =
+                                (dx / scale_a + cx).clamp(0.0, width as f32 - 1.0);
+                            let fsy =
+                                (dy / scale_a + cy).clamp(0.0, height as f32 - 1.0);
+                            let tsx =
+                                (dx / scale_b + cx).clamp(0.0, width as f32 - 1.0);
+                            let tsy =
+                                (dy / scale_b + cy).clamp(0.0, height as f32 - 1.0);
+                            (fsx, fsy, tsx, tsy)
+                        }
+                    };
+                    let fsi = (fsy as usize * w + fsx as usize) * 4;
+                    let tsi = (tsy as usize * w + tsx as usize) * 4;
+                    for c in 0..3 {
+                        output[fi + c] = (from[fsi + c] as f32 * inv_e
+                            + to[tsi + c] as f32 * eased
+                            + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
         TransitionKind::BokehDissolve => {
             // Bokeh dissolve export (default size=1, brightness=0.6).
             let envelope = (p * std::f32::consts::PI).sin();

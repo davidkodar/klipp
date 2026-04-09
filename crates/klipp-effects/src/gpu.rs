@@ -4471,6 +4471,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 result = unpack(from_buf[sidx]);
             }
         }
+    } else if params.kind_id == 63u || params.kind_id == 64u || params.kind_id == 65u {
+        // Zoom family: scale from/to around frame center.
+        let zoom_amount = max(params.param0, 1.001);
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        var ep: f32 = p;
+        if params.kind_id == 65u && params.param1 > 0.5 {
+            ep = p * p * (3.0 - 2.0 * p);
+        }
+        var from_sample: vec4<f32>;
+        var to_sample: vec4<f32>;
+        if params.kind_id == 63u {
+            let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
+            let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
+            let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
+            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
+            to_sample = to_px;
+        } else if params.kind_id == 64u {
+            let scale_a = zoom_amount - (zoom_amount - 1.0) * ep;
+            let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
+            let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
+            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
+            to_sample = to_px;
+        } else {
+            let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
+            let scale_b = zoom_amount - (zoom_amount - 1.0) * ep;
+            let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
+            let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
+            let to_sx = clamp(dx / scale_b + cx, 0.0, f32(params.width) - 1.0);
+            let to_sy = clamp(dy / scale_b + cy, 0.0, f32(params.height) - 1.0);
+            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
+            to_sample = unpack(to_buf[u32(to_sy) * params.width + u32(to_sx)]);
+        }
+        result = lerp_pixel(from_sample, to_sample, ep);
     } else if params.kind_id == 62u {
         // Bokeh Dissolve: screen-blend bloom + chromatic fringe.
         let bokeh_size = params.param0;
