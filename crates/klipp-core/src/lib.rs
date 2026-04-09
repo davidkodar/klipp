@@ -9,6 +9,7 @@ pub mod modifier;
 pub mod modifier_math;
 pub mod ofx_value;
 pub mod time;
+pub mod transition_registry;
 pub mod types;
 
 pub use error::{KlippError, KlippResult};
@@ -21,4 +22,5 @@ pub use time::{Fps, RationalTime, TimeRange, Timecode};
 pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use ofx_value::OfxValue;
 pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, LogFormat, PixelFormat, Resolution, TrackPoint, TransitionAlignment, TransitionUserParams};
+pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{GpuPreference, LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality};

@@ -196,7 +196,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             for transition in &mut track.transitions {
                 if transition.user_params == default_params {
                     transition.user_params =
-                        klipp_core::TransitionUserParams::default_for_kind(transition_kind_id(transition.kind));
+                        klipp_core::spec_for_kind(transition.kind).default_params;
                 }
             }
         }
@@ -219,80 +219,6 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at))
 }
 
-/// Map a `TransitionKind` enum to its stable `kind_id` byte. Mirrors
-/// `klipp_engine::transition::transition_kind_to_id`, duplicated here so
-/// klipp-project doesn't need to depend on klipp-engine.
-fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
-    use klipp_timeline::TransitionKind::*;
-    match kind {
-        CrossDissolve => 0,
-        WipeLeft => 1,
-        WipeRight => 2,
-        WipeUp => 3,
-        WipeDown => 4,
-        DipToBlack => 5,
-        DipToWhite => 6,
-        PushLeft => 7,
-        FilmDissolve => 8,
-        BlurDissolve => 9,
-        Flash => 10,
-        Spin => 11,
-        LightLeak => 12,
-        LuminanceDissolve => 13,
-        CircleWipeIn => 14,
-        CircleWipeOut => 15,
-        ClockWipe => 16,
-        BarnDoorOpen => 17,
-        BarnDoorClose => 18,
-        Pixelate => 19,
-        Ripple => 20,
-        PageTurn => 21,
-        PageTurnReverse => 22,
-        ChromaticAberration => 23,
-        FilmBurn => 24,
-        StarWipe => 25,
-        SplitWipeHorizontal => 26,
-        SplitWipeVertical => 27,
-        VenetianBlindHorizontal => 28,
-        VenetianBlindVertical => 29,
-        CheckerboardWipe => 30,
-        DiagonalWipeTLBR => 31,
-        DiagonalWipeTRBL => 32,
-        BoxWipeIn => 33,
-        BoxWipeOut => 34,
-        SlideLeft => 35,
-        SlideRight => 36,
-        SlideUp => 37,
-        SlideDown => 38,
-        CoverLeft => 39,
-        CoverRight => 40,
-        UncoverLeft => 41,
-        UncoverRight => 42,
-        SqueezeH => 43,
-        SqueezeV => 44,
-        AdditiveDissolve => 45,
-        FadeToColor => 46,
-        GlitchDissolve => 47,
-        Desaturate => 48,
-        NegativeFlash => 49,
-        Sepia => 50,
-        ColorizeFlash => 51,
-        HueRotate => 52,
-        Swirl => 53,
-        WaveDistortion => 54,
-        StaticTV => 55,
-        VHSTracking => 56,
-        GlitchRGBSplit => 57,
-        ProjectorFlicker => 58,
-        Halation => 59,
-        AnamorphicFlare => 60,
-        DreamSequence => 61,
-        BokehDissolve => 62,
-        ZoomInDissolve => 63,
-        ZoomOutDissolve => 64,
-        CrossZoom => 65,
-    }
-}
 
 fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> {
     Ok(Sequence {
@@ -322,75 +248,9 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
             track.custom_height = t.custom_height;
             track.transitions = t.transitions.iter().filter_map(|tr| {
                 let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
-                let kind = match tr.kind.as_str() {
-                    "CrossDissolve" => klipp_timeline::TransitionKind::CrossDissolve,
-                    "WipeLeft" => klipp_timeline::TransitionKind::WipeLeft,
-                    "WipeRight" => klipp_timeline::TransitionKind::WipeRight,
-                    "WipeUp" => klipp_timeline::TransitionKind::WipeUp,
-                    "WipeDown" => klipp_timeline::TransitionKind::WipeDown,
-                    "DipToBlack" => klipp_timeline::TransitionKind::DipToBlack,
-                    "DipToWhite" => klipp_timeline::TransitionKind::DipToWhite,
-                    "PushLeft" => klipp_timeline::TransitionKind::PushLeft,
-                    "FilmDissolve" => klipp_timeline::TransitionKind::FilmDissolve,
-                    "BlurDissolve" => klipp_timeline::TransitionKind::BlurDissolve,
-                    "Flash" => klipp_timeline::TransitionKind::Flash,
-                    "Spin" => klipp_timeline::TransitionKind::Spin,
-                    "LightLeak" => klipp_timeline::TransitionKind::LightLeak,
-                    "LuminanceDissolve" => klipp_timeline::TransitionKind::LuminanceDissolve,
-                    "CircleWipeIn" => klipp_timeline::TransitionKind::CircleWipeIn,
-                    "CircleWipeOut" => klipp_timeline::TransitionKind::CircleWipeOut,
-                    "ClockWipe" => klipp_timeline::TransitionKind::ClockWipe,
-                    "BarnDoorOpen" => klipp_timeline::TransitionKind::BarnDoorOpen,
-                    "BarnDoorClose" => klipp_timeline::TransitionKind::BarnDoorClose,
-                    "Pixelate" => klipp_timeline::TransitionKind::Pixelate,
-                    "Ripple" => klipp_timeline::TransitionKind::Ripple,
-                    "PageTurn" => klipp_timeline::TransitionKind::PageTurn,
-                    "PageTurnReverse" => klipp_timeline::TransitionKind::PageTurnReverse,
-                    "ChromaticAberration" => klipp_timeline::TransitionKind::ChromaticAberration,
-                    "FilmBurn" => klipp_timeline::TransitionKind::FilmBurn,
-                    "StarWipe" => klipp_timeline::TransitionKind::StarWipe,
-                    "SplitWipeHorizontal" => klipp_timeline::TransitionKind::SplitWipeHorizontal,
-                    "SplitWipeVertical" => klipp_timeline::TransitionKind::SplitWipeVertical,
-                    "VenetianBlindHorizontal" => klipp_timeline::TransitionKind::VenetianBlindHorizontal,
-                    "VenetianBlindVertical" => klipp_timeline::TransitionKind::VenetianBlindVertical,
-                    "CheckerboardWipe" => klipp_timeline::TransitionKind::CheckerboardWipe,
-                    "DiagonalWipeTLBR" => klipp_timeline::TransitionKind::DiagonalWipeTLBR,
-                    "DiagonalWipeTRBL" => klipp_timeline::TransitionKind::DiagonalWipeTRBL,
-                    "BoxWipeIn" => klipp_timeline::TransitionKind::BoxWipeIn,
-                    "BoxWipeOut" => klipp_timeline::TransitionKind::BoxWipeOut,
-                    "SlideLeft" => klipp_timeline::TransitionKind::SlideLeft,
-                    "SlideRight" => klipp_timeline::TransitionKind::SlideRight,
-                    "SlideUp" => klipp_timeline::TransitionKind::SlideUp,
-                    "SlideDown" => klipp_timeline::TransitionKind::SlideDown,
-                    "CoverLeft" => klipp_timeline::TransitionKind::CoverLeft,
-                    "CoverRight" => klipp_timeline::TransitionKind::CoverRight,
-                    "UncoverLeft" => klipp_timeline::TransitionKind::UncoverLeft,
-                    "UncoverRight" => klipp_timeline::TransitionKind::UncoverRight,
-                    "SqueezeH" => klipp_timeline::TransitionKind::SqueezeH,
-                    "SqueezeV" => klipp_timeline::TransitionKind::SqueezeV,
-                    "AdditiveDissolve" => klipp_timeline::TransitionKind::AdditiveDissolve,
-                    "FadeToColor" => klipp_timeline::TransitionKind::FadeToColor,
-                    "GlitchDissolve" => klipp_timeline::TransitionKind::GlitchDissolve,
-                    "Desaturate" => klipp_timeline::TransitionKind::Desaturate,
-                    "NegativeFlash" => klipp_timeline::TransitionKind::NegativeFlash,
-                    "Sepia" => klipp_timeline::TransitionKind::Sepia,
-                    "ColorizeFlash" => klipp_timeline::TransitionKind::ColorizeFlash,
-                    "HueRotate" => klipp_timeline::TransitionKind::HueRotate,
-                    "Swirl" => klipp_timeline::TransitionKind::Swirl,
-                    "WaveDistortion" => klipp_timeline::TransitionKind::WaveDistortion,
-                    "StaticTV" => klipp_timeline::TransitionKind::StaticTV,
-                    "VHSTracking" => klipp_timeline::TransitionKind::VHSTracking,
-                    "GlitchRGBSplit" => klipp_timeline::TransitionKind::GlitchRGBSplit,
-                    "ProjectorFlicker" => klipp_timeline::TransitionKind::ProjectorFlicker,
-                    "Halation" => klipp_timeline::TransitionKind::Halation,
-                    "AnamorphicFlare" => klipp_timeline::TransitionKind::AnamorphicFlare,
-                    "DreamSequence" => klipp_timeline::TransitionKind::DreamSequence,
-                    "BokehDissolve" => klipp_timeline::TransitionKind::BokehDissolve,
-                    "ZoomInDissolve" => klipp_timeline::TransitionKind::ZoomInDissolve,
-                    "ZoomOutDissolve" => klipp_timeline::TransitionKind::ZoomOutDissolve,
-                    "CrossZoom" => klipp_timeline::TransitionKind::CrossZoom,
-                    _ => klipp_timeline::TransitionKind::CrossDissolve,
-                };
+                let kind = klipp_core::spec_for_string_key(tr.kind.as_str())
+                    .map(|s| s.kind)
+                    .unwrap_or(klipp_timeline::TransitionKind::CrossDissolve);
                 Some(klipp_timeline::Transition {
                     id,
                     kind,

@@ -12,12 +12,11 @@ const PREVIEW_B: egui::Color32 = egui::Color32::from_rgb(120, 80, 60);
 const PREVIEW_MID: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 
 /// All data needed to register, display, and drag a transition.
+/// Display name and kind_id are looked up from the registry via `spec_for_kind`.
 struct TransitionDef {
-    /// Display name shown in the browser card and inspector.
-    name: &'static str,
-    /// Wire ID — must match TransitionKind::to_id() and the GPU shader kind_id.
-    kind_id: u8,
-    /// Category for future grouping/filtering (Dissolve, Wipe, Slide, etc.)
+    /// Which transition this entry represents.
+    kind: klipp_core::TransitionKind,
+    /// Category for grouping/filtering (Dissolve, Wipe, Slide, etc.)
     category: TransitionCategory,
     /// Draws a static 2-colour preview into the given rect.
     /// Use painter primitives only — no egui layout.
@@ -97,38 +96,32 @@ fn lerp_u8_preview(a: u8, b: u8, t: f32) -> u8 {
 
 const TRANSITIONS: &[TransitionDef] = &[
     TransitionDef {
-        name: "Cross Dissolve",
-        kind_id: 0,
+        kind: klipp_core::TransitionKind::CrossDissolve,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
-        name: "Wipe Left",
-        kind_id: 1,
+        kind: klipp_core::TransitionKind::WipeLeft,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
-        name: "Wipe Right",
-        kind_id: 2,
+        kind: klipp_core::TransitionKind::WipeRight,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| preview_split_h(p, r, 0.5, PREVIEW_B, PREVIEW_A),
     },
     TransitionDef {
-        name: "Wipe Up",
-        kind_id: 3,
+        kind: klipp_core::TransitionKind::WipeUp,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| preview_split_v(p, r, 0.5, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
-        name: "Wipe Down",
-        kind_id: 4,
+        kind: klipp_core::TransitionKind::WipeDown,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| preview_split_v(p, r, 0.5, PREVIEW_B, PREVIEW_A),
     },
     TransitionDef {
-        name: "Dip to Black",
-        kind_id: 5,
+        kind: klipp_core::TransitionKind::DipToBlack,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             let third = r.width() / 3.0;
@@ -156,8 +149,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Dip to White",
-        kind_id: 6,
+        kind: klipp_core::TransitionKind::DipToWhite,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             let third = r.width() / 3.0;
@@ -185,8 +177,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Push Left",
-        kind_id: 7,
+        kind: klipp_core::TransitionKind::PushLeft,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
@@ -199,14 +190,12 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Film Dissolve",
-        kind_id: 8,
+        kind: klipp_core::TransitionKind::FilmDissolve,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| preview_gradient_h(p, r, 12, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
-        name: "Blur Dissolve",
-        kind_id: 9,
+        kind: klipp_core::TransitionKind::BlurDissolve,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             preview_gradient_h(p, r, 6, PREVIEW_A, PREVIEW_B);
@@ -220,8 +209,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Flash",
-        kind_id: 10,
+        kind: klipp_core::TransitionKind::Flash,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
@@ -229,8 +217,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Spin",
-        kind_id: 11,
+        kind: klipp_core::TransitionKind::Spin,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -247,8 +234,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Circle Wipe In",
-        kind_id: 14,
+        kind: klipp_core::TransitionKind::CircleWipeIn,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -257,8 +243,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Circle Wipe Out",
-        kind_id: 15,
+        kind: klipp_core::TransitionKind::CircleWipeOut,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -267,8 +252,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Barn Door Open",
-        kind_id: 17,
+        kind: klipp_core::TransitionKind::BarnDoorOpen,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -290,8 +274,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Barn Door Close",
-        kind_id: 18,
+        kind: klipp_core::TransitionKind::BarnDoorClose,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -309,8 +292,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Slide Left",
-        kind_id: 35,
+        kind: klipp_core::TransitionKind::SlideLeft,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.6, PREVIEW_A, PREVIEW_B);
@@ -322,8 +304,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Slide Right",
-        kind_id: 36,
+        kind: klipp_core::TransitionKind::SlideRight,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.4, PREVIEW_B, PREVIEW_A);
@@ -335,8 +316,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Slide Up",
-        kind_id: 37,
+        kind: klipp_core::TransitionKind::SlideUp,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             preview_split_v(p, r, 0.6, PREVIEW_A, PREVIEW_B);
@@ -348,8 +328,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Slide Down",
-        kind_id: 38,
+        kind: klipp_core::TransitionKind::SlideDown,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             preview_split_v(p, r, 0.4, PREVIEW_B, PREVIEW_A);
@@ -361,8 +340,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Cover Left",
-        kind_id: 39,
+        kind: klipp_core::TransitionKind::CoverLeft,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -378,8 +356,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Cover Right",
-        kind_id: 40,
+        kind: klipp_core::TransitionKind::CoverRight,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -395,8 +372,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Uncover Left",
-        kind_id: 41,
+        kind: klipp_core::TransitionKind::UncoverLeft,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -412,8 +388,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Uncover Right",
-        kind_id: 42,
+        kind: klipp_core::TransitionKind::UncoverRight,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -429,8 +404,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Squeeze H",
-        kind_id: 43,
+        kind: klipp_core::TransitionKind::SqueezeH,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -453,8 +427,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Squeeze V",
-        kind_id: 44,
+        kind: klipp_core::TransitionKind::SqueezeV,
         category: TransitionCategory::Slide,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -477,8 +450,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Box Wipe In",
-        kind_id: 33,
+        kind: klipp_core::TransitionKind::BoxWipeIn,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -487,8 +459,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Box Wipe Out",
-        kind_id: 34,
+        kind: klipp_core::TransitionKind::BoxWipeOut,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -497,8 +468,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Diagonal TL-BR",
-        kind_id: 31,
+        kind: klipp_core::TransitionKind::DiagonalWipeTLBR,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -511,8 +481,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Diagonal TR-BL",
-        kind_id: 32,
+        kind: klipp_core::TransitionKind::DiagonalWipeTRBL,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -525,8 +494,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Checkerboard Wipe",
-        kind_id: 30,
+        kind: klipp_core::TransitionKind::CheckerboardWipe,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             let grid = 4usize;
@@ -551,8 +519,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Venetian Blind H",
-        kind_id: 28,
+        kind: klipp_core::TransitionKind::VenetianBlindHorizontal,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             let strips = 5;
@@ -572,8 +539,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Venetian Blind V",
-        kind_id: 29,
+        kind: klipp_core::TransitionKind::VenetianBlindVertical,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             let strips = 5;
@@ -593,8 +559,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Split Wipe H",
-        kind_id: 26,
+        kind: klipp_core::TransitionKind::SplitWipeHorizontal,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -621,8 +586,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Split Wipe V",
-        kind_id: 27,
+        kind: klipp_core::TransitionKind::SplitWipeVertical,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -649,8 +613,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Star Wipe",
-        kind_id: 25,
+        kind: klipp_core::TransitionKind::StarWipe,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -673,8 +636,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Clock Wipe",
-        kind_id: 16,
+        kind: klipp_core::TransitionKind::ClockWipe,
         category: TransitionCategory::Wipe,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -701,8 +663,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Page Turn",
-        kind_id: 21,
+        kind: klipp_core::TransitionKind::PageTurn,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -729,8 +690,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Page Turn Reverse",
-        kind_id: 22,
+        kind: klipp_core::TransitionKind::PageTurnReverse,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_B);
@@ -757,8 +717,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Zoom In Dissolve",
-        kind_id: 63,
+        kind: klipp_core::TransitionKind::ZoomInDissolve,
         category: TransitionCategory::Zoom,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_B);
@@ -784,8 +743,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Zoom Out Dissolve",
-        kind_id: 64,
+        kind: klipp_core::TransitionKind::ZoomOutDissolve,
         category: TransitionCategory::Zoom,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_B);
@@ -821,8 +779,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Cross Zoom",
-        kind_id: 65,
+        kind: klipp_core::TransitionKind::CrossZoom,
         category: TransitionCategory::Zoom,
         preview: |pa, r, _| {
             let mid = r.min.x + r.width() * 0.5;
@@ -843,8 +800,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Bokeh Dissolve",
-        kind_id: 62,
+        kind: klipp_core::TransitionKind::BokehDissolve,
         category: TransitionCategory::Cinematic,
         preview: |pa, r, _| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
@@ -875,8 +831,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Anamorphic Flare",
-        kind_id: 60,
+        kind: klipp_core::TransitionKind::AnamorphicFlare,
         category: TransitionCategory::Cinematic,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
@@ -910,8 +865,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Dream Sequence",
-        kind_id: 61,
+        kind: klipp_core::TransitionKind::DreamSequence,
         category: TransitionCategory::Cinematic,
         preview: |pa, r, _| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
@@ -935,8 +889,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Projector Flicker",
-        kind_id: 58,
+        kind: klipp_core::TransitionKind::ProjectorFlicker,
         category: TransitionCategory::Cinematic,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, egui::Color32::from_rgb(40, 35, 25));
@@ -972,8 +925,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Halation",
-        kind_id: 59,
+        kind: klipp_core::TransitionKind::Halation,
         category: TransitionCategory::Cinematic,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
@@ -1001,8 +953,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Glitch RGB Split",
-        kind_id: 57,
+        kind: klipp_core::TransitionKind::GlitchRGBSplit,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, egui::Color32::from_rgb(15, 15, 25));
@@ -1039,8 +990,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Static TV",
-        kind_id: 55,
+        kind: klipp_core::TransitionKind::StaticTV,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             let line_h = 4.0_f32;
@@ -1063,8 +1013,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "VHS Tracking",
-        kind_id: 56,
+        kind: klipp_core::TransitionKind::VHSTracking,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
@@ -1097,8 +1046,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Swirl",
-        kind_id: 53,
+        kind: klipp_core::TransitionKind::Swirl,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
@@ -1134,8 +1082,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Wave Distortion",
-        kind_id: 54,
+        kind: klipp_core::TransitionKind::WaveDistortion,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
@@ -1156,8 +1103,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Colorize Flash",
-        kind_id: 51,
+        kind: klipp_core::TransitionKind::ColorizeFlash,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
@@ -1170,8 +1116,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Hue Rotate",
-        kind_id: 52,
+        kind: klipp_core::TransitionKind::HueRotate,
         category: TransitionCategory::Effect,
         preview: |pa, r, _| {
             let steps = 12usize;
@@ -1210,8 +1155,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Negative Flash",
-        kind_id: 49,
+        kind: klipp_core::TransitionKind::NegativeFlash,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
@@ -1228,8 +1172,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Sepia",
-        kind_id: 50,
+        kind: klipp_core::TransitionKind::Sepia,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _| {
             let third = r.width() / 3.0;
@@ -1257,8 +1200,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Glitch Dissolve",
-        kind_id: 47,
+        kind: klipp_core::TransitionKind::GlitchDissolve,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             let block_h = r.height() / 6.0;
@@ -1294,8 +1236,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Desaturate",
-        kind_id: 48,
+        kind: klipp_core::TransitionKind::Desaturate,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             let third = r.width() / 3.0;
@@ -1323,8 +1264,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Additive Dissolve",
-        kind_id: 45,
+        kind: klipp_core::TransitionKind::AdditiveDissolve,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
@@ -1339,8 +1279,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Fade to Color",
-        kind_id: 46,
+        kind: klipp_core::TransitionKind::FadeToColor,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             let third = r.width() / 3.0;
@@ -1368,8 +1307,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Film Burn",
-        kind_id: 24,
+        kind: klipp_core::TransitionKind::FilmBurn,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -1401,8 +1339,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Chromatic Aberration",
-        kind_id: 23,
+        kind: klipp_core::TransitionKind::ChromaticAberration,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             p.rect_filled(r, 0.0, egui::Color32::from_rgb(20, 20, 30));
@@ -1433,8 +1370,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Ripple",
-        kind_id: 20,
+        kind: klipp_core::TransitionKind::Ripple,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
@@ -1451,8 +1387,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Pixelate",
-        kind_id: 19,
+        kind: klipp_core::TransitionKind::Pixelate,
         category: TransitionCategory::Effect,
         preview: |p, r, _| {
             let block = 8.0;
@@ -1479,8 +1414,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Luminance Dissolve",
-        kind_id: 13,
+        kind: klipp_core::TransitionKind::LuminanceDissolve,
         category: TransitionCategory::Dissolve,
         preview: |p, r, _| {
             // Gradient from dark (A) toward bright, with B bleeding through brights.
@@ -1520,8 +1454,7 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
-        name: "Light Leak",
-        kind_id: 12,
+        kind: klipp_core::TransitionKind::LightLeak,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
@@ -1576,7 +1509,11 @@ pub fn show(
         .iter()
         .filter(|t| {
             let matches_search =
-                search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower);
+                search_lower.is_empty()
+                    || klipp_core::spec_for_kind(t.kind)
+                        .display_name
+                        .to_lowercase()
+                        .contains(&search_lower);
             let matches_category = active_category.map_or(true, |cat| t.category == cat);
             matches_search && matches_category
         })
@@ -1594,11 +1531,12 @@ pub fn show(
                 .min_col_width(card_w)
                 .show(ui, |ui| {
                     for (i, tr) in filtered.iter().enumerate() {
-                        let resp = transition_card(ui, tr, theme, card_w);
+                        let spec = klipp_core::spec_for_kind(tr.kind);
+                        let resp = transition_card(ui, tr, spec, theme, card_w);
                         if resp.drag_started() {
                             state.drag_drop.begin(DragPayload::Transition {
-                                name: tr.name.to_string(),
-                                kind_id: tr.kind_id,
+                                name: spec.display_name.to_string(),
+                                kind_id: spec.kind_id,
                             });
                         }
                         if resp.double_clicked() {
@@ -1619,7 +1557,7 @@ pub fn show(
                                                     track_index: ti,
                                                     clip_a_id: clip_id,
                                                     clip_b_id: next_id,
-                                                    kind_id: tr.kind_id,
+                                                    kind_id: spec.kind_id,
                                                     duration_frames: state
                                                         .default_transition_frames,
                                                 });
@@ -1630,7 +1568,7 @@ pub fn show(
                                     }
                                 }
                                 if applied {
-                                    state.toast.show(format!("\"{}\" applied", tr.name));
+                                    state.toast.show(format!("\"{}\" applied", spec.display_name));
                                 } else {
                                     state.toast.show(String::from(
                                         "Select a clip with an adjacent cut point",
@@ -1653,6 +1591,7 @@ pub fn show(
 fn transition_card(
     ui: &mut egui::Ui,
     tr: &TransitionDef,
+    spec: &klipp_core::TransitionSpec,
     theme: &KlippTheme,
     width: f32,
 ) -> egui::Response {
@@ -1690,7 +1629,7 @@ fn transition_card(
         painter.text(
             label_rect.center(),
             egui::Align2::CENTER_CENTER,
-            tr.name,
+            spec.display_name,
             egui::FontId::proportional(10.0),
             if hovered { theme.text_primary } else { theme.text_secondary },
         );
