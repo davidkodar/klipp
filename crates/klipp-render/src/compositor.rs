@@ -965,6 +965,195 @@ fn render_transition(
             }
             } // end else (slide/cover/uncover)
         }
+        TransitionKind::GlitchRGBSplit => {
+            let intensity = 1.0_f32;
+            let block_size = 8_usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let bx = x / block_size.max(1);
+                    let by = y / block_size.max(1);
+                    let hash_r = ((bx as f32 * 127.1 + by as f32 * 311.7 + p * 999.9)
+                        .sin()
+                        * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash_g = ((bx as f32 * 269.5 + by as f32 * 183.3 + p * 543.2)
+                        .sin()
+                        * 12345.678)
+                        .fract()
+                        .abs();
+                    let hash_b = ((bx as f32 * 419.2 + by as f32 * 371.9 + p * 777.3)
+                        .sin()
+                        * 98765.432)
+                        .fract()
+                        .abs();
+                    let r_shift = ((hash_r - 0.5) * envelope * 80.0) as isize;
+                    let g_shift = ((hash_g - 0.5) * envelope * 60.0) as isize;
+                    let b_shift = ((hash_b - 0.5) * envelope * 80.0) as isize;
+                    let rx = (x as isize + r_shift).clamp(0, w as isize - 1) as usize;
+                    let gx = (x as isize + g_shift).clamp(0, w as isize - 1) as usize;
+                    let bxx = (x as isize + b_shift).clamp(0, w as isize - 1) as usize;
+                    let ri = (y * w + rx) * 4;
+                    let gi = (y * w + gx) * 4;
+                    let bi = (y * w + bxx) * 4;
+                    let blackout: f32 =
+                        if hash_r < envelope * 0.15 { 0.0 } else { 1.0 };
+                    output[fi] =
+                        ((from[ri] as f32 * inv + to[ri] as f32 * p) * blackout)
+                            .clamp(0.0, 255.0) as u8;
+                    output[fi + 1] =
+                        ((from[gi + 1] as f32 * inv + to[gi + 1] as f32 * p) * blackout)
+                            .clamp(0.0, 255.0) as u8;
+                    output[fi + 2] =
+                        ((from[bi + 2] as f32 * inv + to[bi + 2] as f32 * p) * blackout)
+                            .clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::StaticTV => {
+            let intensity = 1.0_f32;
+            let line_h = 2_usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7 + p * 999.9).sin()
+                        * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3 + p * 543.2).sin()
+                        * 12345.678)
+                        .fract()
+                        .abs();
+                    let scan_line: f32 =
+                        if (y / line_h.max(1)) % 2 == 0 { 1.0 } else { 0.75 };
+                    let static_val = hash * 255.0 * envelope * scan_line;
+                    let band = y / line_h.max(1);
+                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let shift = ((band_hash - 0.5) * envelope * 20.0) as isize;
+                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
+                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
+                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
+                    let static_mix = envelope * hash2 * 0.8;
+                    output[fi] =
+                        (base_r + (static_val - base_r) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] =
+                        (base_g + (static_val - base_g) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] =
+                        (base_b + (static_val - base_b) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::VHSTracking => {
+            let intensity = 1.0_f32;
+            let band_count = 6.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let band = (y as f32 / height as f32 * band_count) as usize;
+                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let band_hash2 = ((band as f32 * 269.5 + p * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let shift = ((band_hash - 0.5) * envelope * 40.0) as isize;
+                    let cshift = ((band_hash2 - 0.5) * envelope * 15.0) as isize;
+                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let csx = (x as isize + cshift).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let csi = (y * w + csx) * 4;
+                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
+                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
+                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
+                    let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                    let chr = from[csi] as f32 * inv + to[csi] as f32 * p;
+                    let chrb = from[csi + 2] as f32 * inv + to[csi + 2] as f32 * p;
+                    let brightness = 1.0 - band_hash * envelope * 0.4;
+                    let vhs_r = base_r + (chr - base_r) * envelope * 0.5;
+                    let vhs_g = base_g + (luma - base_g) * envelope * 0.5;
+                    let vhs_b = base_b + (chrb - base_b) * envelope * 0.5;
+                    output[fi] = (vhs_r * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = (vhs_g * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = (vhs_b * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Swirl => {
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+            let max_angle = 90.0_f32 * std::f32::consts::PI / 180.0;
+            let falloff = 1.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let norm_dist = dist / max_r;
+                    let swirl_angle = max_angle * envelope * (-norm_dist * falloff).exp();
+                    let cos_a = swirl_angle.cos();
+                    let sin_a = swirl_angle.sin();
+                    let sx = (cos_a * dx - sin_a * dy + cx)
+                        .clamp(0.0, width as f32 - 1.0) as usize;
+                    let sy = (sin_a * dx + cos_a * dy + cy)
+                        .clamp(0.0, height as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] =
+                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::WaveDistortion => {
+            let amplitude = 20.0_f32;
+            let frequency = 4.0_f32;
+            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
+            let two_pi = std::f32::consts::TAU;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let off_x =
+                        (y as f32 / height as f32 * frequency * two_pi).sin() * envelope;
+                    let sx = (x as f32 + off_x).clamp(0.0, width as f32 - 1.0) as usize;
+                    let si = (y * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] =
+                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
         TransitionKind::ColorizeFlash => {
             // Colorize flash export (default cyan, intensity=1, peak=0.5).
             let flash_r = 0.0_f32;

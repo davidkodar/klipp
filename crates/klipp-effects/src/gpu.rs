@@ -4471,6 +4471,134 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 result = unpack(from_buf[sidx]);
             }
         }
+    } else if params.kind_id == 57u {
+        // Glitch RGB Split: per-block RGB channel separation with blackouts.
+        let intensity = params.param0;
+        let block_size = max(params.param1, 1.0);
+        let envelope = sin(p * 3.14159265) * intensity;
+        let block_x = u32(f32(x) / block_size);
+        let block_y = u32(f32(y) / block_size);
+        let hash_r = fract(sin(f32(block_x) * 127.1 + f32(block_y) * 311.7 + p * 999.9) * 43758.545);
+        let hash_g = fract(sin(f32(block_x) * 269.5 + f32(block_y) * 183.3 + p * 543.2) * 12345.678);
+        let hash_b = fract(sin(f32(block_x) * 419.2 + f32(block_y) * 371.9 + p * 777.3) * 98765.432);
+        let r_shift = (hash_r - 0.5) * envelope * 80.0;
+        let g_shift = (hash_g - 0.5) * envelope * 60.0;
+        let b_shift = (hash_b - 0.5) * envelope * 80.0;
+        let rx = clamp(f32(x) + r_shift, 0.0, f32(params.width) - 1.0);
+        let gx = clamp(f32(x) + g_shift, 0.0, f32(params.width) - 1.0);
+        let bx = clamp(f32(x) + b_shift, 0.0, f32(params.width) - 1.0);
+        let r_idx = u32(y) * params.width + u32(rx);
+        let g_idx = u32(y) * params.width + u32(gx);
+        let b_idx = u32(y) * params.width + u32(bx);
+        let r_val = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p).x;
+        let g_val = lerp_pixel(unpack(from_buf[g_idx]), unpack(to_buf[g_idx]), p).y;
+        let b_val = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p).z;
+        var blackout: f32 = 1.0;
+        if hash_r < envelope * 0.15 {
+            blackout = 0.0;
+        }
+        result = vec4<f32>(r_val * blackout, g_val * blackout, b_val * blackout, 255.0);
+    } else if params.kind_id == 55u {
+        // Static TV: noise + scan lines + horizontal band shift.
+        let intensity = params.param0;
+        let line_h = max(params.param1, 1.0);
+        let envelope = sin(p * 3.14159265) * intensity;
+        let hash = fract(sin(f32(x) * 127.1 + f32(y) * 311.7 + p * 999.9) * 43758.545);
+        let hash2 = fract(sin(f32(x) * 269.5 + f32(y) * 183.3 + p * 543.2) * 12345.678);
+        var scan_line: f32 = 1.0;
+        if (u32(f32(y) / line_h) % 2u) == 0u {
+            scan_line = 0.75;
+        }
+        let static_val = hash * 255.0 * envelope * scan_line;
+        let band = u32(f32(y) / line_h);
+        let band_hash = fract(sin(f32(band) * 127.1 + p * 311.7) * 43758.545);
+        let shift = (band_hash - 0.5) * envelope * 20.0;
+        let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
+        let sample_idx = u32(y) * params.width + u32(sx);
+        let from_s = unpack(from_buf[sample_idx]);
+        let to_s = unpack(to_buf[sample_idx]);
+        let base = lerp_pixel(from_s, to_s, p);
+        let static_mix = envelope * hash2 * 0.8;
+        result = vec4<f32>(
+            clamp(base.x + (static_val - base.x) * static_mix, 0.0, 255.0),
+            clamp(base.y + (static_val - base.y) * static_mix, 0.0, 255.0),
+            clamp(base.z + (static_val - base.z) * static_mix, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 56u {
+        // VHS Tracking: horizontal band shifts + chroma bleed.
+        let intensity = params.param0;
+        let band_count = max(params.param1, 1.0);
+        let envelope = sin(p * 3.14159265) * intensity;
+        let band = u32(f32(y) / f32(params.height) * band_count);
+        let band_hash = fract(sin(f32(band) * 127.1 + p * 311.7) * 43758.545);
+        let band_hash2 = fract(sin(f32(band) * 269.5 + p * 183.3) * 12345.678);
+        let shift = (band_hash - 0.5) * envelope * 40.0;
+        let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
+        let sample_idx = u32(y) * params.width + u32(sx);
+        let from_s = unpack(from_buf[sample_idx]);
+        let to_s = unpack(to_buf[sample_idx]);
+        let base = lerp_pixel(from_s, to_s, p);
+        let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let chroma_shift = (band_hash2 - 0.5) * envelope * 15.0;
+        let csx = clamp(f32(x) + chroma_shift, 0.0, f32(params.width) - 1.0);
+        let c_idx = u32(y) * params.width + u32(csx);
+        let from_c = unpack(from_buf[c_idx]);
+        let to_c = unpack(to_buf[c_idx]);
+        let chroma_base = lerp_pixel(from_c, to_c, p);
+        let vhs_r = mix(base.x, chroma_base.x, envelope * 0.5);
+        let vhs_g = mix(base.y, luma, envelope * 0.5);
+        let vhs_b = mix(base.z, chroma_base.z, envelope * 0.5);
+        let brightness = 1.0 - band_hash * envelope * 0.4;
+        result = vec4<f32>(
+            clamp(vhs_r * brightness, 0.0, 255.0),
+            clamp(vhs_g * brightness, 0.0, 255.0),
+            clamp(vhs_b * brightness, 0.0, 255.0),
+            255.0,
+        );
+    } else if params.kind_id == 53u {
+        // Swirl: rotational distortion spiraling from center.
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let dist = length(vec2<f32>(dx, dy));
+        let max_r = max(length(vec2<f32>(cx, cy)), 1.0);
+        let norm_dist = dist / max_r;
+        let max_angle = params.param0 * 3.14159265 / 180.0;
+        let falloff = params.param1;
+        let envelope = sin(p * 3.14159265);
+        let swirl_angle = max_angle * envelope * exp(-norm_dist * falloff);
+        let cos_a = cos(swirl_angle);
+        let sin_a = sin(swirl_angle);
+        let sx = clamp(cos_a * dx - sin_a * dy + cx, 0.0, f32(params.width) - 1.0);
+        let sy = clamp(sin_a * dx + cos_a * dy + cy, 0.0, f32(params.height) - 1.0);
+        let sample_idx = u32(sy) * params.width + u32(sx);
+        let from_s = unpack(from_buf[sample_idx]);
+        let to_s = unpack(to_buf[sample_idx]);
+        result = lerp_pixel(from_s, to_s, p);
+    } else if params.kind_id == 54u {
+        // Wave Distortion: sinusoidal displacement.
+        let amplitude = params.param0;
+        let frequency = params.param1;
+        let dir = u32(params.param2 + 0.5);
+        let envelope = sin(p * 3.14159265) * amplitude;
+        var off_x: f32 = 0.0;
+        var off_y: f32 = 0.0;
+        if dir == 0u {
+            off_x = sin(f32(y) / f32(params.height) * frequency * 6.28318530) * envelope;
+        } else if dir == 1u {
+            off_y = sin(f32(x) / f32(params.width) * frequency * 6.28318530) * envelope;
+        } else {
+            off_x = sin(f32(y) / f32(params.height) * frequency * 6.28318530) * envelope * 0.7;
+            off_y = sin(f32(x) / f32(params.width) * frequency * 6.28318530) * envelope * 0.7;
+        }
+        let sx = clamp(f32(x) + off_x, 0.0, f32(params.width) - 1.0);
+        let sy = clamp(f32(y) + off_y, 0.0, f32(params.height) - 1.0);
+        let sample_idx = u32(sy) * params.width + u32(sx);
+        let from_s = unpack(from_buf[sample_idx]);
+        let to_s = unpack(to_buf[sample_idx]);
+        result = lerp_pixel(from_s, to_s, p);
     } else if params.kind_id == 51u {
         // Colorize Flash: user-defined color washes over at the cut.
         let flash_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;

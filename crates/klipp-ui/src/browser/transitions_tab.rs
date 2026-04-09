@@ -757,6 +757,161 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        name: "Glitch RGB Split",
+        kind_id: 57,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, egui::Color32::from_rgb(15, 15, 25));
+            let block_h = r.height() / 5.0;
+            for i in 0..5 {
+                let y = r.min.y + i as f32 * block_h;
+                let shift_r = (i as f32 * 37.0).sin() * 15.0;
+                let shift_b = (i as f32 * 73.0).sin() * -12.0;
+                pa.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x + shift_r, y),
+                        egui::vec2(r.width(), block_h - 1.0),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(200, 0, 0, 100),
+                );
+                pa.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x, y),
+                        egui::vec2(r.width(), block_h - 1.0),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 180, 0, 80),
+                );
+                pa.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x + shift_b, y),
+                        egui::vec2(r.width(), block_h - 1.0),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 200, 100),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Static TV",
+        kind_id: 55,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            let line_h = 4.0_f32;
+            let lines = (r.height() / line_h) as usize;
+            for i in 0..lines {
+                let y = r.min.y + i as f32 * line_h;
+                let brightness = if i % 2 == 0 { 180u8 } else { 120u8 };
+                let noise = (i as f32 * 37.3).sin().abs();
+                let val = (brightness as f32 * (0.5 + noise * 0.5)) as u8;
+                let color = egui::Color32::from_rgb(val, val, val);
+                pa.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.min.x, y),
+                        egui::vec2(r.width(), line_h - 0.5),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "VHS Tracking",
+        kind_id: 56,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_A);
+            let bands = 5usize;
+            let band_h = r.height() / bands as f32;
+            for i in 0..bands {
+                let y = r.min.y + i as f32 * band_h;
+                let shift = (i as f32 * 37.0).sin() * 12.0;
+                if i % 2 == 0 {
+                    pa.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(r.min.x + shift, y),
+                            egui::vec2(r.width(), band_h - 1.0),
+                        ),
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            PREVIEW_B.r(),
+                            PREVIEW_B.g(),
+                            PREVIEW_B.b(),
+                            180,
+                        ),
+                    );
+                }
+            }
+            pa.rect_filled(
+                egui::Rect::from_min_size(r.min, egui::vec2(4.0, r.height())),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 100, 100, 100),
+            );
+        },
+    },
+    TransitionDef {
+        name: "Swirl",
+        kind_id: 53,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            pa.rect_filled(r, 0.0, PREVIEW_A);
+            let cx = r.center();
+            let steps = 24usize;
+            let max_r = r.height() * 0.45;
+            let mut pts = Vec::new();
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let radius = t * max_r;
+                let angle = t * std::f32::consts::TAU * 1.5
+                    - std::f32::consts::FRAC_PI_2;
+                pts.push(egui::pos2(
+                    cx.x + angle.cos() * radius,
+                    cx.y + angle.sin() * radius,
+                ));
+            }
+            for i in 0..pts.len().saturating_sub(1) {
+                let alpha = (i as f32 / pts.len() as f32 * 200.0) as u8;
+                pa.line_segment(
+                    [pts[i], pts[i + 1]],
+                    egui::Stroke::new(
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            PREVIEW_B.r(),
+                            PREVIEW_B.g(),
+                            PREVIEW_B.b(),
+                            alpha,
+                        ),
+                    ),
+                );
+            }
+        },
+    },
+    TransitionDef {
+        name: "Wave Distortion",
+        kind_id: 54,
+        category: TransitionCategory::Effect,
+        preview: |pa, r, _| {
+            preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
+            let steps = 40usize;
+            let amp = r.height() * 0.2;
+            let mut prev = egui::pos2(r.min.x, r.center().y);
+            for i in 1..=steps {
+                let t = i as f32 / steps as f32;
+                let x = r.min.x + t * r.width();
+                let y = r.center().y + (t * std::f32::consts::TAU * 2.0).sin() * amp;
+                let next = egui::pos2(x, y);
+                pa.line_segment(
+                    [prev, next],
+                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+                );
+                prev = next;
+            }
+        },
+    },
+    TransitionDef {
         name: "Colorize Flash",
         kind_id: 51,
         category: TransitionCategory::Effect,

@@ -1463,6 +1463,11 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         Sepia => 50,
         ColorizeFlash => 51,
         HueRotate => 52,
+        Swirl => 53,
+        WaveDistortion => 54,
+        StaticTV => 55,
+        VHSTracking => 56,
+        GlitchRGBSplit => 57,
     }
 }
 
@@ -2198,6 +2203,218 @@ fn show_transition_inspector(
                         }
                     });
                 }
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::GlitchRGBSplit
+            ) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Intensity", 0u8, 0.0..=2.0, 0.05),
+                    ("Block Size", 1u8, 2.0..=32.0, 0.5),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::StaticTV) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Intensity", 0u8, 0.0..=2.0, 0.05),
+                    ("Scan Line Size", 1u8, 1.0..=8.0, 0.5),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::VHSTracking) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Intensity", 0u8, 0.0..=2.0, 0.05),
+                    ("Bands", 1u8, 2.0..=16.0, 0.5),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::Swirl) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Angle")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param0;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(0.0..=360.0)
+                            .speed(1.0)
+                            .suffix("°"),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param0 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Falloff")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param1;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v).range(0.1..=3.0).speed(0.05),
+                    );
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param1 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
+            if matches!(
+                transition.kind,
+                klipp_timeline::TransitionKind::WaveDistortion
+            ) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Amplitude", 0u8, 0.0..=60.0, 0.5),
+                    ("Frequency", 1u8, 1.0..=16.0, 0.1),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            _ => transition.user_params.param1,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                _ => new_params.param1 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Direction")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let dirs = ["Horizontal", "Vertical", "Both"];
+                    let current = transition.user_params.param2.round() as usize;
+                    egui::ComboBox::from_id_salt("wave_dir")
+                        .selected_text(dirs.get(current).copied().unwrap_or("Horizontal"))
+                        .show_ui(ui, |ui| {
+                            for (i, name) in dirs.iter().enumerate() {
+                                if ui.selectable_label(current == i, *name).clicked() {
+                                    let mut new_params = transition.user_params;
+                                    new_params.param2 = i as f32;
+                                    cmds.push(AppCommand::SetTransitionParam {
+                                        track_index: track_idx,
+                                        transition_id: transition.id,
+                                        user_params: new_params,
+                                    });
+                                }
+                            }
+                        });
+                });
             }
             if matches!(
                 transition.kind,

@@ -58,6 +58,11 @@ pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
         TransitionKind::Sepia => 50,
         TransitionKind::ColorizeFlash => 51,
         TransitionKind::HueRotate => 52,
+        TransitionKind::Swirl => 53,
+        TransitionKind::WaveDistortion => 54,
+        TransitionKind::StaticTV => 55,
+        TransitionKind::VHSTracking => 56,
+        TransitionKind::GlitchRGBSplit => 57,
     }
 }
 
@@ -117,6 +122,11 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
         50 => TransitionKind::Sepia,
         51 => TransitionKind::ColorizeFlash,
         52 => TransitionKind::HueRotate,
+        53 => TransitionKind::Swirl,
+        54 => TransitionKind::WaveDistortion,
+        55 => TransitionKind::StaticTV,
+        56 => TransitionKind::VHSTracking,
+        57 => TransitionKind::GlitchRGBSplit,
         _ => TransitionKind::CrossDissolve,
     }
 }
@@ -177,6 +187,11 @@ pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
         (50, "Sepia"),
         (51, "Colorize Flash"),
         (52, "Hue Rotate"),
+        (53, "Swirl"),
+        (54, "Wave Distortion"),
+        (55, "Static TV"),
+        (56, "VHS Tracking"),
+        (57, "Glitch RGB Split"),
     ]
 }
 
@@ -686,6 +701,228 @@ pub fn render_transition_with_params(
                         t,
                         &mut output[idx..idx + 4],
                     );
+                }
+            }
+        }
+        TransitionKind::GlitchRGBSplit => {
+            // Hard digital glitch: per-block RGB channel separation with blackouts.
+            // param0 = intensity, param1 = block size
+            let intensity = user_params.param0;
+            let block_size = user_params.param1.max(1.0) as usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let block_x = x / block_size.max(1);
+                    let block_y = y / block_size.max(1);
+                    let hash_r = ((block_x as f32 * 127.1
+                        + block_y as f32 * 311.7
+                        + p * 999.9)
+                        .sin()
+                        * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash_g = ((block_x as f32 * 269.5
+                        + block_y as f32 * 183.3
+                        + p * 543.2)
+                        .sin()
+                        * 12345.678)
+                        .fract()
+                        .abs();
+                    let hash_b = ((block_x as f32 * 419.2
+                        + block_y as f32 * 371.9
+                        + p * 777.3)
+                        .sin()
+                        * 98765.432)
+                        .fract()
+                        .abs();
+                    let r_shift = ((hash_r - 0.5) * envelope * 80.0) as isize;
+                    let g_shift = ((hash_g - 0.5) * envelope * 60.0) as isize;
+                    let b_shift = ((hash_b - 0.5) * envelope * 80.0) as isize;
+                    let rx = (x as isize + r_shift).clamp(0, w as isize - 1) as usize;
+                    let gx = (x as isize + g_shift).clamp(0, w as isize - 1) as usize;
+                    let bx = (x as isize + b_shift).clamp(0, w as isize - 1) as usize;
+                    let ri = (y * w + rx) * 4;
+                    let gi = (y * w + gx) * 4;
+                    let bi = (y * w + bx) * 4;
+                    let blackout: f32 =
+                        if hash_r < envelope * 0.15 { 0.0 } else { 1.0 };
+                    let r = (from[ri] as f32 * inv + to[ri] as f32 * p) * blackout;
+                    let g =
+                        (from[gi + 1] as f32 * inv + to[gi + 1] as f32 * p) * blackout;
+                    let b =
+                        (from[bi + 2] as f32 * inv + to[bi + 2] as f32 * p) * blackout;
+                    output[fi] = r.clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = g.clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = b.clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::StaticTV => {
+            // Television static noise overtakes the frame at midpoint.
+            // param0 = intensity, param1 = scan line height
+            let intensity = user_params.param0;
+            let line_h = user_params.param1.max(1.0) as usize;
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let hash = ((x as f32 * 127.1 + y as f32 * 311.7 + p * 999.9).sin()
+                        * 43758.545)
+                        .fract()
+                        .abs();
+                    let hash2 = ((x as f32 * 269.5 + y as f32 * 183.3 + p * 543.2).sin()
+                        * 12345.678)
+                        .fract()
+                        .abs();
+                    let scan_line: f32 =
+                        if (y / line_h.max(1)) % 2 == 0 { 1.0 } else { 0.75 };
+                    let static_val = hash * 255.0 * envelope * scan_line;
+                    let band = y / line_h.max(1);
+                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let shift = ((band_hash - 0.5) * envelope * 20.0) as isize;
+                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
+                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
+                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
+                    let static_mix = envelope * hash2 * 0.8;
+                    output[fi] =
+                        (base_r + (static_val - base_r) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] =
+                        (base_g + (static_val - base_g) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] =
+                        (base_b + (static_val - base_b) * static_mix).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::VHSTracking => {
+            // VHS tape tracking error with band shifts and color bleed.
+            // param0 = intensity, param1 = band count
+            let intensity = user_params.param0;
+            let band_count = user_params.param1.max(1.0);
+            let envelope = (p * std::f32::consts::PI).sin() * intensity;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let band = (y as f32 / height as f32 * band_count) as usize;
+                    let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
+                        .fract()
+                        .abs();
+                    let band_hash2 = ((band as f32 * 269.5 + p * 183.3).sin() * 12345.678)
+                        .fract()
+                        .abs();
+                    let shift = ((band_hash - 0.5) * envelope * 40.0) as isize;
+                    let cshift = ((band_hash2 - 0.5) * envelope * 15.0) as isize;
+                    let sx = (x as isize + shift).clamp(0, w as isize - 1) as usize;
+                    let csx = (x as isize + cshift).clamp(0, w as isize - 1) as usize;
+                    let si = (y * w + sx) * 4;
+                    let csi = (y * w + csx) * 4;
+                    let base_r = from[si] as f32 * inv + to[si] as f32 * p;
+                    let base_g = from[si + 1] as f32 * inv + to[si + 1] as f32 * p;
+                    let base_b = from[si + 2] as f32 * inv + to[si + 2] as f32 * p;
+                    let luma = 0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b;
+                    let chr = from[csi] as f32 * inv + to[csi] as f32 * p;
+                    let chrb = from[csi + 2] as f32 * inv + to[csi + 2] as f32 * p;
+                    let brightness = 1.0 - band_hash * envelope * 0.4;
+                    let vhs_r = base_r + (chr - base_r) * envelope * 0.5;
+                    let vhs_g = base_g + (luma - base_g) * envelope * 0.5;
+                    let vhs_b = base_b + (chrb - base_b) * envelope * 0.5;
+                    output[fi] = (vhs_r * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 1] = (vhs_g * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 2] = (vhs_b * brightness).clamp(0.0, 255.0) as u8;
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::Swirl => {
+            // Rotational distortion spiraling from center, peaking at midpoint.
+            // param0 = max angle (degrees), param1 = radius falloff
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+            let max_angle = user_params.param0 * std::f32::consts::PI / 180.0;
+            let falloff = user_params.param1;
+            let envelope = (p * std::f32::consts::PI).sin();
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let norm_dist = dist / max_r;
+                    let swirl_angle = max_angle * envelope * (-norm_dist * falloff).exp();
+                    let cos_a = swirl_angle.cos();
+                    let sin_a = swirl_angle.sin();
+                    let sx = (cos_a * dx - sin_a * dy + cx)
+                        .clamp(0.0, width as f32 - 1.0) as usize;
+                    let sy = (sin_a * dx + cos_a * dy + cy)
+                        .clamp(0.0, height as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] =
+                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
+        TransitionKind::WaveDistortion => {
+            // Sinusoidal displacement ripples across the frame.
+            // param0 = amplitude (px), param1 = frequency, param2 = direction
+            let amplitude = user_params.param0;
+            let frequency = user_params.param1;
+            let dir = user_params.param2.round() as u32;
+            let envelope = (p * std::f32::consts::PI).sin() * amplitude;
+            let two_pi = std::f32::consts::TAU;
+            let inv = 1.0 - p;
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let (off_x, off_y) = match dir {
+                        1 => (
+                            0.0,
+                            (x as f32 / width as f32 * frequency * two_pi).sin() * envelope,
+                        ),
+                        2 => (
+                            (y as f32 / height as f32 * frequency * two_pi).sin()
+                                * envelope
+                                * 0.7,
+                            (x as f32 / width as f32 * frequency * two_pi).sin()
+                                * envelope
+                                * 0.7,
+                        ),
+                        _ => (
+                            (y as f32 / height as f32 * frequency * two_pi).sin() * envelope,
+                            0.0,
+                        ),
+                    };
+                    let sx = (x as f32 + off_x).clamp(0.0, width as f32 - 1.0) as usize;
+                    let sy = (y as f32 + off_y).clamp(0.0, height as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    for c in 0..3 {
+                        output[fi + c] =
+                            (from[si + c] as f32 * inv + to[si + c] as f32 * p + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
                 }
             }
         }
@@ -2220,11 +2457,16 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::Sepia), 50);
         assert_eq!(transition_kind_to_id(TransitionKind::ColorizeFlash), 51);
         assert_eq!(transition_kind_to_id(TransitionKind::HueRotate), 52);
+        assert_eq!(transition_kind_to_id(TransitionKind::Swirl), 53);
+        assert_eq!(transition_kind_to_id(TransitionKind::WaveDistortion), 54);
+        assert_eq!(transition_kind_to_id(TransitionKind::StaticTV), 55);
+        assert_eq!(transition_kind_to_id(TransitionKind::VHSTracking), 56);
+        assert_eq!(transition_kind_to_id(TransitionKind::GlitchRGBSplit), 57);
     }
 
     #[test]
     fn kind_id_round_trip() {
-        for id in 0..=52u8 {
+        for id in 0..=57u8 {
             let kind = transition_kind_from_id(id);
             assert_eq!(transition_kind_to_id(kind), id as u32);
         }
@@ -2233,12 +2475,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(53), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(58), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_53() {
-        assert_eq!(all_transition_kinds().len(), 53);
+    fn all_transition_kinds_returns_58() {
+        assert_eq!(all_transition_kinds().len(), 58);
     }
 
     // ========================================================================
@@ -2281,6 +2523,102 @@ mod tests {
         let to = make_solid(0, 255, 0, 255, W, H);
         let result = render_transition(TransitionKind::CircleWipeIn, &from, &to, 1.0, W, H);
         assert_approx_rgb(&result, 0, 255, 0, TOLERANCE);
+    }
+
+    // ========================================================================
+    // Glitch RGB Split
+    // ========================================================================
+
+    #[test]
+    fn glitch_rgb_split_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::GlitchRGBSplit, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn glitch_rgb_split_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::GlitchRGBSplit, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    // ========================================================================
+    // Static TV / VHS Tracking
+    // ========================================================================
+
+    #[test]
+    fn static_tv_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::StaticTV, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn static_tv_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::StaticTV, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    #[test]
+    fn vhs_tracking_at_zero_is_from() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::VHSTracking, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 200, 100, 50, 10);
+    }
+
+    #[test]
+    fn vhs_tracking_at_one_is_to() {
+        let from = make_solid(200, 100, 50, 255, 8, 8);
+        let to = make_solid(50, 100, 200, 255, 8, 8);
+        let result = render_transition(TransitionKind::VHSTracking, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 50, 100, 200, 10);
+    }
+
+    // ========================================================================
+    // Swirl / Wave Distortion
+    // ========================================================================
+
+    #[test]
+    fn swirl_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Swirl, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn swirl_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result = render_transition(TransitionKind::Swirl, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
+    }
+
+    #[test]
+    fn wave_distortion_at_zero_is_from() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::WaveDistortion, &from, &to, 0.0, 8, 8);
+        assert_approx_rgb(&result, 255, 0, 0, 5);
+    }
+
+    #[test]
+    fn wave_distortion_at_one_is_to() {
+        let from = make_solid(255, 0, 0, 255, 8, 8);
+        let to = make_solid(0, 255, 0, 255, 8, 8);
+        let result =
+            render_transition(TransitionKind::WaveDistortion, &from, &to, 1.0, 8, 8);
+        assert_approx_rgb(&result, 0, 255, 0, 5);
     }
 
     // ========================================================================
@@ -2974,6 +3312,11 @@ mod tests {
             TransitionKind::Sepia,
             TransitionKind::ColorizeFlash,
             TransitionKind::HueRotate,
+            TransitionKind::Swirl,
+            TransitionKind::WaveDistortion,
+            TransitionKind::StaticTV,
+            TransitionKind::VHSTracking,
+            TransitionKind::GlitchRGBSplit,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -3033,6 +3376,11 @@ mod tests {
             TransitionKind::Sepia,
             TransitionKind::ColorizeFlash,
             TransitionKind::HueRotate,
+            TransitionKind::Swirl,
+            TransitionKind::WaveDistortion,
+            TransitionKind::StaticTV,
+            TransitionKind::VHSTracking,
+            TransitionKind::GlitchRGBSplit,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

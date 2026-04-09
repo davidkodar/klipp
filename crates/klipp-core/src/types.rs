@@ -372,6 +372,16 @@ impl TransitionUserParams {
             },
             // HueRotate: param0=rotations
             52 => Self { param0: 1.0, ..Self::default() },
+            // Swirl: param0=max angle deg, param1=radius falloff
+            53 => Self { param0: 90.0, param1: 1.0, ..Self::default() },
+            // WaveDistortion: param0=amplitude px, param1=frequency, param2=direction
+            54 => Self { param0: 20.0, param1: 4.0, param2: 0.0, ..Self::default() },
+            // StaticTV: param0=intensity, param1=scan line height
+            55 => Self { param0: 1.0, param1: 2.0, ..Self::default() },
+            // VHSTracking: param0=intensity, param1=band count
+            56 => Self { param0: 1.0, param1: 6.0, ..Self::default() },
+            // GlitchRGBSplit: param0=intensity, param1=block size
+            57 => Self { param0: 1.0, param1: 8.0, ..Self::default() },
             _ => Self::default(),
         }
     }

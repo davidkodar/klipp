@@ -6695,6 +6695,11 @@ impl TimelinePanel {
                                 klipp_timeline::TransitionKind::Sepia => "Sepia",
                                 klipp_timeline::TransitionKind::ColorizeFlash => "Colorize",
                                 klipp_timeline::TransitionKind::HueRotate => "Hue Rot",
+                                klipp_timeline::TransitionKind::Swirl => "Swirl",
+                                klipp_timeline::TransitionKind::WaveDistortion => "Wave",
+                                klipp_timeline::TransitionKind::StaticTV => "Static",
+                                klipp_timeline::TransitionKind::VHSTracking => "VHS",
+                                klipp_timeline::TransitionKind::GlitchRGBSplit => "RGB Spl",
                             };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),

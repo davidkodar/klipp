@@ -722,6 +722,11 @@ pub enum TransitionKind {
     Sepia,
     ColorizeFlash,
     HueRotate,
+    Swirl,
+    WaveDistortion,
+    StaticTV,
+    VHSTracking,
+    GlitchRGBSplit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

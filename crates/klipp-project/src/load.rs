@@ -278,6 +278,11 @@ fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {
         Sepia => 50,
         ColorizeFlash => 51,
         HueRotate => 52,
+        Swirl => 53,
+        WaveDistortion => 54,
+        StaticTV => 55,
+        VHSTracking => 56,
+        GlitchRGBSplit => 57,
     }
 }
 
@@ -363,6 +368,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                     "Sepia" => klipp_timeline::TransitionKind::Sepia,
                     "ColorizeFlash" => klipp_timeline::TransitionKind::ColorizeFlash,
                     "HueRotate" => klipp_timeline::TransitionKind::HueRotate,
+                    "Swirl" => klipp_timeline::TransitionKind::Swirl,
+                    "WaveDistortion" => klipp_timeline::TransitionKind::WaveDistortion,
+                    "StaticTV" => klipp_timeline::TransitionKind::StaticTV,
+                    "VHSTracking" => klipp_timeline::TransitionKind::VHSTracking,
+                    "GlitchRGBSplit" => klipp_timeline::TransitionKind::GlitchRGBSplit,
                     _ => klipp_timeline::TransitionKind::CrossDissolve,
                 };
                 Some(klipp_timeline::Transition {
