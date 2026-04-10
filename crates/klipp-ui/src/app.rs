@@ -2201,7 +2201,7 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
-                AppCommand::CreateGeneratorClip { data } => {
+                AppCommand::CreateGeneratorClip { track_index, data } => {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let ph = self.state.playhead.rescale_to(fps_rate);
                     let duration = klipp_core::RationalTime::from_frames(120, fps_rate);
@@ -2213,11 +2213,13 @@ impl KlippApp {
                         klipp_core::GeneratorData::Countdown => "Countdown",
                     };
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    let track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
-                        .unwrap_or_else(|| {
-                            seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
-                            0
-                        });
+                    let track_idx = track_index.unwrap_or_else(|| {
+                        seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                            .unwrap_or_else(|| {
+                                seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
+                                0
+                            })
+                    });
                     let clip = klipp_timeline::Clip {
                         id: klipp_core::ClipId::new(),
                         kind: klipp_timeline::ClipKind::Generator(data.clone()),

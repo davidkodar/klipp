@@ -451,8 +451,8 @@ pub enum AppCommand {
     ApplyMotionPreset { clip_id: ClipId, preset: String },
     /// Create an adjustment layer at the playhead on the top video track.
     CreateAdjustmentLayer,
-    /// Create a generator clip on the top video track at playhead.
-    CreateGeneratorClip { data: crate::GeneratorData },
+    /// Create a generator clip on a video track at the playhead.
+    CreateGeneratorClip { track_index: Option<usize>, data: crate::GeneratorData },
     /// Update a generator clip's data (color, gradient, etc.).
     UpdateGeneratorData { clip_id: ClipId, data: crate::GeneratorData },
     /// Open (drill into) a compound clip for editing.

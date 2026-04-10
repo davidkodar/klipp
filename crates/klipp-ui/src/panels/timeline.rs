@@ -157,6 +157,8 @@ pub struct TimelinePanel {
     resizing_track: Option<(usize, f32, f32)>,
     /// Marquee selection drag: start position in screen coords
     marquee_start: Option<egui::Pos2>,
+    /// Track rename: (track_index, text buffer)
+    renaming_track: Option<(usize, String)>,
     /// Per-frame scratch cache — cleared at the top of `show()`.
     pub(crate) frame_cache: TimelineFrameCache,
 }
@@ -1350,7 +1352,7 @@ impl TimelinePanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
-        _track_idx: usize,
+        track_idx: usize,
         _track_kind: TrackKind,
         track_rect: egui::Rect,
         _content_rect: egui::Rect,
@@ -1362,8 +1364,6 @@ impl TimelinePanel {
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
                 if track_rect.contains(pos) {
-                    // Accept drop on any track — CreateGeneratorClip handler
-                    // finds or creates the correct Video track internally.
                     painter.rect_stroke(
                         track_rect,
                         0.0,
@@ -1371,7 +1371,7 @@ impl TimelinePanel {
                     );
                     if !any_down {
                         if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
-                            cmds.push(AppCommand::CreateGeneratorClip { data });
+                            cmds.push(AppCommand::CreateGeneratorClip { track_index: Some(track_idx), data });
                             state.toast.show(format!("\"{}\" generator added to timeline", name));
                         }
                     }
@@ -1546,7 +1546,7 @@ impl TimelinePanel {
                 let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
                     if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
-                        cmds.push(AppCommand::CreateGeneratorClip { data });
+                        cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data });
                         state.toast.show(format!("\"{}\" generator added to timeline", name));
                     }
                 } else if !on_any_track {
@@ -2345,7 +2345,7 @@ impl TimelinePanel {
     }
 
     fn draw_single_track_header(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
         track_idx: usize,
@@ -2388,13 +2388,53 @@ impl TimelinePanel {
             bg_painter.rect_filled(dim_rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
         }
 
-        bg_painter.text(
-            egui::pos2(header_rect.left() + 4.0, track_y + 8.0),
-            egui::Align2::LEFT_TOP,
-            track_name,
-            egui::FontId::proportional(10.0),
-            if track_locked { egui::Color32::from_rgb(90, 90, 100) } else { label_color },
-        );
+        // Track name: inline text edit when renaming, static label otherwise
+        if let Some((rename_idx, ref mut buf)) = self.renaming_track {
+            if rename_idx == track_idx {
+                let name_rect = egui::Rect::from_min_size(
+                    egui::pos2(header_rect.left() + 2.0, track_y + 5.0),
+                    egui::vec2(header_rect.width() - 4.0, 16.0),
+                );
+                let text_edit = egui::TextEdit::singleline(buf)
+                    .font(egui::FontId::proportional(10.0))
+                    .desired_width(name_rect.width())
+                    .margin(egui::Margin::symmetric(2.0, 1.0));
+                let resp = ui.put(name_rect, text_edit);
+                // Auto-focus on first frame
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+                // Submit on Enter or focus lost
+                if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let new_name = buf.trim().to_string();
+                    if !new_name.is_empty() && new_name != track_name {
+                        let track_id = state.sequence().tracks[track_idx].id;
+                        cmds.push(AppCommand::RenameTrack { track_id, name: new_name });
+                    }
+                    self.renaming_track = None;
+                }
+                // Cancel on Escape
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.renaming_track = None;
+                }
+            } else {
+                bg_painter.text(
+                    egui::pos2(header_rect.left() + 4.0, track_y + 8.0),
+                    egui::Align2::LEFT_TOP,
+                    track_name,
+                    egui::FontId::proportional(10.0),
+                    if track_locked { egui::Color32::from_rgb(90, 90, 100) } else { label_color },
+                );
+            }
+        } else {
+            bg_painter.text(
+                egui::pos2(header_rect.left() + 4.0, track_y + 8.0),
+                egui::Align2::LEFT_TOP,
+                track_name,
+                egui::FontId::proportional(10.0),
+                if track_locked { egui::Color32::from_rgb(90, 90, 100) } else { label_color },
+            );
+        }
 
         // Track control buttons
         {
@@ -2721,7 +2761,10 @@ impl TimelinePanel {
                     }
                 });
                 ui.separator();
-                if ui.button("Rename Track").clicked() { ui.close_menu(); }
+                if ui.button("Rename Track").clicked() {
+                    self.renaming_track = Some((track_idx, track_name.to_string()));
+                    ui.close_menu();
+                }
                 ui.separator();
                 let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
                 let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));

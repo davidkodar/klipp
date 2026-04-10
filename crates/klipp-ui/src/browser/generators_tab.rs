@@ -74,6 +74,7 @@ pub fn show(
 
                         if resp.double_clicked() {
                             cmds.push(AppCommand::CreateGeneratorClip {
+                                track_index: None,
                                 data: (tmpl.create_data)(),
                             });
                             state.toast.show(format!(

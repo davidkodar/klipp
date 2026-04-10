@@ -583,15 +583,15 @@ impl ToolbarPanel {
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.menu_button("Add Generator", |ui| {
                 if ui.button("Solid Color").clicked() {
-                    cmds.push(AppCommand::CreateGeneratorClip { data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });
+                    cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });
                     ui.close_menu();
                 }
                 if ui.button("Color Bars").clicked() {
-                    cmds.push(AppCommand::CreateGeneratorClip { data: klipp_core::GeneratorData::ColorBars });
+                    cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::ColorBars });
                     ui.close_menu();
                 }
                 if ui.button("Black").clicked() {
-                    cmds.push(AppCommand::CreateGeneratorClip { data: klipp_core::GeneratorData::SolidColor { color: [0, 0, 0, 255] } });
+                    cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::SolidColor { color: [0, 0, 0, 255] } });
                     ui.close_menu();
                 }
             });
