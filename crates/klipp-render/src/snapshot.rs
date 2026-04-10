@@ -840,7 +840,7 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip.clone()); // Video 1 is tracks[1] (V2, V1, A1)
+        seq.tracks[0].clips.push(clip.clone()); // Video 1 is tracks[0] (V1, A1)
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
@@ -888,7 +888,7 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip);
+        seq.tracks[0].clips.push(clip);
         seq.in_point = Some(make_rational(24, 24));  // 1 second in
         seq.out_point = Some(make_rational(120, 24)); // 5 seconds in
 
@@ -921,7 +921,7 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip);
+        seq.tracks[0].clips.push(clip);
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
@@ -947,7 +947,7 @@ mod tests {
 
         let pool = MediaPool::new();
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip);
+        seq.tracks[0].clips.push(clip);
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
@@ -967,7 +967,7 @@ mod tests {
 
         let pool = MediaPool::new();
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip);
+        seq.tracks[0].clips.push(clip);
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
@@ -1005,15 +1005,15 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        // Default tracks: V2(0), V1(1), A1(2)
-        seq.tracks[0].clips.push(clip_b); // V2
-        seq.tracks[1].clips.push(clip_a); // V1
+        // Default: V1(0), A1(1). Add a second video track for multi-track test.
+        seq.add_video_track("Video 2".into());
+        // After add: V2(0), V1(1), A1(2)
+        seq.tracks[0].clips.push(clip_b); // V2 (overlay)
+        seq.tracks[1].clips.push(clip_a); // V1 (base)
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
-        // Tracks are reversed to bottom-to-top: A1 last in seq, but we skip audio in video_tracks
-        // Video tracks should have V1 first (bottom), V2 second (top) after reversal
         let tracks_with_clips: Vec<_> = snap.video_tracks.iter()
             .filter(|t| !t.clips.is_empty())
             .collect();
@@ -1058,9 +1058,9 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip_a);
-        seq.tracks[1].clips.push(clip_b);
-        seq.tracks[1].transitions.push(transition);
+        seq.tracks[0].clips.push(clip_a);
+        seq.tracks[0].clips.push(clip_b);
+        seq.tracks[0].transitions.push(transition);
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
@@ -1090,9 +1090,9 @@ mod tests {
         };
 
         let mut seq = make_sequence();
-        seq.tracks[2].clips.push(clip); // A1
-        seq.tracks[2].volume = 0.8;
-        seq.tracks[2].pan = -0.5;
+        seq.tracks[1].clips.push(clip); // A1
+        seq.tracks[1].volume = 0.8;
+        seq.tracks[1].pan = -0.5;
 
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();

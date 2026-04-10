@@ -125,8 +125,43 @@ pub fn show(
         // Right-click context menu on track header area (allocated FIRST so buttons sit on top)
         let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
 
-        // Track name
-        let name_x = track_rect.min.x + crate::theme::CLIP_ROLE_BAR_W + 6.0;
+        // Layer index badge (V1, V2, A1, etc.) — fixed, shows compositing order
+        let badge_x = track_rect.min.x + crate::theme::CLIP_ROLE_BAR_W + 4.0;
+        let layer_label = {
+            let prefix = match track.kind {
+                klipp_timeline::TrackKind::Video => "V",
+                klipp_timeline::TrackKind::Audio => "A",
+                klipp_timeline::TrackKind::Text => "T",
+                klipp_timeline::TrackKind::Subtitle => "S",
+            };
+            // Extract number from track name (e.g., "Video 3" → "3")
+            let num = track.name.split_whitespace().last()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            if num > 0 { format!("{}{}", prefix, num) } else { prefix.to_string() }
+        };
+        let badge_color = match track.kind {
+            klipp_timeline::TrackKind::Video => egui::Color32::from_rgb(50, 90, 140),
+            klipp_timeline::TrackKind::Audio => egui::Color32::from_rgb(60, 110, 70),
+            klipp_timeline::TrackKind::Text => egui::Color32::from_rgb(140, 110, 50),
+            klipp_timeline::TrackKind::Subtitle => egui::Color32::from_rgb(110, 80, 130),
+        };
+        let badge_w = if layer_label.len() > 2 { 22.0 } else { 18.0 };
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(badge_x, track_rect.center().y - 6.0),
+            egui::vec2(badge_w, 12.0),
+        );
+        ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &layer_label,
+            egui::FontId::monospace(8.0),
+            egui::Color32::WHITE,
+        );
+
+        // Track name (after the badge)
+        let name_x = badge_rect.right() + 4.0;
         ui.painter().text(
             egui::pos2(name_x, track_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -280,14 +315,11 @@ pub fn show(
             ui.menu_button("Add Track Above", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
-                        let name = match kind {
-                            TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
-                            TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
-                            TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
-                            TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
-                        };
+                        let seq = &mut state.sequences[state.active_sequence_idx];
+                        let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
-                        state.sequences[state.active_sequence_idx].tracks.insert(track_idx, new_track);
+                        seq.tracks.insert(track_idx, new_track);
+                        seq.renumber_tracks();
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
@@ -296,15 +328,12 @@ pub fn show(
             ui.menu_button("Add Track Below", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
-                        let name = match kind {
-                            TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
-                            TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
-                            TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
-                            TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
-                        };
+                        let seq = &mut state.sequences[state.active_sequence_idx];
+                        let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
-                        let idx = (track_idx + 1).min(state.sequence().tracks.len());
-                        state.sequences[state.active_sequence_idx].tracks.insert(idx, new_track);
+                        let idx = (track_idx + 1).min(seq.tracks.len());
+                        seq.tracks.insert(idx, new_track);
+                        seq.renumber_tracks();
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
@@ -469,14 +498,18 @@ pub fn show(
             ui.separator();
             for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                 if ui.button(label).clicked() {
-                    let name = match kind {
-                        TrackKind::Video => format!("Video {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1),
-                        TrackKind::Audio => format!("Audio {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1),
-                        TrackKind::Text => format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1),
-                        TrackKind::Subtitle => format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1),
-                    };
-                    let new_track = klipp_timeline::Track::new(&name, kind);
-                    state.sequences[state.active_sequence_idx].tracks.push(new_track);
+                    let seq = &mut state.sequences[state.active_sequence_idx];
+                    let name = seq.next_track_name(kind);
+                    match kind {
+                        TrackKind::Video => { seq.add_video_track(name); }
+                        TrackKind::Audio => { seq.add_audio_track(name); }
+                        TrackKind::Text => { seq.add_text_track(name); }
+                        TrackKind::Subtitle => {
+                            let track = klipp_timeline::Track::new(&name, kind);
+                            seq.tracks.push(track);
+                            seq.renumber_tracks();
+                        }
+                    }
                     cmds.push(AppCommand::SequenceUpdated);
                     ui.close_menu();
                 }

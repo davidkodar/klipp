@@ -563,8 +563,8 @@ impl ToolbarPanel {
 
     fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Timeline").size(11.0), |ui| {
-            if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddTrackAbove { track_index: 0 }); ui.close_menu(); }
-            if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddTrackBelow { track_index: state.sequence().tracks.len().saturating_sub(1) }); ui.close_menu(); }
+            if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_menu(); }
+            if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_menu(); }
             if ui.button("Delete Track").clicked() {
                 // Delete the track containing the selected clip, or the last track
                 if let Some(clip_id) = state.selected_clip {

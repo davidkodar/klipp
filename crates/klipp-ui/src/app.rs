@@ -8652,6 +8652,7 @@ impl KlippApp {
                     let name = seq.next_track_name(kind);
                     let track = klipp_timeline::Track::new(&name, kind);
                     seq.tracks.insert(ti, track);
+                    seq.renumber_tracks();
                 }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
@@ -8664,6 +8665,7 @@ impl KlippApp {
                     let name = seq.next_track_name(kind);
                     let track = klipp_timeline::Track::new(&name, kind);
                     seq.tracks.insert((ti + 1).min(seq.tracks.len()), track);
+                    seq.renumber_tracks();
                 }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
@@ -8680,6 +8682,7 @@ impl KlippApp {
                     self.state.confirm_remove_track = Some(tid);
                 } else {
                     let _ = self.state.sequences[self.state.active_sequence_idx].remove_track(tid);
+                    self.state.sequences[self.state.active_sequence_idx].renumber_tracks();
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                 }
@@ -14576,6 +14579,7 @@ impl KlippApp {
                     ui.horizontal(|ui| {
                         if ui.button("Remove").clicked() {
                             let _ = self.state.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
+                            self.state.sequences[self.state.active_sequence_idx].renumber_tracks();
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
                             self.state.confirm_remove_track = None;

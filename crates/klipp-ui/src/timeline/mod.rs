@@ -61,12 +61,26 @@ impl NewTimelinePanel {
             full_rect.max,
         );
 
-        // ── Track headers (left 110px) ──
-        let header_w = crate::theme::TRACK_HEADER_W;
+        // ── Track headers (resizable) ──
+        let header_w = state.track_header_width;
         let header_rect = egui::Rect::from_min_size(
             content_rect.min,
             egui::vec2(header_w, content_rect.height()),
         );
+
+        // ── Resize handle between headers and timeline ──
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(header_rect.max.x - 4.0, content_rect.min.y),
+            egui::vec2(8.0, content_rect.height()),
+        );
+        let handle_resp = ui.interact(handle_rect, ui.id().with("track_header_resize"), egui::Sense::drag());
+        if handle_resp.dragged() {
+            state.track_header_width = (state.track_header_width + handle_resp.drag_delta().x)
+                .clamp(100.0, 320.0);
+        }
+        if handle_resp.hovered() || handle_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
 
         // ── Timeline content (right of headers) ──
         let timeline_content_rect = egui::Rect::from_min_max(

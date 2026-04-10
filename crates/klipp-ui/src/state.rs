@@ -1308,7 +1308,7 @@ impl Default for AppState {
             timeline_resizing_track: None,
             timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
-            track_header_width: 160.0,
+            track_header_width: 180.0,
             viewer_zoom: 0.0, // 0.0 = fit-to-window mode
             last_timeline_content_width: 800.0,
             show_overview_bar: true,

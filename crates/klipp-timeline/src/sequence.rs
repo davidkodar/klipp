@@ -73,12 +73,11 @@ impl Sequence {
             resolution: Resolution::hd_1080(),
             tracks: {
                 let mut tracks = vec![
-                    Track::new("Video 2", TrackKind::Video),
                     Track::new("Video 1", TrackKind::Video),
                     Track::new("Audio 1", TrackKind::Audio),
                 ];
-                tracks[1].magnetic_role = TrackRole::Primary;
-                tracks[2].magnetic_role = TrackRole::Connected;
+                tracks[0].magnetic_role = TrackRole::Primary;
+                tracks[1].magnetic_role = TrackRole::Connected;
                 tracks
             },
             in_point: None,
@@ -97,20 +96,45 @@ impl Sequence {
             .unwrap_or(Timecode::zero())
     }
 
-    /// Returns the primary video track (Video 1).
-    pub fn video_track(&self) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.kind == TrackKind::Video && t.name == "Video 1")
-            .or_else(|| self.tracks.iter().find(|t| t.kind == TrackKind::Video))
-    }
-
-    /// Returns the primary video track (Video 1) mutably.
-    pub fn video_track_mut(&mut self) -> Option<&mut Track> {
-        // Find "Video 1" first, fall back to first video track
-        let has_v1 = self.tracks.iter().any(|t| t.kind == TrackKind::Video && t.name == "Video 1");
-        if has_v1 {
-            self.tracks.iter_mut().find(|t| t.kind == TrackKind::Video && t.name == "Video 1")
-        } else {
-            self.tracks.iter_mut().find(|t| t.kind == TrackKind::Video)
+    /// Renumber video and audio tracks based on visual position.
+    /// Video tracks are numbered bottom-up (last video in array = "Video 1").
+    /// Audio tracks are numbered top-down (first audio = "Audio 1").
+    /// Text/Subtitle tracks are numbered top-down.
+    /// Only renames tracks that have default-pattern names ("Video N", "Audio N", etc.).
+    /// User-customized names (e.g., "B-Roll", "Interview") are left unchanged.
+    pub fn renumber_tracks(&mut self) {
+        // Video: bottom-up (reverse order among video tracks)
+        let video_indices: Vec<usize> = self.tracks.iter().enumerate()
+            .filter(|(_, t)| t.kind == TrackKind::Video)
+            .map(|(i, _)| i)
+            .collect();
+        for (num_from_bottom, &idx) in video_indices.iter().rev().enumerate() {
+            let new_name = format!("Video {}", num_from_bottom + 1);
+            let track = &mut self.tracks[idx];
+            // Only rename if it has a default-pattern name
+            if track.name.starts_with("Video ") || track.name.starts_with("V") {
+                track.name = new_name;
+            }
+        }
+        // Audio: top-down
+        let mut audio_num = 1u32;
+        for track in &mut self.tracks {
+            if track.kind == TrackKind::Audio {
+                if track.name.starts_with("Audio ") || track.name.starts_with("A") {
+                    track.name = format!("Audio {}", audio_num);
+                }
+                audio_num += 1;
+            }
+        }
+        // Text: top-down
+        let mut text_num = 1u32;
+        for track in &mut self.tracks {
+            if track.kind == TrackKind::Text {
+                if track.name.starts_with("Text ") {
+                    track.name = format!("Text {}", text_num);
+                }
+                text_num += 1;
+            }
         }
     }
 
@@ -134,14 +158,15 @@ impl Sequence {
         self.tracks.iter().find(|t| t.kind == TrackKind::Audio)
     }
 
-    /// Add a new video track. Inserts before the first Audio track to maintain V/A ordering.
+    /// Add a new video track at the top of the video track group (above all existing
+    /// video tracks). This makes it the highest-numbered overlay. V1 stays at the bottom.
+    /// Renumbers all video tracks after insertion.
     pub fn add_video_track(&mut self, name: String) -> TrackId {
         let track = Track::new(&name, TrackKind::Video);
         let id = track.id;
-        let insert_pos = self.tracks.iter()
-            .position(|t| t.kind == TrackKind::Audio)
-            .unwrap_or(self.tracks.len());
-        self.tracks.insert(insert_pos, track);
+        // Insert at index 0 — above everything, new track becomes highest V number
+        self.tracks.insert(0, track);
+        self.renumber_tracks();
         id
     }
 

@@ -294,10 +294,10 @@ impl TimelinePanel {
                 [egui::pos2(rect.right(), rect.top()), egui::pos2(rect.right(), rect.bottom())],
                 egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)),
             );
-            // Track header resize handle
+            // Track header resize handle (wider hit area for easier grabbing)
             let handle_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 2.0, panel_rect.top()),
-                egui::vec2(4.0, panel_rect.height()),
+                egui::pos2(rect.right() - 4.0, panel_rect.top()),
+                egui::vec2(8.0, panel_rect.height()),
             );
             let handle_response = ui.interact(handle_rect, ui.id().with("header_resize"), egui::Sense::drag());
             if handle_response.dragged() {
