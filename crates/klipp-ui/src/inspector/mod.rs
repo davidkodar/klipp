@@ -598,6 +598,26 @@ fn show_title_editor(
         }
     });
 
+    // Text opacity slider (controls alpha channel of text color)
+    {
+        let mut opacity_pct = ((display_color[3] as f32 / 255.0) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut opacity_pct, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            let new_alpha = (opacity_pct / 100.0 * 255.0).round() as u8;
+            if new_alpha != display_color[3] {
+                let c = [display_color[0], display_color[1], display_color[2], new_alpha];
+                if has_selection && sel_range.0 < sel_range.1 {
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id, range_start: sel_range.0, range_end: sel_range.1,
+                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                } else {
+                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: c });
+                }
+            }
+        }
+    }
+    ui.add_space(4.0);
+
     // Per-character color effects (apply to selection or whole text)
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
@@ -746,6 +766,16 @@ fn show_title_editor(
         if ui.color_edit_button_srgba(&mut bg_col).changed() {
             cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()] });
         }
+        // Round-trip stable: convert alpha to percentage and back to ensure the slider
+        // doesn't report .changed() every frame due to float rounding.
+        let bg_opacity_raw = (bg_color[3] as f32 / 255.0) * 100.0;
+        let mut bg_opacity = bg_opacity_raw.round();
+        if ui.add(egui::Slider::new(&mut bg_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            let a = (bg_opacity / 100.0 * 255.0).round() as u8;
+            if a != bg_color[3] {
+                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_color[0], bg_color[1], bg_color[2], a] });
+            }
+        }
     }
     ui.add_space(8.0);
 
@@ -767,6 +797,11 @@ fn show_title_editor(
         s_changed |= ui.add(egui::Slider::new(&mut sb, 0.0..=30.0).text("Blur").step_by(0.5)).changed();
         let mut s_col = egui::Color32::from_rgba_premultiplied(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]);
         s_changed |= ui.color_edit_button_srgba(&mut s_col).changed();
+        let mut s_opacity = ((shadow.color[3] as f32 / 255.0) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut s_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            s_col = egui::Color32::from_rgba_premultiplied(s_col.r(), s_col.g(), s_col.b(), (s_opacity / 100.0 * 255.0).round() as u8);
+            s_changed = true;
+        }
         if s_changed {
             cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: true, color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()], offset_x: ox, offset_y: oy, blur: sb });
         }
@@ -788,6 +823,11 @@ fn show_title_editor(
         o_changed |= ui.add(egui::Slider::new(&mut ow, 0.5..=12.0).text("Width").step_by(0.5).suffix(" px")).changed();
         let mut o_col = egui::Color32::from_rgba_premultiplied(outline.color[0], outline.color[1], outline.color[2], outline.color[3]);
         o_changed |= ui.color_edit_button_srgba(&mut o_col).changed();
+        let mut o_opacity = ((outline.color[3] as f32 / 255.0) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut o_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            o_col = egui::Color32::from_rgba_premultiplied(o_col.r(), o_col.g(), o_col.b(), (o_opacity / 100.0 * 255.0).round() as u8);
+            o_changed = true;
+        }
         if o_changed {
             cmds.push(AppCommand::SetTitleOutline {
                 clip_id, enabled: true,
@@ -815,6 +855,11 @@ fn show_title_editor(
         g_changed |= ui.add(egui::Slider::new(&mut gi, 0.0..=1.0).text("Intensity").step_by(0.05)).changed();
         let mut g_col = egui::Color32::from_rgba_premultiplied(glow.color[0], glow.color[1], glow.color[2], glow.color[3]);
         g_changed |= ui.color_edit_button_srgba(&mut g_col).changed();
+        let mut g_opacity = ((glow.color[3] as f32 / 255.0) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut g_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            g_col = egui::Color32::from_rgba_premultiplied(g_col.r(), g_col.g(), g_col.b(), (g_opacity / 100.0 * 255.0).round() as u8);
+            g_changed = true;
+        }
         if g_changed {
             cmds.push(AppCommand::SetTitleGlow {
                 clip_id, enabled: true,
@@ -913,6 +958,11 @@ fn show_title_editor(
         let mut i_changed = false;
         let mut i_col = egui::Color32::from_rgba_premultiplied(inner.color[0], inner.color[1], inner.color[2], inner.color[3]);
         i_changed |= ui.color_edit_button_srgba(&mut i_col).changed();
+        let mut i_opacity = ((inner.color[3] as f32 / 255.0) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut i_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            i_col = egui::Color32::from_rgba_premultiplied(i_col.r(), i_col.g(), i_col.b(), (i_opacity / 100.0 * 255.0).round() as u8);
+            i_changed = true;
+        }
         i_changed |= ui.add(egui::Slider::new(&mut ix, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
         i_changed |= ui.add(egui::Slider::new(&mut iy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
         i_changed |= ui.add(egui::Slider::new(&mut ib, 0.0..=20.0).text("Blur").step_by(0.5)).changed();

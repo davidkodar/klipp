@@ -118,6 +118,22 @@ impl Sequence {
         self.tracks.iter().find(|t| t.kind == TrackKind::Video && t.name == "Video 2")
     }
 
+    /// Returns all overlay video/text/subtitle tracks — every track that composites
+    /// over the primary V1 video track. Returns (track_index, &Track) pairs in
+    /// iteration order (bottom-to-top in the compositing stack).
+    pub fn overlay_video_tracks(&self) -> Vec<(usize, &Track)> {
+        let primary_v1_idx = self.tracks.iter().position(|t| t.kind == TrackKind::Video);
+        self.tracks.iter().enumerate()
+            .filter(|(i, t)| {
+                !t.muted && match t.kind {
+                    TrackKind::Text | TrackKind::Subtitle => true,
+                    TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
+                    _ => false,
+                }
+            })
+            .collect()
+    }
+
     pub fn audio_track(&self) -> Option<&Track> {
         self.tracks.iter().find(|t| t.kind == TrackKind::Audio)
     }

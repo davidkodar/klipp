@@ -108,11 +108,17 @@ use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{AppCommand, AppEvent, Fps, MediaId, RationalTime, Resolution, Timecode};
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+/// Maximum number of live overlay decoders during playback.
+/// Prevents runaway decoder spawning on projects with many video tracks.
+/// Overlay tracks beyond this cap still render correctly in export.
+const MAX_OVERLAY_DECODERS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -186,9 +192,12 @@ pub struct PlaybackEngine {
     dropped_frames: u64,
     // Video decoders
     v1_decoder: Option<VideoDecoder>,
-    v2_decoder: Option<VideoDecoder>,
-    current_clip_v2: Option<usize>,
-    v2_frame_cache: Option<crate::types::DecodedFrame>,
+    // Overlay management: one entry per overlay track that has an active clip at the playhead.
+    // Keyed by track_index (the index in sequence.tracks).
+    overlay_decoders: HashMap<usize, VideoDecoder>,
+    overlay_clips: HashMap<usize, usize>,        // track_index -> clip_index within that track
+    overlay_frames: HashMap<usize, crate::types::DecodedFrame>, // track_index -> latest decoded/rendered frame
+    overlay_synth_frame: HashMap<usize, i64>,    // track_index -> last rendered frame number (for synthetic clip caching)
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -197,6 +206,9 @@ pub struct PlaybackEngine {
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cpal_sample_rate: u32,
+    /// Fingerprint of audio-relevant state. Prevents redundant audio teardown+rebuild
+    /// when SequenceUpdated fires for non-audio changes (title edits, color changes).
+    last_audio_fingerprint: u64,
     // Master clock — single source of truth for A/V timing
     master_clock: Arc<MasterClock>,
     // Timeline offset: maps source PTS to sequence timeline.
@@ -355,9 +367,10 @@ impl PlaybackEngine {
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
-            v2_decoder: None,
-            current_clip_v2: None,
-            v2_frame_cache: None,
+            overlay_decoders: HashMap::new(),
+            overlay_clips: HashMap::new(),
+            overlay_frames: HashMap::new(),
+            overlay_synth_frame: HashMap::new(),
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -365,6 +378,7 @@ impl PlaybackEngine {
             lufs_readings,
             lufs_reset,
             cpal_sample_rate,
+            last_audio_fingerprint: 0,
             master_clock: Arc::new(MasterClock::new()),
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
@@ -547,7 +561,7 @@ impl PlaybackEngine {
                         dec.frame_queue().lock().unwrap().clear();
                         dec.resume();
                     }
-                    if let Some(dec) = &self.v2_decoder {
+                    for dec in self.overlay_decoders.values() {
                         dec.resume();
                     }
 
@@ -596,7 +610,7 @@ impl PlaybackEngine {
                     if let Some(dec) = &self.v1_decoder {
                         dec.pause();
                     }
-                    if let Some(dec) = &self.v2_decoder {
+                    for dec in self.overlay_decoders.values() {
                         dec.pause();
                     }
                     self.master_clock.pause();
@@ -621,9 +635,7 @@ impl PlaybackEngine {
                 if self.state != PlaybackState::Idle {
                     self.master_clock.pause();
                     self.v1_decoder = None;
-                    self.v2_decoder = None;
-                    self.current_clip_v2 = None;
-                    self.v2_frame_cache = None;
+                    self.clear_all_overlays();
                     self.stop_all_audio();
                     self.playhead = RationalTime::from_frames(0, self.fps.rate());
                     self.last_synth_frame_rendered = None;
@@ -685,7 +697,6 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetPlayhead(tc) => {
-                // Always update the engine's playhead (even when Idle) so title overlay lookups work
                 self.playhead = tc;
                 if self.state != PlaybackState::Idle {
                     self.seek_in_sequence(tc);
@@ -854,15 +865,20 @@ impl PlaybackEngine {
                 self.current_grade_hash = 0;
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
-                // Restart audio sources to pick up changes (audio effects, clip edits).
-                // This tears down existing feeders and opens new ones with current clip data.
+                // Restart audio sources only when audio-relevant state changed.
+                // Title color/opacity/position edits fire SequenceUpdated but don't
+                // affect audio — skipping the teardown+rebuild prevents a storm that
+                // freezes the playhead during live editing.
                 if !self.audio_sources.is_empty() {
-                    let tc = self.playhead;
-                    self.start_all_audio(tc);
-                    // Resume immediately if playing
-                    if self.state == PlaybackState::Playing {
-                        for active in &self.audio_sources {
-                            active.source.resume();
+                    let audio_fingerprint = self.compute_audio_fingerprint();
+                    if audio_fingerprint != self.last_audio_fingerprint {
+                        self.last_audio_fingerprint = audio_fingerprint;
+                        let tc = self.playhead;
+                        self.start_all_audio(tc);
+                        if self.state == PlaybackState::Playing {
+                            for active in &self.audio_sources {
+                                active.source.resume();
+                            }
                         }
                     }
                 }
@@ -983,7 +999,7 @@ impl PlaybackEngine {
                 self.master_clock.resume();
 
                 self.state = PlaybackState::Playing;
-                self.maybe_open_v2_decoder(self.playhead);
+                self.update_overlay_decoders(self.playhead);
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
@@ -1134,7 +1150,7 @@ impl PlaybackEngine {
                 self.state = PlaybackState::Playing;
 
                 // Open V2 decoder if there's a clip on Video 2 at the playhead
-                self.maybe_open_v2_decoder(self.playhead);
+                self.update_overlay_decoders(self.playhead);
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
@@ -1206,6 +1222,9 @@ impl PlaybackEngine {
     /// Open audio sources for ALL tracks that have a clip at `tc`.
     /// Replaces any existing audio sources.
     fn start_all_audio(&mut self, tc: Timecode) {
+        // Update fingerprint so SequenceUpdated knows the current audio state
+        // (prevents redundant restart on the next SequenceUpdated after a seek/play).
+        self.last_audio_fingerprint = self.compute_audio_fingerprint();
         self.stop_all_audio();
 
         // Collect (track_index, media_id, path, source_secs) for every track with audio at tc
@@ -1361,6 +1380,43 @@ impl PlaybackEngine {
     }
 
     /// Stop and drop all audio sources, mix thread, and the output.
+    /// Stop all overlay decoders and clear overlay state.
+    fn clear_all_overlays(&mut self) {
+        for dec in self.overlay_decoders.values_mut() {
+            dec.stop_detached();
+        }
+        self.overlay_decoders.clear();
+        self.overlay_clips.clear();
+        self.overlay_frames.clear();
+        self.overlay_synth_frame.clear();
+    }
+
+    /// Compute a fingerprint of audio-relevant state at the current playhead.
+    /// Includes: which media clips are active, their speed, and audio effect count.
+    /// Title/generator clips are excluded (they don't produce audio).
+    fn compute_audio_fingerprint(&self) -> u64 {
+        let seq = self.sequence.read().unwrap();
+        let tc = self.playhead;
+        let mut fp: u64 = 0;
+        for track in &seq.tracks {
+            if let Some((_, clip)) = track.clip_at_timecode(tc) {
+                if let Some(mid) = clip.media_id() {
+                    fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
+                    fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
+                    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effects.len() as u64);
+                    // Include effect types so adding/removing effects triggers restart
+                    for ae in &clip.audio_effects {
+                        for b in ae.effect_type.bytes() {
+                            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+                        }
+                        fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
+                    }
+                }
+            }
+        }
+        fp
+    }
+
     fn stop_all_audio(&mut self) {
         // Clear mix thread staging first (stop reading from source ring buffers)
         if let Some(ref mt) = self.mix_thread {
@@ -1787,67 +1843,75 @@ impl PlaybackEngine {
             }
         }
 
-        // Check V2 decoder lifecycle — open/close as playhead moves through V2 clips
-        self.maybe_open_v2_decoder(self.playhead);
+        // Check overlay decoder lifecycle — open/close as playhead moves through overlay clips
+        self.update_overlay_decoders(self.playhead);
 
-        // Pop V2 frame if available
-        if let Some(v2_dec) = &self.v2_decoder {
-            let mut queue = v2_dec.frame_queue().lock().unwrap();
-            while let Some(f) = queue.front() {
-                if f.is_eof {
-                    let _ = queue.pop();
-                    break;
-                }
-                let pts = f.pts_secs();
-                if pts <= current_source_secs + frame_tolerance {
-                    let v2f = queue.pop().unwrap();
-                    // Check if next is also due (drop current)
-                    if let Some(next) = queue.front() {
-                        if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
-                            continue;
-                        }
+        // Pop frames from each overlay decoder that has pending data
+        let overlay_dec_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
+        for track_idx in overlay_dec_indices {
+            if let Some(dec) = self.overlay_decoders.get(&track_idx) {
+                let mut queue = dec.frame_queue().lock().unwrap();
+                while let Some(f) = queue.front() {
+                    if f.is_eof {
+                        let _ = queue.pop();
+                        break;
                     }
-                    self.v2_frame_cache = Some(v2f);
-                    break;
-                } else {
-                    break;
+                    let pts = f.pts_secs();
+                    if pts <= current_source_secs + frame_tolerance {
+                        let ovf = queue.pop().unwrap();
+                        // Check if next is also due (drop current)
+                        if let Some(next) = queue.front() {
+                            if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
+                                continue;
+                            }
+                        }
+                        self.overlay_frames.insert(track_idx, ovf);
+                        break;
+                    } else {
+                        break;
+                    }
                 }
             }
         }
 
-        // Composite V1 + V2 if V2 frame is available, or pass V1 directly
+        // Composite V1 + all overlay tracks
         let t_composite = std::time::Instant::now();
         let (final_w, final_h) = (frame.width, frame.height);
-        let final_rgba = if let Some(v2_frame) = &self.v2_frame_cache {
-            let v2_opacity = self.sequence.read().unwrap()
-                .video_track2()
-                .map(|t| t.opacity)
-                .unwrap_or(1.0);
+        let final_rgba = {
+            use crate::composite::{composite_layers, CompositeLayer};
+            let mut layers = vec![
+                CompositeLayer {
+                    rgba: frame.into_rgba(),
+                    width: final_w,
+                    height: final_h,
+                    opacity: 1.0,
+                    blend_mode: klipp_core::BlendMode::Normal,
+                },
+            ];
 
-            if v2_opacity > 0.001 {
-                use crate::composite::{composite_layers, CompositeLayer};
-                let layers = vec![
-                    CompositeLayer {
-                        rgba: frame.into_rgba(),
-                        width: final_w,
-                        height: final_h,
-                        opacity: 1.0,
-                        blend_mode: klipp_core::BlendMode::Normal,
-                    },
-                    CompositeLayer {
-                        rgba: v2_frame.to_rgba(),
-                        width: v2_frame.width,
-                        height: v2_frame.height,
-                        opacity: v2_opacity,
-                        blend_mode: klipp_core::BlendMode::Normal,
-                    },
-                ];
-                composite_layers(&layers, final_w, final_h)
-            } else {
-                frame.into_rgba()
+            // Add overlay frames in track order (bottom-to-top)
+            let seq = self.sequence.read().unwrap();
+            let overlay_tracks = seq.overlay_video_tracks();
+            for (track_idx, track) in &overlay_tracks {
+                if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
+                    if track.opacity > 0.001 {
+                        layers.push(CompositeLayer {
+                            rgba: ov_frame.to_rgba(),
+                            width: ov_frame.width,
+                            height: ov_frame.height,
+                            opacity: track.opacity,
+                            blend_mode: klipp_core::BlendMode::Normal,
+                        });
+                    }
+                }
             }
-        } else {
-            frame.into_rgba()
+            drop(seq);
+
+            if layers.len() == 1 {
+                layers.into_iter().next().unwrap().rgba
+            } else {
+                composite_layers(&layers, final_w, final_h)
+            }
         };
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
@@ -1962,7 +2026,7 @@ impl PlaybackEngine {
             self.master_clock.resume();
 
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-            self.maybe_open_v2_decoder(self.playhead);
+            self.update_overlay_decoders(self.playhead);
             return;
         }
 
@@ -2026,7 +2090,7 @@ impl PlaybackEngine {
                 }
             }
 
-            self.maybe_open_v2_decoder(self.playhead);
+            self.update_overlay_decoders(self.playhead);
             return;
         }
 
@@ -2060,7 +2124,7 @@ impl PlaybackEngine {
                 self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                self.maybe_open_v2_decoder(self.playhead);
+                self.update_overlay_decoders(self.playhead);
                 return;
             }
         }
@@ -2095,7 +2159,7 @@ impl PlaybackEngine {
                 self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                self.maybe_open_v2_decoder(self.playhead);
+                self.update_overlay_decoders(self.playhead);
                 return;
             }
 
@@ -2106,12 +2170,7 @@ impl PlaybackEngine {
                 dec.stop_detached();
             }
             self.v1_decoder = None;
-            if let Some(dec) = &mut self.v2_decoder {
-                dec.stop_detached();
-            }
-            self.v2_decoder = None;
-            self.current_clip_v2 = None;
-            self.v2_frame_cache = None;
+            self.clear_all_overlays();
             for active in &mut self.audio_sources {
                 active.source.stop_detached();
             }
@@ -2157,7 +2216,7 @@ impl PlaybackEngine {
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
 
-            self.maybe_open_v2_decoder(self.playhead);
+            self.update_overlay_decoders(self.playhead);
         } else {
             warn!("No path for media {:?}", media_id);
             self.stop_at_end();
@@ -2218,45 +2277,109 @@ impl PlaybackEngine {
 
     /// Check if Video 2 has a clip at the given playhead position.
     /// Opens/closes the V2 decoder as needed.
-    fn maybe_open_v2_decoder(&mut self, playhead: Timecode) {
+    fn update_overlay_decoders(&mut self, playhead: Timecode) {
         let seq = self.sequence.read().unwrap();
-        // Check ALL overlay video/text tracks for clips at playhead.
-        // Text tracks are always overlays. Video tracks are overlays if not the primary V1 track.
-        let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
-        let overlay_info = seq.tracks.iter()
-            .enumerate()
-            .filter(|(i, t)| {
-                !t.muted && match t.kind {
-                    klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle => true,
-                    klipp_timeline::TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
-                    _ => false,
-                }
-            })
-            .find_map(|(track_idx, track)| {
-                track.clip_at_timecode(playhead).map(|(idx, clip)| {
-                    (track_idx, idx, clip.clone())
-                })
-            });
+        // Collect overlay info for all overlay tracks (not just the first one).
+        let overlay_tracks = seq.overlay_video_tracks();
+        let mut active_overlays: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
+        for (track_idx, track) in &overlay_tracks {
+            if let Some((clip_idx, clip)) = track.clip_at_timecode(playhead) {
+                active_overlays.push((*track_idx, clip_idx, clip.clone()));
+            }
+        }
+        let active_track_indices: std::collections::HashSet<usize> = active_overlays.iter().map(|(ti, _, _)| *ti).collect();
         let res = seq.resolution;
         drop(seq);
 
-        match overlay_info {
-            Some((_track_idx, idx, clip)) => {
-                // Title clip on overlay track — render directly to v2_frame_cache
-                if let Some(title_data) = clip.title_data() {
-                    // Close media V2 decoder if open
-                    if self.v2_decoder.is_some() {
-                        if let Some(dec) = &mut self.v2_decoder {
-                            dec.stop_detached();
-                        }
-                        self.v2_decoder = None;
-                    }
-                    let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                    let mut rgba = self.title_renderer.render_with_gpu(title_data, res.width, res.height, gpu);
+        // Close decoders/frames for tracks that no longer have an active clip
+        let stale: Vec<usize> = self.overlay_clips.keys()
+            .filter(|ti| !active_track_indices.contains(ti))
+            .copied().collect();
+        for track_idx in stale {
+            if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
+                dec.stop_detached();
+                debug!("Overlay decoder closed for track {track_idx} (no clip at playhead)");
+            }
+            self.overlay_clips.remove(&track_idx);
+            self.overlay_frames.remove(&track_idx);
+            self.overlay_synth_frame.remove(&track_idx);
+        }
 
-                    // Apply opacity + transform keyframes + modifiers to title overlay
-                    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+        // Count live media decoders (for cap enforcement later)
+        let mut media_decoder_count = self.overlay_decoders.len();
+
+        // Compute current frame number for synthetic clip caching
+        let current_frame = playhead.value;
+
+        // Process each active overlay track
+        for (track_idx, clip_idx, clip) in active_overlays {
+            // Skip re-rendering synthetic clips when the same clip+frame is already cached.
+            // This mirrors the `last_synth_frame_rendered` optimization on the V1 path and
+            // prevents ~1000 re-renders/sec for static titles/generators.
+            let is_synthetic = clip.title_data().is_some() || clip.generator_data().is_some();
+            if is_synthetic
+                && self.overlay_clips.get(&track_idx) == Some(&clip_idx)
+                && self.overlay_synth_frame.get(&track_idx) == Some(&current_frame)
+                && self.overlay_frames.contains_key(&track_idx)
+            {
+                // Same synthetic clip at same frame already rendered — skip
+                continue;
+            }
+
+            // Title clip — render directly to overlay_frames
+            if let Some(title_data) = clip.title_data() {
+                // Close any media decoder for this track
+                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
+                    dec.stop_detached();
+                    media_decoder_count = media_decoder_count.saturating_sub(1);
+                }
+                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
+                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                let mut rgba = self.title_renderer.render_with_gpu(title_data, res.width, res.height, gpu);
+
+                // Apply opacity + transform keyframes + modifiers to title overlay
+                let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                let eval_ctx = klipp_core::EvalContext {
+                    clip_time_secs: clip_relative_secs,
+                    clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+                    timeline_time_secs: playhead.to_secs_f64(),
+                    fps: self.fps.as_f64(),
+                    seed: clip.id.0.as_u64_pair().0,
+                };
+                let opacity_default = clip.builtin_effects.iter()
+                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                    .unwrap_or(1.0);
+                let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
+                };
+                if (opacity - 1.0).abs() > 0.001 {
+                    let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
+                    for pixel in rgba.chunks_exact_mut(4) {
+                        pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
+                    }
+                }
+
+                // Apply transform keyframes + modifiers (position, scale, rotation)
+                let has_transform = !clip.transform_pos_x_keyframes.is_empty()
+                    || !clip.transform_pos_y_keyframes.is_empty()
+                    || !clip.transform_scale_keyframes.is_empty()
+                    || !clip.transform_rotation_keyframes.is_empty()
+                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
+                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
+                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
+                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
+
+                if has_transform {
+                    let tdef = clip.builtin_effects.iter()
+                        .find_map(|e| match e {
+                            klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
+                                Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+                            _ => None,
+                        })
+                        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+
                     let eval_ctx = klipp_core::EvalContext {
                         clip_time_secs: clip_relative_secs,
                         clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
@@ -2264,218 +2387,178 @@ impl PlaybackEngine {
                         fps: self.fps.as_f64(),
                         seed: clip.id.0.as_u64_pair().0,
                     };
-                    let opacity_default = clip.builtin_effects.iter()
-                        .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                        .unwrap_or(1.0);
-                    let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
-                        Some(stack) if !stack.modifiers.is_empty() =>
-                            klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
-                        _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
-                    };
-                    if (opacity - 1.0).abs() > 0.001 {
-                        let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
-                        for pixel in rgba.chunks_exact_mut(4) {
-                            pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
+
+                    let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
+
+                    if let Some(mb) = motion_blur {
+                        let frame_dur = self.fps.frame_duration_secs();
+                        let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
+                        let n = mb.samples as usize;
+                        let pixel_count = (res.width * res.height) as usize * 4;
+                        let mut accum = vec![0u32; pixel_count];
+
+                        for si in 0..n {
+                            let t_offset = if n > 1 {
+                                (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
+                            } else {
+                                0.0
+                            };
+                            let sample_t = (clip_relative_secs + t_offset).max(0.0);
+                            let sample_eval = klipp_core::EvalContext {
+                                clip_time_secs: sample_t,
+                                ..eval_ctx
+                            };
+
+                            let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
+                            };
+                            let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
+                            };
+                            let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
+                            };
+                            let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                                Some(stack) if !stack.modifiers.is_empty() =>
+                                    klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
+                                _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
+                            };
+
+                            let sample_rgba = klipp_effects::transform::apply(
+                                rgba.clone(), res.width, res.height,
+                                spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
+                            );
+                            for (i, &b) in sample_rgba.iter().enumerate() {
+                                accum[i] += b as u32;
+                            }
                         }
-                    }
-
-                    // Apply transform keyframes + modifiers (position, scale, rotation)
-                    let has_transform = !clip.transform_pos_x_keyframes.is_empty()
-                        || !clip.transform_pos_y_keyframes.is_empty()
-                        || !clip.transform_scale_keyframes.is_empty()
-                        || !clip.transform_rotation_keyframes.is_empty()
-                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
-                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
-                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
-                        || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
-
-                    if has_transform {
-                        let tdef = clip.builtin_effects.iter()
-                            .find_map(|e| match e {
-                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
-                                    Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
-                                _ => None,
-                            })
-                            .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-
-                        // Build eval context for modifier evaluation
-                        let eval_ctx = klipp_core::EvalContext {
-                            clip_time_secs: clip_relative_secs,
-                            clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-                            timeline_time_secs: playhead.to_secs_f64(),
-                            fps: self.fps.as_f64(),
-                            seed: clip.id.0.as_u64_pair().0,
+                        rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
+                    } else {
+                        let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
+                        };
+                        let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
+                        };
+                        let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
+                        };
+                        let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
+                            Some(stack) if !stack.modifiers.is_empty() =>
+                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
+                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
                         };
 
-                        // Check for motion blur on animated title
-                        let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
-
-                        if let Some(mb) = motion_blur {
-                            // Multi-sample motion blur: render transform at N time offsets and blend
-                            let frame_dur = self.fps.frame_duration_secs();
-                            let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
-                            let n = mb.samples as usize;
-                            let pixel_count = (res.width * res.height) as usize * 4;
-                            let mut accum = vec![0u32; pixel_count];
-
-                            for si in 0..n {
-                                let t_offset = if n > 1 {
-                                    (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
-                                } else {
-                                    0.0
-                                };
-                                let sample_t = (clip_relative_secs + t_offset).max(0.0);
-                                let sample_eval = klipp_core::EvalContext {
-                                    clip_time_secs: sample_t,
-                                    ..eval_ctx
-                                };
-
-                                let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                                    Some(stack) if !stack.modifiers.is_empty() =>
-                                        klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
-                                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
-                                };
-                                let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                                    Some(stack) if !stack.modifiers.is_empty() =>
-                                        klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
-                                    _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
-                                };
-                                let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                                    Some(stack) if !stack.modifiers.is_empty() =>
-                                        klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
-                                    _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
-                                };
-                                let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                                    Some(stack) if !stack.modifiers.is_empty() =>
-                                        klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
-                                    _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
-                                };
-
-                                let sample_rgba = klipp_effects::transform::apply(
-                                    rgba.clone(), res.width, res.height,
-                                    spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
-                                );
-                                for (i, &b) in sample_rgba.iter().enumerate() {
-                                    accum[i] += b as u32;
-                                }
-                            }
-                            rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
-                        } else {
-                            // No motion blur — single transform
-                            let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
-                            };
-                            let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
-                            };
-                            let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
-                            };
-                            let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
-                            };
-
-                            rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
-                        }
+                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
                     }
-
-                    self.v2_frame_cache = Some(crate::types::DecodedFrame {
-                        data: crate::types::FrameData::Rgba(rgba),
-                        width: res.width,
-                        height: res.height,
-                        pts: RationalTime::from_frames(0, 24),
-                        is_eof: false,
-                    });
-                    self.current_clip_v2 = Some(idx);
-                    return;
                 }
 
-                // Generator clip on overlay track — render directly to v2_frame_cache
-                if let Some(gen_data) = clip.generator_data() {
-                    if self.v2_decoder.is_some() {
-                        if let Some(dec) = &mut self.v2_decoder {
-                            dec.stop_detached();
-                        }
-                        self.v2_decoder = None;
-                    }
-                    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                    let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                    let rgba = klipp_core::generator::render_generator(
-                        gen_data,
-                        res.width,
-                        res.height,
-                        clip_relative_secs,
-                        total_secs,
-                    );
-                    self.v2_frame_cache = Some(crate::types::DecodedFrame {
-                        data: crate::types::FrameData::Rgba(rgba),
-                        width: res.width,
-                        height: res.height,
-                        pts: RationalTime::from_frames(0, 24),
-                        is_eof: false,
-                    });
-                    self.current_clip_v2 = Some(idx);
-                    return;
+                self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
+                    data: crate::types::FrameData::Rgba(rgba),
+                    width: res.width,
+                    height: res.height,
+                    pts: RationalTime::from_frames(0, 24),
+                    is_eof: false,
+                });
+                self.overlay_clips.insert(track_idx, clip_idx);
+                self.overlay_synth_frame.insert(track_idx, current_frame);
+                continue;
+            }
+
+            // Generator clip — render directly to overlay_frames
+            if let Some(gen_data) = clip.generator_data() {
+                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
+                    dec.stop_detached();
+                    media_decoder_count = media_decoder_count.saturating_sub(1);
+                }
+                let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+                let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
+                let rgba = klipp_core::generator::render_generator(
+                    gen_data,
+                    res.width,
+                    res.height,
+                    clip_relative_secs,
+                    total_secs,
+                );
+                self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
+                    data: crate::types::FrameData::Rgba(rgba),
+                    width: res.width,
+                    height: res.height,
+                    pts: RationalTime::from_frames(0, 24),
+                    is_eof: false,
+                });
+                self.overlay_clips.insert(track_idx, clip_idx);
+                self.overlay_synth_frame.insert(track_idx, current_frame);
+                continue;
+            }
+
+            // Media clip — open decoder if needed
+            if let Some(media_id) = clip.media_id() {
+                let source_secs = clip.source_in.to_secs_f64()
+                    + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
+                let rotation = clip.source_rotation;
+                // Already have the right decoder open for this track+clip?
+                if self.overlay_clips.get(&track_idx) == Some(&clip_idx) && self.overlay_decoders.contains_key(&track_idx) {
+                    continue;
+                }
+                // Close old decoder for this track if any
+                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
+                    dec.stop_detached();
+                    media_decoder_count = media_decoder_count.saturating_sub(1);
+                }
+                self.overlay_frames.remove(&track_idx);
+
+                // Enforce decoder cap
+                if media_decoder_count >= MAX_OVERLAY_DECODERS {
+                    debug!("Overlay decoder cap reached ({MAX_OVERLAY_DECODERS}), skipping track {track_idx}");
+                    continue;
                 }
 
-                // Media clip on overlay track
-                if let Some(media_id) = clip.media_id() {
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
-                    let v2_rotation = clip.source_rotation;
-                    // Already have the right decoder open?
-                    if self.current_clip_v2 == Some(idx) {
-                        return;
-                    }
-                    // Close old V2 decoder
-                    if let Some(dec) = &mut self.v2_decoder {
-                        dec.stop_detached();
-                    }
-                    self.v2_decoder = None;
-                    self.v2_frame_cache = None;
-
-                    if let Some(path) = self.path_for_media(media_id) {
-                        match VideoDecoder::open(&path, v2_rotation) {
-                            Ok(dec) => {
-                                if source_secs > 0.01 {
-                                    dec.seek(source_secs);
-                                }
-                                dec.resume();
-                                self.v2_decoder = Some(dec);
-                                self.current_clip_v2 = Some(idx);
-                                debug!("V2 decoder opened for clip {idx}");
+                if let Some(path) = self.path_for_media(media_id) {
+                    match VideoDecoder::open(&path, rotation) {
+                        Ok(dec) => {
+                            if source_secs > 0.01 {
+                                dec.seek(source_secs);
                             }
-                            Err(e) => {
-                                warn!("Failed to open V2 decoder: {e}");
-                                self.current_clip_v2 = None;
-                            }
+                            dec.resume();
+                            self.overlay_decoders.insert(track_idx, dec);
+                            self.overlay_clips.insert(track_idx, clip_idx);
+                            media_decoder_count += 1;
+                            debug!("Overlay decoder opened for track {track_idx} clip {clip_idx}");
+                        }
+                        Err(e) => {
+                            warn!("Failed to open overlay decoder for track {track_idx}: {e}");
+                            self.overlay_clips.remove(&track_idx);
                         }
                     }
                 }
             }
-            None => {
-                // No overlay clip at playhead — close decoder if open
-                if self.v2_decoder.is_some() {
-                    if let Some(dec) = &mut self.v2_decoder {
-                        dec.stop_detached();
-                    }
-                    self.v2_decoder = None;
-                    self.current_clip_v2 = None;
-                    self.v2_frame_cache = None;
-                    debug!("V2 decoder closed (no clip at playhead)");
-                } else if self.v2_frame_cache.is_some() && self.current_clip_v2.is_some() {
-                    // Clear cached title frame
-                    self.v2_frame_cache = None;
-                    self.current_clip_v2 = None;
+        }
+
+        // Enforce decoder cap: remove excess starting from highest track index
+        while self.overlay_decoders.len() > MAX_OVERLAY_DECODERS {
+            let max_idx = self.overlay_decoders.keys().copied().max();
+            if let Some(track_idx) = max_idx {
+                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
+                    dec.stop_detached();
                 }
+                self.overlay_clips.remove(&track_idx);
+                self.overlay_frames.remove(&track_idx);
+                debug!("Overlay decoder capped: closed track {track_idx}");
+            } else {
+                break;
             }
         }
     }
@@ -2494,9 +2577,7 @@ impl PlaybackEngine {
         }
 
         self.v1_decoder = None;
-        self.v2_decoder = None;
-        self.current_clip_v2 = None;
-        self.v2_frame_cache = None;
+        self.clear_all_overlays();
         if let Some(dec) = &mut self.transition_decoder {
             dec.stop_detached();
         }
@@ -2738,9 +2819,9 @@ impl PlaybackEngine {
                     self.master_clock.resume();
                 }
 
-                // 6. V2 decoder update
-                self.v2_frame_cache = None;
-                self.maybe_open_v2_decoder(target);
+                // 6. Overlay decoder update
+                self.overlay_frames.clear();
+                self.update_overlay_decoders(target);
 
                 self.playhead = target;
                 let _ = self.event_tx.send(AppEvent::LoopedBack);
@@ -2880,9 +2961,9 @@ impl PlaybackEngine {
                 self.master_clock.resume();
             }
 
-            // 5. V2 decoder update
-            self.v2_frame_cache = None;
-            self.maybe_open_v2_decoder(target);
+            // 5. Overlay decoder update
+            self.overlay_frames.clear();
+            self.update_overlay_decoders(target);
 
             self.playhead = target;
             let _ = self.event_tx.send(AppEvent::LoopedBack);
@@ -2891,7 +2972,7 @@ impl PlaybackEngine {
         } else {
             // No video clip at target — audio-only loop
             self.v1_decoder = None;
-            self.v2_frame_cache = None;
+            self.overlay_frames.clear();
 
             self.master_clock.pause();
             if let Some(aout) = &self.audio_output { aout.0.pause(); }
@@ -3093,9 +3174,9 @@ impl PlaybackEngine {
             }
             // Sources already start paused, no need to pause them
 
-            // Re-check V2 at the new playhead
-            self.v2_frame_cache = None;
-            self.maybe_open_v2_decoder(tc);
+            // Re-check overlays at the new playhead
+            self.overlay_frames.clear();
+            self.update_overlay_decoders(tc);
 
             if !was_playing {
                 self.grab_single_frame_timeout(grab_timeout);
@@ -3110,7 +3191,7 @@ impl PlaybackEngine {
         } else {
             // No video clip at this timecode — handle audio-only seek
             self.v1_decoder = None;
-            self.v2_frame_cache = None;
+            self.overlay_frames.clear();
 
             // Check if any audio track has a clip here
             let has_audio = {
@@ -3957,14 +4038,14 @@ impl PlaybackEngine {
                     _ => false,
                 }
             })
-            .find_map(|(_ti, track)| {
+            .find_map(|(ti, track)| {
                 track.clip_at_timecode(self.playhead).and_then(|(_, clip)| {
-                    clip.title_data().map(|td| (td.clone(), clip.clone(), seq.resolution))
+                    clip.title_data().map(|td| (ti, td.clone(), clip.clone(), seq.resolution))
                 })
             });
         drop(seq);
 
-        if let Some((title_data, clip, res)) = title_clip_info {
+        if let Some((track_idx, title_data, clip, res)) = title_clip_info {
             let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
             let mut rgba = self.title_renderer.render_with_gpu(&title_data, res.width, res.height, gpu);
@@ -4097,7 +4178,7 @@ impl PlaybackEngine {
                 }
             }
 
-            self.v2_frame_cache = Some(crate::types::DecodedFrame {
+            self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
                 data: crate::types::FrameData::Rgba(rgba),
                 width: res.width,
                 height: res.height,
@@ -4109,43 +4190,43 @@ impl PlaybackEngine {
 
     fn regrade_cached_frame(&mut self) {
         self.ensure_gpu_effects();
-        // Case 1: V1 video exists — regrade and composite with V2 overlay
+        // Case 1: V1 video exists — regrade and composite with overlay(s)
         if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {
-            let v1_result = self.post_process_rgba_inner(rgba_arc.as_ref().clone(), w, h);
+            let mut out = self.post_process_rgba_inner(rgba_arc.as_ref().clone(), w, h);
 
-            // Composite V2 overlay (title clips) directly over V1
-            let final_result = if let Some(v2_frame) = &self.v2_frame_cache {
-                let v2_rgba = v2_frame.to_rgba();
-                let mut out = v1_result;
-                // Simple alpha blend: title pixels with alpha > 0 overwrite V1 pixels
-                if v2_rgba.len() == out.len() {
-                    for i in (0..out.len()).step_by(4) {
-                        let sa = v2_rgba[i + 3] as f32 / 255.0;
-                        if sa > 0.001 {
-                            let da = 1.0 - sa;
-                            out[i]     = (v2_rgba[i]     as f32 * sa + out[i]     as f32 * da) as u8;
-                            out[i + 1] = (v2_rgba[i + 1] as f32 * sa + out[i + 1] as f32 * da) as u8;
-                            out[i + 2] = (v2_rgba[i + 2] as f32 * sa + out[i + 2] as f32 * da) as u8;
-                            out[i + 3] = 255; // result is always fully opaque
+            // Composite overlay frames (titles etc.) over V1, in track order
+            let overlay_indices: Vec<usize> = {
+                let seq = self.sequence.read().unwrap();
+                seq.overlay_video_tracks().iter().map(|(i, _)| *i).collect()
+            };
+            for track_idx in overlay_indices {
+                if let Some(ov_frame) = self.overlay_frames.get(&track_idx) {
+                    let ov_rgba = ov_frame.to_rgba();
+                    if ov_rgba.len() == out.len() {
+                        for i in (0..out.len()).step_by(4) {
+                            let sa = ov_rgba[i + 3] as f32 / 255.0;
+                            if sa > 0.001 {
+                                let da = 1.0 - sa;
+                                out[i]     = (ov_rgba[i]     as f32 * sa + out[i]     as f32 * da) as u8;
+                                out[i + 1] = (ov_rgba[i + 1] as f32 * sa + out[i + 1] as f32 * da) as u8;
+                                out[i + 2] = (ov_rgba[i + 2] as f32 * sa + out[i + 2] as f32 * da) as u8;
+                                out[i + 3] = 255;
+                            }
                         }
                     }
                 }
-                out
-            } else {
-                v1_result
-            };
+            }
 
             // Render GPU scope texture from the graded frame
             let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
                 tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
                 let scope_w = 720u32;
                 let scope_h = 256u32;
-                // Default to waveform; UI can set mode via scope_render_mode
                 let mode = self.scope_render_mode;
                 let tex = match mode {
-                    1 => gpu.render_scope_parade(&final_result, w, h, scope_w, scope_h),
-                    3 => gpu.render_scope_histogram(&final_result, w, h, scope_w, scope_h),
-                    _ => gpu.render_scope_waveform(&final_result, w, h, scope_w, scope_h),
+                    1 => gpu.render_scope_parade(&out, w, h, scope_w, scope_h),
+                    3 => gpu.render_scope_histogram(&out, w, h, scope_w, scope_h),
+                    _ => gpu.render_scope_waveform(&out, w, h, scope_w, scope_h),
                 };
                 Some((tex, scope_w, scope_h, mode))
             } else {
@@ -4153,7 +4234,7 @@ impl PlaybackEngine {
             };
 
             let mut fb = self.frame_buffer.lock().unwrap();
-            fb.write_frame(final_result, w, h);
+            fb.write_frame(out, w, h);
             if let Some((tex, sw, sh, mode)) = scope_tex {
                 fb.scope_texture = tex;
                 fb.scope_texture_w = sw;
@@ -4162,11 +4243,11 @@ impl PlaybackEngine {
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
-        } else if let Some(v2_frame) = &self.v2_frame_cache {
-            // Case 2: No V1 video, but V2 title overlay exists (standalone title)
-            let rgba = v2_frame.to_rgba();
-            let w = v2_frame.width;
-            let h = v2_frame.height;
+        } else if let Some(first_overlay) = self.overlay_frames.values().next() {
+            // Case 2: No V1 video, but overlay exists (standalone title)
+            let rgba = first_overlay.to_rgba();
+            let w = first_overlay.width;
+            let h = first_overlay.height;
             let mut fb = self.frame_buffer.lock().unwrap();
             fb.write_frame(rgba, w, h);
             drop(fb);

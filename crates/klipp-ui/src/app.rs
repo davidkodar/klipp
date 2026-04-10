@@ -7785,7 +7785,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Title Text", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7801,7 +7801,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Tracking", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7817,7 +7817,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Line Spacing", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7876,7 +7876,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Title Style", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7892,7 +7892,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Clear Title Styles", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7933,7 +7933,7 @@ impl KlippApp {
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7949,7 +7949,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Move Title", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7971,7 +7971,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Text Path", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -7997,7 +7997,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Background", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8017,7 +8017,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Gradient", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8039,7 +8039,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Pattern", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8053,7 +8053,7 @@ impl KlippApp {
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8084,7 +8084,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8104,7 +8104,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8124,7 +8124,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8145,7 +8145,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8167,7 +8167,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8193,7 +8193,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Extrusion", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8217,7 +8217,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Motion Blur", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8239,7 +8239,7 @@ impl KlippApp {
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Write-On", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
@@ -8270,7 +8270,7 @@ impl KlippApp {
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
                 true
             }
