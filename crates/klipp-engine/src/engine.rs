@@ -1054,8 +1054,9 @@ impl PlaybackEngine {
         }
 
         let seq = self.sequence.read().unwrap();
-        // Search ALL video tracks (not just Video 1)
-        let clip_info = seq.tracks.iter()
+        // Search video tracks in reverse — the last video track (bottom of panel)
+        // is the compositing primary, matching pro NLE convention.
+        let clip_info = seq.tracks.iter().rev()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
                 // Check if playhead is on a non-gap clip
@@ -3095,8 +3096,8 @@ impl PlaybackEngine {
         }
 
         let seq = self.sequence.read().unwrap();
-        // Search ALL video tracks (not just Video 1)
-        let clip_info = seq.tracks.iter()
+        // Search video tracks in reverse — last video track (bottom of panel) is primary.
+        let clip_info = seq.tracks.iter().rev()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
                 track.clip_at_timecode(tc).and_then(|(idx, clip)| {

@@ -118,7 +118,9 @@ impl Sequence {
     /// over the primary V1 video track. Returns (track_index, &Track) pairs in
     /// iteration order (bottom-to-top in the compositing stack).
     pub fn overlay_video_tracks(&self) -> Vec<(usize, &Track)> {
-        let primary_v1_idx = self.tracks.iter().position(|t| t.kind == TrackKind::Video);
+        // Primary = last video track by array index = bottom of the visual panel.
+        // This matches pro NLE convention: V1 at the bottom is the base compositing layer.
+        let primary_v1_idx = self.tracks.iter().rposition(|t| t.kind == TrackKind::Video);
         self.tracks.iter().enumerate()
             .filter(|(i, t)| {
                 !t.muted && match t.kind {
@@ -279,8 +281,14 @@ impl Sequence {
             TrackKind::Text => "Text",
             TrackKind::Subtitle => "Subtitle",
         };
-        let count = self.tracks.iter().filter(|t| t.kind == kind).count();
-        format!("{} {}", prefix, count + 1)
+        // Find the highest existing number for this kind to avoid name collisions
+        // after track deletion (e.g., deleting "Video 2" from [1,2,3] then adding → "Video 4").
+        let highest = self.tracks.iter()
+            .filter(|t| t.kind == kind)
+            .filter_map(|t| t.name.strip_prefix(prefix).and_then(|s| s.trim().parse::<u32>().ok()))
+            .max()
+            .unwrap_or(0);
+        format!("{} {}", prefix, highest + 1)
     }
 }
 

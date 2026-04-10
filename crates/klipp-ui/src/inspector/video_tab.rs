@@ -1643,7 +1643,7 @@ fn emit_transform(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::
 }
 
 /// Emit an UpdateBuiltinEffect or AddBuiltinEffect for Opacity.
-fn emit_opacity(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::ClipId, value: f32) {
+pub fn emit_opacity(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::ClipId, value: f32) {
     if let Some(index) = find_opacity_index(clip) {
         cmds.push(AppCommand::UpdateBuiltinEffect {
             clip_id,

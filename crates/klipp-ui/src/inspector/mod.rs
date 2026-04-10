@@ -3507,6 +3507,16 @@ fn show_generator_editor(
     ui.label(egui::RichText::new("Generator").strong().size(12.0));
     ui.add_space(6.0);
 
+    // Clip-level opacity (applies to the entire generator output)
+    {
+        let mut opacity_pct = (crate::inspector::video_tab::get_opacity(clip) * 100.0).round();
+        if ui.add(egui::Slider::new(&mut opacity_pct, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            let new_val = opacity_pct / 100.0;
+            crate::inspector::video_tab::emit_opacity(cmds, clip, clip_id, new_val);
+        }
+    }
+    ui.add_space(6.0);
+
     match gd {
         klipp_core::GeneratorData::SolidColor { color } => {
             ui.label(egui::RichText::new("Solid Color").size(11.0).color(theme.text_secondary));
