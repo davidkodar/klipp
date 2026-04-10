@@ -179,6 +179,8 @@ pub struct PlaybackEngine {
     state: PlaybackState,
     current_file: Option<PathBuf>,
     current_clip_index: usize,
+    /// Index into sequence.tracks for the primary video track being played.
+    current_track_index: usize,
     /// True when audio is continuing seamlessly across a contiguous clip boundary.
     /// Suppresses fade-in on the new clip to prevent dropout.
     contiguous_audio: std::sync::atomic::AtomicBool,
@@ -357,6 +359,7 @@ impl PlaybackEngine {
             state: PlaybackState::Idle,
             current_file: None,
             current_clip_index: 0,
+            current_track_index: 0,
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
             duration: Timecode::zero(),
             fps: Fps::film_24(),
@@ -885,9 +888,8 @@ impl PlaybackEngine {
                 // Re-read clip speed in case SpeedRamp changed it during playback
                 if self.state == PlaybackState::Playing {
                     let seq = self.sequence.read().unwrap();
-                    if let Some(clip) = seq.tracks.iter()
-                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                        .find_map(|t| t.clips.get(self.current_clip_index))
+                    if let Some(clip) = seq.tracks.get(self.current_track_index)
+                        .and_then(|t| t.clips.get(self.current_clip_index))
                     {
                         let new_speed = clip.speed.max(0.001);
                         if (self.clip_speed - new_speed).abs() > 0.001 {
@@ -939,14 +941,13 @@ impl PlaybackEngine {
                         .unwrap_or(false)
                 });
             let title_info = if !has_media_clip {
-                seq.tracks.iter()
-                    .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
-                    .find_map(|track| {
+                seq.tracks.iter().enumerate()
+                    .filter(|(_, t)| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
+                    .find_map(|(ti, track)| {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             if !clip.enabled { return None; }
-                            // Check for title clip
                             if let Some(td) = clip.title_data() {
-                                return Some((idx, td.clone(), clip.timeline_in, clip.source_in.to_secs_f64()));
+                                return Some((ti, idx, td.clone(), clip.timeline_in, clip.source_in.to_secs_f64()));
                             }
                             None
                         })
@@ -956,13 +957,13 @@ impl PlaybackEngine {
             };
             // Check for standalone generator clip (no media, no title)
             let generator_info = if !has_media_clip && title_info.is_none() {
-                seq.tracks.iter()
-                    .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
-                    .find_map(|track| {
+                seq.tracks.iter().enumerate()
+                    .filter(|(_, t)| matches!(t.kind, klipp_timeline::TrackKind::Video))
+                    .find_map(|(ti, track)| {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             if !clip.enabled { return None; }
                             let gd = clip.generator_data()?.clone();
-                            Some((idx, gd, clip.timeline_in, clip.timeline_out))
+                            Some((ti, idx, gd, clip.timeline_in, clip.timeline_out))
                         })
                     })
             } else {
@@ -971,10 +972,11 @@ impl PlaybackEngine {
             let res = seq.resolution;
             drop(seq);
 
-            if let Some((idx, _title_data, timeline_in, clip_source_in)) = title_info {
-                info!("handle_play: title clip {idx} at playhead");
+            if let Some((ti, idx, _title_data, timeline_in, clip_source_in)) = title_info {
+                info!("handle_play: title clip {idx} on track {ti} at playhead");
                 self.v1_decoder = None;
                 self.current_clip_index = idx;
+                self.current_track_index = ti;
                 self.current_file = None;
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
@@ -1013,10 +1015,11 @@ impl PlaybackEngine {
             }
 
             // Standalone generator clip at playhead — render and display
-            if let Some((idx, gen_data, timeline_in, timeline_out)) = generator_info {
-                info!("handle_play: generator clip {idx} at playhead");
+            if let Some((ti, idx, gen_data, timeline_in, timeline_out)) = generator_info {
+                info!("handle_play: generator clip {idx} on track {ti} at playhead");
                 self.v1_decoder = None;
                 self.current_clip_index = idx;
+                self.current_track_index = ti;
                 self.current_file = None;
                 self.clip_source_start = 0.0;
                 self.clip_timeline_start = timeline_in;
@@ -1056,43 +1059,41 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap();
         // Search video tracks in reverse — the last video track (bottom of panel)
         // is the compositing primary, matching pro NLE convention.
-        let clip_info = seq.tracks.iter().rev()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|track| {
+        let clip_info = seq.tracks.iter().enumerate().rev()
+            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|(track_idx, track)| {
                 // Check if playhead is on a non-gap clip
                 if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
                     if let Some(media_id) = clip.media_id() {
                         let source_secs = clip.source_in.to_secs_f64()
                             + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed;
                         let clip_source_in = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation));
+                        return Some((track_idx, idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation));
                     }
-                    // Playhead is on a gap clip — fall through to find next real clip
                 }
                 // Find next non-gap clip at or after playhead
                 for (idx, clip) in track.clips.iter().enumerate() {
                     if clip.timeline_in >= self.playhead {
                         if let Some(media_id) = clip.media_id() {
                             let si = clip.source_in.to_secs_f64();
-                            return Some((idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
+                            return Some((track_idx, idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
                         }
-                        // Gap clip — continue searching
                     }
                 }
                 // Fallback: first non-gap clip
                 for (idx, clip) in track.clips.iter().enumerate() {
                     if let Some(media_id) = clip.media_id() {
                         let si = clip.source_in.to_secs_f64();
-                        return Some((idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
+                        return Some((track_idx, idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
                     }
                 }
                 None
             });
         drop(seq);
 
-        if let Some((clip_idx, media_id, source_secs, timeline_in, clip_source_in, clip_speed, source_rotation)) = clip_info {
+        if let Some((track_idx, clip_idx, media_id, source_secs, timeline_in, clip_source_in, clip_speed, source_rotation)) = clip_info {
             if let Some(path) = self.path_for_media(media_id) {
-                info!("handle_play: clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
+                info!("handle_play: track {track_idx} clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
 
                 // Open video decoder
                 match VideoDecoder::open(&path, source_rotation) {
@@ -1150,10 +1151,11 @@ impl PlaybackEngine {
                 self.clip_speed = clip_speed;
                 self.current_source_rotation = source_rotation;
                 self.current_clip_index = clip_idx;
+                self.current_track_index = track_idx;
                 self.current_file = Some(path);
                 self.state = PlaybackState::Playing;
 
-                // Open V2 decoder if there's a clip on Video 2 at the playhead
+                // Open overlay decoders for all non-primary video tracks at the playhead
                 self.update_overlay_decoders(self.playhead);
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
@@ -1607,9 +1609,8 @@ impl PlaybackEngine {
         // Title / Generator clip path — standalone non-media clip on V1 (no decoder active)
         if self.v1_decoder.is_none() && self.current_file.is_none() {
             let seq = self.sequence.read().unwrap();
-            let synth_clip = seq.tracks.iter()
-                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
-                .find_map(|track| {
+            let synth_clip = seq.tracks.get(self.current_track_index)
+                .and_then(|track| {
                     track.clips.get(self.current_clip_index).and_then(|clip| {
                         if clip.title_data().is_some() || clip.generator_data().is_some() {
                             Some(clip.clone())
@@ -1771,9 +1772,8 @@ impl PlaybackEngine {
         // Update playhead from the frame's PTS relative to clip timeline
         // Search ALL video tracks for the current clip
         let seq = self.sequence.read().unwrap();
-        let found_clip = seq.tracks.iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|track| track.clips.get(self.current_clip_index).cloned());
+        let found_clip = seq.tracks.get(self.current_track_index)
+            .and_then(|track| track.clips.get(self.current_clip_index).cloned());
         drop(seq);
 
         if found_clip.is_none() {
@@ -1895,7 +1895,7 @@ impl PlaybackEngine {
 
             // Add overlay frames in track order (bottom-to-top)
             let seq = self.sequence.read().unwrap();
-            let overlay_tracks = seq.overlay_video_tracks();
+            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
             for (track_idx, track) in &overlay_tracks {
                 if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
                     if track.opacity > 0.001 {
@@ -1971,11 +1971,10 @@ impl PlaybackEngine {
         let (current_clip_info, next_clip_info) = {
             let mut cur_info: Option<(klipp_timeline::ClipKind, Option<klipp_core::MediaId>, f64)> = None;
             let mut next_info: Option<(usize, klipp_timeline::Clip)> = None;
-            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+            if let Some(track) = seq.tracks.get(self.current_track_index) {
                 if let Some(c) = track.clips.get(self.current_clip_index) {
                     if c.kind.is_playable() {
                         cur_info = Some((c.kind.clone(), c.media_id(), c.source_out.to_secs_f64()));
-                        // Search for next playable clip on THIS SAME track
                         for idx in next_idx..track.clips.len() {
                             let clip = &track.clips[idx];
                             if clip.kind.is_playable() {
@@ -1983,7 +1982,6 @@ impl PlaybackEngine {
                                 break;
                             }
                         }
-                        break; // Found the track with current clip — stop searching
                     }
                 }
             }
@@ -2235,7 +2233,7 @@ impl PlaybackEngine {
         // Find next non-gap clip on the SAME track as the current clip
         let next_info = {
             let mut result = None;
-            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+            if let Some(track) = seq.tracks.get(self.current_track_index) {
                 if track.clips.get(self.current_clip_index).and_then(|c| c.media_id()).is_some() {
                     for idx in next_idx..track.clips.len() {
                         let clip = &track.clips[idx];
@@ -2244,7 +2242,6 @@ impl PlaybackEngine {
                             break;
                         }
                     }
-                    break;
                 }
             }
             result
@@ -2284,7 +2281,7 @@ impl PlaybackEngine {
     fn update_overlay_decoders(&mut self, playhead: Timecode) {
         let seq = self.sequence.read().unwrap();
         // Collect overlay info for all overlay tracks (not just the first one).
-        let overlay_tracks = seq.overlay_video_tracks();
+        let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
         let mut active_overlays: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
         for (track_idx, track) in &overlay_tracks {
             if let Some((clip_idx, clip)) = track.clip_at_timecode(playhead) {
@@ -2489,13 +2486,37 @@ impl PlaybackEngine {
                 }
                 let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
                 let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                let rgba = klipp_core::generator::render_generator(
+                let mut rgba = klipp_core::generator::render_generator(
                     gen_data,
                     res.width,
                     res.height,
                     clip_relative_secs,
                     total_secs,
                 );
+
+                // Apply clip-level opacity (BuiltinEffect::Opacity) to the generator frame
+                let opacity_default = clip.builtin_effects.iter()
+                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
+                    .unwrap_or(1.0);
+                let eval_ctx = klipp_core::EvalContext {
+                    clip_time_secs: clip_relative_secs,
+                    clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+                    timeline_time_secs: playhead.to_secs_f64(),
+                    fps: self.fps.as_f64(),
+                    seed: clip.id.0.as_u64_pair().0,
+                };
+                let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
+                    Some(stack) if !stack.modifiers.is_empty() =>
+                        klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
+                    _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
+                };
+                if (opacity - 1.0).abs() > 0.001 {
+                    let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
+                    for pixel in rgba.chunks_exact_mut(4) {
+                        pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
+                    }
+                }
+
                 self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
                     data: crate::types::FrameData::Rgba(rgba),
                     width: res.width,
@@ -3097,20 +3118,21 @@ impl PlaybackEngine {
 
         let seq = self.sequence.read().unwrap();
         // Search video tracks in reverse — last video track (bottom of panel) is primary.
-        let clip_info = seq.tracks.iter().rev()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|track| {
+        let clip_info = seq.tracks.iter().enumerate().rev()
+            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|(ti, track)| {
                 track.clip_at_timecode(tc).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     let clip_source_in = clip.source_in.to_secs_f64();
-                    Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
+                    Some((ti, idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
             });
         drop(seq);
 
-        if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
+        if let Some((ti, idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
+            self.current_track_index = ti;
             let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
@@ -3286,9 +3308,8 @@ impl PlaybackEngine {
             if let Some(frame) = next_frame {
                 let chirp_pos = frame.pts_secs();
                 let seq = self.sequence.read().unwrap();
-                if let Some(clip) = seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                    .find_map(|t| t.clips.get(self.current_clip_index))
+                if let Some(clip) = seq.tracks.get(self.current_track_index)
+                    .and_then(|t| t.clips.get(self.current_clip_index))
                 {
                     let source_elapsed =
                         frame.pts_secs() - clip.source_in.to_secs_f64();
@@ -3339,9 +3360,8 @@ impl PlaybackEngine {
                     // Update playhead from frame PTS
                     let chirp_pos = frame.pts_secs();
                     let seq = self.sequence.read().unwrap();
-                    if let Some(clip) = seq.tracks.iter()
-                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                        .find_map(|t| t.clips.get(self.current_clip_index))
+                    if let Some(clip) = seq.tracks.get(self.current_track_index)
+                        .and_then(|t| t.clips.get(self.current_clip_index))
                     {
                         let source_elapsed =
                             frame.pts_secs() - clip.source_in.to_secs_f64();
@@ -3413,9 +3433,8 @@ impl PlaybackEngine {
                     // Compute frame number from PTS
                     let frame_num = {
                         let seq = self.sequence.read().unwrap();
-                        if let Some(clip) = seq.tracks.iter()
-                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                            .find_map(|t| t.clips.get(self.current_clip_index))
+                        if let Some(clip) = seq.tracks.get(self.current_track_index)
+                            .and_then(|t| t.clips.get(self.current_clip_index))
                         {
                             let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
                             let spd = clip.speed.max(0.001);
@@ -3606,9 +3625,8 @@ impl PlaybackEngine {
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
                 let seq = self.sequence.read().unwrap();
-                let frame_num = if let Some(clip) = seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                    .find_map(|t| t.clips.get(self.current_clip_index))
+                let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
+                    .and_then(|t| t.clips.get(self.current_clip_index))
                 {
                     let source_elapsed = pts.to_secs_f64() - clip.source_in.to_secs_f64();
                     let spd = clip.speed.max(0.001);
@@ -3652,9 +3670,8 @@ impl PlaybackEngine {
                     let rgba = frame.to_rgba();
                     let frame_num = {
                         let seq = self.sequence.read().unwrap();
-                        if let Some(clip) = seq.tracks.iter()
-                            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                            .find_map(|t| t.clips.get(self.current_clip_index))
+                        if let Some(clip) = seq.tracks.get(self.current_track_index)
+                            .and_then(|t| t.clips.get(self.current_clip_index))
                         {
                             let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
                             let spd = clip.speed.max(0.001);
@@ -4037,7 +4054,7 @@ impl PlaybackEngine {
             // Composite overlay frames (titles etc.) over V1, in track order
             let overlay_indices: Vec<usize> = {
                 let seq = self.sequence.read().unwrap();
-                seq.overlay_video_tracks().iter().map(|(i, _)| *i).collect()
+                seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
             };
             for track_idx in overlay_indices {
                 if let Some(ov_frame) = self.overlay_frames.get(&track_idx) {
@@ -4087,7 +4104,7 @@ impl PlaybackEngine {
             // Pick the topmost overlay frame (highest track index) in deterministic order.
             let overlay_indices: Vec<usize> = {
                 let seq = self.sequence.read().unwrap();
-                seq.overlay_video_tracks().iter().map(|(i, _)| *i).collect()
+                seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
             };
             overlay_indices.iter().rev()
                 .find_map(|ti| self.overlay_frames.get(ti))
@@ -4106,9 +4123,8 @@ impl PlaybackEngine {
     fn post_process_rgba_inner(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap();
-        let clip = seq.tracks.iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|t| t.clips.get(self.current_clip_index));
+        let clip = seq.tracks.get(self.current_track_index)
+            .and_then(|t| t.clips.get(self.current_clip_index));
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let node_graph = clip.map(|c| c.node_graph.clone());
         let rsc_clip_id_hash = clip.map(|c| c.id.0.as_u64_pair().0).unwrap_or(0);
@@ -4416,9 +4432,8 @@ impl PlaybackEngine {
                 // Only create temporal decoder for plugins that actually need it
                 let (source_path, clip_source_in) = {
                     let seq = self.sequence.read().unwrap();
-                    let clip = seq.tracks.iter()
-                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                        .find_map(|t| t.clips.get(self.current_clip_index));
+                    let clip = seq.tracks.get(self.current_track_index)
+                        .and_then(|t| t.clips.get(self.current_clip_index));
                     let path = clip.and_then(|c| {
                         c.media_id().and_then(|mid| {
                             self.media_pool.read().ok().and_then(|pool| {
@@ -4759,6 +4774,7 @@ impl PlaybackEngine {
                 self.playhead = RationalTime::from_frames(0, self.fps.rate());
                 self.current_file = Some(path.clone());
                 self.current_clip_index = 0;
+                self.current_track_index = 0;
                 self.state = PlaybackState::Stopped;
 
                 let fs_meta = std::fs::metadata(&path).ok();

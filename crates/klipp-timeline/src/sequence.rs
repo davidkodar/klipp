@@ -115,17 +115,15 @@ impl Sequence {
     }
 
     /// Returns all overlay video/text/subtitle tracks — every track that composites
-    /// over the primary V1 video track. Returns (track_index, &Track) pairs in
-    /// iteration order (bottom-to-top in the compositing stack).
-    pub fn overlay_video_tracks(&self) -> Vec<(usize, &Track)> {
-        // Primary = last video track by array index = bottom of the visual panel.
-        // This matches pro NLE convention: V1 at the bottom is the base compositing layer.
-        let primary_v1_idx = self.tracks.iter().rposition(|t| t.kind == TrackKind::Video);
+    /// over the primary video track. The primary is identified by `primary_track_idx`
+    /// (the engine's `current_track_index`). All other unmuted video/text/subtitle
+    /// tracks are returned as overlays.
+    pub fn overlay_video_tracks(&self, primary_track_idx: usize) -> Vec<(usize, &Track)> {
         self.tracks.iter().enumerate()
             .filter(|(i, t)| {
                 !t.muted && match t.kind {
                     TrackKind::Text | TrackKind::Subtitle => true,
-                    TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
+                    TrackKind::Video => *i != primary_track_idx,
                     _ => false,
                 }
             })
