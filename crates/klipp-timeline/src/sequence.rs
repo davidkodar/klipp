@@ -114,10 +114,6 @@ impl Sequence {
         }
     }
 
-    pub fn video_track2(&self) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.kind == TrackKind::Video && t.name == "Video 2")
-    }
-
     /// Returns all overlay video/text/subtitle tracks — every track that composites
     /// over the primary V1 video track. Returns (track_index, &Track) pairs in
     /// iteration order (bottom-to-top in the compositing stack).

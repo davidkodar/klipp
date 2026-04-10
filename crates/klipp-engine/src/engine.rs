@@ -902,9 +902,12 @@ impl PlaybackEngine {
                     }
                     drop(seq);
                 } else {
-                    // Re-grade cached frame when paused — instant parameter feedback
-                    // Refresh title overlay FIRST so regrade composites the updated title
-                    self.refresh_v2_title_overlay();
+                    // Re-render overlays and re-grade cached frame when paused —
+                    // instant parameter feedback for title/generator edits.
+                    // Clear synth frame cache so update_overlay_decoders re-renders
+                    // all synthetic clips, reflecting any parameter changes.
+                    self.overlay_synth_frame.clear();
+                    self.update_overlay_decoders(self.playhead);
                     self.regrade_cached_frame();
                 }
             }
@@ -4024,170 +4027,6 @@ impl PlaybackEngine {
 
     /// Re-grade the cached pre-grade frame without re-decoding.
     /// Called when color parameters change while paused.
-    /// Re-render title overlay (V2) from current sequence data.
-    /// Called on SequenceUpdated when paused so title text/font/color changes show instantly.
-    fn refresh_v2_title_overlay(&mut self) {
-        let seq = self.sequence.read().unwrap();
-        let primary_v1_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video);
-        let title_clip_info = seq.tracks.iter()
-            .enumerate()
-            .filter(|(i, t)| {
-                !t.muted && match t.kind {
-                    klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle => true,
-                    klipp_timeline::TrackKind::Video => primary_v1_idx.map_or(true, |v1| *i != v1),
-                    _ => false,
-                }
-            })
-            .find_map(|(ti, track)| {
-                track.clip_at_timecode(self.playhead).and_then(|(_, clip)| {
-                    clip.title_data().map(|td| (ti, td.clone(), clip.clone(), seq.resolution))
-                })
-            });
-        drop(seq);
-
-        if let Some((track_idx, title_data, clip, res)) = title_clip_info {
-            let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-            let mut rgba = self.title_renderer.render_with_gpu(&title_data, res.width, res.height, gpu);
-
-            // Apply opacity keyframes to the title overlay
-            let clip_relative_secs = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-            let eval_ctx = klipp_core::EvalContext {
-                clip_time_secs: clip_relative_secs,
-                clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-                timeline_time_secs: self.playhead.to_secs_f64(),
-                fps: self.fps.as_f64(),
-                seed: clip.id.0.as_u64_pair().0,
-            };
-
-            // Evaluate opacity
-            let opacity_default = clip.builtin_effects.iter()
-                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                .unwrap_or(1.0);
-            let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
-                Some(stack) if !stack.modifiers.is_empty() => {
-                    klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx)
-                }
-                _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
-            };
-
-            // Apply opacity to all alpha pixels
-            if (opacity - 1.0).abs() > 0.001 {
-                let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
-                for pixel in rgba.chunks_exact_mut(4) {
-                    pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
-                }
-            }
-
-            // Apply transform keyframes + modifiers (position, scale, rotation)
-            let has_transform = !clip.transform_pos_x_keyframes.is_empty()
-                || !clip.transform_pos_y_keyframes.is_empty()
-                || !clip.transform_scale_keyframes.is_empty()
-                || !clip.transform_rotation_keyframes.is_empty()
-                || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
-                || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
-                || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
-                || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
-
-            if has_transform {
-                let tdef = clip.builtin_effects.iter()
-                    .find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
-                            Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
-                        _ => None,
-                    })
-                    .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-
-                // Check for motion blur on animated title
-                let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
-
-                if let Some(mb) = motion_blur {
-                    // Multi-sample motion blur: render transform at N time offsets and blend
-                    let frame_dur = self.fps.frame_duration_secs();
-                    let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
-                    let n = mb.samples as usize;
-                    let pixel_count = (res.width * res.height) as usize * 4;
-                    let mut accum = vec![0u32; pixel_count];
-
-                    for si in 0..n {
-                        let t_offset = if n > 1 {
-                            (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
-                        } else {
-                            0.0
-                        };
-                        let sample_t = (clip_relative_secs + t_offset).max(0.0);
-                        let sample_eval = klipp_core::EvalContext {
-                            clip_time_secs: sample_t,
-                            ..eval_ctx
-                        };
-
-                        let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
-                        };
-                        let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
-                        };
-                        let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
-                        };
-                        let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
-                        };
-
-                        let sample_rgba = klipp_effects::transform::apply(
-                            rgba.clone(), res.width, res.height,
-                            spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
-                        );
-                        for (i, &b) in sample_rgba.iter().enumerate() {
-                            accum[i] += b as u32;
-                        }
-                    }
-                    rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
-                } else {
-                    // No motion blur — single transform
-                    let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                        Some(stack) if !stack.modifiers.is_empty() =>
-                            klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
-                        _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
-                    };
-                    let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                        Some(stack) if !stack.modifiers.is_empty() =>
-                            klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
-                        _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
-                    };
-                    let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                        Some(stack) if !stack.modifiers.is_empty() =>
-                            klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
-                        _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
-                    };
-                    let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                        Some(stack) if !stack.modifiers.is_empty() =>
-                            klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
-                        _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
-                    };
-
-                    rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
-                }
-            }
-
-            self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
-                data: crate::types::FrameData::Rgba(rgba),
-                width: res.width,
-                height: res.height,
-                pts: RationalTime::from_frames(0, 24),
-                is_eof: false,
-            });
-        }
-    }
-
     fn regrade_cached_frame(&mut self) {
         self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with overlay(s)
@@ -4243,7 +4082,15 @@ impl PlaybackEngine {
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
-        } else if let Some(first_overlay) = self.overlay_frames.values().next() {
+        } else if let Some(first_overlay) = {
+            // Pick the topmost overlay frame (highest track index) in deterministic order.
+            let overlay_indices: Vec<usize> = {
+                let seq = self.sequence.read().unwrap();
+                seq.overlay_video_tracks().iter().map(|(i, _)| *i).collect()
+            };
+            overlay_indices.iter().rev()
+                .find_map(|ti| self.overlay_frames.get(ti))
+        } {
             // Case 2: No V1 video, but overlay exists (standalone title)
             let rgba = first_overlay.to_rgba();
             let w = first_overlay.width;
