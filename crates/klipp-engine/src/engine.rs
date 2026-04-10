@@ -1888,7 +1888,10 @@ impl PlaybackEngine {
                     rgba: frame.into_rgba(),
                     width: final_w,
                     height: final_h,
-                    opacity: 1.0,
+                    opacity: {
+                        let seq = self.sequence.read().unwrap();
+                        seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
+                    },
                     blend_mode: klipp_core::BlendMode::Normal,
                 },
             ];

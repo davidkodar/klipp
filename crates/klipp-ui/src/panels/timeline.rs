@@ -5084,6 +5084,7 @@ impl TimelinePanel {
         };
 
         // Handle ongoing drag (only process once, on the drag's source track)
+        let mut non_primary_target_in: Option<Timecode> = None;
         if let Some(ref drag) = self.dragging_clip {
             if drag.track_idx != track_idx {
                 // Skip — will be handled when we draw the correct track
@@ -5163,19 +5164,34 @@ impl TimelinePanel {
                             .map(|c| c.duration().to_secs_f64() as f32)
                             .unwrap_or(1.0);
 
-                        // Ghost clip following cursor (drawn on tooltip layer so it's above everything)
+                        // Determine ghost track (follows cursor to compatible tracks)
+                        let ghost_target_rect = if let Some(target_idx) = hover_track_idx {
+                            let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                            let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                            if source_kind == target_kind {
+                                self.frame_cache.track_rects.iter()
+                                    .find(|(idx, _, _)| *idx == target_idx)
+                                    .map(|(_, _, r)| *r)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }.unwrap_or(*track_rect);
+
+                        // Ghost clip following cursor — unclipped so it renders on any track
+                        let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
                         let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
                         let ghost_w = clip_dur * zoom;
                         let ghost_rect = egui::Rect::from_min_size(
-                            egui::pos2(ghost_x, track_rect.top() + 2.0),
-                            egui::vec2(ghost_w, track_rect.height() - 4.0),
+                            egui::pos2(ghost_x, ghost_target_rect.top() + 2.0),
+                            egui::vec2(ghost_w, ghost_target_rect.height() - 4.0),
                         );
 
-                        // Draw ghost with 50% opacity
                         let ghost_fill = egui::Color32::from_rgba_unmultiplied(60, 80, 140, 128);
                         let ghost_border = egui::Color32::from_rgba_unmultiplied(120, 160, 240, 180);
-                        painter.rect_filled(ghost_rect, 3.0, ghost_fill);
-                        painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
+                        ghost_painter.rect_filled(ghost_rect, 3.0, ghost_fill);
+                        ghost_painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
 
                         // Draw filmstrip in ghost if available
                         if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
@@ -5183,7 +5199,7 @@ impl TimelinePanel {
                             .and_then(|c| c.media_id())
                         {
                             if let Some(tex) = state.thumbnail_textures.get(&media_id) {
-                                let thumb_painter = painter.with_clip_rect(ghost_rect);
+                                let thumb_painter = ghost_painter.with_clip_rect(ghost_rect);
                                 thumb_painter.image(
                                     tex.id(),
                                     ghost_rect,
@@ -5424,53 +5440,88 @@ impl TimelinePanel {
                             let _ = amber; // suppress unused
                         }
 
+                        // Highlight target track for primary cross-track drag
+                        if let Some(target_idx) = hover_track_idx {
+                            if target_idx != drag.track_idx {
+                                let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                                let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                                if source_kind == target_kind {
+                                    if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
+                                        .find(|(idx, _, _)| *idx == target_idx)
+                                    {
+                                        let hl = ui.painter_at(ui.ctx().screen_rect());
+                                        hl.rect_stroke(*rect, 0.0,
+                                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Store target for primary cross-track drop
+                        non_primary_target_in = Some(final_in);
+
                     } else {
-                        // NON-PRIMARY: Legacy free movement
-                        let delta = final_in - drag.original_timeline_in;
+                        // NON-PRIMARY: Deferred movement with ghost preview
+                        // (same visual pattern as primary — don't move clip in state during drag)
+                        let clip_dur = state.sequence().tracks.get(drag.track_idx)
+                            .and_then(|t| t.find_clip(drag.clip_id))
+                            .map(|c| c.duration().to_secs_f64() as f32)
+                            .unwrap_or(1.0);
 
-                        if let Some(track) = state.sequence_mut().tracks.get_mut(drag.track_idx) {
-                            if let Some(clip) = track.find_clip_mut(drag.clip_id) {
-                                let dur = clip.duration();
-                                clip.timeline_in = final_in;
-                                clip.timeline_out = clip.timeline_in + dur;
+                        // Determine which track to draw the ghost on
+                        let ghost_track_rect = if let Some(target_idx) = hover_track_idx {
+                            let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                            let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                            if source_kind == target_kind {
+                                // Compatible track — draw ghost on target track
+                                self.frame_cache.track_rects.iter()
+                                    .find(|(idx, _, _)| *idx == target_idx)
+                                    .map(|(_, _, r)| *r)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }.unwrap_or(*track_rect);
+
+                        // Ghost clip following cursor — use unclipped painter so ghost
+                        // renders on ANY track, not just the source track
+                        let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
+                        let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
+                        let ghost_w = clip_dur * zoom;
+                        let ghost_rect = egui::Rect::from_min_size(
+                            egui::pos2(ghost_x, ghost_track_rect.top() + 2.0),
+                            egui::vec2(ghost_w, ghost_track_rect.height() - 4.0),
+                        );
+                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(60, 80, 140, 128);
+                        let ghost_border = egui::Color32::from_rgba_unmultiplied(120, 160, 240, 180);
+                        ghost_painter.rect_filled(ghost_rect, 3.0, ghost_fill);
+                        ghost_painter.rect_stroke(ghost_rect, 3.0, egui::Stroke::new(2.0, ghost_border));
+
+                        // Draw filmstrip thumbnail in ghost if available
+                        if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
+                            .and_then(|t| t.find_clip(drag.clip_id))
+                            .and_then(|c| c.media_id())
+                        {
+                            if let Some(tex) = state.thumbnail_textures.get(&media_id) {
+                                let thumb_painter = ghost_painter.with_clip_rect(ghost_rect);
+                                thumb_painter.image(
+                                    tex.id(),
+                                    ghost_rect,
+                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                                );
                             }
                         }
 
-                        // Move linked partner by same delta (absolute from its original position)
-                        if let (Some(lid), Some(orig_in)) = (drag.linked_clip_id, drag.linked_original_in) {
-                            for track in &mut state.sequence_mut().tracks {
-                                if let Some(lclip) = track.find_clip_mut(lid) {
-                                    let dur = lclip.duration();
-                                    let new_in = orig_in + delta;
-                                    lclip.timeline_in = if new_in.value < 0 {
-                                        RationalTime { value: 0, rate: new_in.rate }
-                                    } else {
-                                        new_in
-                                    };
-                                    lclip.timeline_out = lclip.timeline_in + dur;
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Drop zone highlight — amber glow around the clip when snapped (non-primary only)
+                        // Snap indicator
                         if snapped {
-                            if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
-                                if let Some(clip) = track.find_clip(drag.clip_id) {
-                                    let dur_secs = clip.duration().to_secs_f64() as f32;
-                                    let drop_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                    let drop_w = dur_secs * zoom;
-                                    let drop_rect = egui::Rect::from_min_size(
-                                        egui::pos2(drop_x - 1.0, track_rect.top() + 1.0),
-                                        egui::vec2(drop_w + 2.0, track_rect.height() - 2.0),
-                                    );
-                                    painter.rect_stroke(drop_rect, 4.0,
-                                        egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 80)));
-                                    painter.rect_stroke(drop_rect, 4.0,
-                                        egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
-                                }
-                            }
+                            ghost_painter.rect_stroke(ghost_rect, 4.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
                         }
+
+                        // Store target position for drop handler (set after the drag borrow ends)
+                        non_primary_target_in = Some(final_in);
                     }
 
                     // Auto-connect/disconnect indicator during non-primary drag
@@ -5575,7 +5626,7 @@ impl TimelinePanel {
                         }
                     }
 
-                    // Highlight target track if different from source
+                    // Highlight target track if different from source (unclipped so it shows on any track)
                     if let Some(target_idx) = hover_track_idx {
                         if target_idx != drag.track_idx {
                             let source_kind = state.sequence().tracks.get(drag.track_idx)
@@ -5586,7 +5637,8 @@ impl TimelinePanel {
                                 if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                 {
-                                    painter.rect_stroke(
+                                    let highlight_painter = ui.painter_at(ui.ctx().screen_rect());
+                                    highlight_painter.rect_stroke(
                                         *rect, 0.0,
                                         egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
                                     );
@@ -5602,6 +5654,9 @@ impl TimelinePanel {
             if pointer_released && drag.track_idx == track_idx {
                 let clip_id = drag.clip_id;
                 let from_track = drag.track_idx;
+                let original_in = drag.original_timeline_in;
+                let drag_start_x = drag.start_x;
+                let drag_target_in = non_primary_target_in;
 
                 // Check if pointer is over a different compatible track
                 let target_track = pointer_pos.and_then(|pos| {
@@ -5615,17 +5670,21 @@ impl TimelinePanel {
                         let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
                         let target_kind = state.sequence().tracks.get(to_track).map(|t| t.kind);
                         if source_kind == target_kind {
-                            // Cross-track move
-                            if let Some(track) = state.sequence().tracks.get(from_track) {
-                                if let Some(clip) = track.find_clip(clip_id) {
-                                    cmds.push(AppCommand::MoveClipToTrack {
-                                        clip_id,
-                                        new_timeline_in: clip.timeline_in,
-                                        from_track,
-                                        to_track,
-                                    });
-                                }
-                            }
+                            // Cross-track move — compute position from pointer at drop time
+                            let new_in = if let Some(pos) = pointer_pos {
+                                let dx = pos.x - drag_start_x;
+                                let delta_secs = dx as f64 / zoom as f64;
+                                let new_val = original_in.to_secs_f64() + delta_secs;
+                                RationalTime::from_secs_f64(new_val.max(0.0), fps.rate())
+                            } else {
+                                original_in
+                            };
+                            cmds.push(AppCommand::MoveClipToTrack {
+                                clip_id,
+                                new_timeline_in: new_in,
+                                from_track,
+                                to_track,
+                            });
                         } else {
                             // Incompatible track type — revert position
                             if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
@@ -5685,14 +5744,21 @@ impl TimelinePanel {
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
                         } else {
-                            // Legacy: free move
-                            if let Some(track) = state.sequence().tracks.get(from_track) {
-                                if let Some(clip) = track.find_clip(clip_id) {
-                                    cmds.push(AppCommand::MoveClip {
-                                        clip_id,
-                                        new_timeline_in: clip.timeline_in,
-                                    });
-                                }
+                            // Non-primary: compute target position from pointer at drop time
+                            let target_in = if let Some(pos) = pointer_pos {
+                                let dx = pos.x - drag_start_x;
+                                let delta_secs = dx as f64 / zoom as f64;
+                                let new_val = original_in.to_secs_f64() + delta_secs;
+                                let clamped = new_val.max(0.0);
+                                RationalTime::from_secs_f64(clamped, fps.rate())
+                            } else {
+                                original_in
+                            };
+                            if target_in != original_in {
+                                cmds.push(AppCommand::MoveClip {
+                                    clip_id,
+                                    new_timeline_in: target_in,
+                                });
                             }
 
                             // Auto-connect/disconnect on drop for non-primary tracks
