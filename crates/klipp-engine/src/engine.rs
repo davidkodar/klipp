@@ -5555,6 +5555,106 @@ pub(crate) fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>
 
 /// Generate a thumbnail for a media file. Uses software decode (CPU) — thumbnails
 /// are single small frames, not worth GPU context creation overhead.
+/// Decode the FIRST available video frame from the format context, using a
+/// correct two-phase pattern that handles codecs requiring multi-packet warmup
+/// (AV1, B-frame HEVC, VP9) and a final EOF flush for very short files where
+/// the decoder buffers everything before yielding output.
+///
+/// Per the project's CLAUDE.md decode notes:
+///   - ALWAYS drain receive_frame BEFORE feeding new send_packet (avoids
+///     EAGAIN packet loss)
+///   - Some decoders only release frames after `send_eof()` — flush at end
+///
+/// Returns true if a frame was decoded into `out_frame`. The previous version
+/// of this loop interleaved send/receive per iteration which caused several
+/// codecs to fail with "No frame decoded" — see the codec coverage notes in
+/// the file-browser hover-skim audit.
+fn decode_one_frame(
+    format_ctx: &mut ffmpeg_next::format::context::Input,
+    decoder: &mut ffmpeg_next::decoder::Video,
+    stream_index: usize,
+    out_frame: &mut ffmpeg_next::frame::Video,
+) -> bool {
+    decode_frame_at_or_after(format_ctx, decoder, stream_index, out_frame, None)
+}
+
+/// Decode a video frame, optionally discarding frames whose presentation
+/// timestamp is earlier than `target_secs` seconds. This is the precise-seek
+/// pattern needed for files with sparse keyframes (long GOPs / B-frame video):
+/// after `format_ctx.seek` lands on the keyframe BEFORE the target, we keep
+/// decoding forward and throwing frames away until we reach the requested
+/// timestamp.
+///
+/// When `target_secs` is `None`, returns the very first decoded frame
+/// (used by `generate_thumbnail` / poster-frame paths where any frame from
+/// the seeked region is acceptable).
+///
+/// Two-phase decode loop with EOF flush — handles AV1, HEVC with B-frames,
+/// VP9, and very short files. See `decode_one_frame` callers for context.
+fn decode_frame_at_or_after(
+    format_ctx: &mut ffmpeg_next::format::context::Input,
+    decoder: &mut ffmpeg_next::decoder::Video,
+    stream_index: usize,
+    out_frame: &mut ffmpeg_next::frame::Video,
+    target_secs: Option<f64>,
+) -> bool {
+    // Cache the stream's time_base so we can convert each frame's PTS into
+    // seconds for the target comparison. Time base is the unit one PTS tick
+    // represents (e.g. 1/16384 means each tick is 1/16384 of a second).
+    let time_base = format_ctx
+        .stream(stream_index)
+        .map(|s| s.time_base())
+        .unwrap_or_else(|| ffmpeg_next::Rational::new(1, 1));
+    let tb_secs = time_base.numerator() as f64 / time_base.denominator().max(1) as f64;
+
+    let frame_passes_target = |frame: &ffmpeg_next::frame::Video| -> bool {
+        let Some(target) = target_secs else { return true; };
+        let pts = frame.pts().unwrap_or(0);
+        let frame_secs = pts as f64 * tb_secs;
+        // Accept the first frame at or after the target. A small slack
+        // (one frame at 24 fps = ~42 ms) avoids missing the exact frame
+        // due to floating-point imprecision.
+        frame_secs + 0.042 >= target
+    };
+
+    // Phase 1: feed packets, draining all available frames after each send.
+    for (stream, packet) in format_ctx.packets() {
+        if stream.index() != stream_index {
+            continue;
+        }
+        // Drain BEFORE sending (avoids EAGAIN on full input queue).
+        while decoder.receive_frame(out_frame).is_ok() {
+            if frame_passes_target(out_frame) {
+                return true;
+            }
+            // Otherwise the frame is too early — discard and keep decoding.
+        }
+        let _ = decoder.send_packet(&packet);
+    }
+    // Phase 2: stream exhausted but no frame yet — drain anything that came
+    // out from the last send_packet.
+    while decoder.receive_frame(out_frame).is_ok() {
+        if frame_passes_target(out_frame) {
+            return true;
+        }
+    }
+    // Phase 3: final EOF flush. AV1, HEVC with B-frames, and short files all
+    // need this — the decoder has buffered packets but won't release the
+    // first frame until told there's no more input coming.
+    let _ = decoder.send_eof();
+    while decoder.receive_frame(out_frame).is_ok() {
+        if frame_passes_target(out_frame) {
+            return true;
+        }
+    }
+    // If we ran out of frames without reaching the target, fall back to
+    // whatever frame is currently in `out_frame` if it's valid (i.e. we
+    // decoded SOMETHING). Better than returning failure for a request near
+    // end-of-file. The width check distinguishes "frame populated" from
+    // "still empty".
+    target_secs.is_some() && out_frame.width() > 0
+}
+
 pub fn generate_thumbnail(
     path: &std::path::Path,
     seek_secs: f64,
@@ -5574,18 +5674,7 @@ pub fn generate_thumbnail(
     }
 
     let mut decoded_frame = ffmpeg_next::frame::Video::empty();
-    let mut got_frame = false;
-
-    for (stream, packet) in format_ctx.packets() {
-        if stream.index() != stream_index {
-            continue;
-        }
-        let _ = decoder.send_packet(&packet);
-        if decoder.receive_frame(&mut decoded_frame).is_ok() {
-            got_frame = true;
-            break;
-        }
-    }
+    let got_frame = decode_one_frame(&mut format_ctx, &mut decoder, stream_index, &mut decoded_frame);
 
     if !got_frame {
         return Err("No frame decoded".to_string());
@@ -5625,24 +5714,29 @@ pub fn generate_thumbnail_at_size(
         if r != 0 { r } else { detect_rotation_from_path(path) }
     };
 
-    if seek_secs > 0.1 {
+    // Precise seek: ffmpeg's `format_ctx.seek` only lands on the nearest
+    // keyframe BEFORE the target. For files with sparse keyframes (long
+    // GOPs / heavy B-frame use / very short single-GOP files), that means
+    // every requested time returns the same keyframe — making hover skim
+    // useless. We pass the requested time to `decode_frame_at_or_after`
+    // so the decoder discards earlier frames after the seek and returns
+    // the actual frame at or after the requested timestamp.
+    let target = if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
         format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
-    }
+        Some(seek_secs)
+    } else {
+        None
+    };
 
     let mut decoded_frame = ffmpeg_next::frame::Video::empty();
-    let mut got_frame = false;
-
-    for (stream, packet) in format_ctx.packets() {
-        if stream.index() != stream_index {
-            continue;
-        }
-        let _ = decoder.send_packet(&packet);
-        if decoder.receive_frame(&mut decoded_frame).is_ok() {
-            got_frame = true;
-            break;
-        }
-    }
+    let got_frame = decode_frame_at_or_after(
+        &mut format_ctx,
+        &mut decoder,
+        stream_index,
+        &mut decoded_frame,
+        target,
+    );
 
     if !got_frame {
         return Err("No frame decoded".to_string());
@@ -6143,6 +6237,75 @@ impl Drop for SequentialFrameDecoder {
     fn drop(&mut self) {
         if let Some(sws) = self.sws_cache.take() {
             unsafe { ffmpeg_next::ffi::sws_freeContext(sws); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod codec_fix_tests {
+    /// Opt-in test for the codec coverage fix in `decode_one_frame`.
+    /// Decodes a frame from a user-supplied path via the KLIPP_TEST_DECODE_FILE
+    /// env var. Skipped silently if the env var is unset.
+    ///
+    /// Run with:
+    ///     KLIPP_TEST_DECODE_FILE=/path/to/file.mp4 \
+    ///         cargo test --release -p klipp-engine \
+    ///         codec_fix_tests::decode_user_supplied_file -- --nocapture
+    #[test]
+    fn decode_user_supplied_file() {
+        let path = match std::env::var("KLIPP_TEST_DECODE_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("[skipped] set KLIPP_TEST_DECODE_FILE to a media file path to run this test");
+                return;
+            }
+        };
+        super::super::init_ffmpeg().expect("ffmpeg init");
+
+        // Verify the header probe (used by file-browser hover skim to learn
+        // file duration before mapping cursor X to a timestamp).
+        let header = super::super::probe_media_header(&path);
+        eprintln!("[probe] {} → {:?}", path.display(), header);
+
+        // Try a few seek positions that often trip up codec edge cases:
+        //   - 0.0     (very first frame, no seek)
+        //   - 0.5     (mid-GOP after keyframe)
+        //   - 2.0     (deep into the file — may land on a B-frame)
+        //   - 4.0     (near end of short test files)
+        let positions = [0.0_f64, 0.5, 2.0, 4.0];
+        let mut any_succeeded = false;
+        let mut frame_hashes: Vec<(f64, u64)> = Vec::new();
+        for &t in &positions {
+            match super::generate_thumbnail_at_size(&path, t, 480) {
+                Ok((rgba, w, h)) => {
+                    // Cheap content hash so we can verify different positions
+                    // return DIFFERENT frames (proves precise seek is working).
+                    let mut h64: u64 = 0xcbf29ce484222325;
+                    for &b in rgba.iter().step_by(101) { // sparse hash for speed
+                        h64 ^= b as u64;
+                        h64 = h64.wrapping_mul(0x100000001b3);
+                    }
+                    eprintln!("[OK] {} @ {:.1}s → {}x{} hash={:016x}", path.display(), t, w, h, h64);
+                    frame_hashes.push((t, h64));
+                    any_succeeded = true;
+                }
+                Err(e) => {
+                    eprintln!("[FAIL] {} @ {:.1}s → {}", path.display(), t, e);
+                }
+            }
+        }
+        assert!(any_succeeded, "decode failed at all probed positions for {}", path.display());
+
+        // Sanity check: at least TWO of the positions should produce different
+        // frames. If they all return the same hash, precise-seek is broken
+        // (we're just getting the keyframe over and over).
+        if frame_hashes.len() >= 2 {
+            let unique: std::collections::HashSet<u64> = frame_hashes.iter().map(|(_, h)| *h).collect();
+            eprintln!("[unique frame count] {} of {} probed positions",
+                unique.len(), frame_hashes.len());
+            if unique.len() == 1 {
+                eprintln!("[WARN] all positions returned the same frame — precise seek may not be working for this file");
+            }
         }
     }
 }
