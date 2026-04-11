@@ -9,6 +9,7 @@ pub mod id;
 pub mod modifier;
 pub mod modifier_math;
 pub mod ofx_value;
+pub mod startup_timer;
 pub mod time;
 pub mod transition_registry;
 pub mod types;

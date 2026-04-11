@@ -7,4 +7,5 @@ edition = "2021"
 klipp-effects = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }

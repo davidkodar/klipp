@@ -2105,6 +2105,7 @@ dependencies = [
  "klipp-engine",
  "klipp-media",
  "klipp-timeline",
+ "klipp-title",
  "klipp-ui",
  "png 0.17.16",
  "tracing",
@@ -2133,6 +2134,7 @@ dependencies = [
  "klipp-effects",
  "serde",
  "thiserror 1.0.69",
+ "tracing",
  "uuid",
 ]
 
@@ -2283,9 +2285,12 @@ dependencies = [
 name = "klipp-title"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "fontdue",
  "image",
  "klipp-timeline",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

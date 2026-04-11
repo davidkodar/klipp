@@ -4,7 +4,7 @@ use fontdue::layout::{
 };
 use fontdue::Font;
 use klipp_timeline::{FontStyle, StyleRun, TextAlignment, TextPath, TextPattern, TitleBackground, TitleData};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 pub mod font_discovery;
 
@@ -86,7 +86,10 @@ pub struct CharPosition {
 pub struct TitleRenderer {
     fallback_font: Font,
     font_cache: HashMap<String, Font>,
-    font_registry: BTreeMap<String, Vec<font_discovery::FontInfo>>,
+    /// Shared registry of available system fonts. Cheap to clone — internally
+    /// an `Arc` populated by `font_discovery::discover_system_fonts()`, which
+    /// dedupes across the whole process and caches the result on disk.
+    font_registry: font_discovery::FontRegistry,
     /// Cached texture fill image: (path, rgba_data, width, height)
     texture_fill_cache: Option<(String, Vec<u8>, u32, u32)>,
 }

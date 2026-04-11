@@ -188,16 +188,24 @@ impl KlippApp {
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
     ) -> Self {
+        use klipp_core::startup_timer::LogTimer;
+
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
         let (proxy_progress_tx, proxy_progress_rx) = crossbeam_channel::unbounded();
-        let prefs = crate::prefs::Preferences::load();
+        let prefs = {
+            let _t = LogTimer::new("ui: Preferences::load");
+            crate::prefs::Preferences::load()
+        };
         let theme = KlippTheme::from_prefs(&prefs.appearance);
-        theme.apply_to_egui(&cc.egui_ctx);
-        theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
-        crate::icons::install(&cc.egui_ctx);
+        {
+            let _t = LogTimer::new("ui: theme + fonts apply (egui)");
+            theme.apply_to_egui(&cc.egui_ctx);
+            theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
+            crate::icons::install(&cc.egui_ctx);
+        }
 
         // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
         let scale_pct = prefs.appearance.ui_scale_percent;
@@ -213,6 +221,21 @@ impl KlippApp {
         }
         let layout = LayoutState::load();
 
+        // Heavy field inits — extracted from the struct literal so we can
+        // measure each one independently for STARTUP_PERF.
+        let title_renderer_ui = {
+            let _t = LogTimer::new("ui: TitleRenderer::new (font discovery, second instance)");
+            klipp_title::TitleRenderer::new()
+        };
+        let key_bindings = {
+            let _t = LogTimer::new("ui: KeyBindings::load");
+            crate::keybindings::KeyBindings::load()
+        };
+        let cpal_sample_rate = {
+            let _t = LogTimer::new("ui: cpal probe_sample_rate (duplicate)");
+            klipp_engine::audio_output::probe_sample_rate()
+        };
+
         let mut app = Self {
             cmd_tx,
             event_rx,
@@ -222,7 +245,7 @@ impl KlippApp {
             state: AppState::default(),
             toolbar: ToolbarPanel { logo_texture: None },
             viewer: ViewerPanel::default(),
-            title_renderer: klipp_title::TitleRenderer::new(),
+            title_renderer: title_renderer_ui,
             inspector: InspectorPanel::default(),
             markers: MarkersPanel::default(),
             preferences_panel: PreferencesPanel::default(),
@@ -244,7 +267,7 @@ impl KlippApp {
             export_dialog: ExportDialogState::default(),
             prefs,
             prefs_dirty: false,
-            key_bindings: crate::keybindings::KeyBindings::load(),
+            key_bindings,
             prefs_last_save: std::time::Instant::now(),
             proxy_progress_tx,
             proxy_progress_rx,
@@ -256,7 +279,7 @@ impl KlippApp {
             new_inspector: NewInspectorPanel::default(),
             new_timeline: crate::timeline::NewTimelinePanel,
             skim_consumer,
-            cpal_sample_rate: klipp_engine::audio_output::probe_sample_rate(),
+            cpal_sample_rate,
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
@@ -269,7 +292,10 @@ impl KlippApp {
         };
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
-        app.state.audio_backend_ok = klipp_engine::audio_output::probe_audio_available();
+        app.state.audio_backend_ok = {
+            let _t = LogTimer::new("ui: cpal probe_audio_available (duplicate)");
+            klipp_engine::audio_output::probe_audio_available()
+        };
 
         // Load saved workspaces
         let ws_path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
@@ -382,42 +408,51 @@ impl KlippApp {
         let _ = app.cmd_tx.send(AppCommand::SetAntiClickFade(app.state.audio_anti_click_fade));
 
         // Discover system fonts for title clip font selector
-        let font_registry = klipp_title::font_discovery::discover_system_fonts();
+        let font_registry = {
+            let _t = LogTimer::new("ui: discover_system_fonts (third instance)");
+            klipp_title::font_discovery::discover_system_fonts()
+        };
         app.state.available_fonts = font_registry.keys().cloned().collect();
         tracing::info!("UI font discovery: {} families available", app.state.available_fonts.len());
 
         // Enrich any stale recent project entries with metadata from disk
-        let mut prefs_changed = app.prefs.enrich_recent_projects();
+        let mut prefs_changed = {
+            let _t = LogTimer::new("ui: enrich_recent_projects");
+            app.prefs.enrich_recent_projects()
+        };
 
         // Generate poster frame thumbnails for recent projects that don't have one
-        let cache_dir = dirs::cache_dir().map(|d| d.join("klipp").join("thumbnails"));
-        if let Some(ref cache_dir) = cache_dir {
-            let _ = std::fs::create_dir_all(cache_dir);
-            for rp in &mut app.prefs.general.recent_projects {
-                // Skip if already has a valid thumbnail
-                if rp.thumbnail_path.as_ref().is_some_and(|p| p.exists()) {
-                    continue;
-                }
-                if !rp.path.exists() {
-                    continue;
-                }
-                // Try to find the first media file from the project's manifest
-                let manifest_path = rp.path.join("media").join("manifest.json");
-                let first_media = std::fs::read_to_string(&manifest_path).ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .and_then(|v| v.get("items")?.as_array()?.first()?.get("path")?.as_str().map(std::path::PathBuf::from));
+        {
+            let _t = LogTimer::new("ui: poster frame generation (recent projects)");
+            let cache_dir = dirs::cache_dir().map(|d| d.join("klipp").join("thumbnails"));
+            if let Some(ref cache_dir) = cache_dir {
+                let _ = std::fs::create_dir_all(cache_dir);
+                for rp in &mut app.prefs.general.recent_projects {
+                    // Skip if already has a valid thumbnail
+                    if rp.thumbnail_path.as_ref().is_some_and(|p| p.exists()) {
+                        continue;
+                    }
+                    if !rp.path.exists() {
+                        continue;
+                    }
+                    // Try to find the first media file from the project's manifest
+                    let manifest_path = rp.path.join("media").join("manifest.json");
+                    let first_media = std::fs::read_to_string(&manifest_path).ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("items")?.as_array()?.first()?.get("path")?.as_str().map(std::path::PathBuf::from));
 
-                if let Some(media_path) = first_media {
-                    if media_path.exists() {
-                        // Extract a non-black frame and save as PNG
-                        let est_duration = rp.duration_secs.unwrap_or(60.0);
-                        if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, 1.0, est_duration, 320) {
-                            let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
-                            let out_path = cache_dir.join(format!("{stem}.png"));
-                            if save_rgba_as_png(&rgba, w, h, &out_path) {
-                                rp.thumbnail_path = Some(out_path);
-                                prefs_changed = true;
-                                tracing::info!("Generated poster frame for {:?}", rp.path);
+                    if let Some(media_path) = first_media {
+                        if media_path.exists() {
+                            // Extract a non-black frame and save as PNG
+                            let est_duration = rp.duration_secs.unwrap_or(60.0);
+                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, 1.0, est_duration, 320) {
+                                let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
+                                let out_path = cache_dir.join(format!("{stem}.png"));
+                                if save_rgba_as_png(&rgba, w, h, &out_path) {
+                                    rp.thumbnail_path = Some(out_path);
+                                    prefs_changed = true;
+                                    tracing::info!("Generated poster frame for {:?}", rp.path);
+                                }
                             }
                         }
                     }
@@ -430,12 +465,16 @@ impl KlippApp {
         }
 
         // Discover OFX plugins at startup
-        let mut ofx_host = klipp_plugin::OfxHost::new();
-        let count = ofx_host.discover_plugins();
-        app.state.available_plugins = ofx_host.plugin_infos();
-        app.state.effect_registry.merge_ofx_plugins(&app.state.available_plugins);
-        tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
-        drop(ofx_host); // UI doesn't need the host — engine has its own
+        {
+            let _t = LogTimer::new("ui: OfxHost::discover_plugins (duplicate)");
+            let mut ofx_host = klipp_plugin::OfxHost::new();
+            let count = ofx_host.discover_plugins();
+            app.state.available_plugins = ofx_host.plugin_infos();
+            app.state.effect_registry.merge_ofx_plugins(&app.state.available_plugins);
+            tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
+            // ofx_host dropped here — UI doesn't need to keep it; engine has its own
+        }
+        klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }
 

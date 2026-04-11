@@ -353,6 +353,7 @@ impl PlaybackEngine {
 
         // Probe cpal sample rate (don't start the stream yet — we start it per-clip)
         let cpal_sample_rate = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: cpal default device probe");
             use cpal::traits::{DeviceTrait, HostTrait};
             let host = cpal::default_host();
             host.default_output_device()
@@ -363,10 +364,13 @@ impl PlaybackEngine {
         info!("PlaybackEngine: cpal sample rate = {cpal_sample_rate}");
 
         // Probe VAAPI availability once
-        let use_hw_decode = unsafe {
-            use ffmpeg_next::ffi::*;
-            let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
-            device_type != AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
+        let use_hw_decode = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: VAAPI probe");
+            unsafe {
+                use ffmpeg_next::ffi::*;
+                let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
+                device_type != AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
+            }
         };
         info!("PlaybackEngine: VAAPI available = {use_hw_decode}");
 
@@ -376,15 +380,38 @@ impl PlaybackEngine {
         let lufs_readings = Some(mix_thread.lufs_readings());
         let lufs_reset = Some(mix_thread.lufs_reset_flag());
         let preferred_device = crate::audio_output::PREFERRED_DEVICE.lock().ok().and_then(|g| g.clone());
-        let audio_output = match AudioOutput::new_with_device(main_consumer, skim_consumer.clone(), preferred_device.as_deref()) {
-            Ok(output) => {
-                info!("PlaybackEngine: audio output created eagerly");
-                Some(SendAudioOutput(output))
+        let audio_output = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: AudioOutput::new (cpal stream open)");
+            match AudioOutput::new_with_device(main_consumer, skim_consumer.clone(), preferred_device.as_deref()) {
+                Ok(output) => {
+                    info!("PlaybackEngine: audio output created eagerly");
+                    Some(SendAudioOutput(output))
+                }
+                Err(e) => {
+                    warn!("Failed to create audio output: {e}");
+                    None
+                }
             }
-            Err(e) => {
-                warn!("Failed to create audio output: {e}");
-                None
-            }
+        };
+
+        // Heavy field inits — extracted from the struct literal below so we can
+        // measure each one independently for STARTUP_PERF.
+        let render_cache_disk = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: DiskRenderCache::new (LRU walk)");
+            crate::render_cache::DiskRenderCache::new(
+                dirs::cache_dir().unwrap_or_default().join("klipp/render"),
+                20, // 20 GB default max
+            )
+        };
+        let ofx_host = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: OfxHost::discover_plugins");
+            let mut h = klipp_plugin::OfxHost::new();
+            h.discover_plugins();
+            h
+        };
+        let title_renderer = {
+            let _t = klipp_core::startup_timer::LogTimer::new("engine: TitleRenderer::new (font discovery)");
+            klipp_title::TitleRenderer::new()
         };
 
         Ok(Self {
@@ -439,17 +466,10 @@ impl PlaybackEngine {
             cached_pregrade_frame: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
-            render_cache_disk: crate::render_cache::DiskRenderCache::new(
-                dirs::cache_dir().unwrap_or_default().join("klipp/render"),
-                20, // 20 GB default max
-            ),
+            render_cache_disk,
             current_grade_hash: 0,
             current_grade_clip_id: None,
-            ofx_host: {
-                let mut h = klipp_plugin::OfxHost::new();
-                h.discover_plugins();
-                h
-            },
+            ofx_host,
             gpu_effects: None, // lazily initialized on first use
             gpu_effects_failed: false,
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
@@ -459,7 +479,7 @@ impl PlaybackEngine {
             transition_clip_a_last_frame: None,
             transition_partner_eof: false,
             transition_degradation: Default::default(),
-            title_renderer: klipp_title::TitleRenderer::new(),
+            title_renderer,
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
             skim_consumer,

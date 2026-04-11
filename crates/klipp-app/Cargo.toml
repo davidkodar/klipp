@@ -9,6 +9,7 @@ klipp-ui = { workspace = true }
 klipp-engine = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
+klipp-title = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 crossbeam-channel = { workspace = true }
