@@ -235,6 +235,17 @@ impl KlippApp {
             let _t = LogTimer::new("ui: cpal probe_sample_rate (duplicate)");
             klipp_engine::audio_output::probe_sample_rate()
         };
+        // Prime the cpal device cache in a background thread so the first
+        // visit to the Audio HW preferences tab is instant. The
+        // enumeration takes 5–50 ms (mostly walking ALSA's device tree on
+        // Linux) and we don't want it on the startup critical path. The
+        // OnceLock-style cache inside `audio_output` is thread-safe.
+        std::thread::Builder::new()
+            .name("klipp-audio-devices-prime".into())
+            .spawn(|| {
+                klipp_engine::audio_output::prime_audio_devices_cache();
+            })
+            .ok();
 
         let mut app = Self {
             cmd_tx,
@@ -339,6 +350,8 @@ impl KlippApp {
             });
         }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
+        app.state.file_browser_video_skim_enabled = app.prefs.editing.file_browser_video_skim;
+        app.state.file_browser_audio_skim_enabled = app.prefs.editing.file_browser_audio_skim;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         // Playhead follow: if pref is off, start with follow disabled
         if !app.prefs.editing.playhead_follows_playback {
@@ -9375,6 +9388,27 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::BrowserSkimAudioStartFromPath { source_path, time_secs } => {
+                // Stop any existing session first.
+                if let Some(ref session) = self.state.skim_audio_session {
+                    session.stop();
+                }
+                self.state.skim_audio_session = None;
+
+                // No PCM cache, no MediaId — decode the source file directly.
+                // First-hover cost is the decode time (cached after that, so
+                // wiggling the cursor across the same row is free).
+                if let Some(session) = klipp_engine::skim_audio::SkimAudioSession::new_from_source_path(
+                    source_path.clone(),
+                    self.cpal_sample_rate,
+                    self.skim_consumer.clone(),
+                    if self.state.master_muted { 0.0 } else { self.state.master_volume },
+                    *time_secs,
+                ) {
+                    self.state.skim_audio_session = Some(session);
+                }
+                true
+            }
             AppCommand::BrowserSkimAudioUpdate { time_secs, .. } => {
                 if let Some(ref session) = self.state.skim_audio_session {
                     // Update volume dynamically
@@ -14877,6 +14911,18 @@ impl KlippApp {
             if self.state.audio_skimming_enabled != self.prefs.playback.skim_audio {
                 self.state.audio_skimming_enabled = self.prefs.playback.skim_audio;
                 if !self.state.audio_skimming_enabled && self.state.skim_audio_session.is_some() {
+                    cmds.push(AppCommand::BrowserSkimAudioEnd);
+                }
+            }
+            // Sync file-browser skim prefs → state. If audio skim was just
+            // turned off mid-session, end the active session immediately so
+            // the user gets the silence they asked for.
+            if self.state.file_browser_video_skim_enabled != self.prefs.editing.file_browser_video_skim {
+                self.state.file_browser_video_skim_enabled = self.prefs.editing.file_browser_video_skim;
+            }
+            if self.state.file_browser_audio_skim_enabled != self.prefs.editing.file_browser_audio_skim {
+                self.state.file_browser_audio_skim_enabled = self.prefs.editing.file_browser_audio_skim;
+                if !self.state.file_browser_audio_skim_enabled && self.state.skim_audio_session.is_some() {
                     cmds.push(AppCommand::BrowserSkimAudioEnd);
                 }
             }

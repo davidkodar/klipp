@@ -290,6 +290,20 @@ pub struct EditingPrefs {
     /// User-pinned favorite folders shown in the Files-tab bookmarks bar.
     #[serde(default)]
     pub pinned_folders: Vec<std::path::PathBuf>,
+    /// Enable hover-skim previews for VIDEO files in the file browser.
+    /// When off, hovering a video row leaves the cached poster thumbnail
+    /// in place — no per-frame decode happens. Off-by-default users:
+    /// people on slow disks, low-power machines, or anyone who finds the
+    /// constant decoding distracting.
+    #[serde(default = "default_true")]
+    pub file_browser_video_skim: bool,
+    /// Enable hover-skim playback for AUDIO files in the file browser.
+    /// When off, hovering an audio row only shows its waveform thumbnail
+    /// — no decoding, no audio output. Useful for users who don't want
+    /// audio interrupting their work or who are reviewing files in a
+    /// shared/quiet environment.
+    #[serde(default = "default_true")]
+    pub file_browser_audio_skim: bool,
     /// Maximum number of undo steps (0 = unlimited).
     #[serde(default = "default_undo_limit")]
     pub undo_limit: usize,
@@ -370,6 +384,8 @@ impl Default for EditingPrefs {
             file_sort_ascending: true,
             file_type_filter: Default::default(),
             pinned_folders: Vec::new(),
+            file_browser_video_skim: true,
+            file_browser_audio_skim: true,
             default_transition_frames: default_transition_frames(),
             default_video_track_height: default_video_track_h(),
             default_audio_track_height: default_audio_track_h(),
@@ -1062,6 +1078,8 @@ mod tests {
         assert!(rt.editing.auto_create_tracks);
         assert!(rt.editing.auto_generate_filmstrips);
         assert!(rt.editing.auto_generate_skim);
+        assert!(rt.editing.file_browser_video_skim);
+        assert!(rt.editing.file_browser_audio_skim);
         assert_eq!(rt.editing.default_still_duration_secs, 5.0);
         assert_eq!(rt.editing.undo_limit, 100);
         assert_eq!(rt.editing.default_transition_frames, 24);
@@ -1289,6 +1307,8 @@ mod tests {
         prefs.editing.auto_create_tracks = false;
         prefs.editing.auto_generate_filmstrips = false;
         prefs.editing.auto_generate_skim = false;
+        prefs.editing.file_browser_video_skim = false;
+        prefs.editing.file_browser_audio_skim = false;
         prefs.editing.default_still_duration_secs = 10.0;
         prefs.editing.undo_limit = 50;
         prefs.editing.default_transition_frames = 12;
@@ -1409,6 +1429,8 @@ mod tests {
         assert!(!rt.editing.auto_create_tracks);
         assert!(!rt.editing.auto_generate_filmstrips);
         assert!(!rt.editing.auto_generate_skim);
+        assert!(!rt.editing.file_browser_video_skim);
+        assert!(!rt.editing.file_browser_audio_skim);
         assert_eq!(rt.editing.default_still_duration_secs, 10.0);
         assert_eq!(rt.editing.undo_limit, 50);
         assert_eq!(rt.editing.default_transition_frames, 12);

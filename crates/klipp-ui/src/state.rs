@@ -340,6 +340,15 @@ pub struct AppState {
 
     // GUI redesign
     pub skimming_enabled: bool,
+    /// Whether VIDEO files in the file browser are hover-skimmable.
+    /// Mirrored from `prefs.editing.file_browser_video_skim`. Independent
+    /// of the global `skimming_enabled` toolbar toggle — both must be on
+    /// for the file browser to spawn skim decodes.
+    pub file_browser_video_skim_enabled: bool,
+    /// Whether AUDIO files in the file browser are hover-skimmable.
+    /// Mirrored from `prefs.editing.file_browser_audio_skim`. Same gating
+    /// as `file_browser_video_skim_enabled`.
+    pub file_browser_audio_skim_enabled: bool,
     pub toast: crate::widgets::toast::ToastState,
     pub drag_drop: crate::drag_drop::DragDropState,
 
@@ -1373,6 +1382,8 @@ impl Default for AppState {
             fullscreen_overlay_timer: 0.0,
             dragging_media: None,
             skimming_enabled: true,
+            file_browser_video_skim_enabled: true,
+            file_browser_audio_skim_enabled: true,
             toast: crate::widgets::toast::ToastState::default(),
             drag_drop: crate::drag_drop::DragDropState::default(),
             browser_skim_texture: None,

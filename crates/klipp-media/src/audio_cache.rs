@@ -113,8 +113,14 @@ pub fn conform_audio_to_paths(
         .map_err(|e| ConformError::CodecError(e.to_string()))?;
 
     let src_format = decoder.format();
-    let src_layout = decoder.channel_layout();
     let src_rate = decoder.rate();
+    // Derive layout from channel count, not from `decoder.channel_layout()`
+    // — see the long comment in `klipp_engine::audio_decoder` for why.
+    // Short version: PCM WAVs frequently have unknown channel_layout in
+    // the container, which makes the resampler reject every frame with
+    // "Input changed".
+    let src_channels = decoder.channels();
+    let src_layout = ffmpeg_next::ChannelLayout::default(src_channels as i32);
 
     debug!(
         "conform_audio: {:?} — src: {}Hz {:?}, dst: {}Hz stereo f32",
@@ -155,7 +161,23 @@ pub fn conform_audio_to_paths(
             }
             drained_any = true;
 
-            let mut resampled = ffmpeg_next::frame::Audio::empty();
+            // Patch up empty channel_layout on the decoded frame — see
+            // the long comment in `klipp_engine::audio_decoder` for why.
+            if frame.channel_layout().is_empty() {
+                frame.set_channel_layout(src_layout);
+            }
+            // Pre-allocate the output buffer at the rate-scaled worst-case
+            // size. ffmpeg-next's `Context::run` would otherwise allocate
+            // it at `input.samples()` count, which silently truncates the
+            // output for any upsampling case. See the same comment in
+            // `klipp_engine::audio_decoder` for the full story.
+            let out_samples =
+                frame.samples() * CONFORM_SAMPLE_RATE as usize / src_rate.max(1) as usize + 256;
+            let mut resampled = ffmpeg_next::frame::Audio::new(
+                ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed),
+                out_samples,
+                ffmpeg_next::ChannelLayout::STEREO,
+            );
             if resampler.run(&frame, &mut resampled).is_err() {
                 continue;
             }
@@ -280,4 +302,137 @@ pub fn load_peaks(peaks_path: &Path) -> Result<Vec<(f32, f32)>, std::io::Error> 
     let floats: &[f32] = bytemuck::cast_slice(&bytes);
     let peaks: Vec<(f32, f32)> = floats.chunks_exact(2).map(|c| (c[0], c[1])).collect();
     Ok(peaks)
+}
+
+#[cfg(test)]
+mod conform_regression_tests {
+    //! Regression tests for two latent ffmpeg-next resampler bugs that
+    //! used to silently corrupt PCM WAV imports:
+    //!
+    //! 1. PCM WAVs with `unknown` channel_layout in the container produced
+    //!    decoded frames with empty `ch_layout`, which made
+    //!    `swr_convert_frame` reject every frame ("Input changed"). The
+    //!    cache file ended up empty.
+    //!
+    //! 2. Upsampling (e.g. 16 kHz → 48 kHz) was silently truncated because
+    //!    ffmpeg-next's `Context::run` pre-allocates the output frame at
+    //!    `input.samples()` count instead of the rate-scaled size.
+    //!
+    //! Both fixes live in `conform_audio_to_paths`. These tests construct
+    //! synthetic mono PCM WAVs (which exhibit both bugs in the wild) and
+    //! verify the conformed PCM has the right size and is non-empty.
+    use super::*;
+
+    fn write_test_wav(path: &Path, samples: &[i16], sample_rate: u32) {
+        let n = samples.len();
+        let byte_rate = sample_rate * 2; // mono, 16-bit = 2 bytes/sample
+        let data_size = (n * 2) as u32;
+        let mut bytes = Vec::with_capacity(44 + data_size as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_size).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&byte_rate.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // block align
+        bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_size.to_le_bytes());
+        for s in samples {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn sine_wave_samples(sample_rate: u32, duration_secs: f64) -> Vec<i16> {
+        let n = (sample_rate as f64 * duration_secs) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f64 / sample_rate as f64;
+                let v = (t * 440.0 * std::f64::consts::TAU).sin();
+                (v * 16000.0) as i16
+            })
+            .collect()
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_conform_test_{}_{}",
+            label,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn conform_decodes_unknown_layout_pcm_wav() {
+        ffmpeg_next::init().unwrap();
+        let dir = temp_dir("unknown_layout");
+        let wav = dir.join("input.wav");
+        // 1 second of mono sine at 48 kHz — no resampling, isolates the
+        // empty-channel-layout bug.
+        write_test_wav(&wav, &sine_wave_samples(48_000, 1.0), 48_000);
+
+        let pcm = dir.join("out.pcm");
+        let peaks = dir.join("out.peaks");
+        let mid = klipp_core::MediaId::new();
+
+        let entry = conform_audio_to_paths(mid, &wav, &pcm, &peaks)
+            .expect("conform should succeed for mono PCM WAV");
+
+        // ~1s of stereo f32 at 48 kHz = 48000 stereo frames = 384000 bytes.
+        let pcm_bytes = std::fs::metadata(&pcm).unwrap().len();
+        assert!(
+            pcm_bytes > 100_000,
+            "conform produced unexpectedly small PCM ({} bytes) — \
+             empty-channel-layout regression?",
+            pcm_bytes
+        );
+        assert!(
+            (entry.duration_secs - 1.0).abs() < 0.05,
+            "expected ~1s, got {:.3}s",
+            entry.duration_secs
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conform_upsamples_low_rate_pcm_wav() {
+        ffmpeg_next::init().unwrap();
+        let dir = temp_dir("upsample");
+        let wav = dir.join("input.wav");
+        // 1 second of mono sine at 16 kHz — exercises the upsampling
+        // truncation bug. Output should be ~1s at 48 kHz stereo.
+        write_test_wav(&wav, &sine_wave_samples(16_000, 1.0), 16_000);
+
+        let pcm = dir.join("out.pcm");
+        let peaks = dir.join("out.peaks");
+        let mid = klipp_core::MediaId::new();
+
+        let entry = conform_audio_to_paths(mid, &wav, &pcm, &peaks)
+            .expect("conform should succeed for 16 kHz mono WAV");
+
+        // 1s @ 48 kHz stereo f32 = 48000 * 2 * 4 = 384000 bytes.
+        // Pre-fix this would have been ~128000 bytes (1/3 of expected).
+        let pcm_bytes = std::fs::metadata(&pcm).unwrap().len();
+        assert!(
+            pcm_bytes > 350_000,
+            "conform produced too few PCM bytes for upsampling case ({}) \
+             — output-buffer-truncation regression?",
+            pcm_bytes
+        );
+        assert!(
+            (entry.duration_secs - 1.0).abs() < 0.05,
+            "expected ~1s after upsampling, got {:.3}s",
+            entry.duration_secs
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

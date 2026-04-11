@@ -57,6 +57,176 @@ pub fn probe_audio_available() -> bool {
     host.default_output_device().is_some()
 }
 
+/// Detailed info about a single output audio device, suitable for showing
+/// the user in a "Detected hardware" panel. Cheap to clone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    /// Device name as cpal reports it (e.g. `"pipewire"`, `"hw:CARD=PCH,DEV=0"`).
+    pub name: String,
+    /// True for the system default output device.
+    pub is_default: bool,
+    /// Native sample rate of the device's default output config (Hz).
+    pub default_sample_rate: u32,
+    /// Channel count of the default output config.
+    pub default_channels: u16,
+    /// Sample format label (`"f32"`, `"i16"`, `"u16"`, or `"?"`).
+    pub default_format: &'static str,
+    /// Min sample rate across all supported configs, or 0 if unknown.
+    pub min_sample_rate: u32,
+    /// Max sample rate across all supported configs, or 0 if unknown.
+    pub max_sample_rate: u32,
+    /// Max channel count across all supported configs.
+    pub max_channels: u16,
+}
+
+/// Identifier of the cpal host backend (e.g. "ALSA", "CoreAudio", "WASAPI").
+/// On Linux this is always "ALSA" — even when PipeWire is the active server,
+/// cpal speaks to it via the ALSA shim, so the device list will include the
+/// "pipewire" virtual device.
+pub fn host_name() -> &'static str {
+    cpal::default_host().id().name()
+}
+
+/// Process-wide cache of the most recent `enumerate_output_devices()` result.
+/// Filled lazily by `cached_output_devices()` (or eagerly by
+/// `prime_audio_devices_cache()` at startup) and refreshable via
+/// `refresh_audio_devices_cache()` so hot-plugged devices can show up.
+///
+/// Why a cache at all: cpal device enumeration takes 5–50 ms depending on
+/// the platform and would hitch UI rendering if called every frame.
+///
+/// Why not push-based: cpal does not expose any device-change notification
+/// API. To get true hot-plug callbacks we'd need platform-specific code
+/// (libudev on Linux, AudioObjectAddPropertyListener on macOS,
+/// MMNotificationClient on Windows). For now we re-enumerate on demand —
+/// when the user opens the Audio HW preferences tab or clicks "Refresh".
+static AUDIO_DEVICE_CACHE: std::sync::Mutex<Option<Vec<AudioDeviceInfo>>> =
+    std::sync::Mutex::new(None);
+
+/// Return a clone of the cached output device list, populating it from
+/// `enumerate_output_devices()` on first call. Cheap on every call after
+/// the first. Safe to call from any thread.
+pub fn cached_output_devices() -> Vec<AudioDeviceInfo> {
+    let mut guard = match AUDIO_DEVICE_CACHE.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(), // recover from poisoning — cache contents are still valid
+    };
+    if guard.is_none() {
+        *guard = Some(enumerate_output_devices());
+    }
+    guard.clone().unwrap_or_default()
+}
+
+/// Force a fresh re-enumeration and replace the cache. Use this when the
+/// user explicitly asks to refresh the device list (e.g. after hot-plugging
+/// a USB audio interface) or when re-opening the preferences panel.
+/// Returns the refreshed list.
+pub fn refresh_audio_devices_cache() -> Vec<AudioDeviceInfo> {
+    let fresh = enumerate_output_devices();
+    if let Ok(mut guard) = AUDIO_DEVICE_CACHE.lock() {
+        *guard = Some(fresh.clone());
+    }
+    fresh
+}
+
+/// Eagerly populate the audio device cache. Call this once during app
+/// startup (ideally from a background thread) so the first user visit
+/// to the Audio HW preferences panel doesn't hit the 5–50 ms enumeration
+/// hitch. Idempotent — calling it again does nothing.
+pub fn prime_audio_devices_cache() {
+    let _ = cached_output_devices();
+}
+
+/// Enumerate every available output device with rich info. Returns an empty
+/// vec if no host or no devices are available — never panics. The result is
+/// suitable for caching: cpal device enumeration takes 5–50 ms depending on
+/// the platform and shouldn't be done every UI frame.
+///
+/// The default device (if any) is marked with `is_default = true`. Order is
+/// "default first, then everything else in cpal's enumeration order" so a
+/// dropdown built from the result naturally puts the default at the top.
+pub fn enumerate_output_devices() -> Vec<AudioDeviceInfo> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let default_name = host
+        .default_output_device()
+        .and_then(|d| d.name().ok());
+
+    let devices = match host.output_devices() {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    for device in devices {
+        let name = match device.name() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let is_default = default_name.as_deref() == Some(&name);
+
+        let default_cfg = device.default_output_config().ok();
+        let (default_sample_rate, default_channels, default_format) =
+            if let Some(cfg) = default_cfg.as_ref() {
+                let fmt: &'static str = match cfg.sample_format() {
+                    cpal::SampleFormat::F32 => "f32",
+                    cpal::SampleFormat::I16 => "i16",
+                    cpal::SampleFormat::U16 => "u16",
+                    _ => "?",
+                };
+                (cfg.sample_rate().0, cfg.channels(), fmt)
+            } else {
+                (0, 0, "?")
+            };
+
+        // Walk supported_output_configs to compute the rate range.
+        // This iterator is consumed once, so we drain it into a Vec first.
+        let mut min_rate = u32::MAX;
+        let mut max_rate = 0u32;
+        let mut max_channels = 0u16;
+        if let Ok(configs) = device.supported_output_configs() {
+            for c in configs {
+                let lo = c.min_sample_rate().0;
+                let hi = c.max_sample_rate().0;
+                if lo < min_rate {
+                    min_rate = lo;
+                }
+                if hi > max_rate {
+                    max_rate = hi;
+                }
+                if c.channels() > max_channels {
+                    max_channels = c.channels();
+                }
+            }
+        }
+        if min_rate == u32::MAX {
+            min_rate = 0;
+        }
+
+        out.push(AudioDeviceInfo {
+            name,
+            is_default,
+            default_sample_rate,
+            default_channels,
+            default_format,
+            min_sample_rate: min_rate,
+            max_sample_rate: max_rate,
+            max_channels,
+        });
+    }
+
+    // Move default to the front so dropdowns built from this list can use
+    // out[0] as the natural "selected default" entry.
+    if let Some(idx) = out.iter().position(|d| d.is_default) {
+        if idx != 0 {
+            let d = out.remove(idx);
+            out.insert(0, d);
+        }
+    }
+
+    out
+}
+
 pub struct AudioOutput {
     _stream: cpal::Stream,
     pub sample_rate: u32,
@@ -386,5 +556,116 @@ impl std::fmt::Display for AudioOutputError {
             Self::Build(e) => write!(f, "build stream: {e}"),
             Self::Play(e) => write!(f, "play stream: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod device_enum_tests {
+    //! Tests for the audio device enumeration helpers. These run against
+    //! whatever cpal sees on the host machine, so we keep the assertions
+    //! shape-based rather than depending on specific device names. CI
+    //! machines may legitimately have zero devices — that case is
+    //! exercised explicitly.
+    use super::*;
+
+    #[test]
+    fn host_name_is_non_empty() {
+        let name = host_name();
+        assert!(!name.is_empty(), "cpal host should have a non-empty name");
+    }
+
+    #[test]
+    fn enumerate_returns_a_vec_without_panicking() {
+        // The list may be empty (CI / sandbox) but enumeration must not panic.
+        let _ = enumerate_output_devices();
+    }
+
+    #[test]
+    fn at_most_one_device_marked_default() {
+        let devices = enumerate_output_devices();
+        let default_count = devices.iter().filter(|d| d.is_default).count();
+        assert!(
+            default_count <= 1,
+            "expected at most one default device, got {}",
+            default_count
+        );
+    }
+
+    #[test]
+    fn default_device_is_first_when_present() {
+        let devices = enumerate_output_devices();
+        if let Some(default_idx) = devices.iter().position(|d| d.is_default) {
+            assert_eq!(
+                default_idx, 0,
+                "default device should be first in the list"
+            );
+        }
+    }
+
+    #[test]
+    fn enumerate_device_fields_are_well_formed() {
+        let devices = enumerate_output_devices();
+        for d in &devices {
+            assert!(!d.name.is_empty(), "device name should not be empty");
+            // Sample rate of 0 is allowed (means "couldn't read default
+            // config"), but if non-zero it should be a sane value.
+            if d.default_sample_rate != 0 {
+                assert!(
+                    d.default_sample_rate >= 8_000 && d.default_sample_rate <= 768_000,
+                    "device {} has implausible default rate {}",
+                    d.name,
+                    d.default_sample_rate
+                );
+            }
+            // If we got a min and max range, min must not exceed max.
+            if d.min_sample_rate != 0 && d.max_sample_rate != 0 {
+                assert!(
+                    d.min_sample_rate <= d.max_sample_rate,
+                    "device {} has min_sample_rate {} > max_sample_rate {}",
+                    d.name,
+                    d.min_sample_rate,
+                    d.max_sample_rate
+                );
+            }
+            // Format label is one of our known strings.
+            assert!(
+                matches!(d.default_format, "f32" | "i16" | "u16" | "?"),
+                "device {} has unexpected format label {:?}",
+                d.name,
+                d.default_format
+            );
+        }
+    }
+
+    #[test]
+    fn cached_output_devices_returns_consistent_results() {
+        // Two consecutive calls without explicit refresh should return
+        // the same set of device names (the cache is stable between
+        // refresh calls).
+        let first = cached_output_devices();
+        let second = cached_output_devices();
+        let first_names: Vec<&str> = first.iter().map(|d| d.name.as_str()).collect();
+        let second_names: Vec<&str> = second.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(first_names, second_names);
+    }
+
+    #[test]
+    fn refresh_audio_devices_cache_returns_a_vec() {
+        // Same shape contract as enumerate_output_devices — the result
+        // may be empty but must not panic and must update the cache.
+        let refreshed = refresh_audio_devices_cache();
+        let cached = cached_output_devices();
+        assert_eq!(
+            refreshed.iter().map(|d| &d.name).collect::<Vec<_>>(),
+            cached.iter().map(|d| &d.name).collect::<Vec<_>>(),
+            "refresh result should match the new cache contents"
+        );
+    }
+
+    #[test]
+    fn prime_is_idempotent_and_does_not_panic() {
+        prime_audio_devices_cache();
+        prime_audio_devices_cache();
+        let _ = cached_output_devices();
     }
 }

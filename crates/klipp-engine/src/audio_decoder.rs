@@ -180,8 +180,17 @@ fn audio_decode_thread(
 
     // Set up resampler: source format → f32 stereo at output_rate
     let src_format = decoder.format();
-    let src_layout = decoder.channel_layout();
     let src_rate = decoder.rate();
+    // ALWAYS derive the layout from the channel count rather than from
+    // `decoder.channel_layout()`. PCM WAV streams (the most common
+    // import format) often have an `unknown` channel_layout in their
+    // container header — `decoder.channel_layout()` then returns an
+    // empty `ChannelLayout`, which makes the resampler refuse every
+    // frame with "Input changed". `ChannelLayout::default(channels)`
+    // is reliable for mono/stereo content (which is essentially all
+    // music and dialog audio in practice).
+    let src_channels = decoder.channels();
+    let src_layout = ffmpeg_next::ChannelLayout::default(src_channels as i32);
 
     let mut resampler = match ffmpeg_next::software::resampling::Context::get(
         src_format,
@@ -323,7 +332,31 @@ fn audio_decode_thread(
                 seek_target = None;
             }
 
-            let mut resampled = ffmpeg_next::frame::Audio::empty();
+            // Patch up the frame's channel layout if the decoder produced
+            // an empty one (PCM WAVs with unknown layout in the container).
+            // The resampler's input layout is `src_layout` (defaulted from
+            // channel count above) so anything else here causes a mismatch.
+            if frame.channel_layout().is_empty() {
+                frame.set_channel_layout(src_layout);
+            }
+
+            // Pre-allocate the output frame ourselves with the rate-scaled
+            // worst-case sample count. ffmpeg-next's `Context::run` would
+            // otherwise call `output.alloc(format, input.samples(), layout)`
+            // when the output frame is empty — sizing the buffer for
+            // input.samples() STEREO frames, which is correct only when
+            // src_rate == dst_rate. For upsampling (e.g. 44.1 kHz → 48 kHz)
+            // that's too small and `swr_convert_frame` silently truncates
+            // every call, leaving samples buffered in the resampler that
+            // never come out. The `+ 256` matches FFmpeg's own internal
+            // padding in its auto-allocation path.
+            let out_samples =
+                frame.samples() * output_rate as usize / src_rate.max(1) as usize + 256;
+            let mut resampled = ffmpeg_next::frame::Audio::new(
+                ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed),
+                out_samples,
+                ffmpeg_next::ChannelLayout::STEREO,
+            );
             if resampler.run(&frame, &mut resampled).is_err() {
                 continue;
             }

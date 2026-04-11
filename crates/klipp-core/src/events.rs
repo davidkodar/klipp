@@ -751,6 +751,15 @@ pub enum AppCommand {
         source_path: PathBuf,
         time_secs: f64,
     },
+    /// Begin an audio skim session for a file that has NOT been imported into
+    /// the media pool (no `MediaId`, no PCM cache). Used by the file browser
+    /// hover preview where the user is just exploring a directory. The audio
+    /// is decoded on the fly via ffmpeg into the same 48 kHz stereo f32 PCM
+    /// the existing skim feeder thread expects.
+    BrowserSkimAudioStartFromPath {
+        source_path: PathBuf,
+        time_secs: f64,
+    },
     /// Update audio skim position (mouse moves while skimming).
     BrowserSkimAudioUpdate {
         media_id: MediaId,

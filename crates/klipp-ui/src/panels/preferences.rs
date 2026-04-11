@@ -372,7 +372,18 @@ impl PreferencesPanel {
             text_color,
         );
 
-        if resp.clicked() { self.active_tab = tab; }
+        if resp.clicked() {
+            // On Audio HW tab activation, re-poll cpal so hot-plugged
+            // devices appear without requiring a restart. cpal has no
+            // device-change push API on any platform — re-enumerating
+            // when the user explicitly opens this tab is the closest
+            // thing to "automatic" we can offer without pulling in
+            // libudev / CoreAudio listeners / MMNotificationClient.
+            if tab == PrefsTab::AudioHardware && self.active_tab != PrefsTab::AudioHardware {
+                klipp_engine::audio_output::refresh_audio_devices_cache();
+            }
+            self.active_tab = tab;
+        }
     }
 
     /// Draw a section header (e.g., "PROJECT", "INSPECTOR") with subtle background.
@@ -694,6 +705,39 @@ impl PreferencesPanel {
                 *dirty = true;
             }
         });
+
+        // ── FILE BROWSER section ──
+        // Hover-skim previews are great for fast file triage but cost
+        // CPU/IO and (for audio) can be distracting. Both default on but
+        // can be turned off independently for users who prefer a quieter
+        // browser or who work on slower hardware.
+        Self::section_header(ui, "FILE BROWSER");
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Video hover skim",
+            "Decode video frames as you hover over file rows",
+            |ui| {
+                let mut val = prefs.editing.file_browser_video_skim;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.editing.file_browser_video_skim = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Audio hover skim",
+            "Play audio as you hover over audio file rows",
+            |ui| {
+                let mut val = prefs.editing.file_browser_audio_skim;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.editing.file_browser_audio_skim = val;
+                    *dirty = true;
+                }
+            },
+        );
 
         // ── DEFAULTS section ──
         Self::section_header(ui, "DEFAULTS");
@@ -1447,6 +1491,14 @@ impl PreferencesPanel {
     }
 
     fn show_audio_hardware(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        // Read the process-wide cached device list. The cache is primed at
+        // app startup (background thread) and re-populated when the user
+        // enters this tab via `enter_tab()`, so this call is essentially
+        // free on every frame. Hot-plugged devices show up next time the
+        // user re-enters the tab or clicks "Refresh" below.
+        let devices = klipp_engine::audio_output::cached_output_devices();
+        let host_name = klipp_engine::audio_output::host_name();
+
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
@@ -1457,16 +1509,50 @@ impl PreferencesPanel {
         // ── OUTPUT DEVICE section ──
         Self::section_header(ui, "OUTPUT DEVICE");
 
+        // Build the dropdown label for the currently-selected device.
+        // For "Default" (None), pick a label that includes the actual
+        // device name cpal will use, so users see what's really happening.
+        let default_device_label: String = devices
+            .iter()
+            .find(|d| d.is_default)
+            .map(|d| format!("Default ({})", d.name))
+            .unwrap_or_else(|| "Default (auto)".to_string());
+
         Self::setting_row(ui, "Output device", |ui| {
-            let current = prefs.audio_hardware.output_device.as_deref().unwrap_or("Default (PipeWire)");
+            let current_text = prefs
+                .audio_hardware
+                .output_device
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| default_device_label.clone());
             egui::ComboBox::from_id_salt("audio_device")
-                .selected_text(current)
-                .width(160.0)
+                .selected_text(current_text)
+                .width(220.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(prefs.audio_hardware.output_device.is_none(), "Default (PipeWire)").clicked() {
-                        prefs.audio_hardware.output_device = None; *dirty = true;
+                    if ui
+                        .selectable_label(
+                            prefs.audio_hardware.output_device.is_none(),
+                            &default_device_label,
+                        )
+                        .clicked()
+                    {
+                        prefs.audio_hardware.output_device = None;
+                        *dirty = true;
                     }
-                    // TODO: enumerate actual audio devices from cpal
+                    if !devices.is_empty() {
+                        ui.separator();
+                    }
+                    for d in &devices {
+                        let selected = prefs
+                            .audio_hardware
+                            .output_device
+                            .as_deref()
+                            == Some(d.name.as_str());
+                        if ui.selectable_label(selected, &d.name).clicked() {
+                            prefs.audio_hardware.output_device = Some(d.name.clone());
+                            *dirty = true;
+                        }
+                    }
                 });
         });
 
@@ -1513,6 +1599,108 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Hardware, "Hardware (direct)").changed() { *dirty = true; }
                 });
         });
+
+        // ── DETECTED HARDWARE section ──
+        // Read-only diagnostics — what cpal actually sees on this system.
+        // Useful for debugging device-not-found issues and for users who
+        // want to know what their machine is offering.
+        Self::section_header(ui, "DETECTED HARDWARE");
+
+        // `refreshed_devices` is filled when the user clicks the Refresh
+        // button below; we use it as the override list for the rest of
+        // the section so the new state appears immediately, not on the
+        // next frame.
+        let mut refreshed_devices: Option<Vec<klipp_engine::audio_output::AudioDeviceInfo>> = None;
+        Self::setting_row_with_subtitle(
+            ui,
+            "Audio backend",
+            // cpal has no push notifications for hot-plug, so the user
+            // needs an explicit "I just plugged something in" button.
+            "Click Refresh after plugging in a new device",
+            |ui| {
+                if ui.button("Refresh").clicked() {
+                    refreshed_devices =
+                        Some(klipp_engine::audio_output::refresh_audio_devices_cache());
+                }
+                ui.label(
+                    egui::RichText::new(host_name)
+                        .size(12.0)
+                        .color(Self::NORMAL_TEXT),
+                );
+            },
+        );
+        // Use refreshed list if available, else the cached one captured above.
+        let devices: Vec<klipp_engine::audio_output::AudioDeviceInfo> =
+            refreshed_devices.unwrap_or(devices);
+
+        if devices.is_empty() {
+            Self::setting_row_with_subtitle(
+                ui,
+                "Output devices",
+                "No audio output devices detected",
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("\u{2014}")
+                            .size(12.0)
+                            .color(Self::DIM_TEXT),
+                    );
+                },
+            );
+        } else {
+            // Summary row: how many devices and which is the system default.
+            let default_name = devices
+                .iter()
+                .find(|d| d.is_default)
+                .map(|d| d.name.as_str())
+                .unwrap_or("(none)");
+            let count_label = format!(
+                "{} device{} \u{00b7} default: {}",
+                devices.len(),
+                if devices.len() == 1 { "" } else { "s" },
+                default_name,
+            );
+            Self::setting_row(ui, "Output devices", |ui| {
+                ui.label(
+                    egui::RichText::new(count_label)
+                        .size(11.0)
+                        .color(Self::DIM_TEXT),
+                );
+            });
+
+            // One row per device showing rate range, channel count, format.
+            for d in devices {
+                let label = if d.is_default {
+                    format!("\u{25cf} {}", d.name) // bullet marks default
+                } else {
+                    format!("  {}", d.name)
+                };
+                let rate_text = if d.min_sample_rate == 0 || d.max_sample_rate == 0 {
+                    format!("{} Hz", d.default_sample_rate)
+                } else if d.min_sample_rate == d.max_sample_rate {
+                    format!("{} Hz", d.default_sample_rate)
+                } else {
+                    format!(
+                        "{} Hz (range {}\u{2013}{})",
+                        d.default_sample_rate, d.min_sample_rate, d.max_sample_rate
+                    )
+                };
+                let subtitle = format!(
+                    "{} \u{00b7} {} ch \u{00b7} {}",
+                    rate_text, d.default_channels, d.default_format
+                );
+                Self::setting_row_with_subtitle(ui, &label, &subtitle, |ui| {
+                    if d.is_default {
+                        ui.label(
+                            egui::RichText::new("default")
+                                .size(10.0)
+                                .color(Self::ACCENT),
+                        );
+                    } else {
+                        ui.label("");
+                    }
+                });
+            }
+        }
     }
 
     fn show_media_cache(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, cmds: &mut Vec<AppCommand>) {

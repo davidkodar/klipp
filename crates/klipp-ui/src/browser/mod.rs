@@ -522,6 +522,12 @@ pub struct BrowserPanel {
     file_audio_failed: HashSet<std::path::PathBuf>,
     file_audio_tx: crossbeam_channel::Sender<FileAudioPeaksResult>,
     file_audio_rx: crossbeam_channel::Receiver<FileAudioPeaksResult>,
+    /// Path of the audio file currently being hover-skimmed in the file
+    /// browser, or `None` if no audio row is being hovered. Used to
+    /// distinguish "first hover of this row" (emit Start) from "still
+    /// hovering same row" (emit Update) from "left the row" (emit End).
+    /// Single slot — only one audio file can be skimmed at a time.
+    file_audio_skim_active: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone)]
@@ -587,6 +593,7 @@ impl Default for BrowserPanel {
             file_audio_failed: HashSet::new(),
             file_audio_tx,
             file_audio_rx,
+            file_audio_skim_active: None,
         }
     }
 }
@@ -1299,6 +1306,15 @@ impl BrowserPanel {
         // Drain any completed audio peaks results into the in-memory cache.
         self.drain_file_audio_peaks();
 
+        // Sync our local audio-skim tracker with the engine. If something
+        // outside the file browser tore down the session (e.g. modal open,
+        // viewer mode switch), clear our local "active path" so the next
+        // hover starts a fresh session instead of trying to update a dead
+        // one.
+        if self.file_audio_skim_active.is_some() && state.skim_audio_session.is_none() {
+            self.file_audio_skim_active = None;
+        }
+
         // Check for async directory read result
         if let Some(ref rx) = self.files_receiver {
             match rx.try_recv() {
@@ -1630,6 +1646,13 @@ impl BrowserPanel {
         // Used to clear `file_skim_texture` when the cursor leaves all video
         // rows, so the rows revert to their cached poster thumbnails.
         let mut any_video_row_hovered = false;
+        // Hover audio skim — captured during the row loop, applied after.
+        // (path, time_secs) — `path` doubles as identity to detect a row
+        // change between frames. `any_audio_row_hovered` mirrors the video
+        // flag so we can emit `BrowserSkimAudioEnd` exactly once when the
+        // cursor leaves all audio rows.
+        let mut pending_audio_skim: Option<(std::path::PathBuf, f64)> = None;
+        let mut any_audio_row_hovered = false;
         // Capture before the closure — `self` is borrowed inside via `filtered`.
         let thumb_size = self.file_thumb_size;
         let row_h = thumb_size.row_height();
@@ -1941,7 +1964,11 @@ impl BrowserPanel {
                         .map(|e| e.to_string_lossy().to_lowercase())
                         .unwrap_or_default();
                     let is_video = VIDEO_EXTENSIONS.contains(&ext.as_str());
-                    if is_video && state.skimming_enabled && !state.has_modal_open() {
+                    if is_video
+                        && state.skimming_enabled
+                        && state.file_browser_video_skim_enabled
+                        && !state.has_modal_open()
+                    {
                         if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                             if thumb_box.contains(pos) {
                                 any_video_row_hovered = true;
@@ -2012,6 +2039,36 @@ impl BrowserPanel {
                             // Visible row that wants audio peaks but doesn't
                             // have them — queue a generation request.
                             audio_peaks_spawn_requests.push(entry.path.clone());
+                        }
+
+                        // ── Hover skim for audio rows ──
+                        // Same UX as the video row hover skim above, but
+                        // streams audio instead of video. Gated on:
+                        //   - the global toolbar skim toggle
+                        //   - the per-feature `file_browser_audio_skim`
+                        //     pref (so users can keep video skim on but
+                        //     turn audio skim off, or vice versa)
+                        //   - no modals open
+                        if state.skimming_enabled
+                            && state.file_browser_audio_skim_enabled
+                            && !state.has_modal_open()
+                        {
+                            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                if thumb_box.contains(pos) {
+                                    any_audio_row_hovered = true;
+                                    if let Some(dur) = self.file_durations.get(&entry.path).copied() {
+                                        let frac = ((pos.x - thumb_box.min.x) / thumb_box.width())
+                                            .clamp(0.0, 1.0);
+                                        let t = dur * frac as f64;
+                                        pending_audio_skim = Some((entry.path.clone(), t));
+                                    } else if pending_duration_probe.is_none() {
+                                        // First hover — defer the probe to
+                                        // after the loop. `ensure_file_duration`
+                                        // works for audio too.
+                                        pending_duration_probe = Some(entry.path.clone());
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2454,6 +2511,51 @@ impl BrowserPanel {
         //    texture so the previously-skimmed row reverts to its poster.
         if !any_video_row_hovered && self.file_skim_texture.is_some() {
             self.file_skim_texture = None;
+        }
+
+        // ── Audio hover skim — apply requests captured during the row loop ──
+        // 1. Update the speed estimate so `BrowserSkimAudioUpdate` can
+        //    silence the feeder when the cursor stops, matching the
+        //    behavior used for media-pool clip skimming.
+        if let Some((_, _)) = pending_audio_skim.as_ref() {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(state.skim_last_update).as_secs_f32();
+                let dx = (pos.x - state.skim_last_x).abs();
+                let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+                state.skim_speed_px_per_sec =
+                    state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+                state.skim_last_x = pos.x;
+                state.skim_last_update = now;
+            }
+        }
+        // 2. Decide whether this is a Start (different file or no
+        //    active session), an Update (same file, just moving), or
+        //    an End (no audio row hovered this frame).
+        match (pending_audio_skim, self.file_audio_skim_active.clone()) {
+            (Some((path, t)), Some(active_path)) if path == active_path => {
+                // Same file — just push a position update.
+                cmds.push(AppCommand::BrowserSkimAudioUpdate {
+                    media_id: klipp_core::MediaId::new(), // ignored by the handler
+                    time_secs: t,
+                });
+            }
+            (Some((path, t)), _) => {
+                // New file (or first hover) — start a fresh path-based
+                // session. The handler will tear down any previous
+                // session before opening this one.
+                cmds.push(AppCommand::BrowserSkimAudioStartFromPath {
+                    source_path: path.clone(),
+                    time_secs: t,
+                });
+                self.file_audio_skim_active = Some(path);
+            }
+            (None, Some(_)) if !any_audio_row_hovered => {
+                // Cursor left every audio row — tear the session down.
+                cmds.push(AppCommand::BrowserSkimAudioEnd);
+                self.file_audio_skim_active = None;
+            }
+            _ => {}
         }
 
         cmds
