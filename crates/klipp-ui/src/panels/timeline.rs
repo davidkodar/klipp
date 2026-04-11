@@ -132,6 +132,10 @@ pub(crate) struct TimelineFrameCache {
     pub track_rects: Vec<(usize, TrackKind, egui::Rect)>,
     /// Clip id → screen rect, populated while drawing clips. Used for linked-clip connection lines.
     pub clip_screen_rects: HashMap<ClipId, egui::Rect>,
+    /// Top Y of the tracks area (for full-height guidelines during drag).
+    pub tracks_start_y: f32,
+    /// Bottom Y of the tracks area.
+    pub tracks_clip_bottom: f32,
 }
 
 #[derive(Default)]
@@ -163,6 +167,7 @@ pub struct TimelinePanel {
     pub(crate) frame_cache: TimelineFrameCache,
 }
 
+#[allow(dead_code)]
 struct DragState {
     clip_id: ClipId,
     track_idx: usize,
@@ -421,6 +426,8 @@ impl TimelinePanel {
                 pre_y += th;
             }
         }
+        self.frame_cache.tracks_start_y = tracks_start_y;
+        self.frame_cache.tracks_clip_bottom = tracks_clip_bottom;
 
         // Clip all track interactions to the tracks area — prevents ui.interact() zones
         // from registering below the status bar or above the ruler.
@@ -5109,7 +5116,9 @@ impl TimelinePanel {
 
                     let mut final_in = new_timeline_in;
                     let mut snapped = false;
+                    let shift_held = ui.input(|i| i.modifiers.shift);
 
+                    if !shift_held {
                     if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
                         if let Some(clip) = track.find_clip(drag.clip_id) {
                             let dur = clip.duration();
@@ -5139,6 +5148,7 @@ impl TimelinePanel {
                             }
                         }
                     }
+                    } // end if !shift_held
 
                     // Clamp to >= 0
                     if final_in.value < 0 {
@@ -5207,6 +5217,34 @@ impl TimelinePanel {
                                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
                                 );
                             }
+                        }
+
+                        // Full-height vertical guidelines + position timecode
+                        {
+                            let guide_top = self.frame_cache.tracks_start_y;
+                            let guide_bottom = self.frame_cache.tracks_clip_bottom;
+                            let guide_color = egui::Color32::from_rgba_unmultiplied(120, 160, 240, 80);
+                            ghost_painter.line_segment(
+                                [egui::pos2(ghost_rect.left(), guide_top), egui::pos2(ghost_rect.left(), guide_bottom)],
+                                egui::Stroke::new(1.0, guide_color),
+                            );
+                            ghost_painter.line_segment(
+                                [egui::pos2(ghost_rect.right(), guide_top), egui::pos2(ghost_rect.right(), guide_bottom)],
+                                egui::Stroke::new(1.0, guide_color),
+                            );
+                            let tc_text = {
+                                let secs = final_in.to_secs_f64();
+                                let mins = (secs / 60.0) as u32;
+                                let s = secs % 60.0;
+                                format!("{:02}:{:05.2}", mins, s)
+                            };
+                            ghost_painter.text(
+                                egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                &tc_text,
+                                egui::FontId::monospace(9.0),
+                                egui::Color32::from_rgb(200, 200, 220),
+                            );
                         }
 
                         // Insertion indicator: find where the clip would land between existing clips
@@ -5514,11 +5552,45 @@ impl TimelinePanel {
                             }
                         }
 
-                        // Snap indicator
+                        // Snap indicator — amber glow
                         if snapped {
                             ghost_painter.rect_stroke(ghost_rect, 4.0,
                                 egui::Stroke::new(1.5, egui::Color32::from_rgb(232, 160, 32)));
                         }
+
+                        // Full-height vertical guidelines on both edges of the ghost clip
+                        let guide_top = self.frame_cache.tracks_start_y;
+                        let guide_bottom = self.frame_cache.tracks_clip_bottom;
+                        let guide_color = if snapped {
+                            egui::Color32::from_rgba_unmultiplied(232, 160, 32, 100) // amber when snapped
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(120, 160, 240, 80) // blue normally
+                        };
+                        // Left edge guide
+                        ghost_painter.line_segment(
+                            [egui::pos2(ghost_rect.left(), guide_top), egui::pos2(ghost_rect.left(), guide_bottom)],
+                            egui::Stroke::new(1.0, guide_color),
+                        );
+                        // Right edge guide
+                        ghost_painter.line_segment(
+                            [egui::pos2(ghost_rect.right(), guide_top), egui::pos2(ghost_rect.right(), guide_bottom)],
+                            egui::Stroke::new(1.0, guide_color),
+                        );
+
+                        // Position timecode label above the ghost
+                        let tc_text = {
+                            let secs = final_in.to_secs_f64();
+                            let mins = (secs / 60.0) as u32;
+                            let s = secs % 60.0;
+                            format!("{:02}:{:05.2}", mins, s)
+                        };
+                        ghost_painter.text(
+                            egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            &tc_text,
+                            egui::FontId::monospace(9.0),
+                            egui::Color32::from_rgb(200, 200, 220),
+                        );
 
                         // Store target position for drop handler (set after the drag borrow ends)
                         non_primary_target_in = Some(final_in);
@@ -5656,7 +5728,7 @@ impl TimelinePanel {
                 let from_track = drag.track_idx;
                 let original_in = drag.original_timeline_in;
                 let drag_start_x = drag.start_x;
-                let drag_target_in = non_primary_target_in;
+                let _drag_target_in = non_primary_target_in;
 
                 // Check if pointer is over a different compatible track
                 let target_track = pointer_pos.and_then(|pos| {

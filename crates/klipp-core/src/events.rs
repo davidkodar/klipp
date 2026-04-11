@@ -329,6 +329,9 @@ pub enum AppCommand {
     // Project
     NewProject,
     CloseProject,
+    /// Wipe all engine-side state (decoders, caches, frame buffer) so the next
+    /// project starts from a clean slate. Sent by the UI on new/close project.
+    ResetEngine,
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },

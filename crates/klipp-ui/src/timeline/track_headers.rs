@@ -193,6 +193,42 @@ pub fn show(
             );
         }
 
+        // Track opacity slider (video tracks only) — horizontal bar at bottom of header
+        if track.kind == TrackKind::Video {
+            let opacity_pct = (track.opacity * 100.0) as u32;
+            let slider_h = 12.0;
+            let slider_rect = egui::Rect::from_min_size(
+                egui::pos2(track_rect.min.x + 4.0, track_rect.max.y - slider_h - 2.0),
+                egui::vec2(track_rect.width() - 8.0, slider_h),
+            );
+            let slider_resp = ui.interact(
+                slider_rect, ui.id().with(("track_opacity", track_idx)),
+                egui::Sense::click_and_drag(),
+            );
+            // Background
+            ui.painter().rect_filled(slider_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
+            // Fill bar
+            let fill_w = slider_rect.width() * track.opacity;
+            let fill_rect = egui::Rect::from_min_size(
+                slider_rect.left_top(), egui::vec2(fill_w, slider_rect.height()),
+            );
+            ui.painter().rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(50, 80, 130));
+            // Label
+            ui.painter().text(
+                slider_rect.center(), egui::Align2::CENTER_CENTER,
+                format!("{}%", opacity_pct), egui::FontId::proportional(8.0),
+                egui::Color32::from_rgb(180, 180, 200),
+            );
+            // Interaction
+            if slider_resp.double_clicked() {
+                cmds.push(AppCommand::SetTrackOpacity { track_index: track_idx, opacity: 1.0 });
+            } else if slider_resp.dragged() {
+                let dx = slider_resp.drag_delta().x;
+                let new_opacity = (track.opacity + dx / slider_rect.width()).clamp(0.0, 1.0);
+                cmds.push(AppCommand::SetTrackOpacity { track_index: track_idx, opacity: new_opacity });
+            }
+        }
+
         // Per-track VU meter (audio tracks only)
         if track.kind == TrackKind::Audio {
             if let Some(&(peak_l, peak_r)) = state.track_peak_levels.get(track_idx) {

@@ -2118,6 +2118,7 @@ impl KlippApp {
                 AppCommand::SetTrackOpacity { track_index, opacity } => {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.opacity = opacity.clamp(0.0, 1.0);
+                        tracing::debug!("SetTrackOpacity: track[{}]={} name={}", track_index, track.opacity, track.name);
                     }
                     self.sync_sequence_to_engine();
                     return true;
@@ -9931,50 +9932,69 @@ impl KlippApp {
     }
 
     fn do_new_project(&mut self) {
-        self.state.sequences = vec![Sequence::new_default()];
-        self.state.active_sequence_idx = 0;
-        self.state.media_pool = klipp_media::MediaPool::new();
-        self.state.project_path = None;
-        self.state.dirty = false;
-        self.state.selected_clip = None;
-        self.state.selected_clips.clear();
-        self.state.hovered_clip = None;
-        self.state.playback = PlaybackState::Idle;
-        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-        self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
-        self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
-        self.state.thumbnail_textures.clear();
-        self.state.filmstrip_textures.clear();
-        self.state.filmstrip_in_progress.clear();
-        self.state.filmstrip_queue.clear();
+        self.reset_project_state();
         self.sync_sequence_to_engine();
     }
 
     /// Close the current project and return to the Project Manager (launch screen).
     fn do_close_project(&mut self) {
-        // Stop playback
-        let _ = self.cmd_tx.send(AppCommand::Stop);
         // Drop file watcher
         self.media_watcher = None;
-        // Reset state to return to launch screen
+        self.reset_project_state();
+        self.state.fullscreen_viewer = false;
+        self.sync_sequence_to_engine();
+    }
+
+    /// Wipe all project-scoped state on both the UI and engine sides so the
+    /// next project starts from a clean slate. Used by both new-project and
+    /// close-project flows.
+    fn reset_project_state(&mut self) {
+        // 1. Tell the engine to drop everything it's holding (decoders, caches,
+        //    audio sources, frame buffer pixels). Sequence reset comes after.
+        let _ = self.cmd_tx.send(AppCommand::Stop);
+        let _ = self.cmd_tx.send(AppCommand::ResetEngine);
+
+        // 2. Replace project-scoped data
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
         self.state.media_pool = klipp_media::MediaPool::new();
         self.state.project_path = None;
         self.state.dirty = false;
+
+        // 3. Clear undo/redo history — entries reference clip IDs that no
+        //    longer exist in the new project.
+        self.state.history = crate::history::CommandHistory::new();
+
+        // 4. Clear selection / hover / drag state
         self.state.selected_clip = None;
         self.state.selected_clips.clear();
         self.state.hovered_clip = None;
+        self.state.dragging_media = None;
+        self.state.dragging_audio_keyframe = None;
+        self.state.dragging_video_keyframe = None;
+        self.state.dragging_rubber_band = None;
+        self.state.dragging_bezier_handle = None;
+        self.state.dragging_video_bezier_handle = None;
+        self.state.dragging_fade_handle = None;
+
+        // 5. Reset playback / playhead
         self.state.playback = PlaybackState::Idle;
         let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
         self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
+
+        // 6. Clear thumbnail and filmstrip caches (textures reference dropped media)
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
         self.state.thumbnail_textures.clear();
         self.state.filmstrip_textures.clear();
         self.state.filmstrip_in_progress.clear();
         self.state.filmstrip_queue.clear();
-        self.state.fullscreen_viewer = false;
-        self.sync_sequence_to_engine();
+
+        // 7. Invalidate media usage cache (clip-counts per media item)
+        self.state.media_usage_cache.clear();
+        self.state.media_usage_cache_dirty = true;
+
+        // 8. Clear render-cache range markers (no clips → no ranges)
+        self.state.render_cache_ranges.clear();
     }
 
     fn apply_undo(&mut self) {

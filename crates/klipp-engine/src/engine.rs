@@ -61,6 +61,41 @@ fn eval_with_modifiers(
     }
 }
 
+/// Evaluate the effective clip-level opacity at a timeline position.
+/// Combines the static `BuiltinEffect::Opacity` value with opacity keyframes
+/// and any modifier stack on `ParamId::Opacity`. Returns a value in [0.0, 1.0].
+fn evaluate_clip_opacity(
+    clip: &klipp_timeline::Clip,
+    playhead: klipp_core::Timecode,
+    fps: f64,
+) -> f32 {
+    let opacity_default = clip
+        .builtin_effects
+        .iter()
+        .find_map(|e| match e {
+            klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+            _ => None,
+        })
+        .unwrap_or(1.0);
+    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+    let eval_ctx = klipp_core::EvalContext {
+        clip_time_secs: clip_relative_secs,
+        clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+        timeline_time_secs: playhead.to_secs_f64(),
+        fps,
+        seed: clip.id.0.as_u64_pair().0,
+    };
+    eval_with_modifiers(
+        &clip.opacity_keyframes,
+        &clip.param_modifiers,
+        &klipp_core::ParamId::Opacity,
+        clip_relative_secs,
+        opacity_default,
+        &eval_ctx,
+    )
+    .clamp(0.0, 1.0)
+}
+
 /// Evaluate an effect param with optional modifier stack.
 fn eval_effect_with_modifiers(
     keyframes: &[klipp_core::Keyframe],
@@ -649,6 +684,10 @@ impl PlaybackEngine {
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     (self.repaint_cb)();
                 }
+            }
+
+            AppCommand::ResetEngine => {
+                self.reset_to_idle();
             }
 
             AppCommand::SeekTo(tc) => {
@@ -1397,6 +1436,95 @@ impl PlaybackEngine {
         self.overlay_synth_frame.clear();
     }
 
+    /// Wipe all engine-side state to a clean slate.
+    /// Called on `AppCommand::ResetEngine` (new project / close project).
+    /// After this returns the engine holds no decoders, no cached frames,
+    /// no audio sources, and the frame buffer is blanked.
+    fn reset_to_idle(&mut self) {
+        // Pause clock and stop playback state
+        self.master_clock.pause();
+        self.state = PlaybackState::Idle;
+
+        // Drop all video decoders
+        self.v1_decoder = None;
+        self.clear_all_overlays();
+        if let Some(mut dec) = self.preroll_decoder.take() {
+            dec.stop_detached();
+        }
+        self.preroll_clip_index = None;
+        self.preroll_source_in = 0.0;
+        if let Some(mut dec) = self.transition_decoder.take() {
+            dec.stop_detached();
+        }
+        self.transition_clip_id = None;
+        self.transition_frame_cache = None;
+        self.transition_clip_a_last_frame = None;
+        self.transition_partner_eof = false;
+
+        // Stop audio
+        self.stop_all_audio();
+        self.last_audio_fingerprint = 0;
+
+        // Clear caches (frame, render hot, pre-grade, grade hash)
+        self.cached_pregrade_frame = None;
+        self.frame_cache.clear();
+        self.render_cache_hot.clear();
+        self.last_synth_frame_rendered = None;
+        self.current_grade_hash = 0;
+        self.current_grade_clip_id = None;
+
+        // Reset playhead and per-clip state
+        self.playhead = RationalTime::from_frames(0, self.fps.rate());
+        self.current_clip_index = 0;
+        self.current_track_index = 0;
+        self.current_file = None;
+        self.clip_source_start = 0.0;
+        self.clip_timeline_start = RationalTime::from_frames(0, self.fps.rate());
+        self.clip_speed = 1.0;
+        self.current_source_rotation = 0;
+        self.master_clock.set_speed(1.0);
+
+        // Reset pre-seek background state
+        self.pre_seek_generation = self.pre_seek_generation.wrapping_add(1);
+        self.pre_seek_started = false;
+        if let Ok(mut g) = self.pre_seek_result.lock() {
+            *g = None;
+        }
+
+        // Frame counters
+        self.frames_consumed = 0;
+        self.dropped_frames = 0;
+
+        // Blank the shared frame buffer so the viewer no longer shows old pixels
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.clear();
+            fb.pregrade_data = Arc::new(Vec::new());
+            fb.original_data.clear();
+            fb.unstab_data.clear();
+            fb.scope_data.clear();
+            fb.scope_preview.clear();
+            fb.scope_preview_w = 0;
+            fb.scope_preview_h = 0;
+            fb.scope_texture.clear();
+            fb.scope_texture_w = 0;
+            fb.scope_texture_h = 0;
+            fb.scope_texture_mode = 255;
+            fb.pending_data.clear();
+            fb.pending_width = 0;
+            fb.pending_height = 0;
+            fb.pending_ready = false;
+            fb.render_cache_ranges.clear();
+            fb.generation = fb.generation.wrapping_add(1);
+        }
+
+        info!("Engine reset to idle (project unloaded)");
+        let _ = self.event_tx.send(AppEvent::PlaybackStopped);
+        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        (self.repaint_cb)();
+    }
+
     /// Compute a fingerprint of audio-relevant state at the current playhead.
     /// Includes: which media clips are active, their speed, and audio effect count.
     /// Title/generator clips are excluded (they don't produce audio).
@@ -1850,29 +1978,55 @@ impl PlaybackEngine {
         // Check overlay decoder lifecycle — open/close as playhead moves through overlay clips
         self.update_overlay_decoders(self.playhead);
 
-        // Pop frames from each overlay decoder that has pending data
+        // Pop frames from each overlay decoder using per-clip source timing.
+        // Each overlay clip has its own source_in, timeline_in, and speed, so we compute
+        // the expected source time independently for each overlay decoder.
         let overlay_dec_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
-        for track_idx in overlay_dec_indices {
-            if let Some(dec) = self.overlay_decoders.get(&track_idx) {
-                let mut queue = dec.frame_queue().lock().unwrap();
-                while let Some(f) = queue.front() {
-                    if f.is_eof {
-                        let _ = queue.pop();
-                        break;
+        {
+            let seq = self.sequence.read().unwrap();
+            for track_idx in overlay_dec_indices {
+                // Compute this overlay clip's source time from the current playhead
+                let overlay_source_secs = if let Some(clip_idx) = self.overlay_clips.get(&track_idx) {
+                    seq.tracks.get(track_idx)
+                        .and_then(|t| t.clips.get(*clip_idx))
+                        .map(|clip| {
+                            clip.source_in.to_secs_f64()
+                                + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed
+                        })
+                        .unwrap_or(current_source_secs)
+                } else {
+                    current_source_secs
+                };
+
+                if let Some(dec) = self.overlay_decoders.get(&track_idx) {
+                    let mut queue = dec.frame_queue().lock().unwrap();
+                    let q_len = queue.len();
+                    if q_len > 0 || self.overlay_frames.contains_key(&track_idx) {
+                        debug!("OV track={} q={} has_frame={} src={:.3}s front_pts={:?}",
+                            track_idx, q_len, self.overlay_frames.contains_key(&track_idx),
+                            overlay_source_secs, queue.front().map(|f| f.pts_secs()));
                     }
-                    let pts = f.pts_secs();
-                    if pts <= current_source_secs + frame_tolerance {
-                        let ovf = queue.pop().unwrap();
-                        // Check if next is also due (drop current)
-                        if let Some(next) = queue.front() {
-                            if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
-                                continue;
-                            }
+                    while let Some(f) = queue.front() {
+                        if f.is_eof {
+                            let _ = queue.pop();
+                            break;
                         }
-                        self.overlay_frames.insert(track_idx, ovf);
-                        break;
-                    } else {
-                        break;
+                        let pts = f.pts_secs();
+                        if pts <= overlay_source_secs + frame_tolerance {
+                            let ovf = queue.pop().unwrap();
+                            if let Some(next) = queue.front() {
+                                if !next.is_eof && next.pts_secs() <= overlay_source_secs + frame_tolerance {
+                                    continue;
+                                }
+                            }
+                            // Store the raw overlay frame WITHOUT baking clip opacity in.
+                            // Clip opacity is now applied at composite time so paused
+                            // opacity drags update the visible frame.
+                            self.overlay_frames.insert(track_idx, ovf);
+                            break;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
@@ -1896,17 +2050,25 @@ impl PlaybackEngine {
                 },
             ];
 
-            // Add overlay frames in track order (bottom-to-top)
+            // Add overlay frames in track order (bottom-to-top).
+            // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
+            // This is evaluated each frame so paused opacity drags update the visible composite.
             let seq = self.sequence.read().unwrap();
+            let fps_f64 = self.fps.as_f64();
             let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
             for (track_idx, track) in &overlay_tracks {
                 if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                    if track.opacity > 0.001 {
+                    let clip_opacity = track
+                        .clip_at_timecode(self.playhead)
+                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                        .unwrap_or(1.0);
+                    let effective = track.opacity * clip_opacity;
+                    if effective > 0.001 {
                         layers.push(CompositeLayer {
                             rgba: ov_frame.to_rgba(),
                             width: ov_frame.width,
                             height: ov_frame.height,
-                            opacity: track.opacity,
+                            opacity: effective,
                             blend_mode: klipp_core::BlendMode::Normal,
                         });
                     }
@@ -1914,6 +2076,10 @@ impl PlaybackEngine {
             }
             drop(seq);
 
+            debug!("COMPOSITE layers={} sizes={:?} opacities={:?}",
+                layers.len(),
+                layers.iter().map(|l| format!("{}x{}", l.width, l.height)).collect::<Vec<_>>(),
+                layers.iter().map(|l| format!("{:.2}", l.opacity)).collect::<Vec<_>>());
             if layers.len() == 1 {
                 layers.into_iter().next().unwrap().rgba
             } else {
@@ -2341,29 +2507,10 @@ impl PlaybackEngine {
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let mut rgba = self.title_renderer.render_with_gpu(title_data, res.width, res.height, gpu);
 
-                // Apply opacity + transform keyframes + modifiers to title overlay
+                // Note: clip-level opacity is NOT baked in here. It is applied at
+                // composite time so paused opacity drags update the visible frame
+                // even when no new frame is being rendered.
                 let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                let eval_ctx = klipp_core::EvalContext {
-                    clip_time_secs: clip_relative_secs,
-                    clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-                    timeline_time_secs: playhead.to_secs_f64(),
-                    fps: self.fps.as_f64(),
-                    seed: clip.id.0.as_u64_pair().0,
-                };
-                let opacity_default = clip.builtin_effects.iter()
-                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                    .unwrap_or(1.0);
-                let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
-                };
-                if (opacity - 1.0).abs() > 0.001 {
-                    let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
-                    for pixel in rgba.chunks_exact_mut(4) {
-                        pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
-                    }
-                }
 
                 // Apply transform keyframes + modifiers (position, scale, rotation)
                 let has_transform = !clip.transform_pos_x_keyframes.is_empty()
@@ -2489,7 +2636,7 @@ impl PlaybackEngine {
                 }
                 let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
                 let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                let mut rgba = klipp_core::generator::render_generator(
+                let rgba = klipp_core::generator::render_generator(
                     gen_data,
                     res.width,
                     res.height,
@@ -2497,28 +2644,8 @@ impl PlaybackEngine {
                     total_secs,
                 );
 
-                // Apply clip-level opacity (BuiltinEffect::Opacity) to the generator frame
-                let opacity_default = clip.builtin_effects.iter()
-                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                    .unwrap_or(1.0);
-                let eval_ctx = klipp_core::EvalContext {
-                    clip_time_secs: clip_relative_secs,
-                    clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-                    timeline_time_secs: playhead.to_secs_f64(),
-                    fps: self.fps.as_f64(),
-                    seed: clip.id.0.as_u64_pair().0,
-                };
-                let opacity = match clip.param_modifiers.get(&klipp_core::ParamId::Opacity) {
-                    Some(stack) if !stack.modifiers.is_empty() =>
-                        klipp_core::evaluate_param(&clip.opacity_keyframes, stack, clip_relative_secs, opacity_default, &eval_ctx),
-                    _ => klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_relative_secs, opacity_default),
-                };
-                if (opacity - 1.0).abs() > 0.001 {
-                    let alpha_mul = (opacity * 255.0).clamp(0.0, 255.0) as u8;
-                    for pixel in rgba.chunks_exact_mut(4) {
-                        pixel[3] = ((pixel[3] as u16 * alpha_mul as u16) / 255) as u8;
-                    }
-                }
+                // Note: clip-level opacity is NOT baked in here. It is applied at
+                // composite time so paused opacity drags update the visible frame.
 
                 self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
                     data: crate::types::FrameData::Rgba(rgba),
@@ -4054,27 +4181,42 @@ impl PlaybackEngine {
         if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {
             let mut out = self.post_process_rgba_inner(rgba_arc.as_ref().clone(), w, h);
 
-            // Composite overlay frames (titles etc.) over V1, in track order
-            let overlay_indices: Vec<usize> = {
-                let seq = self.sequence.read().unwrap();
-                seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
-            };
-            for track_idx in overlay_indices {
-                if let Some(ov_frame) = self.overlay_frames.get(&track_idx) {
-                    let ov_rgba = ov_frame.to_rgba();
-                    if ov_rgba.len() == out.len() {
-                        for i in (0..out.len()).step_by(4) {
-                            let sa = ov_rgba[i + 3] as f32 / 255.0;
-                            if sa > 0.001 {
-                                let da = 1.0 - sa;
-                                out[i]     = (ov_rgba[i]     as f32 * sa + out[i]     as f32 * da) as u8;
-                                out[i + 1] = (ov_rgba[i + 1] as f32 * sa + out[i + 1] as f32 * da) as u8;
-                                out[i + 2] = (ov_rgba[i + 2] as f32 * sa + out[i + 2] as f32 * da) as u8;
-                                out[i + 3] = 255;
+            // Composite overlay frames (titles etc.) over V1, in track order.
+            // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
+            // Evaluating here means paused opacity drags update the visible composite.
+            let has_overlays = !self.overlay_frames.is_empty();
+            if has_overlays {
+                use crate::composite::{composite_layers, CompositeLayer};
+                let mut layers = vec![CompositeLayer {
+                    rgba: std::mem::take(&mut out),
+                    width: w,
+                    height: h,
+                    opacity: 1.0,
+                    blend_mode: klipp_core::BlendMode::Normal,
+                }];
+                {
+                    let seq = self.sequence.read().unwrap();
+                    let fps_f64 = self.fps.as_f64();
+                    for (track_idx, track) in &seq.overlay_video_tracks(self.current_track_index) {
+                        if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
+                            let clip_opacity = track
+                                .clip_at_timecode(self.playhead)
+                                .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                                .unwrap_or(1.0);
+                            let effective = track.opacity * clip_opacity;
+                            if effective > 0.001 {
+                                layers.push(CompositeLayer {
+                                    rgba: ov_frame.to_rgba(),
+                                    width: ov_frame.width,
+                                    height: ov_frame.height,
+                                    opacity: effective,
+                                    blend_mode: klipp_core::BlendMode::Normal,
+                                });
                             }
                         }
                     }
                 }
+                out = composite_layers(&layers, w, h);
             }
 
             // Render GPU scope texture from the graded frame
@@ -4103,21 +4245,39 @@ impl PlaybackEngine {
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
-        } else if let Some(first_overlay) = {
-            // Pick the topmost overlay frame (highest track index) in deterministic order.
+        } else if let Some((track_idx, ov_w, ov_h)) = {
+            // Pick the topmost overlay (highest track index) with a frame in deterministic order.
             let overlay_indices: Vec<usize> = {
                 let seq = self.sequence.read().unwrap();
                 seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
             };
-            overlay_indices.iter().rev()
-                .find_map(|ti| self.overlay_frames.get(ti))
+            overlay_indices.iter().rev().find_map(|ti| {
+                self.overlay_frames.get(ti).map(|f| (*ti, f.width, f.height))
+            })
         } {
-            // Case 2: No V1 video, but overlay exists (standalone title)
-            let rgba = first_overlay.to_rgba();
-            let w = first_overlay.width;
-            let h = first_overlay.height;
+            // Case 2: No V1 video, but overlay exists (standalone title/generator).
+            // Apply track + clip opacity by pre-multiplying alpha.
+            let (effective_opacity, ov_rgba) = {
+                let seq = self.sequence.read().unwrap();
+                let fps_f64 = self.fps.as_f64();
+                let track_opacity = seq.tracks.get(track_idx).map(|t| t.opacity).unwrap_or(1.0);
+                let clip_opacity = seq.tracks.get(track_idx)
+                    .and_then(|t| t.clip_at_timecode(self.playhead))
+                    .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                    .unwrap_or(1.0);
+                let effective = track_opacity * clip_opacity;
+                let rgba = self.overlay_frames.get(&track_idx).map(|f| f.to_rgba()).unwrap_or_default();
+                (effective, rgba)
+            };
+            let mut rgba = ov_rgba;
+            if (effective_opacity - 1.0).abs() > 0.001 && effective_opacity >= 0.0 {
+                let mul = (effective_opacity * 255.0).clamp(0.0, 255.0) as u16;
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel[3] = ((pixel[3] as u16 * mul) / 255) as u8;
+                }
+            }
             let mut fb = self.frame_buffer.lock().unwrap();
-            fb.write_frame(rgba, w, h);
+            fb.write_frame(rgba, ov_w, ov_h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
         }
