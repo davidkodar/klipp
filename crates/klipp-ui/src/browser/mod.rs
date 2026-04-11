@@ -37,6 +37,16 @@ struct FileThumbResult {
     height: u32,
 }
 
+/// Result from a file-browser skim-decode worker. Same shape as FileThumbResult
+/// but on a separate channel so the renderer can distinguish "poster frame
+/// arrived" from "live skim frame arrived" without ambiguity.
+struct FileSkimResult {
+    path: std::path::PathBuf,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
 /// Max concurrent file-thumbnail decode workers. Software decode only,
 /// so this is CPU-bounded — keep modest to avoid starving the UI.
 const FILE_THUMB_MAX_INFLIGHT: usize = 4;
@@ -49,6 +59,9 @@ pub(crate) const STILL_EXTENSIONS: &[&str] = &[
 ];
 pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
+];
+pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
+    "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
 ];
 
 fn ext_lower(path: &std::path::Path) -> String {
@@ -94,6 +107,267 @@ fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), St
     }
 
     Ok((rgba, w, h))
+}
+
+/// Read system file-manager bookmarks (KDE Places + GTK plain-text formats)
+/// from the standard XDG locations. Returns a deduped list of `(label, path)`
+/// tuples for valid local directories.
+///
+/// Sources searched, in order:
+/// - `~/.local/share/user-places.xbel` (KDE Plasma)
+/// - `~/.config/gtk-4.0/bookmarks` (modern GTK)
+/// - `~/.config/gtk-3.0/bookmarks` (legacy GTK)
+/// - `~/.gtk-bookmarks` (very old GTK 2)
+///
+/// KDE entries marked `<isSystemItem>true</isSystemItem>` are skipped because
+/// they duplicate the hardcoded XDG bookmarks bar (Home/Desktop/Videos/etc.).
+/// Non-`file://` entries (`remote:/`, `trash:/`, etc.) are skipped.
+/// Paths are percent-decoded before being returned.
+fn read_system_bookmarks() -> Vec<(String, std::path::PathBuf)> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+
+    // ── KDE XBEL ──
+    let xbel = home.join(".local/share/user-places.xbel");
+    if let Ok(contents) = std::fs::read_to_string(&xbel) {
+        parse_kde_xbel(&contents, &mut out, &mut seen);
+    }
+
+    // ── GTK plain-text bookmarks ──
+    for rel in &[
+        ".config/gtk-4.0/bookmarks",
+        ".config/gtk-3.0/bookmarks",
+        ".gtk-bookmarks",
+    ] {
+        let p = home.join(rel);
+        if let Ok(contents) = std::fs::read_to_string(&p) {
+            parse_gtk_bookmarks(&contents, &mut out, &mut seen);
+        }
+    }
+
+    out
+}
+
+/// Parse KDE Places XBEL with light line-based scanning. Avoids pulling in a
+/// full XML parser for one feature. The format we need is regular enough that
+/// this approach works reliably for the bookmarks subset.
+fn parse_kde_xbel(
+    contents: &str,
+    out: &mut Vec<(String, std::path::PathBuf)>,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    // Tracks the current bookmark being parsed across multiple lines.
+    let mut current_href: Option<String> = None;
+    let mut current_title: Option<String> = None;
+    let mut current_is_system = false;
+
+    let flush = |href: &mut Option<String>,
+                 title: &mut Option<String>,
+                 is_system: &mut bool,
+                 out: &mut Vec<(String, std::path::PathBuf)>,
+                 seen: &mut std::collections::HashSet<std::path::PathBuf>| {
+        if let (Some(h), Some(t)) = (href.take(), title.take()) {
+            if !*is_system {
+                if let Some(path) = file_uri_to_path(&h) {
+                    if path.is_dir() && seen.insert(path.clone()) {
+                        out.push((t, path));
+                    }
+                }
+            }
+        }
+        *is_system = false;
+    };
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+
+        // New bookmark — flush the previous one first.
+        if trimmed.starts_with("<bookmark ") {
+            flush(&mut current_href, &mut current_title, &mut current_is_system, out, seen);
+            // Extract href="..."
+            if let Some(start) = trimmed.find("href=\"") {
+                let after = &trimmed[start + 6..];
+                if let Some(end) = after.find('"') {
+                    current_href = Some(after[..end].to_string());
+                }
+            }
+        } else if trimmed.starts_with("<title>") && trimmed.ends_with("</title>") {
+            let inner = &trimmed[7..trimmed.len() - 8];
+            current_title = Some(inner.to_string());
+        } else if trimmed.contains("<isSystemItem>true</isSystemItem>") {
+            current_is_system = true;
+        } else if trimmed == "</bookmark>" {
+            flush(&mut current_href, &mut current_title, &mut current_is_system, out, seen);
+        }
+    }
+    // Flush any final dangling bookmark (in case of malformed XML).
+    flush(&mut current_href, &mut current_title, &mut current_is_system, out, seen);
+}
+
+/// Parse GTK plain-text bookmarks. Format: one URI per line, optional space
+/// + display name override.
+fn parse_gtk_bookmarks(
+    contents: &str,
+    out: &mut Vec<(String, std::path::PathBuf)>,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Split URI from optional display name (separated by single space).
+        let (uri, label_override) = match line.split_once(' ') {
+            Some((uri, label)) => (uri, Some(label.to_string())),
+            None => (line, None),
+        };
+        if let Some(path) = file_uri_to_path(uri) {
+            if !path.is_dir() {
+                continue;
+            }
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let label = label_override.unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string())
+            });
+            out.push((label, path));
+        }
+    }
+}
+
+/// Decode a `file:///...` URI to a PathBuf. Returns None for non-file URIs
+/// (`remote:/`, `trash:/`, etc.) or invalid input. Performs percent-decoding
+/// (`%20` → space, etc.) on the path component.
+fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let path_part = uri.strip_prefix("file://")?;
+    // file:///foo → /foo (the leading slash stays)
+    let decoded = percent_decode(path_part);
+    if decoded.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(decoded))
+}
+
+/// Percent-decode an ASCII percent-encoded string. Treats invalid escapes as
+/// literal characters (lenient — better than dropping the bookmark entirely).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Quick type filter for the Files tab. Persisted in EditingPrefs.
+/// Directories are always shown regardless of filter so the user can navigate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum FileTypeFilter {
+    #[default]
+    All,
+    Video,
+    Audio,
+    Images,
+}
+
+impl FileTypeFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Images => "Images",
+        }
+    }
+
+    /// Check whether a single file entry matches this filter. Directories
+    /// always match (so navigation always works). For files, the extension
+    /// is checked against the corresponding extension constant.
+    pub fn matches(self, entry: &FileEntry) -> bool {
+        if entry.is_dir {
+            return true;
+        }
+        let ext = entry.path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        match self {
+            Self::All => true,
+            Self::Video => VIDEO_EXTENSIONS.contains(&ext.as_str()),
+            Self::Audio => AUDIO_EXTENSIONS.contains(&ext.as_str()),
+            Self::Images => STILL_EXTENSIONS.contains(&ext.as_str()),
+        }
+    }
+}
+
+/// Sort key for the Files tab. Persisted in EditingPrefs.
+/// Directories are always grouped above files regardless of the chosen key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum FileSortBy {
+    #[default]
+    Name,
+    DateModified,
+    Size,
+    Type,
+}
+
+impl FileSortBy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::DateModified => "Date",
+            Self::Size => "Size",
+            Self::Type => "Type",
+        }
+    }
+}
+
+/// Sort a slice of FileEntry in place by the chosen key. Directories are
+/// always grouped above files; the sort key + direction only affect ordering
+/// within the file group (and within the directory group).
+fn sort_file_entries(entries: &mut [FileEntry], by: FileSortBy, ascending: bool) {
+    entries.sort_by(|a, b| {
+        // Dirs always first.
+        match (a.is_dir, b.is_dir) {
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        let ord = match by {
+            FileSortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            FileSortBy::Size => a.size.cmp(&b.size),
+            FileSortBy::DateModified => a.mtime.cmp(&b.mtime),
+            FileSortBy::Type => {
+                let ext_a = a.path.extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let ext_b = b.path.extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                // Tiebreaker: name within the same extension.
+                ext_a.cmp(&ext_b)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            }
+        };
+        if ascending { ord } else { ord.reverse() }
+    });
 }
 
 /// Smart bin filter criteria for auto-filtering media.
@@ -176,6 +450,48 @@ pub struct BrowserPanel {
     file_thumb_tx: crossbeam_channel::Sender<FileThumbResult>,
     file_thumb_rx: crossbeam_channel::Receiver<FileThumbResult>,
     pub file_thumb_size: FileThumbSize,
+    /// Files-tab sort key.
+    pub files_sort_by: FileSortBy,
+    /// Files-tab sort direction (true = ascending).
+    pub files_sort_ascending: bool,
+    /// Files-tab quick type filter (All / Video / Audio / Images).
+    pub files_type_filter: FileTypeFilter,
+    /// User-pinned favorite folders, rendered after the XDG bookmarks bar.
+    /// Persisted via `EditingPrefs::pinned_folders`.
+    pub pinned_folders: Vec<std::path::PathBuf>,
+    /// System file-manager bookmarks read once at startup from KDE Places
+    /// (`~/.local/share/user-places.xbel`) and GTK plain-text bookmarks
+    /// (`~/.config/gtk-{3,4}.0/bookmarks`). Read-only at runtime.
+    pub system_bookmarks: Vec<(String, std::path::PathBuf)>,
+    /// Whether the Files panel currently "owns" keyboard focus. Set to true
+    /// when the user clicks a row, cleared when any text-edit widget takes
+    /// focus (search bar, dialogs, etc.). Controls whether arrow keys / Enter
+    /// / Backspace navigate the file list.
+    pub files_panel_focused: bool,
+    /// Type-to-navigate prefix buffer. Accumulates typed characters within
+    /// a 750ms window; matches the first visible entry whose name starts
+    /// with the buffer (case-insensitive). Cleared on timeout or when the
+    /// files panel loses focus.
+    pub type_ahead_buffer: String,
+    /// Timestamp of the last type-ahead keystroke. Used to expire the
+    /// buffer after 750ms of inactivity.
+    pub type_ahead_last_input: Option<std::time::Instant>,
+    /// Live skim frame for the row currently under the cursor (FCP-style
+    /// hover skimming). Single slot: only one row can be skimmed at a time.
+    /// Cleared when the cursor leaves a video row, which makes the row
+    /// fall back to its cached poster thumbnail.
+    file_skim_texture: Option<(std::path::PathBuf, egui::TextureHandle)>,
+    /// Cached file durations (seconds), populated lazily on first hover.
+    /// Used to map cursor X position to a skim timestamp.
+    file_durations: std::collections::HashMap<std::path::PathBuf, f64>,
+    /// Whether a skim-decode worker thread is currently running. Prevents
+    /// spawning more than one decode at a time (back-pressure).
+    file_skim_in_flight: bool,
+    /// Latest skim request received while a decode was in flight. Picked up
+    /// by `drain_file_skims` when the current decode finishes.
+    file_skim_queued: Option<(std::path::PathBuf, f64)>,
+    file_skim_tx: crossbeam_channel::Sender<FileSkimResult>,
+    file_skim_rx: crossbeam_channel::Receiver<FileSkimResult>,
 }
 
 #[derive(Clone)]
@@ -185,11 +501,15 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
     pub is_media: bool,
+    /// Last-modified time, populated from `metadata().modified()`. May be
+    /// `None` on filesystems that don't track mtime (rare).
+    pub mtime: Option<std::time::SystemTime>,
 }
 
 impl Default for BrowserPanel {
     fn default() -> Self {
         let (file_thumb_tx, file_thumb_rx) = crossbeam_channel::unbounded();
+        let (file_skim_tx, file_skim_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
@@ -217,6 +537,20 @@ impl Default for BrowserPanel {
             file_thumb_tx,
             file_thumb_rx,
             file_thumb_size: FileThumbSize::default(),
+            files_sort_by: FileSortBy::default(),
+            files_sort_ascending: true,
+            files_type_filter: FileTypeFilter::default(),
+            pinned_folders: Vec::new(),
+            system_bookmarks: read_system_bookmarks(),
+            files_panel_focused: false,
+            type_ahead_buffer: String::new(),
+            type_ahead_last_input: None,
+            file_skim_texture: None,
+            file_durations: HashMap::new(),
+            file_skim_in_flight: false,
+            file_skim_queued: None,
+            file_skim_tx,
+            file_skim_rx,
         }
     }
 }
@@ -412,6 +746,75 @@ impl BrowserPanel {
                 });
                 if sort_dir_resp.clicked() {
                     self.media_sort_ascending = !self.media_sort_ascending;
+                }
+
+                ui.add_space(4.0);
+            }
+
+            // Type filter + sort dropdown + direction toggle for Files tab.
+            // Mirrors the Media-tab pattern above. Changing the sort key
+            // re-sorts `files_entries` immediately (no disk read). The type
+            // filter is applied at render time on the existing entries.
+            if *active_tab == BrowserTab::Files {
+                // Type filter dropdown — All / Video / Audio / Images.
+                // Directories are always shown regardless of selection.
+                egui::ComboBox::from_id_salt("files_type_filter")
+                    .selected_text(
+                        egui::RichText::new(self.files_type_filter.label())
+                            .size(10.0)
+                            .color(theme.text_secondary),
+                    )
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.files_type_filter, FileTypeFilter::All, "All");
+                        ui.selectable_value(&mut self.files_type_filter, FileTypeFilter::Video, "Video only");
+                        ui.selectable_value(&mut self.files_type_filter, FileTypeFilter::Audio, "Audio only");
+                        ui.selectable_value(&mut self.files_type_filter, FileTypeFilter::Images, "Images only");
+                    });
+
+                let prev_sort = self.files_sort_by;
+                let prev_asc = self.files_sort_ascending;
+
+                egui::ComboBox::from_id_salt("files_sort")
+                    .selected_text(
+                        egui::RichText::new(self.files_sort_by.label())
+                            .size(10.0)
+                            .color(theme.text_secondary),
+                    )
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.files_sort_by, FileSortBy::Name, "Name");
+                        ui.selectable_value(&mut self.files_sort_by, FileSortBy::DateModified, "Date modified");
+                        ui.selectable_value(&mut self.files_sort_by, FileSortBy::Size, "Size");
+                        ui.selectable_value(&mut self.files_sort_by, FileSortBy::Type, "Type");
+                    });
+
+                let sort_icon = if self.files_sort_ascending {
+                    Icon::SortAscending
+                } else {
+                    Icon::SortDescending
+                };
+                let sort_dir_resp = ui.add(
+                    egui::Button::image(sort_icon.image(12.0).tint(theme.text_dim))
+                        .min_size(egui::vec2(16.0, 24.0))
+                        .frame(false),
+                )
+                .on_hover_text(if self.files_sort_ascending {
+                    "Sort ascending — click to flip"
+                } else {
+                    "Sort descending — click to flip"
+                });
+                if sort_dir_resp.clicked() {
+                    self.files_sort_ascending = !self.files_sort_ascending;
+                }
+
+                // Re-sort the existing entries in place if either changed.
+                if self.files_sort_by != prev_sort || self.files_sort_ascending != prev_asc {
+                    sort_file_entries(
+                        &mut self.files_entries,
+                        self.files_sort_by,
+                        self.files_sort_ascending,
+                    );
                 }
 
                 ui.add_space(4.0);
@@ -673,17 +1076,117 @@ impl BrowserPanel {
             .ok();
     }
 
+    /// Drain skim-decode results from the worker channel into `file_skim_texture`.
+    /// Called at the top of `show_files_tab` each frame. Only the LATEST result
+    /// for the most recently requested path is kept; stale results from old
+    /// hover positions are dropped.
+    fn drain_file_skims(&mut self, ctx: &egui::Context) {
+        let mut last: Option<FileSkimResult> = None;
+        while let Ok(result) = self.file_skim_rx.try_recv() {
+            last = Some(result);
+        }
+        if let Some(result) = last {
+            self.file_skim_in_flight = false;
+            // Only upload if the result is non-empty (decode failures send empty rgba).
+            if !result.rgba.is_empty() && result.width > 0 && result.height > 0 {
+                let pixels: Vec<egui::Color32> = result.rgba
+                    .chunks_exact(4)
+                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                    .collect();
+                let image = egui::ColorImage {
+                    size: [result.width as usize, result.height as usize],
+                    pixels,
+                };
+                let tex = ctx.load_texture(
+                    "file_skim_frame",
+                    image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.file_skim_texture = Some((result.path.clone(), tex));
+            }
+
+            // If a more recent hover request came in while we were decoding,
+            // start the queued one immediately.
+            if let Some((qpath, qtime)) = self.file_skim_queued.take() {
+                self.spawn_file_skim_decode(qpath, qtime, ctx);
+            }
+        }
+    }
+
+    /// Request a skim frame for `path` at `time_secs`. If a decode is already
+    /// in flight, queue the latest request to fire when the current one finishes
+    /// (back-pressure — at most one decode at a time per panel).
+    fn request_file_skim(&mut self, path: std::path::PathBuf, time_secs: f64, ctx: &egui::Context) {
+        if self.file_skim_in_flight {
+            // Replace any older queued request — we only care about the latest.
+            self.file_skim_queued = Some((path, time_secs));
+            return;
+        }
+        self.spawn_file_skim_decode(path, time_secs, ctx);
+    }
+
+    fn spawn_file_skim_decode(&mut self, path: std::path::PathBuf, time_secs: f64, ctx: &egui::Context) {
+        self.file_skim_in_flight = true;
+        let tx = self.file_skim_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("file-skim-worker".into())
+            .spawn(move || {
+                // Decode at FILE_THUMB_MAX_WIDTH for visual quality at the
+                // largest thumb size (Large = 144px). Software decode is
+                // sufficient — frames are tiny.
+                match klipp_engine::generate_thumbnail_at_size(&path, time_secs, FILE_THUMB_MAX_WIDTH) {
+                    Ok((rgba, w, h)) => {
+                        let _ = tx.send(FileSkimResult { path, rgba, width: w, height: h });
+                    }
+                    Err(e) => {
+                        tracing::debug!("file skim decode failed for {:?} @ {:.2}s: {}", path, time_secs, e);
+                        // Send an empty result so drain_file_skims clears in_flight.
+                        let _ = tx.send(FileSkimResult { path, rgba: Vec::new(), width: 0, height: 0 });
+                    }
+                }
+                ctx.request_repaint();
+            })
+            .ok();
+    }
+
+    /// Lazily probe a video file's duration via ffmpeg's format header.
+    /// Cached in `file_durations` so subsequent hovers are free.
+    /// Returns None if the file isn't probable (audio, broken, etc.).
+    fn ensure_file_duration(&mut self, path: &std::path::Path) -> Option<f64> {
+        if let Some(d) = self.file_durations.get(path) {
+            return Some(*d);
+        }
+        // probe_media_header is fast (~10–50ms), acceptable as a one-time
+        // hitch on first hover per file.
+        match klipp_engine::probe_media_header(path) {
+            Ok(info) => {
+                if let Some(d) = info.duration_secs {
+                    if d > 0.0 {
+                        self.file_durations.insert(path.to_path_buf(), d);
+                        return Some(d);
+                    }
+                }
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
     fn show_files_tab(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
 
         // Drain any completed thumbnail results into textures.
         self.drain_file_thumbs(ui.ctx());
+        // Drain any completed skim-frame results into the live skim texture.
+        self.drain_file_skims(ui.ctx());
 
         // Check for async directory read result
         if let Some(ref rx) = self.files_receiver {
             match rx.try_recv() {
-                Ok(Ok(entries)) => {
+                Ok(Ok(mut entries)) => {
+                    sort_file_entries(&mut entries, self.files_sort_by, self.files_sort_ascending);
                     self.files_entries = entries;
                     self.files_loading = false;
                     self.files_error = None;
@@ -880,6 +1383,87 @@ impl BrowserPanel {
                     }
                 }
             }
+
+            // ── User-pinned favorites ──
+            // Rendered inline after the XDG bookmarks. The Star prefix
+            // distinguishes them visually. Right-click any pinned button to
+            // remove it from the favorites list.
+            //
+            // We snapshot `self.pinned_folders` into a local Vec so the
+            // iteration doesn't borrow `self`, freeing us to call
+            // `self.navigate_files_to(...)` and mutate `self.pinned_folders`
+            // inside the loop body.
+            let pinned_snapshot: Vec<std::path::PathBuf> = self.pinned_folders.clone();
+            let mut pending_unpin: Option<std::path::PathBuf> = None;
+            for path in &pinned_snapshot {
+                let is_current = *path == self.files_current_path;
+                let display_name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(format!("\u{2605} {}", display_name)).size(9.0)
+                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                    )
+                    .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
+                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .rounding(3.0),
+                )
+                .on_hover_text(path.to_string_lossy().to_string());
+                if btn.clicked() {
+                    self.navigate_files_to(path.clone());
+                }
+                btn.context_menu(|ui| {
+                    if ui.button("Remove from Favorites").clicked() {
+                        pending_unpin = Some(path.clone());
+                        ui.close_menu();
+                    }
+                });
+            }
+            // Apply unpin after the loop so we don't mutate `pinned_snapshot`'s
+            // backing store (`self.pinned_folders`) mid-iteration. Persistence
+            // is handled by the diff check in `render_browser_panel`.
+            if let Some(target) = pending_unpin {
+                self.pinned_folders.retain(|p| p != &target);
+            }
+
+            // ── System bookmarks (KDE Places + GTK) ──
+            // Rendered after the user-pinned favorites. Skipped if the path
+            // is already shown elsewhere in the bar (XDG default or pinned).
+            // The visual style matches the other bookmark buttons exactly so
+            // they feel native — no special icon prefix.
+            //
+            // Snapshot into locals so the iteration doesn't borrow `self`,
+            // freeing us to call `self.navigate_files_to(...)` inside the loop.
+            let xdg_paths: Vec<std::path::PathBuf> = bookmarks
+                .iter()
+                .filter_map(|(_, dir)| dir.clone())
+                .collect();
+            let system_snapshot: Vec<(String, std::path::PathBuf)> = self.system_bookmarks.clone();
+            let pinned_paths: Vec<std::path::PathBuf> = self.pinned_folders.clone();
+            for (label, path) in &system_snapshot {
+                // Dedupe against XDG defaults and user pins.
+                if xdg_paths.iter().any(|p| p == path) {
+                    continue;
+                }
+                if pinned_paths.iter().any(|p| p == path) {
+                    continue;
+                }
+                let is_current = *path == self.files_current_path;
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(label).size(9.0)
+                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                    )
+                    .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
+                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .rounding(3.0),
+                )
+                .on_hover_text(path.to_string_lossy().to_string());
+                if btn.clicked() {
+                    self.navigate_files_to(path.clone());
+                }
+            }
         });
 
         ui.add_space(4.0);
@@ -892,7 +1476,9 @@ impl BrowserPanel {
 
         // ── File listing ──
         let search = self.search_query.to_lowercase();
+        let type_filter = self.files_type_filter;
         let filtered: Vec<&FileEntry> = self.files_entries.iter()
+            .filter(|e| type_filter.matches(e))
             .filter(|e| search.is_empty() || e.name.to_lowercase().contains(&search))
             .collect();
 
@@ -913,6 +1499,19 @@ impl BrowserPanel {
         let mut pending_open_in_source: Option<Vec<std::path::PathBuf>> = None;
         // Right-click → "Refresh folder" — re-read current dir + drop thumbs.
         let mut pending_refresh = false;
+        // Right-click → "Pin / Unpin Favorites" — directory path to toggle.
+        let mut pending_pin_toggle: Option<std::path::PathBuf> = None;
+        // Hover skim — latest skim decode request captured during the row loop.
+        // Tuple: (path, time_secs). Applied after the loop to avoid borrow conflicts.
+        let mut pending_skim_request: Option<(std::path::PathBuf, f64)> = None;
+        // Hover skim — duration to probe (lazy, on first hover per file).
+        // Set inside the loop, applied after the loop. Sync probe is OK because
+        // it's a one-time hitch per file (~10–50ms).
+        let mut pending_duration_probe: Option<std::path::PathBuf> = None;
+        // True if any video row is currently being hovered with skim active.
+        // Used to clear `file_skim_texture` when the cursor leaves all video
+        // rows, so the rows revert to their cached poster thumbnails.
+        let mut any_video_row_hovered = false;
         // Capture before the closure — `self` is borrowed inside via `filtered`.
         let thumb_size = self.file_thumb_size;
         let row_h = thumb_size.row_height();
@@ -924,7 +1523,139 @@ impl BrowserPanel {
             FileThumbSize::Medium => 12.0,
             FileThumbSize::Large => 13.0,
         };
-        egui::ScrollArea::vertical().id_salt("files_scroll").show(ui, |ui| {
+
+        // ── Keyboard navigation ──
+        // Only fires when the files panel has focus (set on row click below)
+        // AND no text-edit widget anywhere has focus (search bar, dialogs, etc.).
+        // Mutates `self.files_selected` + `self.files_selection_anchor`
+        // immediately, and stashes `scroll_to_index` so the row loop can call
+        // `scroll_to_rect` for the new selection on the same frame.
+        let text_edit_active = ui.ctx().wants_keyboard_input();
+        if text_edit_active {
+            self.files_panel_focused = false;
+            // Reset type-ahead so the buffer doesn't carry over from a
+            // search-bar interaction back to the file list.
+            self.type_ahead_buffer.clear();
+            self.type_ahead_last_input = None;
+        }
+        let mut scroll_to_index: Option<usize> = None;
+        if self.files_panel_focused && !text_edit_active && !filtered.is_empty() {
+            let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back) = ui.input(|i| (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::Home),
+                i.key_pressed(egui::Key::End),
+                i.key_pressed(egui::Key::PageDown),
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Backspace),
+            ));
+            // Find current anchor's index in `filtered`. If the anchor isn't
+            // in the visible list (e.g. user just enabled a filter that hides
+            // it), fall back to None so the next move starts from the top.
+            let cur_idx = self.files_selection_anchor.as_ref()
+                .and_then(|a| filtered.iter().position(|e| &e.path == a));
+
+            let last = filtered.len() - 1;
+            let page = 10usize;
+            let mut new_idx: Option<usize> = None;
+
+            if k_down {
+                new_idx = Some(match cur_idx { Some(i) if i < last => i + 1, _ => 0 });
+            } else if k_up {
+                new_idx = Some(match cur_idx { Some(i) if i > 0 => i - 1, Some(_) => 0, None => last });
+            } else if k_home {
+                new_idx = Some(0);
+            } else if k_end {
+                new_idx = Some(last);
+            } else if k_pgdn {
+                new_idx = Some(match cur_idx { Some(i) => (i + page).min(last), None => 0 });
+            } else if k_pgup {
+                new_idx = Some(match cur_idx { Some(i) => i.saturating_sub(page), None => 0 });
+            }
+
+            if let Some(idx) = new_idx {
+                let path = filtered[idx].path.clone();
+                self.files_selected.clear();
+                self.files_selected.insert(path.clone());
+                self.files_selection_anchor = Some(path);
+                scroll_to_index = Some(idx);
+            }
+
+            // ── Type-to-navigate ──
+            // Read any Text events this frame (typed characters from the
+            // keyboard or IME). Append to the buffer if the user is still
+            // typing within the 750ms window; otherwise reset and start fresh.
+            // Then jump to the first visible entry whose name starts with the
+            // buffer (case-insensitive). Finder/Files-style behavior.
+            let typed: String = ui.input(|i| {
+                i.events.iter()
+                    .filter_map(|e| if let egui::Event::Text(s) = e { Some(s.clone()) } else { None })
+                    .collect()
+            });
+            if !typed.is_empty() {
+                // Expire the buffer if too long has passed since the last keystroke.
+                let now = std::time::Instant::now();
+                let expired = self.type_ahead_last_input
+                    .map(|t| now.duration_since(t) > std::time::Duration::from_millis(750))
+                    .unwrap_or(true);
+                if expired {
+                    self.type_ahead_buffer.clear();
+                }
+                self.type_ahead_buffer.push_str(&typed);
+                self.type_ahead_last_input = Some(now);
+
+                // Find first visible entry whose name starts with the buffer.
+                let needle = self.type_ahead_buffer.to_lowercase();
+                if let Some((idx, entry)) = filtered.iter().enumerate()
+                    .find(|(_, e)| e.name.to_lowercase().starts_with(&needle))
+                {
+                    let path = entry.path.clone();
+                    self.files_selected.clear();
+                    self.files_selected.insert(path.clone());
+                    self.files_selection_anchor = Some(path);
+                    scroll_to_index = Some(idx);
+                }
+                // No match → leave selection alone (no flash, no error).
+                // Buffer still updated so a subsequent keystroke can extend it.
+            }
+
+            // Enter: activate the current anchor (or first row if none).
+            if k_enter {
+                let activate_idx = cur_idx.or(Some(0));
+                if let Some(idx) = activate_idx {
+                    let entry = filtered[idx];
+                    if entry.is_dir {
+                        pending_navigate = Some(entry.path.clone());
+                    } else if entry.is_media {
+                        cmds.push(AppCommand::LoadMediaFile {
+                            path: entry.path.clone(),
+                            media_id: klipp_core::MediaId::new(),
+                        });
+                    }
+                }
+            }
+
+            // Backspace: go up one directory (same as the back button).
+            if k_back {
+                if let Some(parent) = self.files_current_path.parent() {
+                    pending_navigate = Some(parent.to_path_buf());
+                }
+            }
+        }
+
+        // Reserve vertical space for the status bar at the bottom of the panel.
+        // The scroll area is capped to (available - status_h) and pinned to its
+        // max size via auto_shrink([false, false]), so the status bar always
+        // sits at the bottom regardless of how few/many file rows there are.
+        let status_h = 22.0_f32;
+        let scroll_h = (ui.available_height() - status_h).max(0.0);
+
+        egui::ScrollArea::vertical()
+            .id_salt("files_scroll")
+            .max_height(scroll_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
             // Error state
             if let Some(ref err) = self.files_error {
                 let err_text = err.clone();
@@ -967,8 +1698,53 @@ impl BrowserPanel {
             for (row_idx, entry) in filtered.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), row_h),
-                    egui::Sense::click(), // egui::Sense::click() captures both primary and secondary
+                    // click_and_drag sense captures click (single + double),
+                    // secondary click (right-click → context menu), AND the
+                    // drag-started event used to begin a cross-panel drag.
+                    egui::Sense::click_and_drag(),
                 );
+
+                // Keyboard navigation just moved selection to this row →
+                // scroll it into view (centered) on this frame.
+                if Some(row_idx) == scroll_to_index {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                }
+
+                // Drag-and-drop start: when the user begins dragging a row,
+                // populate the global drag_drop state with the file path(s)
+                // so the timeline / media tab can detect the drop on hover.
+                //
+                // Multi-file logic mirrors the right-click context menu:
+                // if the dragged row is part of a multi-selection, drag all
+                // selected media files; otherwise drag just this row.
+                // Directories are NOT draggable (no semantic for them).
+                if resp.drag_started() && !entry.is_dir {
+                    let drag_paths: Vec<std::path::PathBuf> = if self.files_selected.contains(&entry.path)
+                        && self.files_selected.len() > 1
+                    {
+                        filtered.iter()
+                            .filter(|e| !e.is_dir && e.is_media && self.files_selected.contains(&e.path))
+                            .map(|e| e.path.clone())
+                            .collect()
+                    } else if entry.is_media {
+                        vec![entry.path.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    if !drag_paths.is_empty() {
+                        state.drag_drop.begin(crate::drag_drop::DragPayload::FilePaths {
+                            paths: drag_paths,
+                        });
+                    }
+                }
+                // Update cursor position while a drag is in progress so the
+                // floating ghost (rendered globally in app.rs) follows the
+                // pointer.
+                if state.drag_drop.is_active() {
+                    if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                        state.drag_drop.update_pos(p);
+                    }
+                }
 
                 // Background priority: selected > hovered > none.
                 let is_selected = self.files_selected.contains(&entry.path);
@@ -997,7 +1773,16 @@ impl BrowserPanel {
 
                 let mut painted_thumb = false;
                 if !entry.is_dir && is_visual_media(&entry.path) {
-                    if let Some(tex) = self.file_thumb_textures.get(&entry.path) {
+                    // Texture priority: live skim frame for THIS path > cached
+                    // poster thumbnail. The skim texture is single-slot, so at
+                    // most one row at a time can show a live frame.
+                    let tex_to_use: Option<&egui::TextureHandle> = self.file_skim_texture
+                        .as_ref()
+                        .filter(|(p, _)| *p == entry.path)
+                        .map(|(_, t)| t)
+                        .or_else(|| self.file_thumb_textures.get(&entry.path));
+
+                    if let Some(tex) = tex_to_use {
                         let sz = tex.size();
                         let img_aspect = sz[0] as f32 / sz[1].max(1) as f32;
                         let box_aspect = thumb_box.width() / thumb_box.height();
@@ -1028,6 +1813,33 @@ impl BrowserPanel {
                     } else if ui.is_rect_visible(rect) {
                         // Visible row that wants a thumb but doesn't have one — request it.
                         thumb_spawn_requests.push(entry.path.clone());
+                    }
+
+                    // ── Hover skimming ──
+                    // Only for VIDEO files (audio + still images don't have a
+                    // duration to skim through). Gated on the global toolbar
+                    // toggle `state.skimming_enabled`.
+                    let ext = entry.path.extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let is_video = VIDEO_EXTENSIONS.contains(&ext.as_str());
+                    if is_video && state.skimming_enabled && !state.has_modal_open() {
+                        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                            if thumb_box.contains(pos) {
+                                any_video_row_hovered = true;
+                                // Need duration to map cursor X → time. Cached.
+                                if let Some(dur) = self.file_durations.get(&entry.path).copied() {
+                                    let frac = ((pos.x - thumb_box.min.x) / thumb_box.width())
+                                        .clamp(0.0, 1.0);
+                                    let t = dur * frac as f64;
+                                    pending_skim_request = Some((entry.path.clone(), t));
+                                } else if pending_duration_probe.is_none() {
+                                    // First hover — defer the probe to after the
+                                    // loop so we can call self.ensure_file_duration.
+                                    pending_duration_probe = Some(entry.path.clone());
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1101,6 +1913,14 @@ impl BrowserPanel {
                     }
                 }
 
+                // Any primary click on a row gives the files panel keyboard
+                // focus, so subsequent arrow keys / Enter / Backspace navigate
+                // the file list. Cleared automatically when any text-edit
+                // widget takes focus elsewhere.
+                if resp.clicked() || resp.double_clicked() {
+                    self.files_panel_focused = true;
+                }
+
                 // Single primary click: navigate into a directory, OR update
                 // the file selection (with modifier-aware behavior).
                 if resp.clicked() {
@@ -1156,6 +1976,9 @@ impl BrowserPanel {
                     .collect();
                 let menu_path = entry.path.clone();
                 let menu_is_dir = entry.is_dir;
+                // Snapshot of "is this directory currently pinned" so the menu
+                // closure can read it without borrowing self.pinned_folders.
+                let menu_is_pinned = entry.is_dir && self.pinned_folders.iter().any(|p| p == &entry.path);
                 resp.context_menu(|ui| {
                     // ── Import actions (only for media files) ──
                     if menu_count > 0 {
@@ -1224,6 +2047,19 @@ impl BrowserPanel {
                         }
                     }
 
+                    // ── Pin / Unpin Favorites (directories only) ──
+                    if menu_is_dir {
+                        let pin_label = if menu_is_pinned {
+                            "Unpin from Favorites"
+                        } else {
+                            "Pin to Favorites"
+                        };
+                        if ui.button(pin_label).clicked() {
+                            pending_pin_toggle = Some(menu_path.clone());
+                            ui.close_menu();
+                        }
+                    }
+
                     // ── Copy file path ──
                     if ui.button("Copy File Path").clicked() {
                         ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
@@ -1249,6 +2085,66 @@ impl BrowserPanel {
                 resp.on_hover_text(entry.path.to_string_lossy().as_ref());
             }
         });
+
+        // ── Status bar (bottom of files panel) ──
+        // MUST come BEFORE the deferred-mutation block below, because the
+        // status bar reads `filtered` which borrows `self.files_entries`.
+        // Capture all the counts/sizes into locals first so the borrow on
+        // `filtered` is dropped before any `self.navigate_files_to(...)` call.
+        let total_count = self.files_entries.len();
+        let visible_count = filtered.len();
+        let selected_count = self.files_selected.len();
+        let selected_size: u64 = filtered.iter()
+            .filter(|e| !e.is_dir && self.files_selected.contains(&e.path))
+            .map(|e| e.size)
+            .sum();
+        let is_loading = self.files_loading;
+        let has_error = self.files_error.is_some();
+
+        let (status_rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), status_h),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(status_rect, 0.0, theme.bg_deep);
+        ui.painter().hline(
+            status_rect.x_range(),
+            status_rect.min.y,
+            egui::Stroke::new(0.5, theme.border),
+        );
+
+        // Build status text. Format follows Finder/Files conventions:
+        //   "247 items"                                  (default)
+        //   "187 of 247 items"                           (filter or search active)
+        //   "247 items  ·  5 selected  ·  312.4 MB"      (with selection)
+        let status_text = if is_loading {
+            "Loading\u{2026}".to_string()
+        } else if has_error {
+            // Error state already shown inside the scroll area; keep status bar empty.
+            String::new()
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            if visible_count != total_count {
+                parts.push(format!("{} of {} items", visible_count, total_count));
+            } else {
+                parts.push(format!("{} items", total_count));
+            }
+            if selected_count > 0 {
+                parts.push(format!("{} selected", selected_count));
+                if selected_size > 0 {
+                    parts.push(format_file_size(selected_size));
+                }
+            }
+            parts.join("  \u{00B7}  ")
+        };
+        if !status_text.is_empty() {
+            ui.painter().text(
+                egui::pos2(status_rect.min.x + 8.0, status_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &status_text,
+                egui::FontId::proportional(10.0),
+                theme.text_dim,
+            );
+        }
 
         // Apply deferred mutations now that the ScrollArea closure has released
         // its borrow on `self.files_entries`.
@@ -1337,6 +2233,35 @@ impl BrowserPanel {
         // Right-click → refresh current folder.
         if pending_refresh {
             self.refresh_files();
+        }
+
+        // Right-click → toggle pin/unpin a directory in the favorites list.
+        // Persistence is handled by the diff check in `render_browser_panel`.
+        if let Some(target) = pending_pin_toggle {
+            if let Some(idx) = self.pinned_folders.iter().position(|p| p == &target) {
+                self.pinned_folders.remove(idx);
+            } else {
+                self.pinned_folders.push(target);
+            }
+        }
+
+        // Hover skim — apply requests captured during the row loop.
+        // 1. If a duration probe is needed (first hover), do it synchronously
+        //    here. The next frame will pick up the cached duration and the
+        //    actual skim request will fire.
+        if let Some(probe_path) = pending_duration_probe {
+            let _ = self.ensure_file_duration(&probe_path);
+        }
+        // 2. If the cursor is on a video row with a known duration, request
+        //    a skim decode at the computed timestamp.
+        if let Some((skim_path, skim_time)) = pending_skim_request {
+            let ctx = ui.ctx().clone();
+            self.request_file_skim(skim_path, skim_time, &ctx);
+        }
+        // 3. If no video row was hovered this frame, drop the live skim
+        //    texture so the previously-skimmed row reverts to its poster.
+        if !any_video_row_hovered && self.file_skim_texture.is_some() {
+            self.file_skim_texture = None;
         }
 
         cmds
@@ -1459,16 +2384,12 @@ fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>,
             is_dir,
             size: if is_dir { 0 } else { meta.len() },
             is_media,
+            mtime: meta.modified().ok(),
         });
     }
 
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
-    });
+    // Note: sorting is applied by the caller after the worker returns,
+    // because the sort key is part of UI state and the worker doesn't see it.
 
     Ok(entries)
 }
@@ -1671,6 +2592,224 @@ mod tests {
         // Default must be Medium (chosen for balance — Small was the original
         // post-Phase-A look and the user found it too small to be useful).
         assert_eq!(super::FileThumbSize::default(), medium);
+    }
+
+    #[test]
+    fn percent_decode_basic_and_escapes() {
+        assert_eq!(super::percent_decode("/home/david"), "/home/david");
+        assert_eq!(super::percent_decode("/home/david/My%20Documents"), "/home/david/My Documents");
+        // Multiple escapes
+        assert_eq!(super::percent_decode("a%20b%20c"), "a b c");
+        // Lone percent treated as literal (lenient parsing)
+        assert_eq!(super::percent_decode("100%"), "100%");
+        // Invalid hex digits → literal
+        assert_eq!(super::percent_decode("%ZZ"), "%ZZ");
+    }
+
+    #[test]
+    fn file_uri_to_path_handles_file_scheme_only() {
+        use std::path::PathBuf;
+        assert_eq!(
+            super::file_uri_to_path("file:///home/david/Pictures"),
+            Some(PathBuf::from("/home/david/Pictures"))
+        );
+        // Percent-decoded
+        assert_eq!(
+            super::file_uri_to_path("file:///home/david/My%20Folder"),
+            Some(PathBuf::from("/home/david/My Folder"))
+        );
+        // Non-file schemes are rejected
+        assert_eq!(super::file_uri_to_path("remote:/"), None);
+        assert_eq!(super::file_uri_to_path("trash:/"), None);
+        assert_eq!(super::file_uri_to_path("recentlyused:/files"), None);
+        assert_eq!(super::file_uri_to_path(""), None);
+        assert_eq!(super::file_uri_to_path("file://"), None);
+    }
+
+    #[test]
+    fn parse_kde_xbel_skips_system_items_and_non_file_uris() {
+        use std::collections::HashSet;
+        // Use a real existing directory so the `path.is_dir()` check passes
+        // (the parser only emits real, accessible directories).
+        let tmp = std::env::temp_dir().join(format!("klipp_test_xbel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project_dir = tmp.join("Project Folder");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let xbel = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<xbel>
+ <bookmark href="file:///home/david">
+  <title>Home</title>
+  <info>
+   <metadata owner="http://www.kde.org">
+    <isSystemItem>true</isSystemItem>
+   </metadata>
+  </info>
+ </bookmark>
+ <bookmark href="remote:/">
+  <title>Network</title>
+ </bookmark>
+ <bookmark href="file://{}">
+  <title>Project</title>
+ </bookmark>
+</xbel>"#,
+            project_dir.display()
+        );
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        super::parse_kde_xbel(&xbel, &mut out, &mut seen);
+
+        // Home is system → skipped. Network is non-file → skipped.
+        // Project is the only real entry.
+        assert_eq!(out.len(), 1, "expected exactly one entry, got {:?}", out);
+        assert_eq!(out[0].0, "Project");
+        assert_eq!(out[0].1, project_dir);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_gtk_bookmarks_handles_format_variants() {
+        use std::collections::HashSet;
+        let tmp = std::env::temp_dir().join(format!("klipp_test_gtk_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir_a = tmp.join("Folder A");
+        let dir_b = tmp.join("FolderB");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        // dir_a uses an explicit display name override; dir_b uses the
+        // default (last path component). Also includes a comment, a blank
+        // line, and a non-existent path that should be filtered out.
+        let contents = format!(
+            "# a comment line\n\
+             \n\
+             file://{}/Folder%20A My Custom Name\n\
+             file://{}/FolderB\n\
+             file:///nonexistent/should/be/skipped\n",
+            tmp.display(),
+            tmp.display()
+        );
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        super::parse_gtk_bookmarks(&contents, &mut out, &mut seen);
+
+        assert_eq!(out.len(), 2, "expected 2 entries, got {:?}", out);
+        // First entry: explicit name + percent-decoded path
+        assert_eq!(out[0].0, "My Custom Name");
+        assert_eq!(out[0].1, dir_a);
+        // Second entry: default name from path
+        assert_eq!(out[1].0, "FolderB");
+        assert_eq!(out[1].1, dir_b);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn file_type_filter_matches_correct_extensions_and_keeps_dirs() {
+        use std::path::PathBuf;
+        let mk = |name: &str, is_dir: bool| super::FileEntry {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            is_dir,
+            size: 0,
+            is_media: false,
+            mtime: None,
+        };
+
+        let dir = mk("subfolder", true);
+        let video = mk("clip.mp4", false);
+        let audio = mk("song.mp3", false);
+        let image = mk("photo.jpg", false);
+        let text = mk("readme.txt", false);
+
+        // All filter — everything passes (including non-media .txt).
+        assert!(super::FileTypeFilter::All.matches(&dir));
+        assert!(super::FileTypeFilter::All.matches(&video));
+        assert!(super::FileTypeFilter::All.matches(&audio));
+        assert!(super::FileTypeFilter::All.matches(&image));
+        assert!(super::FileTypeFilter::All.matches(&text));
+
+        // Video filter — directories always pass; only video extensions match.
+        assert!(super::FileTypeFilter::Video.matches(&dir), "dirs always visible");
+        assert!(super::FileTypeFilter::Video.matches(&video));
+        assert!(!super::FileTypeFilter::Video.matches(&audio));
+        assert!(!super::FileTypeFilter::Video.matches(&image));
+        assert!(!super::FileTypeFilter::Video.matches(&text));
+
+        // Audio filter
+        assert!(super::FileTypeFilter::Audio.matches(&dir));
+        assert!(!super::FileTypeFilter::Audio.matches(&video));
+        assert!(super::FileTypeFilter::Audio.matches(&audio));
+        assert!(!super::FileTypeFilter::Audio.matches(&image));
+        assert!(!super::FileTypeFilter::Audio.matches(&text));
+
+        // Images filter
+        assert!(super::FileTypeFilter::Images.matches(&dir));
+        assert!(!super::FileTypeFilter::Images.matches(&video));
+        assert!(!super::FileTypeFilter::Images.matches(&audio));
+        assert!(super::FileTypeFilter::Images.matches(&image));
+        assert!(!super::FileTypeFilter::Images.matches(&text));
+
+        // Default filter is All.
+        assert_eq!(super::FileTypeFilter::default(), super::FileTypeFilter::All);
+    }
+
+    #[test]
+    fn sort_file_entries_keeps_dirs_first_and_respects_key() {
+        use std::path::PathBuf;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let mk = |name: &str, is_dir: bool, size: u64, mtime_secs: u64| super::FileEntry {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            is_dir,
+            size,
+            is_media: false,
+            mtime: Some(UNIX_EPOCH + Duration::from_secs(mtime_secs)),
+        };
+
+        // Mixed dirs + files in random order.
+        let mut entries = vec![
+            mk("zebra.mp4", false, 5_000, 100),
+            mk("alpha.txt", false, 1_000, 300),
+            mk("bravo_dir", true, 0, 200),
+            mk("alpha_dir", true, 0, 50),
+            mk("middle.png", false, 2_500, 200),
+        ];
+
+        // Sort by name ascending. Dirs first (alpha order), then files (alpha order).
+        super::sort_file_entries(&mut entries, super::FileSortBy::Name, true);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha_dir", "bravo_dir", "alpha.txt", "middle.png", "zebra.mp4"]);
+
+        // Sort by size descending. Dirs still first.
+        super::sort_file_entries(&mut entries, super::FileSortBy::Size, false);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names[0], "alpha_dir");
+        assert_eq!(names[1], "bravo_dir");
+        // Files: 5000, 2500, 1000
+        assert_eq!(&names[2..], &["zebra.mp4", "middle.png", "alpha.txt"]);
+
+        // Sort by date modified ascending. Dirs first by their own mtime.
+        super::sort_file_entries(&mut entries, super::FileSortBy::DateModified, true);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // dirs sorted by mtime: alpha_dir(50), bravo_dir(200)
+        // files sorted by mtime: zebra(100), middle(200), alpha(300)
+        assert_eq!(names, vec!["alpha_dir", "bravo_dir", "zebra.mp4", "middle.png", "alpha.txt"]);
+
+        // Sort by type. Files grouped by extension; tiebreak on name.
+        super::sort_file_entries(&mut entries, super::FileSortBy::Type, true);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // dirs first, then files in extension order (mp4, png, txt)
+        assert_eq!(names[0], "alpha_dir");
+        assert_eq!(names[1], "bravo_dir");
+        assert_eq!(&names[2..], &["zebra.mp4", "middle.png", "alpha.txt"]);
     }
 
     #[test]

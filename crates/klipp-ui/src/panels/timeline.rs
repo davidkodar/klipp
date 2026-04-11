@@ -470,6 +470,7 @@ impl TimelinePanel {
             );
 
             self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
+            self.handle_file_browser_dnd_over_track(ui, state, track_idx, track_kind, track_rect, &painter, &mut cmds);
 
             self.handle_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
             self.handle_audio_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
@@ -1070,6 +1071,103 @@ impl TimelinePanel {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Drop handler for `DragPayload::FilePaths` — files dragged from the
+    /// FILES browser tab. Files are imported (LoadMediaFile) AND appended to
+    /// the dropped track in one shot. Multi-file drops are filtered by
+    /// extension so only compatible files land on the target track:
+    /// audio files only on audio tracks, video/image files only on video
+    /// tracks. Mixed selections drop the compatible subset and show a toast
+    /// for the rest.
+    fn handle_file_browser_dnd_over_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_idx: usize,
+        track_kind: TrackKind,
+        track_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let paths_snapshot: Option<Vec<std::path::PathBuf>> = match &state.drag_drop.payload {
+            Some(crate::drag_drop::DragPayload::FilePaths { paths }) => Some(paths.clone()),
+            _ => None,
+        };
+        let Some(paths) = paths_snapshot else { return; };
+
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let any_down = ui.input(|i| i.pointer.any_down());
+        let Some(pos) = hover_pos else { return; };
+        if !track_rect.contains(pos) {
+            return;
+        }
+
+        // Classify each dragged path against the target track kind.
+        // Audio tracks accept .wav/.mp3/etc.; video tracks accept video and
+        // still-image files (stills become a still clip on a video track).
+        let compatible: Vec<std::path::PathBuf> = paths.iter()
+            .filter(|p| {
+                let ext = p.extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let is_video = crate::browser::VIDEO_EXTENSIONS.contains(&ext.as_str());
+                let is_audio = crate::browser::AUDIO_EXTENSIONS.contains(&ext.as_str());
+                let is_still = crate::browser::STILL_EXTENSIONS.contains(&ext.as_str());
+                match track_kind {
+                    TrackKind::Audio => is_audio,
+                    _ => is_video || is_still,
+                }
+            })
+            .cloned()
+            .collect();
+
+        if compatible.is_empty() {
+            // None of the dragged files match this track kind — paint a red
+            // "rejected" outline so the user understands why nothing happened.
+            painter.rect_stroke(
+                track_rect,
+                0.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 60, 60)),
+            );
+            // On release we still need to clear the payload — but only if
+            // pointer is over THIS rejecting track. Other handlers may still
+            // be matching the same payload on other tracks; let them claim it.
+            return;
+        }
+
+        // Compatible drop — paint blue accept outline.
+        painter.rect_stroke(
+            track_rect,
+            0.0,
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+        );
+
+        if !any_down {
+            // Mouse released over this track — claim the drop.
+            state.drag_drop.end();
+            let imported_count = compatible.len();
+            let skipped = paths.len() - imported_count;
+            for path in compatible {
+                let media_id = klipp_core::MediaId::new();
+                cmds.push(AppCommand::LoadMediaFile {
+                    path,
+                    media_id,
+                });
+                cmds.push(AppCommand::AppendClipToTrack {
+                    media_id,
+                    track_index: track_idx,
+                });
+            }
+            if skipped > 0 {
+                state.toast.show(format!(
+                    "Imported {} file(s) — skipped {} incompatible",
+                    imported_count, skipped
+                ));
+            } else {
+                state.toast.show(format!("Imported {} file(s) to timeline", imported_count));
             }
         }
     }

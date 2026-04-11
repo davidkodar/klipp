@@ -38,6 +38,10 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
+    // Capture the panel rect upfront for the file-browser drag-drop handler
+    // at the bottom of this function.
+    let panel_rect = ui.max_rect();
+
     // Skim flag is reset at the start of each frame in app.rs update().
     // Cleanup of skim state happens in app.rs after all panels render.
 
@@ -230,6 +234,40 @@ pub fn show(
         });
     });
 
+    // ── File-browser drag-and-drop ──
+    // If the user is dragging files from the FILES tab and the cursor is
+    // inside this media-pool panel, paint a drop-accept outline. On release,
+    // import all dragged files via LoadMediaFile (no clip placement —
+    // they just land in the media pool, ready to be added to a timeline
+    // by the user later).
+    let drag_paths: Option<Vec<std::path::PathBuf>> = match &state.drag_drop.payload {
+        Some(crate::drag_drop::DragPayload::FilePaths { paths }) => Some(paths.clone()),
+        _ => None,
+    };
+    if let Some(paths) = drag_paths {
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let any_down = ui.input(|i| i.pointer.any_down());
+        if let Some(pos) = hover_pos {
+            if panel_rect.contains(pos) {
+                ui.painter().rect_stroke(
+                    panel_rect,
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                );
+                if !any_down {
+                    state.drag_drop.end();
+                    let count = paths.len();
+                    for path in paths {
+                        cmds.push(AppCommand::LoadMediaFile {
+                            path,
+                            media_id: MediaId::new(),
+                        });
+                    }
+                    state.toast.show(format!("Imported {} file(s) to media pool", count));
+                }
+            }
+        }
+    }
 
     cmds
 }

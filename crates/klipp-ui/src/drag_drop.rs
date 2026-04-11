@@ -21,6 +21,10 @@ pub enum DragPayload {
     Transition { name: String, kind_id: u8 },
     /// Dragging a media item from the media browser tab.
     MediaClip { media_id: MediaId },
+    /// Dragging one or more files from the FILES browser tab. These files
+    /// haven't been imported yet — drop targets must push `LoadMediaFile`
+    /// per path before doing anything else with them.
+    FilePaths { paths: Vec<std::path::PathBuf> },
     /// Dragging a title template from the titles browser tab.
     Title { template_name: String, title_data: TitleData, animation: Option<String> },
     /// Dragging a generator preset from the generators browser tab.

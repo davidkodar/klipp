@@ -278,6 +278,18 @@ pub struct EditingPrefs {
     /// Files-tab thumbnail size (Small/Medium/Large).
     #[serde(default)]
     pub file_thumb_size: crate::browser::FileThumbSize,
+    /// Files-tab sort key (Name / Date / Size / Type).
+    #[serde(default)]
+    pub file_sort_by: crate::browser::FileSortBy,
+    /// Files-tab sort direction (true = ascending).
+    #[serde(default = "default_true")]
+    pub file_sort_ascending: bool,
+    /// Files-tab quick type filter (All / Video / Audio / Images).
+    #[serde(default)]
+    pub file_type_filter: crate::browser::FileTypeFilter,
+    /// User-pinned favorite folders shown in the Files-tab bookmarks bar.
+    #[serde(default)]
+    pub pinned_folders: Vec<std::path::PathBuf>,
     /// Maximum number of undo steps (0 = unlimited).
     #[serde(default = "default_undo_limit")]
     pub undo_limit: usize,
@@ -354,6 +366,10 @@ impl Default for EditingPrefs {
             undo_limit: default_undo_limit(),
             media_browser_view_mode: Default::default(),
             file_thumb_size: Default::default(),
+            file_sort_by: Default::default(),
+            file_sort_ascending: true,
+            file_type_filter: Default::default(),
+            pinned_folders: Vec::new(),
             default_transition_frames: default_transition_frames(),
             default_video_track_height: default_video_track_h(),
             default_audio_track_height: default_audio_track_h(),

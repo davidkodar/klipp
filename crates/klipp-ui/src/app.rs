@@ -401,6 +401,10 @@ impl KlippApp {
         app.state.peak_hold_time_secs = app.prefs.audio.peak_hold_time_secs;
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
         app.browser.file_thumb_size = app.prefs.editing.file_thumb_size;
+        app.browser.files_sort_by = app.prefs.editing.file_sort_by;
+        app.browser.files_sort_ascending = app.prefs.editing.file_sort_ascending;
+        app.browser.files_type_filter = app.prefs.editing.file_type_filter;
+        app.browser.pinned_folders = app.prefs.editing.pinned_folders.clone();
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -13330,6 +13334,52 @@ impl eframe::App for KlippApp {
         // 11c. Toast notifications + drag-drop cleanup
         self.state.toast.render(ctx, &self.theme);
         self.state.toast.cleanup();
+
+        // 11c-bis. Floating drag ghost for FilePaths drags from the file
+        // browser. Other DragPayload types rely on target-side highlighting
+        // alone, but the file browser → timeline path crosses a lot of
+        // empty screen space, so we render a small label following the
+        // cursor for the entire duration of the drag.
+        if let Some(crate::drag_drop::DragPayload::FilePaths { ref paths }) = self.state.drag_drop.payload {
+            if let Some(pos) = self.state.drag_drop.cursor_pos {
+                let label = if paths.len() == 1 {
+                    paths[0].file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| paths[0].to_string_lossy().to_string())
+                } else {
+                    format!("{} files", paths.len())
+                };
+                let theme = &self.theme;
+                egui::Area::new(egui::Id::new("file_drag_ghost"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(pos + egui::vec2(12.0, 12.0))
+                    .interactable(false)
+                    .show(ctx, |ui| {
+                        egui::Frame::none()
+                            .fill(theme.bg_raised)
+                            .stroke(egui::Stroke::new(1.0, theme.accent))
+                            .rounding(4.0)
+                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .size(11.0)
+                                        .color(theme.text_primary),
+                                );
+                            });
+                    });
+            }
+        }
+
+        // If the user releases the mouse anywhere outside a drop target while
+        // a FilePaths drag is in progress, clear the payload (otherwise it
+        // would persist into the next click).
+        if matches!(self.state.drag_drop.payload, Some(crate::drag_drop::DragPayload::FilePaths { .. }))
+            && !ctx.input(|i| i.pointer.any_down())
+        {
+            self.state.drag_drop.end();
+        }
+
         self.state.drag_drop.frame_start();
 
         // 12. Filmstrip generation — shown in status bar now (no popup)
@@ -15439,6 +15489,21 @@ impl KlippApp {
             }
             if self.browser.file_thumb_size != self.prefs.editing.file_thumb_size {
                 self.prefs.editing.file_thumb_size = self.browser.file_thumb_size;
+                let _ = self.prefs.save();
+            }
+            if self.browser.files_sort_by != self.prefs.editing.file_sort_by
+                || self.browser.files_sort_ascending != self.prefs.editing.file_sort_ascending
+            {
+                self.prefs.editing.file_sort_by = self.browser.files_sort_by;
+                self.prefs.editing.file_sort_ascending = self.browser.files_sort_ascending;
+                let _ = self.prefs.save();
+            }
+            if self.browser.files_type_filter != self.prefs.editing.file_type_filter {
+                self.prefs.editing.file_type_filter = self.browser.files_type_filter;
+                let _ = self.prefs.save();
+            }
+            if self.browser.pinned_folders != self.prefs.editing.pinned_folders {
+                self.prefs.editing.pinned_folders = self.browser.pinned_folders.clone();
                 let _ = self.prefs.save();
             }
         });
