@@ -1355,68 +1355,47 @@ impl ViewerPanel {
             self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(AppCommand::SeekTo(dur)));
         }
 
-        // ── Right: Transform | Mute | Slider | Vol% | Zoom% ──
-        // Layout from right: zoom(44) gap(8) vol%(40) gap(6) slider(60) gap(6) mute(20) gap(8) transform(20)
+        // ── Right side controls ──
+        // Layout from right edge:
+        //   [Vol% slot 36] gap(6) [Slider 60] gap(6) [Mute 20] gap(8) [Transform 20]
+        // Each element gets a fixed-width slot so neighbors can't overlap when
+        // the value text changes (e.g. "0%" vs "130%").
+        // Note: viewer zoom % was removed from here — it lives in the View menu
+        // (Window > Viewer Zoom) and the timeline ruler has its own Fit/+/-.
         let rx = rect.max.x - 12.0;
 
-        // Zoom dropdown
-        {
-            let zoom_label = if state.viewer_zoom <= 0.0 {
-                "Fit".to_string()
-            } else {
-                format!("{}%", (state.viewer_zoom * 100.0) as u32)
-            };
-            let zoom_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - 42.0, cy - 8.0),
-                egui::vec2(44.0, 16.0),
-            );
-            let zoom_resp = ui.allocate_rect(zoom_rect, egui::Sense::click())
-                .on_hover_text("Viewer zoom — click to toggle Fit/100%, right-click for options");
-            ui.painter().text(
-                egui::pos2(rx, cy),
-                egui::Align2::RIGHT_CENTER,
-                &zoom_label,
-                egui::FontId::monospace(11.0),
-                if zoom_resp.hovered() {
-                    egui::Color32::from_rgb(200, 200, 220)
-                } else {
-                    egui::Color32::from_rgb(120, 120, 130)
-                },
-            );
-            zoom_resp.context_menu(|ui| {
-                for &(label, value) in &[("Fit", 0.0), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
-                    if ui.button(label).clicked() {
-                        state.viewer_zoom = value;
-                        ui.close_menu();
-                    }
-                }
-            });
-            if zoom_resp.clicked() {
-                // Toggle between fit and 100%
-                state.viewer_zoom = if state.viewer_zoom <= 0.0 { 1.0 } else { 0.0 };
-            }
-        }
-
-        // Volume percentage
+        // Volume percentage — fixed 36px slot at the far right.
         let vol_pct = (state.master_volume * 100.0) as u32;
-        let vol_text_x = rx - 52.0;
+        let vol_text = format!("{}%", vol_pct);
+        let vol_text_slot_w = 36.0_f32;
+        let vol_text_right = rx;
+        let vol_text_left = vol_text_right - vol_text_slot_w;
         ui.painter().text(
-            egui::pos2(vol_text_x, cy),
+            egui::pos2(vol_text_right, cy),
             egui::Align2::RIGHT_CENTER,
-            format!("{}%", vol_pct),
+            &vol_text,
             egui::FontId::monospace(10.0),
             egui::Color32::from_rgb(140, 140, 150),
         );
 
-        // Volume slider
-        let slider_w = 60.0;
-        let slider_right = vol_text_x - 8.0;
+        // Volume slider — right edge sits 6px LEFT of the volume %'s left edge.
+        //
+        // CRITICAL: egui::Slider's track width is governed by `spacing.slider_width`,
+        // NOT by the parent UI's max_rect or by `add_sized`. The slider widget
+        // internally calls `ui.allocate_response(vec2(spacing.slider_width, ...))`
+        // which ignores both the child UI's bounds and any size hint passed to
+        // add_sized. The ONLY way to make the slider narrower is to mutate
+        // `spacing_mut().slider_width` on the UI before adding the slider.
+        let slider_w = 60.0_f32;
+        let slider_h = 16.0_f32;
+        let slider_right = vol_text_left - 6.0;
         let slider_rect = egui::Rect::from_min_size(
-            egui::pos2(slider_right - slider_w, cy - 8.0),
-            egui::vec2(slider_w, 16.0),
+            egui::pos2(slider_right - slider_w, cy - slider_h * 0.5),
+            egui::vec2(slider_w, slider_h),
         );
         let mut vol = state.master_volume;
         let mut slider_ui = ui.new_child(egui::UiBuilder::new().max_rect(slider_rect));
+        slider_ui.spacing_mut().slider_width = slider_w;
         let slider = egui::Slider::new(&mut vol, 0.0..=1.3).show_value(false);
         if slider_ui.add(slider).changed() {
             cmds.push(AppCommand::SetMasterVolume(vol));

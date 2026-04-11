@@ -103,9 +103,29 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             styled_tooltip(&dot_resp, theme, tip, None);
         }
 
-        // ── Zoom slider (right-aligned) ──
+        // ── Zoom slider + Fit button (right-aligned) ──
+        // Items in `right_to_left` are added from the RIGHT moving LEFT, so the
+        // FIRST add becomes the rightmost on screen. Final visual order:
+        //     [−] [slider] [+] [Fit]
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
+
+            // Fit button — first add → rightmost position on screen.
+            let fit_resp = ui.add(
+                egui::Button::new(
+                    egui::RichText::new("Fit").size(9.0).color(theme.text_secondary),
+                )
+                .min_size(egui::vec2(26.0, 16.0))
+                .rounding(3.0)
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(0.5, theme.border)),
+            );
+            styled_tooltip(&fit_resp, theme, "Fit timeline to window", Some("Shift+Z"));
+            if fit_resp.clicked() {
+                cmds.push(AppCommand::ZoomTimelineToFit);
+            }
+            ui.add_space(4.0);
+
             ui.label(egui::RichText::new("+").size(9.0).color(theme.text_dim));
             let mut zoom_t = ((state.timeline_zoom.ln() - 0.1f32.ln())
                 / (2000.0f32.ln() - 0.1f32.ln())).clamp(0.0, 1.0);
