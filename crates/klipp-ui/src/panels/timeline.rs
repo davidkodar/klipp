@@ -2452,7 +2452,8 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 42.0, track_y + (track_height - 14.0) / 2.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
                     let l_bg = if track_locked {
                         egui::Color32::from_rgb(160, 120, 40)
                     } else if l_resp.hovered() {
@@ -2473,7 +2474,8 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 22.0, track_y + (track_height - 14.0) / 2.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click());
+                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track.visible { "Hide track" } else { "Show track" });
                     bg_painter.rect_filled(v_rect, 2.0, if v_resp.hovered() {
                         egui::Color32::from_rgb(50, 50, 60)
                     } else {
@@ -2491,7 +2493,8 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 42.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
                     let l_bg = if track_locked {
                         egui::Color32::from_rgb(160, 120, 40)
                     } else if l_resp.hovered() {
@@ -2512,7 +2515,8 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click());
+                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track.visible { "Hide track" } else { "Show track" });
                     let v_col = if track.visible {
                         egui::Color32::from_rgb(120, 120, 140)
                     } else {
@@ -2540,7 +2544,8 @@ impl TimelinePanel {
                     let opacity_resp = ui.interact(
                         opacity_rect, ui.id().with(("opacity_ctrl", track_idx)),
                         egui::Sense::click_and_drag(),
-                    );
+                    )
+                    .on_hover_text("Track opacity — drag to adjust, double-click to reset");
                     bg_painter.rect_filled(opacity_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
                     let fill_w = opacity_rect.width() * track.opacity;
                     let fill_rect = egui::Rect::from_min_size(
@@ -2565,7 +2570,8 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let al_resp = ui.interact(al_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click());
+                    let al_resp = ui.interact(al_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
                     let al_bg = if track_locked {
                         egui::Color32::from_rgb(160, 120, 40)
                     } else if al_resp.hovered() {
@@ -2586,7 +2592,8 @@ impl TimelinePanel {
                     let m_rect = egui::Rect::from_min_size(
                         egui::pos2(header_rect.left() + 4.0, btn_y), egui::vec2(16.0, 12.0),
                     );
-                    let m_resp = ui.interact(m_rect, ui.id().with(("mute_btn", track_idx)), egui::Sense::click());
+                    let m_resp = ui.interact(m_rect, ui.id().with(("mute_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track.muted { "Unmute track" } else { "Mute track" });
                     let m_bg = if track.muted {
                         egui::Color32::from_rgb(160, 50, 50)
                     } else if m_resp.hovered() {
@@ -2604,7 +2611,8 @@ impl TimelinePanel {
                     let s_rect = egui::Rect::from_min_size(
                         egui::pos2(m_rect.right() + 2.0, btn_y), egui::vec2(16.0, 12.0),
                     );
-                    let s_resp = ui.interact(s_rect, ui.id().with(("solo_btn", track_idx)), egui::Sense::click());
+                    let s_resp = ui.interact(s_rect, ui.id().with(("solo_btn", track_idx)), egui::Sense::click())
+                        .on_hover_text(if track.solo { "Unsolo track" } else { "Solo track" });
                     let s_bg = if track.solo {
                         egui::Color32::from_rgb(50, 120, 180)
                     } else if s_resp.hovered() {
@@ -2626,7 +2634,8 @@ impl TimelinePanel {
                     let vol_resp = ui.interact(
                         vol_rect, ui.id().with(("vol_ctrl", track_idx)),
                         egui::Sense::click_and_drag(),
-                    );
+                    )
+                    .on_hover_text("Track volume — drag to adjust, double-click to reset");
                     bg_painter.rect_filled(vol_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
                     let fill_w = vol_rect.width() * (track.volume / 1.3);
                     let fill_rect = egui::Rect::from_min_size(
@@ -9121,7 +9130,8 @@ impl TimelinePanel {
 
         // Fit button
         let fit_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let fit_resp = ui.interact(fit_rect, ui.id().with("zoom_fit"), egui::Sense::click());
+        let fit_resp = ui.interact(fit_rect, ui.id().with("zoom_fit"), egui::Sense::click())
+            .on_hover_text("Fit timeline to window (Shift+Z)");
         painter.rect_filled(fit_rect, 2.0, if fit_resp.hovered() {
             egui::Color32::from_rgb(55, 55, 65)
         } else {
@@ -9136,7 +9146,8 @@ impl TimelinePanel {
 
         // - button
         let minus_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let minus_resp = ui.interact(minus_rect, ui.id().with("zoom_minus"), egui::Sense::click());
+        let minus_resp = ui.interact(minus_rect, ui.id().with("zoom_minus"), egui::Sense::click())
+            .on_hover_text("Zoom out");
         painter.rect_filled(minus_rect, 2.0, if minus_resp.hovered() {
             egui::Color32::from_rgb(55, 55, 65)
         } else {
@@ -9151,7 +9162,8 @@ impl TimelinePanel {
 
         // + button
         let plus_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let plus_resp = ui.interact(plus_rect, ui.id().with("zoom_plus"), egui::Sense::click());
+        let plus_resp = ui.interact(plus_rect, ui.id().with("zoom_plus"), egui::Sense::click())
+            .on_hover_text("Zoom in");
         painter.rect_filled(plus_rect, 2.0, if plus_resp.hovered() {
             egui::Color32::from_rgb(55, 55, 65)
         } else {

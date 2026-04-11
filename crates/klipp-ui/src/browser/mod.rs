@@ -332,7 +332,8 @@ impl BrowserPanel {
                     egui::Button::image(Icon::List.image(14.0).tint(list_color))
                         .min_size(egui::vec2(24.0, 24.0))
                         .frame(false),
-                );
+                )
+                .on_hover_text("List view");
                 if list_resp.clicked() {
                     self.browser_view_mode = media_tab::BrowserViewMode::List;
                 }
@@ -343,7 +344,8 @@ impl BrowserPanel {
                     egui::Button::image(Icon::GridFour.image(14.0).tint(grid_color))
                         .min_size(egui::vec2(24.0, 24.0))
                         .frame(false),
-                );
+                )
+                .on_hover_text("Grid view");
                 if grid_resp.clicked() {
                     self.browser_view_mode = media_tab::BrowserViewMode::Grid;
                 }
@@ -375,11 +377,17 @@ impl BrowserPanel {
 
                 // Sort direction toggle
                 let sort_icon = if self.media_sort_ascending { Icon::SortAscending } else { Icon::SortDescending };
-                if ui.add(
+                let sort_dir_resp = ui.add(
                     egui::Button::image(sort_icon.image(12.0).tint(theme.text_dim))
                         .min_size(egui::vec2(16.0, 24.0))
                         .frame(false),
-                ).clicked() {
+                )
+                .on_hover_text(if self.media_sort_ascending {
+                    "Sort ascending — click to flip"
+                } else {
+                    "Sort descending — click to flip"
+                });
+                if sort_dir_resp.clicked() {
                     self.media_sort_ascending = !self.media_sort_ascending;
                 }
 
@@ -691,7 +699,8 @@ impl BrowserPanel {
                 egui::Button::new(
                     egui::RichText::new("<").size(12.0).color(if can_go_up { theme.text_primary } else { theme.text_dim })
                 ).fill(theme.bg_raised).rounding(3.0).min_size(egui::vec2(24.0, 20.0)),
-            );
+            )
+            .on_hover_text("Go up one directory");
             if back_resp.clicked() {
                 if let Some(parent) = self.files_current_path.parent() {
                     self.navigate_files_to(parent.to_path_buf());
@@ -703,7 +712,8 @@ impl BrowserPanel {
                 egui::Button::new(
                     egui::RichText::new("~").size(12.0).color(theme.text_primary)
                 ).fill(theme.bg_raised).rounding(3.0).min_size(egui::vec2(24.0, 20.0)),
-            );
+            )
+            .on_hover_text("Go to home directory");
             if home_resp.clicked() {
                 self.navigate_files_to(dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
             }
@@ -764,7 +774,12 @@ impl BrowserPanel {
                             .min_size(egui::vec2(22.0, 20.0))
                             .fill(if is_pinned { theme.accent } else { theme.bg_raised })
                             .rounding(3.0),
-                    );
+                    )
+                    .on_hover_text(if is_pinned {
+                        "Unpin Files panel (return to single tab)"
+                    } else {
+                        "Pin Files panel alongside Media/Library"
+                    });
                     if pin_resp.clicked() {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_pin_clicked"), true));
                     }
@@ -820,7 +835,8 @@ impl BrowserPanel {
                         .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                         .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
                         .rounding(3.0),
-                    );
+                    )
+                    .on_hover_text(path.to_string_lossy().to_string());
                     if btn.clicked() {
                         self.navigate_files_to(path.clone());
                     }

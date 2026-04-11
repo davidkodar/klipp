@@ -1370,7 +1370,8 @@ impl ViewerPanel {
                 egui::pos2(rx - 42.0, cy - 8.0),
                 egui::vec2(44.0, 16.0),
             );
-            let zoom_resp = ui.allocate_rect(zoom_rect, egui::Sense::click());
+            let zoom_resp = ui.allocate_rect(zoom_rect, egui::Sense::click())
+                .on_hover_text("Viewer zoom — click to toggle Fit/100%, right-click for options");
             ui.painter().text(
                 egui::pos2(rx, cy),
                 egui::Align2::RIGHT_CENTER,
@@ -1427,7 +1428,8 @@ impl ViewerPanel {
             egui::pos2(mute_x, cy),
             egui::vec2(20.0, 20.0),
         );
-        let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
+        let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click())
+            .on_hover_text(if state.master_muted { "Unmute master output" } else { "Mute master output" });
         let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
         let mute_color = if state.master_muted {
             egui::Color32::from_rgb(255, 80, 80)
