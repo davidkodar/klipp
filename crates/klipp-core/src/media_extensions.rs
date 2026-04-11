@@ -70,6 +70,14 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
 /// Callers that build a thumbnail / poster decode pipeline should check
 /// `is_raw(ext)` first and dispatch to `klipp_engine::extract_raw_preview`,
 /// then fall back to the regular ffmpeg image path for everything else.
+///
+/// **Important**: the current implementation extracts the camera-baked
+/// JPEG preview from these files, NOT the demosaiced raw bayer data. This
+/// is fine for thumbnails / browsing / drag-into-timeline workflows but
+/// it means there's no "raw editing" capability — white balance, exposure
+/// recovery, etc. are baked in. See `klipp_engine::extract_raw_preview`'s
+/// doc comment for the full design rationale and the upgrade path to real
+/// RAW decoding via `rawler` or `libraw` if Klipp ever needs that.
 pub const RAW_EXTENSIONS: &[&str] = &[
     "arw",  // Sony Alpha
     "cr2",  // Canon (older)

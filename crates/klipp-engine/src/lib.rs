@@ -56,6 +56,61 @@ pub fn init_ffmpeg() -> Result<(), ffmpeg_next::Error> {
 /// Returns `(rgba, width, height)` matching the shape of the existing
 /// thumbnail helpers, so callers in the file browser thumb pipeline can use
 /// this as a drop-in replacement when they detect a RAW extension.
+///
+/// # Limitations
+///
+/// **This function returns the camera-baked JPEG preview, NOT demosaiced
+/// data from the raw bayer sensor values.** That means:
+///
+/// - White balance, exposure, highlight recovery, and any other in-camera
+///   processing are baked into the pixels we return — there's nothing to
+///   "develop" or color-grade at the raw level.
+/// - The bit depth is whatever the camera's preview JPEG is (typically 8-bit
+///   per channel), not the 12-14 bits captured by the sensor.
+/// - Any sharpening / noise reduction applied by the camera is also baked in.
+///
+/// For thumbnails, file browser previews, drag-drop into the timeline, and
+/// "show me what's in this file" workflows, this is exactly right and matches
+/// what the user expects (the same image their camera shows on its screen).
+///
+/// # Upgrading to real RAW decoding
+///
+/// If Klipp ever needs to support **actual raw image editing** — color grading
+/// on linear bayer values, white balance adjustment, exposure compensation
+/// applied to the sensor data, highlight recovery from clipped highlights —
+/// then we need to add real RAW decoding alongside this preview path. The
+/// preview-extraction code here should NOT be deleted: it's still the right
+/// thing for fast thumbnails. The real-decode path is an addition, not a
+/// replacement.
+///
+/// Two reasonable options for that future work:
+///
+/// 1. **`rawler` crate** ([crates.io/crates/rawler](https://crates.io/crates/rawler)):
+///    pure Rust, no system dependencies, MIT/Apache. Maintained as part of
+///    the dnglab project. Supports all the formats in `RAW_EXTENSIONS` plus
+///    more. Returns demosaiced linear RGB. ~2 MB compiled. Recommended.
+///
+/// 2. **`libraw` C++ library via `libraw-rs` bindings**: the gold-standard
+///    RAW decoder used by darktable, RawTherapee, etc. Most comprehensive
+///    format support. Requires libraw as a system dependency, which is a
+///    deployment headache for an app like Klipp that ships as a single
+///    binary. Avoid unless rawler turns out to be insufficient.
+///
+/// The integration shape would be:
+/// - Add a new helper alongside this one, e.g.
+///   `decode_raw_demosaiced(path) -> Result<(Vec<f32>, u32, u32), String>`
+///   returning linear RGB at 32-bit per channel.
+/// - Use the demosaiced output for the source viewer, color grading, and
+///   the timeline render path when the user explicitly opts in to "raw mode"
+///   for a clip.
+/// - Keep `extract_raw_preview` for everything thumbnail-related — it's
+///   ~50ms vs ~500ms-1s for full demosaicing on a 24MP image, and the
+///   visual difference is invisible at thumbnail sizes.
+/// - Add a new IMAGE_EXTENSIONS / RAW_EXTENSIONS distinction in the media
+///   pool item type so the engine knows which decode path to use per clip.
+///
+/// In other words: this function stays exactly as-is forever; the upgrade
+/// path is purely additive.
 pub fn extract_raw_preview(
     path: &std::path::Path,
     max_width: u32,
