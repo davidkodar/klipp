@@ -298,7 +298,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
-/// Quick type filter for the Files tab. Persisted in EditingPrefs.
+/// Quick type filter for the Files tab. Persisted in FileBrowserPrefs.
 /// Directories are always shown regardless of filter so the user can navigate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FileTypeFilter {
@@ -338,7 +338,7 @@ impl FileTypeFilter {
     }
 }
 
-/// Sort key for the Files tab. Persisted in EditingPrefs.
+/// Sort key for the Files tab. Persisted in FileBrowserPrefs.
 /// Directories are always grouped above files regardless of the chosen key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FileSortBy {
@@ -403,7 +403,7 @@ pub enum SmartBinFilter {
 }
 
 /// Thumbnail size for the Files tab. Controls row height, thumb box size,
-/// and where the filename is positioned. Persisted in EditingPrefs.
+/// and where the filename is positioned. Persisted in FileBrowserPrefs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FileThumbSize {
     Small,

@@ -11,6 +11,8 @@ pub struct Preferences {
     #[serde(default)]
     pub editing: EditingPrefs,
     #[serde(default)]
+    pub file_browser: FileBrowserPrefs,
+    #[serde(default)]
     pub audio: AudioPrefs,
     pub export: ExportPrefs,
     pub proxy: ProxyPrefs,
@@ -257,24 +259,18 @@ impl Default for AudioPrefs {
     }
 }
 
+/// File browser preferences. Lives in its own struct (and own prefs tab)
+/// because the file browser has accumulated enough settings — thumbnail
+/// size, sort, filter, pinned favorites, hover-skim toggles — that
+/// burying them under "Editing" was hurting discoverability.
+///
+/// Backward compatibility: prior versions stored these fields directly
+/// inside `EditingPrefs`. `Preferences::load` runs a small migration
+/// pass that moves any legacy `editing.file_*` keys into the new
+/// `file_browser` section before serde sees them, so existing users'
+/// settings are preserved on first launch after the upgrade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EditingPrefs {
-    /// Automatically create a new track when a clip is dropped
-    /// above the top video track or below the bottom audio track.
-    #[serde(default = "default_true")]
-    pub auto_create_tracks: bool,
-    /// Automatically generate filmstrip thumbnails when media is imported.
-    #[serde(default = "default_true")]
-    pub auto_generate_filmstrips: bool,
-    /// Automatically generate skim transcodes for hover skimming on import.
-    #[serde(default = "default_true")]
-    pub auto_generate_skim: bool,
-    /// Default duration in seconds for imported still images (PNG, JPG, etc.).
-    #[serde(default = "default_still_duration")]
-    pub default_still_duration_secs: f64,
-    /// Media browser view mode (persisted across sessions).
-    #[serde(default)]
-    pub media_browser_view_mode: crate::browser::media_tab::BrowserViewMode,
+pub struct FileBrowserPrefs {
     /// Files-tab thumbnail size (Small/Medium/Large).
     #[serde(default)]
     pub file_thumb_size: crate::browser::FileThumbSize,
@@ -304,6 +300,40 @@ pub struct EditingPrefs {
     /// shared/quiet environment.
     #[serde(default = "default_true")]
     pub file_browser_audio_skim: bool,
+}
+
+impl Default for FileBrowserPrefs {
+    fn default() -> Self {
+        Self {
+            file_thumb_size: Default::default(),
+            file_sort_by: Default::default(),
+            file_sort_ascending: true,
+            file_type_filter: Default::default(),
+            pinned_folders: Vec::new(),
+            file_browser_video_skim: true,
+            file_browser_audio_skim: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditingPrefs {
+    /// Automatically create a new track when a clip is dropped
+    /// above the top video track or below the bottom audio track.
+    #[serde(default = "default_true")]
+    pub auto_create_tracks: bool,
+    /// Automatically generate filmstrip thumbnails when media is imported.
+    #[serde(default = "default_true")]
+    pub auto_generate_filmstrips: bool,
+    /// Automatically generate skim transcodes for hover skimming on import.
+    #[serde(default = "default_true")]
+    pub auto_generate_skim: bool,
+    /// Default duration in seconds for imported still images (PNG, JPG, etc.).
+    #[serde(default = "default_still_duration")]
+    pub default_still_duration_secs: f64,
+    /// Media browser view mode (persisted across sessions).
+    #[serde(default)]
+    pub media_browser_view_mode: crate::browser::media_tab::BrowserViewMode,
     /// Maximum number of undo steps (0 = unlimited).
     #[serde(default = "default_undo_limit")]
     pub undo_limit: usize,
@@ -379,13 +409,6 @@ impl Default for EditingPrefs {
             default_still_duration_secs: default_still_duration(),
             undo_limit: default_undo_limit(),
             media_browser_view_mode: Default::default(),
-            file_thumb_size: Default::default(),
-            file_sort_by: Default::default(),
-            file_sort_ascending: true,
-            file_type_filter: Default::default(),
-            pinned_folders: Vec::new(),
-            file_browser_video_skim: true,
-            file_browser_audio_skim: true,
             default_transition_frames: default_transition_frames(),
             default_video_track_height: default_video_track_h(),
             default_audio_track_height: default_audio_track_h(),
@@ -515,6 +538,9 @@ impl Preferences {
     }
 
     /// Load preferences from disk. Returns defaults if file doesn't exist or is malformed.
+    /// Runs `migrate_legacy_editing_to_file_browser` before deserializing so that
+    /// file browser fields stored under the old `editing.*` location are
+    /// transparently moved to the new `file_browser.*` section on first load.
     pub fn load() -> Self {
         let Some(path) = Self::config_path() else {
             tracing::warn!("Could not determine config directory, using default preferences");
@@ -522,19 +548,91 @@ impl Preferences {
         };
 
         match std::fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str(&contents) {
-                Ok(prefs) => {
-                    tracing::info!("Preferences loaded from {}", path.display());
-                    prefs
+            Ok(contents) => {
+                // Two-pass parse: first into a generic JSON Value so we can
+                // run the legacy field migration, then into the typed
+                // Preferences struct. The migration is idempotent — if the
+                // new fields already exist, the legacy ones are just dropped.
+                let parsed: Result<serde_json::Value, _> = serde_json::from_str(&contents);
+                match parsed {
+                    Ok(mut value) => {
+                        Self::migrate_legacy_editing_to_file_browser(&mut value);
+                        match serde_json::from_value::<Self>(value) {
+                            Ok(prefs) => {
+                                tracing::info!("Preferences loaded from {}", path.display());
+                                prefs
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to parse preferences ({}), using defaults", e);
+                                Self::default()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read preferences JSON ({}), using defaults", e);
+                        Self::default()
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to parse preferences ({}), using defaults", e);
-                    Self::default()
-                }
-            },
+            }
             Err(_) => {
                 tracing::info!("No preferences file found, using defaults");
                 Self::default()
+            }
+        }
+    }
+
+    /// Migrate file-browser-related fields from the old `editing.*` location
+    /// to the new `file_browser.*` location. Operates on the raw JSON Value
+    /// so the typed deserialize step sees the fields under their current
+    /// names. Idempotent: any field already present in `file_browser` wins
+    /// over the legacy `editing` value, and legacy fields are removed from
+    /// `editing` regardless so they don't accumulate stale state.
+    ///
+    /// Was added when the file browser settings were extracted into their
+    /// own preferences tab. The legacy fields lived in `EditingPrefs` from
+    /// the original "everything related to editing-mode UI lives here"
+    /// design until users (rightly) couldn't find them.
+    fn migrate_legacy_editing_to_file_browser(value: &mut serde_json::Value) {
+        // Field names that moved from `editing.*` to `file_browser.*`.
+        const MIGRATED_FIELDS: &[&str] = &[
+            "file_thumb_size",
+            "file_sort_by",
+            "file_sort_ascending",
+            "file_type_filter",
+            "pinned_folders",
+            "file_browser_video_skim",
+            "file_browser_audio_skim",
+        ];
+
+        let Some(obj) = value.as_object_mut() else { return };
+
+        // First pass: collect any legacy values from `editing.*`. We do this
+        // in a separate phase because we need a mutable borrow of `editing`
+        // to remove fields, then a mutable borrow of `file_browser` to
+        // insert them — the borrow checker won't allow both at once.
+        let mut moved: Vec<(&'static str, serde_json::Value)> = Vec::new();
+        if let Some(editing) = obj.get_mut("editing").and_then(|v| v.as_object_mut()) {
+            for &field in MIGRATED_FIELDS {
+                if let Some(v) = editing.remove(field) {
+                    moved.push((field, v));
+                }
+            }
+        }
+
+        if moved.is_empty() {
+            return; // nothing to migrate
+        }
+
+        // Second pass: insert into `file_browser.*`, but only for fields
+        // that aren't already present in the new location (so an explicit
+        // new-format value wins over a stale legacy value).
+        let file_browser = obj
+            .entry("file_browser")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let Some(fb_obj) = file_browser.as_object_mut() else { return };
+        for (field, value) in moved {
+            if !fb_obj.contains_key(field) {
+                fb_obj.insert(field.to_string(), value);
             }
         }
     }
@@ -1078,8 +1176,6 @@ mod tests {
         assert!(rt.editing.auto_create_tracks);
         assert!(rt.editing.auto_generate_filmstrips);
         assert!(rt.editing.auto_generate_skim);
-        assert!(rt.editing.file_browser_video_skim);
-        assert!(rt.editing.file_browser_audio_skim);
         assert_eq!(rt.editing.default_still_duration_secs, 5.0);
         assert_eq!(rt.editing.undo_limit, 100);
         assert_eq!(rt.editing.default_transition_frames, 24);
@@ -1088,6 +1184,12 @@ mod tests {
         assert_eq!(rt.editing.snap_threshold_px, 10.0);
         assert_eq!(rt.editing.zoom_step, 1.5);
         assert_eq!(rt.editing.backup_count, 5);
+
+        // FileBrowserPrefs (extracted from EditingPrefs in r58)
+        assert!(rt.file_browser.file_browser_video_skim);
+        assert!(rt.file_browser.file_browser_audio_skim);
+        assert!(rt.file_browser.file_sort_ascending);
+        assert!(rt.file_browser.pinned_folders.is_empty());
 
         // AudioPrefs
         assert_eq!(rt.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
@@ -1307,8 +1409,6 @@ mod tests {
         prefs.editing.auto_create_tracks = false;
         prefs.editing.auto_generate_filmstrips = false;
         prefs.editing.auto_generate_skim = false;
-        prefs.editing.file_browser_video_skim = false;
-        prefs.editing.file_browser_audio_skim = false;
         prefs.editing.default_still_duration_secs = 10.0;
         prefs.editing.undo_limit = 50;
         prefs.editing.default_transition_frames = 12;
@@ -1317,6 +1417,13 @@ mod tests {
         prefs.editing.snap_threshold_px = 20.0;
         prefs.editing.zoom_step = 2.0;
         prefs.editing.backup_count = 10;
+
+        // FileBrowserPrefs
+        prefs.file_browser.file_browser_video_skim = false;
+        prefs.file_browser.file_browser_audio_skim = false;
+        prefs.file_browser.file_sort_ascending = false;
+        prefs.file_browser.pinned_folders =
+            vec![PathBuf::from("/home/u/Movies"), PathBuf::from("/data/footage")];
 
         // AudioPrefs
         prefs.audio.fade_overlay_mode = FadeOverlayMode::Both;
@@ -1429,8 +1536,6 @@ mod tests {
         assert!(!rt.editing.auto_create_tracks);
         assert!(!rt.editing.auto_generate_filmstrips);
         assert!(!rt.editing.auto_generate_skim);
-        assert!(!rt.editing.file_browser_video_skim);
-        assert!(!rt.editing.file_browser_audio_skim);
         assert_eq!(rt.editing.default_still_duration_secs, 10.0);
         assert_eq!(rt.editing.undo_limit, 50);
         assert_eq!(rt.editing.default_transition_frames, 12);
@@ -1439,6 +1544,16 @@ mod tests {
         assert_eq!(rt.editing.snap_threshold_px, 20.0);
         assert_eq!(rt.editing.zoom_step, 2.0);
         assert_eq!(rt.editing.backup_count, 10);
+
+        // FileBrowserPrefs round-trip
+        assert!(!rt.file_browser.file_browser_video_skim);
+        assert!(!rt.file_browser.file_browser_audio_skim);
+        assert!(!rt.file_browser.file_sort_ascending);
+        assert_eq!(rt.file_browser.pinned_folders.len(), 2);
+        assert_eq!(
+            rt.file_browser.pinned_folders[0].to_str().unwrap(),
+            "/home/u/Movies"
+        );
 
         assert_eq!(rt.audio.fade_overlay_mode, FadeOverlayMode::Both);
         assert!(!rt.audio.show_rubber_band);
@@ -1614,6 +1729,109 @@ mod tests {
         let rt = round_trip(&prefs);
         assert_eq!(rt.appearance.accent_color, [255, 255, 255]);
         assert_eq!(rt.viewer.grid_color, [255, 255, 255, 255]);
+    }
+
+    // ── 6.5. Migration: legacy editing.file_* → file_browser.* ──
+
+    /// When the file-browser settings were extracted from `EditingPrefs`
+    /// into their own struct, prior versions had stored these fields
+    /// inside `editing`. `Preferences::load` runs a migration shim
+    /// (`migrate_legacy_editing_to_file_browser`) that moves the values
+    /// before serde deserialization. These tests cover the shim directly
+    /// against synthetic JSON so the migration path doesn't bit-rot.
+    #[test]
+    fn migrate_moves_legacy_editing_file_fields_to_file_browser() {
+        let raw = r#"{
+            "general": {"auto_save_interval_secs": 300, "recent_projects": []},
+            "playback": {"scrub_audio": true, "jkl_audio_mute_threshold": 4.0},
+            "export": {"custom_presets": []},
+            "proxy": {"auto_generate_on_import": false, "proxy_resolution": "Half"},
+            "editing": {
+                "file_thumb_size": "Large",
+                "file_sort_ascending": false,
+                "pinned_folders": ["/home/u/Movies"],
+                "file_browser_video_skim": false,
+                "file_browser_audio_skim": false
+            }
+        }"#;
+        let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        Preferences::migrate_legacy_editing_to_file_browser(&mut value);
+
+        // Legacy fields are gone from editing.
+        let editing = value.get("editing").and_then(|v| v.as_object()).unwrap();
+        assert!(!editing.contains_key("file_thumb_size"));
+        assert!(!editing.contains_key("file_sort_ascending"));
+        assert!(!editing.contains_key("pinned_folders"));
+        assert!(!editing.contains_key("file_browser_video_skim"));
+        assert!(!editing.contains_key("file_browser_audio_skim"));
+
+        // file_browser section was created and populated.
+        let fb = value.get("file_browser").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(fb.get("file_thumb_size").and_then(|v| v.as_str()), Some("Large"));
+        assert_eq!(fb.get("file_sort_ascending").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            fb.get("file_browser_video_skim").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            fb.get("file_browser_audio_skim").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+
+        // Roundtrip the migrated Value through Preferences to confirm it
+        // deserializes cleanly with the migrated values.
+        let prefs: Preferences = serde_json::from_value(value).unwrap();
+        assert!(!prefs.file_browser.file_browser_video_skim);
+        assert!(!prefs.file_browser.file_browser_audio_skim);
+        assert!(!prefs.file_browser.file_sort_ascending);
+        assert_eq!(prefs.file_browser.pinned_folders.len(), 1);
+    }
+
+    #[test]
+    fn migrate_prefers_new_location_when_both_present() {
+        // If a user has both old and new entries (e.g. they manually edited
+        // the JSON), the new file_browser.* value must win — never have a
+        // ghost legacy value silently override an explicit modern setting.
+        let raw = r#"{
+            "general": {"auto_save_interval_secs": 300, "recent_projects": []},
+            "playback": {"scrub_audio": true, "jkl_audio_mute_threshold": 4.0},
+            "export": {"custom_presets": []},
+            "proxy": {"auto_generate_on_import": false, "proxy_resolution": "Half"},
+            "editing": {
+                "file_browser_video_skim": false
+            },
+            "file_browser": {
+                "file_browser_video_skim": true
+            }
+        }"#;
+        let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        Preferences::migrate_legacy_editing_to_file_browser(&mut value);
+
+        let fb = value.get("file_browser").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            fb.get("file_browser_video_skim").and_then(|v| v.as_bool()),
+            Some(true),
+            "explicit new value must win over legacy editing.* value"
+        );
+    }
+
+    #[test]
+    fn migrate_is_noop_when_no_legacy_fields_present() {
+        // Modern JSON with only file_browser.* fields should pass through
+        // unchanged — nothing copied, nothing removed.
+        let raw = r#"{
+            "general": {"auto_save_interval_secs": 300, "recent_projects": []},
+            "playback": {"scrub_audio": true, "jkl_audio_mute_threshold": 4.0},
+            "export": {"custom_presets": []},
+            "proxy": {"auto_generate_on_import": false, "proxy_resolution": "Half"},
+            "file_browser": {
+                "file_browser_video_skim": false
+            }
+        }"#;
+        let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let before = value.clone();
+        Preferences::migrate_legacy_editing_to_file_browser(&mut value);
+        assert_eq!(value, before, "migration must be a no-op for modern JSON");
     }
 
     // ── 7. Vec fields: clip_colors and font_search_paths round-trip ──

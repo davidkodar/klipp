@@ -341,12 +341,12 @@ pub struct AppState {
     // GUI redesign
     pub skimming_enabled: bool,
     /// Whether VIDEO files in the file browser are hover-skimmable.
-    /// Mirrored from `prefs.editing.file_browser_video_skim`. Independent
+    /// Mirrored from `prefs.file_browser.file_browser_video_skim`. Independent
     /// of the global `skimming_enabled` toolbar toggle — both must be on
     /// for the file browser to spawn skim decodes.
     pub file_browser_video_skim_enabled: bool,
     /// Whether AUDIO files in the file browser are hover-skimmable.
-    /// Mirrored from `prefs.editing.file_browser_audio_skim`. Same gating
+    /// Mirrored from `prefs.file_browser.file_browser_audio_skim`. Same gating
     /// as `file_browser_video_skim_enabled`.
     pub file_browser_audio_skim_enabled: bool,
     pub toast: crate::widgets::toast::ToastState,

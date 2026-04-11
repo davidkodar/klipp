@@ -8,6 +8,7 @@ enum PrefsTab {
     Appearance,
     Playback,
     Editing,
+    FileBrowser,
     Audio,
     AudioHardware,
     Export,
@@ -184,7 +185,7 @@ impl PreferencesPanel {
                             ("PROJECT", &[(PrefsTab::General, "\u{1F4C4}", "General"), (PrefsTab::Appearance, "\u{2699}", "Appearance")]),
                             ("PERFORMANCE", &[(PrefsTab::System, "\u{1F5A5}", "System"), (PrefsTab::Playback, "\u{25B6}", "Playback"), (PrefsTab::MediaCache, "\u{1F4BE}", "Cache")]),
                             ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
-                            ("MEDIA & AUDIO", &[(PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy")]),
+                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy")]),
                             ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
                             ("INTERFACE", &[(PrefsTab::Title, "\u{1D413}", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
@@ -234,6 +235,7 @@ impl PreferencesPanel {
                             PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
                             PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
                             PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
+                            PrefsTab::FileBrowser => self.show_file_browser(ui, prefs, prefs_dirty),
                             PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
@@ -312,6 +314,7 @@ impl PreferencesPanel {
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
             PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync", "tracking", "tracker", "search radius"],
+            PrefsTab::FileBrowser => &["file browser", "browser", "files", "thumbnail", "thumb", "skim", "skimming", "hover", "sort", "filter", "favorites", "pinned", "folders"],
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
@@ -706,39 +709,6 @@ impl PreferencesPanel {
             }
         });
 
-        // ── FILE BROWSER section ──
-        // Hover-skim previews are great for fast file triage but cost
-        // CPU/IO and (for audio) can be distracting. Both default on but
-        // can be turned off independently for users who prefer a quieter
-        // browser or who work on slower hardware.
-        Self::section_header(ui, "FILE BROWSER");
-
-        Self::setting_row_with_subtitle(
-            ui,
-            "Video hover skim",
-            "Decode video frames as you hover over file rows",
-            |ui| {
-                let mut val = prefs.editing.file_browser_video_skim;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
-                    prefs.editing.file_browser_video_skim = val;
-                    *dirty = true;
-                }
-            },
-        );
-
-        Self::setting_row_with_subtitle(
-            ui,
-            "Audio hover skim",
-            "Play audio as you hover over audio file rows",
-            |ui| {
-                let mut val = prefs.editing.file_browser_audio_skim;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
-                    prefs.editing.file_browser_audio_skim = val;
-                    *dirty = true;
-                }
-            },
-        );
-
         // ── DEFAULTS section ──
         Self::section_header(ui, "DEFAULTS");
 
@@ -825,6 +795,223 @@ impl PreferencesPanel {
         });
 
         let _ = cmds; // suppress unused warning
+    }
+
+    fn show_file_browser(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs: &mut Preferences,
+        dirty: &mut bool,
+    ) {
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new("File Browser")
+                    .strong()
+                    .size(18.0)
+                    .color(Self::NORMAL_TEXT),
+            );
+        });
+        ui.add_space(4.0);
+
+        // ── HOVER SKIM section ──
+        // Hover-skim previews are great for fast file triage but cost
+        // CPU/IO and (for audio) can be distracting. Both default on but
+        // can be turned off independently for users who prefer a quieter
+        // browser or who work on slower hardware.
+        Self::section_header(ui, "HOVER SKIM");
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Video hover skim",
+            "Decode video frames as you hover over file rows",
+            |ui| {
+                let mut val = prefs.file_browser.file_browser_video_skim;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.file_browser_video_skim = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Audio hover skim",
+            "Play audio as you hover over audio file rows",
+            |ui| {
+                let mut val = prefs.file_browser.file_browser_audio_skim;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.file_browser_audio_skim = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        // ── DISPLAY section ──
+        Self::section_header(ui, "DISPLAY");
+
+        Self::setting_row(ui, "Thumbnail size", |ui| {
+            use crate::browser::FileThumbSize;
+            egui::ComboBox::from_id_salt("fb_thumb_size")
+                .selected_text(match prefs.file_browser.file_thumb_size {
+                    FileThumbSize::Small => "Small",
+                    FileThumbSize::Medium => "Medium",
+                    FileThumbSize::Large => "Large",
+                })
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut prefs.file_browser.file_thumb_size,
+                            FileThumbSize::Small,
+                            "Small",
+                        )
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut prefs.file_browser.file_thumb_size,
+                            FileThumbSize::Medium,
+                            "Medium",
+                        )
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut prefs.file_browser.file_thumb_size,
+                            FileThumbSize::Large,
+                            "Large",
+                        )
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                });
+        });
+
+        Self::setting_row(ui, "Default sort", |ui| {
+            use crate::browser::FileSortBy;
+            egui::ComboBox::from_id_salt("fb_sort_by")
+                .selected_text(match prefs.file_browser.file_sort_by {
+                    FileSortBy::Name => "Name",
+                    FileSortBy::DateModified => "Date modified",
+                    FileSortBy::Size => "Size",
+                    FileSortBy::Type => "Type",
+                })
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::Name, "Name")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::DateModified, "Date modified")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::Size, "Size")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::Type, "Type")
+                        .changed()
+                    { *dirty = true; }
+                });
+        });
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Sort ascending",
+            "Off = newest/largest first",
+            |ui| {
+                let mut val = prefs.file_browser.file_sort_ascending;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.file_sort_ascending = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row(ui, "Default type filter", |ui| {
+            use crate::browser::FileTypeFilter;
+            egui::ComboBox::from_id_salt("fb_type_filter")
+                .selected_text(match prefs.file_browser.file_type_filter {
+                    FileTypeFilter::All => "All",
+                    FileTypeFilter::Video => "Video only",
+                    FileTypeFilter::Audio => "Audio only",
+                    FileTypeFilter::Images => "Images only",
+                })
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_type_filter, FileTypeFilter::All, "All")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_type_filter, FileTypeFilter::Video, "Video only")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_type_filter, FileTypeFilter::Audio, "Audio only")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_type_filter, FileTypeFilter::Images, "Images only")
+                        .changed()
+                    { *dirty = true; }
+                });
+        });
+
+        // ── FAVORITES section ──
+        Self::section_header(ui, "FAVORITES");
+
+        if prefs.file_browser.pinned_folders.is_empty() {
+            Self::setting_row_with_subtitle(
+                ui,
+                "Pinned folders",
+                "Right-click any folder in the browser and choose \"Pin to Favorites\"",
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("none")
+                            .size(11.0)
+                            .color(Self::DIM_TEXT),
+                    );
+                },
+            );
+        } else {
+            Self::setting_row(ui, "Pinned folders", |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} folder{}",
+                        prefs.file_browser.pinned_folders.len(),
+                        if prefs.file_browser.pinned_folders.len() == 1 { "" } else { "s" }
+                    ))
+                    .size(11.0)
+                    .color(Self::DIM_TEXT),
+                );
+            });
+            // Each pinned folder gets its own row showing the path and an
+            // unpin button. Right-clicking in the file browser is the usual
+            // way to manage favorites; this is the explicit fallback.
+            let mut to_remove: Option<usize> = None;
+            for (i, path) in prefs.file_browser.pinned_folders.iter().enumerate() {
+                let display = path.display().to_string();
+                Self::setting_row_with_subtitle(ui, "  \u{1F4CC}", &display, |ui| {
+                    if ui.button("Unpin").clicked() {
+                        to_remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = to_remove {
+                prefs.file_browser.pinned_folders.remove(i);
+                *dirty = true;
+            }
+        }
     }
 
     fn show_audio(

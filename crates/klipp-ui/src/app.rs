@@ -350,8 +350,8 @@ impl KlippApp {
             });
         }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
-        app.state.file_browser_video_skim_enabled = app.prefs.editing.file_browser_video_skim;
-        app.state.file_browser_audio_skim_enabled = app.prefs.editing.file_browser_audio_skim;
+        app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
+        app.state.file_browser_audio_skim_enabled = app.prefs.file_browser.file_browser_audio_skim;
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         // Playhead follow: if pref is off, start with follow disabled
         if !app.prefs.editing.playhead_follows_playback {
@@ -413,11 +413,11 @@ impl KlippApp {
         };
         app.state.peak_hold_time_secs = app.prefs.audio.peak_hold_time_secs;
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
-        app.browser.file_thumb_size = app.prefs.editing.file_thumb_size;
-        app.browser.files_sort_by = app.prefs.editing.file_sort_by;
-        app.browser.files_sort_ascending = app.prefs.editing.file_sort_ascending;
-        app.browser.files_type_filter = app.prefs.editing.file_type_filter;
-        app.browser.pinned_folders = app.prefs.editing.pinned_folders.clone();
+        app.browser.file_thumb_size = app.prefs.file_browser.file_thumb_size;
+        app.browser.files_sort_by = app.prefs.file_browser.file_sort_by;
+        app.browser.files_sort_ascending = app.prefs.file_browser.file_sort_ascending;
+        app.browser.files_type_filter = app.prefs.file_browser.file_type_filter;
+        app.browser.pinned_folders = app.prefs.file_browser.pinned_folders.clone();
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -14917,11 +14917,11 @@ impl KlippApp {
             // Sync file-browser skim prefs → state. If audio skim was just
             // turned off mid-session, end the active session immediately so
             // the user gets the silence they asked for.
-            if self.state.file_browser_video_skim_enabled != self.prefs.editing.file_browser_video_skim {
-                self.state.file_browser_video_skim_enabled = self.prefs.editing.file_browser_video_skim;
+            if self.state.file_browser_video_skim_enabled != self.prefs.file_browser.file_browser_video_skim {
+                self.state.file_browser_video_skim_enabled = self.prefs.file_browser.file_browser_video_skim;
             }
-            if self.state.file_browser_audio_skim_enabled != self.prefs.editing.file_browser_audio_skim {
-                self.state.file_browser_audio_skim_enabled = self.prefs.editing.file_browser_audio_skim;
+            if self.state.file_browser_audio_skim_enabled != self.prefs.file_browser.file_browser_audio_skim {
+                self.state.file_browser_audio_skim_enabled = self.prefs.file_browser.file_browser_audio_skim;
                 if !self.state.file_browser_audio_skim_enabled && self.state.skim_audio_session.is_some() {
                     cmds.push(AppCommand::BrowserSkimAudioEnd);
                 }
@@ -15526,23 +15526,23 @@ impl KlippApp {
                 self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
                 let _ = self.prefs.save();
             }
-            if self.browser.file_thumb_size != self.prefs.editing.file_thumb_size {
-                self.prefs.editing.file_thumb_size = self.browser.file_thumb_size;
+            if self.browser.file_thumb_size != self.prefs.file_browser.file_thumb_size {
+                self.prefs.file_browser.file_thumb_size = self.browser.file_thumb_size;
                 let _ = self.prefs.save();
             }
-            if self.browser.files_sort_by != self.prefs.editing.file_sort_by
-                || self.browser.files_sort_ascending != self.prefs.editing.file_sort_ascending
+            if self.browser.files_sort_by != self.prefs.file_browser.file_sort_by
+                || self.browser.files_sort_ascending != self.prefs.file_browser.file_sort_ascending
             {
-                self.prefs.editing.file_sort_by = self.browser.files_sort_by;
-                self.prefs.editing.file_sort_ascending = self.browser.files_sort_ascending;
+                self.prefs.file_browser.file_sort_by = self.browser.files_sort_by;
+                self.prefs.file_browser.file_sort_ascending = self.browser.files_sort_ascending;
                 let _ = self.prefs.save();
             }
-            if self.browser.files_type_filter != self.prefs.editing.file_type_filter {
-                self.prefs.editing.file_type_filter = self.browser.files_type_filter;
+            if self.browser.files_type_filter != self.prefs.file_browser.file_type_filter {
+                self.prefs.file_browser.file_type_filter = self.browser.files_type_filter;
                 let _ = self.prefs.save();
             }
-            if self.browser.pinned_folders != self.prefs.editing.pinned_folders {
-                self.prefs.editing.pinned_folders = self.browser.pinned_folders.clone();
+            if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
+                self.prefs.file_browser.pinned_folders = self.browser.pinned_folders.clone();
                 let _ = self.prefs.save();
             }
         });
