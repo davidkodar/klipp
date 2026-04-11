@@ -14769,6 +14769,58 @@ impl KlippApp {
             }
         }
 
+        // 4c4. File Info window — opens from the file browser right-click menu.
+        if let Some(path) = self.state.file_info.clone() {
+            // Modal backdrop
+            egui::Area::new(egui::Id::new("file_info_backdrop"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let resp = ui.allocate_rect(screen, egui::Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
+                    if resp.clicked() { self.state.file_info = None; }
+                });
+
+            // Lazy-load the thumbnail texture from the shared media-pool disk
+            // cache. The cache key is path+size+mtime so it's automatically
+            // shared with the file browser thumbnails — if the user has seen
+            // this file in the browser, the cache hit is instant.
+            if self.state.file_info_thumb.is_none() {
+                if let Some(key) = klipp_media::disk_cache::compute_cache_key(&path) {
+                    if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(&key) {
+                        let pixels: Vec<egui::Color32> = rgba
+                            .chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                            .collect();
+                        let image = egui::ColorImage {
+                            size: [w as usize, h as usize],
+                            pixels,
+                        };
+                        let tex = ctx.load_texture(
+                            "file_info_thumb",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.state.file_info_thumb = Some(tex);
+                    }
+                }
+            }
+
+            let mut still_open = true;
+            crate::panels::file_info::show_file_info(
+                ctx,
+                &path,
+                self.state.file_info_thumb.as_ref(),
+                &self.theme,
+                &mut still_open,
+            );
+            if !still_open {
+                self.state.file_info = None;
+                self.state.file_info_thumb = None;
+            }
+        }
+
         // 4d. Preferences window
         if self.state.show_preferences {
             let (still_open, pref_cmds) = self.preferences_panel.show(

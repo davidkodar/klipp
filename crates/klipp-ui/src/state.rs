@@ -630,6 +630,13 @@ pub struct AppState {
     pub show_new_project_dialog: bool,
     // Project Info window
     pub show_project_info: bool,
+    /// File Info window — Some(path) when open, None when closed.
+    /// Set from the file browser right-click menu.
+    pub file_info: Option<std::path::PathBuf>,
+    /// Lazily-loaded thumbnail texture for the currently-shown File Info window.
+    /// Cleared when `file_info` is reset to None. Loaded from the shared
+    /// media-pool disk cache (`klipp_media::disk_cache`).
+    pub file_info_thumb: Option<egui::TextureHandle>,
     // Consolidate Project dialog
     pub show_consolidate_dialog: bool,
 
@@ -1518,6 +1525,8 @@ impl Default for AppState {
             media_usage_cache_dirty: true,
             show_new_project_dialog: false,
             show_project_info: false,
+            file_info: None,
+            file_info_thumb: None,
             show_consolidate_dialog: false,
             renaming_sequence_idx: None,
             rename_sequence_buf: String::new(),

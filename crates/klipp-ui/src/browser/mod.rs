@@ -16,6 +16,19 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// One pending file-browser selection action, captured during the row loop
+/// and applied after the ScrollArea closure releases its borrow on
+/// `self.files_entries`.
+enum FileSelectAction {
+    /// Replace selection with a single path. Sets the anchor to that path.
+    Set(std::path::PathBuf),
+    /// Toggle a single path in/out of the selection. Updates the anchor.
+    Toggle(std::path::PathBuf),
+    /// Replace selection with a pre-computed range of paths (anchor is left
+    /// untouched so subsequent shift+clicks still extend from the same anchor).
+    Range(Vec<std::path::PathBuf>),
+}
+
 /// Result from a file-browser thumbnail worker.
 struct FileThumbResult {
     path: std::path::PathBuf,
@@ -147,6 +160,14 @@ pub struct BrowserPanel {
     pub files_loading: bool,
     pub files_error: Option<String>,
     pub files_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<FileEntry>, String>>>,
+    /// Currently selected files in the files tab. Supports multi-select via
+    /// Ctrl/Cmd+click (toggle) and Shift+click (range). Cleared on directory
+    /// navigation. Visual-only — does not affect import flow.
+    pub files_selected: HashSet<std::path::PathBuf>,
+    /// Anchor for range selection (the last item that was plain- or
+    /// ctrl-clicked). Shift+click selects every visible row between the
+    /// anchor and the clicked row, inclusive.
+    pub files_selection_anchor: Option<std::path::PathBuf>,
     // File-thumbnail state (in-memory; disk cache is shared with media pool)
     file_thumb_textures: HashMap<std::path::PathBuf, egui::TextureHandle>,
     file_thumb_pending: HashSet<std::path::PathBuf>,
@@ -187,6 +208,8 @@ impl Default for BrowserPanel {
             files_loading: false,
             files_error: None,
             files_receiver: None,
+            files_selected: HashSet::new(),
+            files_selection_anchor: None,
             file_thumb_textures: HashMap::new(),
             file_thumb_pending: HashSet::new(),
             file_thumb_failed: HashSet::new(),
@@ -565,8 +588,23 @@ impl BrowserPanel {
         self.file_thumb_textures.clear();
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
+        // Selection doesn't carry across folders.
+        self.files_selected.clear();
+        self.files_selection_anchor = None;
         // Note: in-flight workers will still complete and send results;
         // drain_file_thumbs filters out paths no longer in the current entries.
+    }
+
+    /// Re-read the current directory and drop in-memory thumbnail caches so
+    /// any externally-modified files are picked up. Selection IS preserved
+    /// (paths that no longer exist will simply disappear from the new
+    /// `files_entries` list). The disk thumbnail cache stays intact — its
+    /// keys (path+size+mtime) auto-invalidate per file.
+    fn refresh_files(&mut self) {
+        self.files_entries_dirty = true;
+        self.file_thumb_textures.clear();
+        self.file_thumb_pending.clear();
+        self.file_thumb_failed.clear();
     }
 
     /// Drain pending file-thumbnail results and upload textures to egui.
@@ -635,7 +673,7 @@ impl BrowserPanel {
             .ok();
     }
 
-    fn show_files_tab(&mut self, ui: &mut egui::Ui, _state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
+    fn show_files_tab(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
 
@@ -864,6 +902,17 @@ impl BrowserPanel {
         let mut go_home_clicked = false;
         let mut pending_navigate: Option<std::path::PathBuf> = None;
         let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
+        let mut pending_select: Option<FileSelectAction> = None;
+        // Right-click → "Add to media pool" / "Add to bin" request.
+        // Tuple: (paths to import, optional bin name).
+        let mut import_request: Option<(Vec<std::path::PathBuf>, Option<String>)> = None;
+        // Right-click → "File info..." request (path of file to show info for).
+        let mut pending_show_file_info: Option<std::path::PathBuf> = None;
+        // Right-click → "Open in Source Viewer" — list of files to import.
+        // The FIRST file becomes the source viewer's active media.
+        let mut pending_open_in_source: Option<Vec<std::path::PathBuf>> = None;
+        // Right-click → "Refresh folder" — re-read current dir + drop thumbs.
+        let mut pending_refresh = false;
         // Capture before the closure — `self` is borrowed inside via `filtered`.
         let thumb_size = self.file_thumb_size;
         let row_h = thumb_size.row_height();
@@ -915,14 +964,17 @@ impl BrowserPanel {
                 });
             }
 
-            for entry in &filtered {
+            for (row_idx, entry) in filtered.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), row_h),
-                    egui::Sense::click(),
+                    egui::Sense::click(), // egui::Sense::click() captures both primary and secondary
                 );
 
-                // Hover highlight
-                if resp.hovered() {
+                // Background priority: selected > hovered > none.
+                let is_selected = self.files_selected.contains(&entry.path);
+                if is_selected {
+                    ui.painter().rect_filled(rect, 2.0, theme.accent_dim);
+                } else if resp.hovered() {
                     ui.painter().rect_filled(rect, 2.0, theme.bg_hover);
                 }
 
@@ -993,7 +1045,11 @@ impl BrowserPanel {
                 }
 
                 // Name + size are positioned to the right of the thumb_box.
-                let name_color = if entry.is_dir {
+                // Selected rows use the accent text color for clear contrast on
+                // the accent_dim background.
+                let name_color = if is_selected {
+                    theme.text_accent
+                } else if entry.is_dir {
                     theme.text_primary
                 } else if entry.is_media {
                     theme.text_primary
@@ -1028,8 +1084,12 @@ impl BrowserPanel {
                     egui::Stroke::new(0.3, theme.border),
                 );
 
-                // Interactions — defer mutations to after the closure to avoid
-                // borrowing `self` while `filtered` still aliases `self.files_entries`.
+                // ── Interactions ──
+                // All `self` mutations are deferred to after the closure to
+                // avoid borrowing `self` while `filtered` still aliases
+                // `self.files_entries`.
+
+                // Double-click: navigate (dir) or import (media file).
                 if resp.double_clicked() {
                     if entry.is_dir {
                         pending_navigate = Some(entry.path.clone());
@@ -1040,11 +1100,152 @@ impl BrowserPanel {
                         });
                     }
                 }
-                if resp.clicked() && entry.is_dir {
-                    pending_navigate = Some(entry.path.clone());
+
+                // Single primary click: navigate into a directory, OR update
+                // the file selection (with modifier-aware behavior).
+                if resp.clicked() {
+                    if entry.is_dir {
+                        pending_navigate = Some(entry.path.clone());
+                    } else {
+                        let mods = ui.input(|i| i.modifiers);
+                        if mods.shift {
+                            // Shift+click: select range from anchor (or current
+                            // row if no anchor) up to and including this row.
+                            let anchor_idx = self.files_selection_anchor.as_ref()
+                                .and_then(|a| filtered.iter().position(|e| e.path == *a));
+                            let range_paths: Vec<std::path::PathBuf> = match anchor_idx {
+                                Some(a) => {
+                                    let (lo, hi) = if a <= row_idx { (a, row_idx) } else { (row_idx, a) };
+                                    filtered[lo..=hi].iter().map(|e| e.path.clone()).collect()
+                                }
+                                None => vec![entry.path.clone()],
+                            };
+                            pending_select = Some(FileSelectAction::Range(range_paths));
+                        } else if mods.ctrl || mods.command {
+                            // Ctrl/Cmd+click: toggle this row in the selection.
+                            pending_select = Some(FileSelectAction::Toggle(entry.path.clone()));
+                        } else {
+                            // Plain click: replace selection with this row.
+                            pending_select = Some(FileSelectAction::Set(entry.path.clone()));
+                        }
+                    }
                 }
 
-                // Tooltip
+                // Right-click context menu — available on EVERY entry (file or
+                // directory). Import actions are gated to media files; the
+                // Tier 1 actions (reveal/open/copy/info) work for everything.
+                //
+                // Operates on the existing selection if the right-clicked file
+                // is part of it; otherwise operates on just this single row.
+                let target_paths: Vec<std::path::PathBuf> = if self.files_selected.contains(&entry.path)
+                    && self.files_selected.len() > 1
+                {
+                    // Multi-selection — keep only visible media files.
+                    filtered.iter()
+                        .filter(|e| !e.is_dir && e.is_media && self.files_selected.contains(&e.path))
+                        .map(|e| e.path.clone())
+                        .collect()
+                } else if !entry.is_dir && entry.is_media {
+                    vec![entry.path.clone()]
+                } else {
+                    Vec::new()
+                };
+                let menu_count = target_paths.len();
+                let bins_snapshot: Vec<String> = state.media_pool.bins.iter()
+                    .map(|b| b.name.clone())
+                    .collect();
+                let menu_path = entry.path.clone();
+                let menu_is_dir = entry.is_dir;
+                resp.context_menu(|ui| {
+                    // ── Import actions (only for media files) ──
+                    if menu_count > 0 {
+                        let label = if menu_count == 1 {
+                            "Add to Media Pool".to_string()
+                        } else {
+                            format!("Add {} files to Media Pool", menu_count)
+                        };
+                        if ui.button(label).clicked() {
+                            import_request = Some((target_paths.clone(), None));
+                            ui.close_menu();
+                        }
+                        if !bins_snapshot.is_empty() {
+                            ui.menu_button("Add to Bin", |ui| {
+                                for bin_name in &bins_snapshot {
+                                    if ui.button(bin_name).clicked() {
+                                        import_request = Some((target_paths.clone(), Some(bin_name.clone())));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+
+                        // ── Open in Source Viewer ──
+                        // Imports the file(s) to the media pool AND switches the
+                        // viewer to Source mode showing the FIRST imported file.
+                        // (Klipp's source viewer requires a MediaId, so we can't
+                        // do true preview-without-import yet — see Tier 2 audit.)
+                        let src_label = if menu_count == 1 {
+                            "Open in Source Viewer".to_string()
+                        } else {
+                            format!("Import {} & Open First in Source Viewer", menu_count)
+                        };
+                        if ui.button(src_label).clicked() {
+                            pending_open_in_source = Some(target_paths.clone());
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                    }
+
+                    // ── Reveal in File Manager (parent directory) ──
+                    let reveal_label = if menu_is_dir {
+                        "Open in File Manager"
+                    } else {
+                        "Reveal in File Manager"
+                    };
+                    if ui.button(reveal_label).clicked() {
+                        let target = if menu_is_dir {
+                            menu_path.clone()
+                        } else {
+                            menu_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| menu_path.clone())
+                        };
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg(&target)
+                            .spawn();
+                        ui.close_menu();
+                    }
+
+                    // ── Open with Default Application (only for files) ──
+                    if !menu_is_dir {
+                        if ui.button("Open with Default Application").clicked() {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(&menu_path)
+                                .spawn();
+                            ui.close_menu();
+                        }
+                    }
+
+                    // ── Copy file path ──
+                    if ui.button("Copy File Path").clicked() {
+                        ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    // ── File Info... ──
+                    if ui.button("File Info\u{2026}").clicked() {
+                        pending_show_file_info = Some(menu_path.clone());
+                        ui.close_menu();
+                    }
+
+                    // ── Refresh folder ──
+                    if ui.button("Refresh Folder").clicked() {
+                        pending_refresh = true;
+                        ui.close_menu();
+                    }
+                });
+
+                // Tooltip on hover (path)
                 resp.on_hover_text(entry.path.to_string_lossy().as_ref());
             }
         });
@@ -1062,6 +1263,80 @@ impl BrowserPanel {
             for path in thumb_spawn_requests {
                 self.spawn_file_thumb(path, &ctx);
             }
+        }
+
+        // Apply selection changes captured during the row loop.
+        match pending_select {
+            Some(FileSelectAction::Set(p)) => {
+                self.files_selected.clear();
+                self.files_selected.insert(p.clone());
+                self.files_selection_anchor = Some(p);
+            }
+            Some(FileSelectAction::Toggle(p)) => {
+                if self.files_selected.contains(&p) {
+                    self.files_selected.remove(&p);
+                } else {
+                    self.files_selected.insert(p.clone());
+                }
+                self.files_selection_anchor = Some(p);
+            }
+            Some(FileSelectAction::Range(paths)) => {
+                self.files_selected.clear();
+                for p in paths {
+                    self.files_selected.insert(p);
+                }
+                // Anchor stays put — subsequent shift+clicks extend from the
+                // SAME anchor (Finder/FCP behavior).
+            }
+            None => {}
+        }
+
+        // Right-click → import to media pool / bin.
+        if let Some((paths, bin)) = import_request {
+            for path in paths {
+                let media_id = klipp_core::MediaId::new();
+                cmds.push(AppCommand::LoadMediaFile {
+                    path,
+                    media_id,
+                });
+                if let Some(ref bin_name) = bin {
+                    cmds.push(AppCommand::MoveItemToBin {
+                        media_id,
+                        bin: Some(bin_name.clone()),
+                    });
+                }
+            }
+        }
+
+        // Right-click → show File Info modal.
+        if let Some(path) = pending_show_file_info {
+            state.file_info = Some(path);
+        }
+
+        // Right-click → import + open in Source viewer.
+        // For multi-select, all files are imported and the FIRST one becomes
+        // the active source media. There's a 1-frame flicker because the
+        // engine processes LoadMediaFile asynchronously, so the source viewer
+        // briefly renders the placeholder until the MediaItem appears in the
+        // pool — imperceptible in practice.
+        if let Some(paths) = pending_open_in_source {
+            let mut first_id: Option<klipp_core::MediaId> = None;
+            for path in paths {
+                let media_id = klipp_core::MediaId::new();
+                if first_id.is_none() {
+                    first_id = Some(media_id);
+                }
+                cmds.push(AppCommand::LoadMediaFile { path, media_id });
+            }
+            if let Some(mid) = first_id {
+                state.source_media_id = Some(mid);
+                state.viewer_mode = klipp_core::ViewerMode::Source;
+            }
+        }
+
+        // Right-click → refresh current folder.
+        if pending_refresh {
+            self.refresh_files();
         }
 
         cmds

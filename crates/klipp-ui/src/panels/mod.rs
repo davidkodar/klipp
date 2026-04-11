@@ -7,6 +7,7 @@ pub mod launch_screen;
 pub mod markers;
 pub mod new_project_dialog;
 pub mod project_info;
+pub mod file_info;
 pub mod preferences;
 pub mod render_queue;
 pub mod status_bar;
