@@ -47,9 +47,41 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 ///
 /// Includes the modern formats `heic`, `heif`, `avif`, and `jxl` because
 /// modern phone cameras and the web routinely produce them.
+///
+/// Also includes the camera RAW formats from [`RAW_EXTENSIONS`] — they're
+/// treated as still images by Klipp because we extract their embedded JPEG
+/// preview rather than demosaicing the actual raw bayer data. Callers that
+/// need to know "is this a raw file that needs special decoding?" should
+/// use [`is_raw`] instead of `is_image`.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
     "heic", "heif", "avif", "jxl",
+    // Camera RAW formats — actual decode goes through the embedded-JPEG
+    // extractor (klipp_engine::extract_raw_preview) instead of ffmpeg.
+    "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
+];
+
+/// Camera RAW image extensions. These are a subset of [`IMAGE_EXTENSIONS`] —
+/// every entry here is also in `IMAGE_EXTENSIONS` so they get treated as
+/// stills throughout the app, but they decode through a different path
+/// (embedded JPEG preview extraction, not ffmpeg) because none of the
+/// proprietary RAW codecs are supported by stock ffmpeg.
+///
+/// Callers that build a thumbnail / poster decode pipeline should check
+/// `is_raw(ext)` first and dispatch to `klipp_engine::extract_raw_preview`,
+/// then fall back to the regular ffmpeg image path for everything else.
+pub const RAW_EXTENSIONS: &[&str] = &[
+    "arw",  // Sony Alpha
+    "cr2",  // Canon (older)
+    "cr3",  // Canon (newer)
+    "nef",  // Nikon
+    "raf",  // Fujifilm
+    "orf",  // Olympus
+    "rw2",  // Panasonic
+    "dng",  // Adobe Digital Negative (also produced by some phones)
+    "pef",  // Pentax
+    "srw",  // Samsung
+    "rwl",  // Leica
 ];
 
 /// Build a `Vec` containing every media extension from all three categories.
@@ -92,12 +124,29 @@ pub fn is_audio(ext: &str) -> bool {
 }
 
 /// Returns `true` if the extension is a known still-image format. Case-insensitive.
+/// Includes RAW formats — see [`is_raw`] if you need to distinguish them.
 pub fn is_image(ext: &str) -> bool {
     if ext.is_empty() {
         return false;
     }
     let lower = ext.to_lowercase();
     IMAGE_EXTENSIONS.contains(&lower.as_str())
+}
+
+/// Returns `true` if the extension is a camera RAW format that needs to be
+/// decoded via embedded-JPEG preview extraction rather than ffmpeg.
+/// Case-insensitive.
+///
+/// Every RAW extension is also a member of [`IMAGE_EXTENSIONS`], so any
+/// caller that just wants to know "should this file appear in the image
+/// filter / pool / browser?" should use `is_image` instead. Use `is_raw`
+/// only when you're about to decode and need to choose the right code path.
+pub fn is_raw(ext: &str) -> bool {
+    if ext.is_empty() {
+        return false;
+    }
+    let lower = ext.to_lowercase();
+    RAW_EXTENSIONS.contains(&lower.as_str())
 }
 
 /// Returns `true` if the extension belongs to any of the three media categories.
@@ -128,6 +177,14 @@ pub fn path_is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(is_image)
+        .unwrap_or(false)
+}
+
+/// Path-aware variant of [`is_raw`].
+pub fn path_is_raw(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(is_raw)
         .unwrap_or(false)
 }
 
@@ -167,13 +224,87 @@ mod tests {
 
     #[test]
     fn image_extensions_baseline() {
-        // Includes the modern phone/web formats that we explicitly want
-        // supported (this is the regression test for the HEIC bug).
+        // Includes the modern phone/web formats AND camera RAW formats.
+        // The RAW formats are decoded via embedded-JPEG preview extraction,
+        // not ffmpeg — see klipp_engine::extract_raw_preview.
         let expected: &[&str] = &[
             "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
             "heic", "heif", "avif", "jxl",
+            "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
         ];
         assert_eq!(IMAGE_EXTENSIONS, expected);
+    }
+
+    #[test]
+    fn raw_extensions_baseline() {
+        let expected: &[&str] = &[
+            "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
+        ];
+        assert_eq!(RAW_EXTENSIONS, expected);
+    }
+
+    #[test]
+    fn every_raw_is_also_an_image() {
+        // Critical invariant: RAW_EXTENSIONS must be a subset of
+        // IMAGE_EXTENSIONS so RAW files are treated as still images
+        // throughout the app. If this fails, the file browser will
+        // fail to detect RAW files as media.
+        for &raw in RAW_EXTENSIONS {
+            assert!(
+                IMAGE_EXTENSIONS.contains(&raw),
+                "RAW extension '{}' is not in IMAGE_EXTENSIONS",
+                raw
+            );
+        }
+    }
+
+    #[test]
+    fn is_raw_accepts_known_formats() {
+        for &ext in RAW_EXTENSIONS {
+            assert!(is_raw(ext), "is_raw should accept {}", ext);
+        }
+    }
+
+    #[test]
+    fn is_raw_case_insensitive() {
+        assert!(is_raw("arw"));
+        assert!(is_raw("ARW"));
+        assert!(is_raw("Arw"));
+        assert!(is_raw("CR2"));
+        assert!(is_raw("dng"));
+        assert!(is_raw("DNG"));
+    }
+
+    #[test]
+    fn is_raw_rejects_non_raw() {
+        // Standard images are not RAW.
+        assert!(!is_raw("png"));
+        assert!(!is_raw("jpg"));
+        assert!(!is_raw("heic"));
+        // Other categories.
+        assert!(!is_raw("mp4"));
+        assert!(!is_raw("wav"));
+        // Unrelated.
+        assert!(!is_raw("txt"));
+        assert!(!is_raw(""));
+    }
+
+    #[test]
+    fn is_image_accepts_raw_formats() {
+        // Sanity: every RAW format must also pass is_image.
+        for &raw in RAW_EXTENSIONS {
+            assert!(is_image(raw), "is_image should accept RAW '{}'", raw);
+        }
+    }
+
+    #[test]
+    fn path_is_raw_handles_real_paths() {
+        use std::path::PathBuf;
+        assert!(path_is_raw(&PathBuf::from("/photos/DSC01393.ARW")));
+        assert!(path_is_raw(&PathBuf::from("DSC_0001.NEF")));
+        assert!(path_is_raw(&PathBuf::from("IMG_1234.cr3")));
+        assert!(!path_is_raw(&PathBuf::from("/photos/IMG.jpg")));
+        assert!(!path_is_raw(&PathBuf::from("/tmp/Makefile")));
     }
 
     // ── Cross-domain integrity ────────────────────────────────────

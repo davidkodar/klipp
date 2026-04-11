@@ -21,7 +21,7 @@ ringbuf = { workspace = true }
 bytemuck = { workspace = true }
 crossbeam-channel = { workspace = true }
 tracing = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 lz4_flex = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }

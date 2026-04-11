@@ -98,7 +98,9 @@ fn is_visual_media(path: &std::path::Path) -> bool {
 fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), String> {
     let cache_key = klipp_media::disk_cache::compute_cache_key(path);
 
-    // Try disk cache first (shared with media-pool thumbnails).
+    // Try disk cache first (shared with media-pool thumbnails). RAW files
+    // use the same cache because the embedded JPEG preview is what we
+    // ultimately store, not the bayer data.
     if let Some(ref key) = cache_key {
         if klipp_media::disk_cache::thumbnail_cache_exists(key) {
             if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(key) {
@@ -107,11 +109,19 @@ fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), St
         }
     }
 
-    // Generate from source. Stills decode at seek=0, duration=0.
-    // Videos use the non-black variant which probes 0/5/10/20/30%.
-    let (rgba, w, h) = klipp_engine::generate_thumbnail_at_size_non_black(
-        path, 0.0, 0.0, FILE_THUMB_MAX_WIDTH,
-    )?;
+    // ── Decode path selection ──
+    // RAW camera files (ARW, CR2, NEF, RAF, ORF, DNG, etc.) can't be decoded
+    // by stock ffmpeg — they need their embedded JPEG preview extracted.
+    // Every other still / video goes through the regular ffmpeg path.
+    let (rgba, w, h) = if klipp_core::media_extensions::path_is_raw(path) {
+        klipp_engine::extract_raw_preview(path, FILE_THUMB_MAX_WIDTH)?
+    } else {
+        // Stills decode at seek=0, duration=0. Videos use the non-black
+        // variant which probes 0/5/10/20/30%.
+        klipp_engine::generate_thumbnail_at_size_non_black(
+            path, 0.0, 0.0, FILE_THUMB_MAX_WIDTH,
+        )?
+    };
 
     if let Some(ref key) = cache_key {
         let _ = klipp_media::disk_cache::write_thumbnail_cache(key, &rgba, w, h);

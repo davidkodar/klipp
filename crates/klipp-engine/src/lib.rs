@@ -26,6 +26,146 @@ pub fn init_ffmpeg() -> Result<(), ffmpeg_next::Error> {
     ffmpeg_next::init()
 }
 
+/// Extract the largest embedded JPEG preview from a camera RAW file (ARW,
+/// CR2, NEF, RAF, ORF, DNG, etc.) and decode it to RGBA.
+///
+/// Stock ffmpeg can't decode the proprietary compression in most RAW formats
+/// (e.g. Sony's "Unknown compression method 32767" on ARW). Doing real
+/// demosaicing would require pulling in libraw or a Rust equivalent like
+/// rawler — heavy dependency for what's almost always a thumbnail use case.
+///
+/// Every RAW file produced by a real camera embeds 1-3 JPEG previews so the
+/// camera's playback screen can render the image without doing a full RAW
+/// conversion. The largest of these is typically a near-full-resolution copy
+/// of the photo (e.g. 6192×3480 in a Sony A7 IV ARW). For thumbnail/preview
+/// purposes that's strictly better than what we could produce by demosaicing
+/// in 50ms anyway.
+///
+/// The algorithm:
+/// 1. Read the file into memory.
+/// 2. Linear scan for `FF D8 FF` JPEG SOI markers (followed by a valid
+///    marker byte 0xC0..0xEF, which excludes `FF D9` EOI being mistaken
+///    for a SOI continuation).
+/// 3. For each candidate SOI, find the next `FF D9` EOI to determine the
+///    JPEG's length.
+/// 4. Pick the longest candidate — by camera convention this is always the
+///    full-resolution preview, never an intermediate thumbnail.
+/// 5. Decode the extracted bytes via the `image` crate (jpeg feature) and
+///    optionally resize to `max_width` on the long edge.
+///
+/// Returns `(rgba, width, height)` matching the shape of the existing
+/// thumbnail helpers, so callers in the file browser thumb pipeline can use
+/// this as a drop-in replacement when they detect a RAW extension.
+pub fn extract_raw_preview(
+    path: &std::path::Path,
+    max_width: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read raw file: {e}"))?;
+    if bytes.len() < 8 {
+        return Err("file too small to contain a preview".to_string());
+    }
+
+    // Find the longest contained JPEG. We use a small state machine that
+    // alternates between LookingForSOI and LookingForEOI; this correctly
+    // handles SEQUENTIAL JPEGs (the common case in RAW files where the
+    // file is laid out as: thumbnail JPEG → medium preview JPEG → full
+    // preview JPEG → raw bayer data).
+    let (start, end) = find_largest_jpeg(&bytes)
+        .ok_or_else(|| "no embedded JPEG found in RAW file".to_string())?;
+
+    let jpeg_bytes = &bytes[start..end];
+
+    // Decode the extracted JPEG via the `image` crate.
+    let dynamic = image::load_from_memory_with_format(jpeg_bytes, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("decode embedded jpeg: {e}"))?;
+
+    // Resize to fit `max_width` on the long edge (preserve aspect).
+    let src_w = dynamic.width();
+    let src_h = dynamic.height();
+    let scale = if src_w > max_width || src_h > max_width {
+        (max_width as f32) / (src_w.max(src_h) as f32)
+    } else {
+        1.0
+    };
+    let dst_w = ((src_w as f32) * scale).round().max(1.0) as u32;
+    let dst_h = ((src_h as f32) * scale).round().max(1.0) as u32;
+
+    let resized = if scale < 1.0 {
+        dynamic.resize(dst_w, dst_h, image::imageops::FilterType::Triangle)
+    } else {
+        dynamic
+    };
+
+    let rgba = resized.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Ok((rgba.into_raw(), w, h))
+}
+
+/// Find the byte offsets `(start, end)` of the longest embedded JPEG in `bytes`.
+/// Returns `None` if no JPEG is found.
+///
+/// `start` points at the JPEG's `FF D8` SOI marker; `end` is one past the
+/// `FF D9` EOI marker, so `&bytes[start..end]` is the complete JPEG.
+///
+/// Pulled out as a freestanding function so the unit tests can drive it
+/// with synthetic byte sequences without touching the filesystem.
+fn find_largest_jpeg(bytes: &[u8]) -> Option<(usize, usize)> {
+    enum State {
+        LookingForSoi,
+        InsideJpeg { start: usize },
+    }
+
+    // A "valid SOI" is `FF D8 FF Xn` where Xn is a known JPEG marker byte.
+    // We require the 4th byte to be 0xC0..=0xEF or 0xDB so that random
+    // raw bayer data containing `FF D8 FF` followed by garbage doesn't
+    // get mistaken for a JPEG start. This covers JFIF (E0), Exif (E1),
+    // app markers (E2..EF), DQT (DB), and start-of-frame (C0..CF).
+    let is_valid_soi_continuation = |b: u8| (0xC0..=0xEF).contains(&b) || b == 0xDB;
+
+    let mut best: Option<(usize, usize)> = None;
+    let mut state = State::LookingForSoi;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        match state {
+            State::LookingForSoi => {
+                if i + 3 < bytes.len()
+                    && bytes[i] == 0xFF
+                    && bytes[i + 1] == 0xD8
+                    && bytes[i + 2] == 0xFF
+                    && is_valid_soi_continuation(bytes[i + 3])
+                {
+                    state = State::InsideJpeg { start: i };
+                    i += 2; // skip past SOI; the FF Xn at i+2..i+4 will be re-scanned
+                } else {
+                    i += 1;
+                }
+            }
+            State::InsideJpeg { start } => {
+                if bytes[i] == 0xFF && bytes[i + 1] == 0xD9 {
+                    let end = i + 2;
+                    let len = end - start;
+                    // Reject suspiciously tiny "JPEGs" — likely false positives
+                    // from random bayer data. Real previews are at least a few KB.
+                    if len >= 1024 {
+                        match best {
+                            None => best = Some((start, end)),
+                            Some((bs, be)) if (be - bs) < len => best = Some((start, end)),
+                            _ => {}
+                        }
+                    }
+                    state = State::LookingForSoi;
+                    i = end;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    best
+}
+
 /// Generate a downsampled waveform peaks summary for an audio file.
 ///
 /// Decodes the file via ffmpeg, resamples to 4 kHz MONO f32, accumulates
@@ -220,4 +360,180 @@ pub fn probe_media_header(path: &std::path::Path) -> Result<MediaHeader, String>
     }
 
     Ok(info)
+}
+
+#[cfg(test)]
+mod raw_preview_tests {
+    use super::*;
+
+    /// Helper: build a synthetic byte stream that contains N "fake JPEGs"
+    /// of given lengths at deterministic offsets, separated by filler bytes
+    /// (zeros, which never form valid JPEG markers). Returns the bytes plus
+    /// the (start, length) of each embedded JPEG so tests can verify the
+    /// scanner picked the right one.
+    fn build_synthetic_raw(
+        jpeg_lengths: &[usize],
+    ) -> (Vec<u8>, Vec<(usize, usize)>) {
+        let mut out = Vec::new();
+        let mut markers = Vec::new();
+        // Some leading TIFF-ish padding so the first JPEG isn't at offset 0.
+        out.extend_from_slice(b"II*\0\x08\0\0\0FAKE_TIFF_HEADER_PADDING");
+        for &len in jpeg_lengths {
+            assert!(len >= 4, "JPEG must have room for SOI + EOI");
+            let start = out.len();
+            // SOI: FF D8 FF E1 (Exif marker)
+            out.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
+            // Filler bytes — use 0xAA so they don't accidentally form
+            // valid markers. Number of filler bytes = len - 6 (4 SOI + 2 EOI).
+            out.extend(std::iter::repeat(0xAA).take(len - 6));
+            // EOI: FF D9
+            out.extend_from_slice(&[0xFF, 0xD9]);
+            markers.push((start, len));
+            // Some inter-JPEG padding (raw bayer-ish data — random-looking
+            // bytes that contain neither FF D8 FF nor FF D9).
+            out.extend(std::iter::repeat(0x55).take(64));
+        }
+        (out, markers)
+    }
+
+    #[test]
+    fn find_largest_jpeg_picks_largest_of_three() {
+        // Three sequential JPEGs of increasing size — typical RAW layout
+        // (small thumb, medium preview, large preview).
+        let (bytes, markers) = build_synthetic_raw(&[200, 1500, 8192]);
+        let result = find_largest_jpeg(&bytes);
+        let (start, end) = result.expect("should find a JPEG");
+        let (expected_start, expected_len) = markers[2]; // the 8192-byte one
+        assert_eq!(start, expected_start);
+        assert_eq!(end - start, expected_len);
+    }
+
+    #[test]
+    fn find_largest_jpeg_picks_when_first_is_largest() {
+        let (bytes, markers) = build_synthetic_raw(&[8192, 1500, 200]);
+        let result = find_largest_jpeg(&bytes);
+        let (start, end) = result.expect("should find a JPEG");
+        let (expected_start, expected_len) = markers[0];
+        assert_eq!(start, expected_start);
+        assert_eq!(end - start, expected_len);
+    }
+
+    #[test]
+    fn find_largest_jpeg_returns_none_for_no_jpegs() {
+        // Random bytes that contain no JPEG markers.
+        let bytes: Vec<u8> = (0..1000).map(|i| (i % 200) as u8).collect();
+        assert!(find_largest_jpeg(&bytes).is_none());
+    }
+
+    #[test]
+    fn find_largest_jpeg_returns_none_for_empty_input() {
+        assert!(find_largest_jpeg(&[]).is_none());
+    }
+
+    #[test]
+    fn find_largest_jpeg_rejects_tiny_false_positives() {
+        // A "JPEG" of only 100 bytes is below the 1024-byte sanity floor —
+        // rejected as a likely false positive from random raw bayer data.
+        let (bytes, _markers) = build_synthetic_raw(&[100]);
+        assert!(find_largest_jpeg(&bytes).is_none());
+    }
+
+    #[test]
+    fn find_largest_jpeg_handles_truncated_final_jpeg() {
+        // First JPEG is complete, second SOI has no matching EOI (truncated).
+        // Scanner should return the first one and not panic.
+        let (mut bytes, markers) = build_synthetic_raw(&[2048]);
+        // Append a truncated JPEG: SOI but no EOI.
+        bytes.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
+        bytes.extend(std::iter::repeat(0xAA).take(500));
+        // No EOI — file ends here.
+
+        let result = find_largest_jpeg(&bytes);
+        let (start, end) = result.expect("should still find the first complete JPEG");
+        let (expected_start, expected_len) = markers[0];
+        assert_eq!(start, expected_start);
+        assert_eq!(end - start, expected_len);
+    }
+
+    #[test]
+    fn find_largest_jpeg_ignores_random_ff_d8_in_data() {
+        // Random bytes that include `FF D8` followed by something invalid
+        // (not a valid SOI continuation).
+        let mut bytes = vec![0u8; 5000];
+        bytes[100] = 0xFF;
+        bytes[101] = 0xD8;
+        bytes[102] = 0xFF;
+        bytes[103] = 0x55; // not a valid marker — must NOT be treated as SOI
+        // Add a real JPEG further along.
+        let real_start = 1000;
+        bytes[real_start] = 0xFF;
+        bytes[real_start + 1] = 0xD8;
+        bytes[real_start + 2] = 0xFF;
+        bytes[real_start + 3] = 0xE1;
+        // Pad with safe bytes
+        for i in (real_start + 4)..(real_start + 2000) {
+            bytes[i] = 0xAA;
+        }
+        // EOI
+        bytes[real_start + 2000] = 0xFF;
+        bytes[real_start + 2001] = 0xD9;
+        bytes.truncate(real_start + 2002);
+
+        let result = find_largest_jpeg(&bytes);
+        let (start, _end) = result.expect("should find the real JPEG");
+        assert_eq!(start, real_start, "false-positive at offset 100 should have been rejected");
+    }
+
+    #[test]
+    fn extract_raw_preview_errors_on_missing_file() {
+        let result = extract_raw_preview(
+            std::path::Path::new("/nonexistent/path/to/file.arw"),
+            480,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_raw_preview_errors_on_file_with_no_jpeg() {
+        // Write a small non-JPEG file to disk and verify extract_raw_preview
+        // returns Err rather than panicking.
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_test_no_jpeg_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fake.arw");
+        std::fs::write(&path, b"this is not a jpeg, no markers here at all").unwrap();
+        let result = extract_raw_preview(&path, 480);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opt-in regression test against a real RAW file. Set
+    /// `KLIPP_TEST_RAW_FILE=/path/to/file.arw` to enable.
+    /// Skipped silently otherwise.
+    #[test]
+    fn extract_raw_preview_against_real_arw_file() {
+        let path = match std::env::var("KLIPP_TEST_RAW_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("[skipped] set KLIPP_TEST_RAW_FILE to a real RAW file path to run this test");
+                return;
+            }
+        };
+        let result = extract_raw_preview(&path, 480);
+        match result {
+            Ok((rgba, w, h)) => {
+                eprintln!("[OK] {} → {}x{} ({} bytes RGBA)", path.display(), w, h, rgba.len());
+                assert!(w > 0 && h > 0);
+                assert_eq!(rgba.len() as u32, w * h * 4);
+                // Result should fit within max_width on the long edge.
+                assert!(w <= 480 && h <= 480, "result must fit in 480px max bound");
+            }
+            Err(e) => {
+                panic!("extract_raw_preview failed for {}: {}", path.display(), e);
+            }
+        }
+    }
 }
