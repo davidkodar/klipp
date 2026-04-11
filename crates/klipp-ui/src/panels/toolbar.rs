@@ -346,10 +346,10 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Import Media...").shortcut_text("Ctrl+I")).clicked() {
                 ui.close_menu();
                 if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("All media", &["mp4","mkv","mov","avi","webm","m4v","mts","wav","mp3","aac","flac","ogg","m4a","aiff","png","jpg","jpeg","tiff","tif","bmp","webp"])
-                    .add_filter("Video", &["mp4","mkv","mov","avi","webm","m4v","mts"])
-                    .add_filter("Audio", &["wav","mp3","aac","flac","ogg","m4a","aiff"])
-                    .add_filter("Image", &["png","jpg","jpeg","tiff","tif","bmp","webp"])
+                    .add_filter("All media", &klipp_core::media_extensions::all_media_extensions())
+                    .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
+                    .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
+                    .add_filter("Image", klipp_core::media_extensions::IMAGE_EXTENSIONS)
                     .pick_file()
                 { cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() }); }
             }

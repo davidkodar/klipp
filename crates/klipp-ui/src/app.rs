@@ -6247,11 +6247,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ImportMediaFolder { ref directory } => {
-                    let media_extensions: &[&str] = &[
-                        "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
-                        "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-                        "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
-                    ];
+                    let media_extensions = klipp_core::media_extensions::all_media_extensions();
                     let mut imported = 0u32;
                     for entry in walkdir::WalkDir::new(directory)
                         .into_iter()
@@ -11446,11 +11442,10 @@ impl KlippApp {
             }
             // Ctrl+I — Import Media
             if kb.is_action_pressed("import_media", i) {
+                // Use the canonical Video list (the previous hardcoded one
+                // was missing "ts" which broke .ts file selection here).
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter(
-                        "Video",
-                        &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts"],
-                    )
+                    .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
                     .pick_file()
                 {
                     cmds.push(AppCommand::ImportMedia { path });
@@ -12487,9 +12482,7 @@ impl eframe::App for KlippApp {
                 .collect()
         });
         if !dropped_files.is_empty() {
-            let media_exts = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts",
-                "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-                "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr"];
+            let media_exts = klipp_core::media_extensions::all_media_extensions();
             for path in dropped_files {
                 let ext = path.extension()
                     .map(|e| e.to_string_lossy().to_lowercase())
@@ -16002,9 +15995,10 @@ pub fn detect_image_sequence(paths: &[PathBuf]) -> Option<(String, u32, u32)> {
         return None;
     }
 
-    // Only image extensions
-    let ext_lower = ext.to_lowercase();
-    if !matches!(ext_lower.as_str(), "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp" | "exr") {
+    // Only image extensions (delegated to the canonical klipp_core list,
+    // so any future image format automatically participates in image
+    // sequence detection).
+    if !klipp_core::media_extensions::is_image(ext) {
         return None;
     }
 
@@ -16157,12 +16151,11 @@ fn set_thumbnail_from_image_file(
 
     // Read and decode with the image crate-style approach using ffmpeg
     // Use generate_thumbnail_at_size for images (seeks to 0.0s, which works for stills)
-    let ext = image_path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "webp" || ext == "tiff" || ext == "tif" {
-        // For images, use ffmpeg to decode and resize
+    if klipp_core::media_extensions::path_is_image(image_path) {
+        // For images, use ffmpeg to decode and resize. Now correctly handles
+        // HEIC/HEIF/AVIF/JXL — the previous hardcoded chain only matched 7
+        // legacy extensions and silently fell through to the video branch
+        // for HEIC, which then errored on seek.
         if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(image_path, 0.0, 320) {
             return save_rgba_as_png(&rgba, w, h, &out_path).then_some(out_path);
         }
@@ -16210,10 +16203,7 @@ fn save_rgb_as_png(rgb: &[u8], width: u32, height: u32, path: &std::path::Path) 
 }
 
 fn is_video_ext(path: &std::path::Path) -> bool {
-    let ext = path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "mts" | "ts")
+    klipp_core::media_extensions::path_is_video(path)
 }
 
 pub(crate) fn format_size_brief(bytes: u64) -> String {

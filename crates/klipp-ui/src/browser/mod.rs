@@ -47,6 +47,19 @@ struct FileSkimResult {
     height: u32,
 }
 
+/// Result from a file-browser audio peaks worker.
+struct FileAudioPeaksResult {
+    path: std::path::PathBuf,
+    /// Empty Vec means decode failed — used to mark the path as failed
+    /// so we don't retry every frame.
+    peaks: Vec<(f32, f32)>,
+}
+
+/// Number of waveform buckets to compute for audio thumbnails. Matches
+/// roughly the pixel width of the Large thumb so even at the biggest size
+/// we have one bucket per pixel column.
+const FILE_AUDIO_PEAKS_BUCKETS: usize = 144;
+
 /// Max concurrent file-thumbnail decode workers. Software decode only,
 /// so this is CPU-bounded — keep modest to avoid starving the UI.
 const FILE_THUMB_MAX_INFLIGHT: usize = 4;
@@ -54,15 +67,13 @@ const FILE_THUMB_MAX_INFLIGHT: usize = 4;
 /// disk file is reusable across both views.
 const FILE_THUMB_MAX_WIDTH: u32 = 480;
 
-pub(crate) const STILL_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
-];
-pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
-];
-pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
-    "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-];
+// Re-exports from the canonical module so the rest of this file (and other
+// files in this crate that import via `super::`) can keep using the old
+// names without churn. The actual definitions live in
+// `klipp_core::media_extensions`.
+pub(crate) use klipp_core::media_extensions::IMAGE_EXTENSIONS as STILL_EXTENSIONS;
+pub(crate) use klipp_core::media_extensions::VIDEO_EXTENSIONS;
+pub(crate) use klipp_core::media_extensions::AUDIO_EXTENSIONS;
 
 fn ext_lower(path: &std::path::Path) -> String {
     path.extension()
@@ -492,6 +503,15 @@ pub struct BrowserPanel {
     file_skim_queued: Option<(std::path::PathBuf, f64)>,
     file_skim_tx: crossbeam_channel::Sender<FileSkimResult>,
     file_skim_rx: crossbeam_channel::Receiver<FileSkimResult>,
+    /// Lightweight waveform peaks for audio files in the current directory.
+    /// Loaded lazily on first viewport visibility, cached on disk via
+    /// `klipp_media::disk_cache::write_audio_peaks_cache` so subsequent
+    /// visits are instant.
+    file_audio_peaks: HashMap<std::path::PathBuf, Vec<(f32, f32)>>,
+    file_audio_pending: HashSet<std::path::PathBuf>,
+    file_audio_failed: HashSet<std::path::PathBuf>,
+    file_audio_tx: crossbeam_channel::Sender<FileAudioPeaksResult>,
+    file_audio_rx: crossbeam_channel::Receiver<FileAudioPeaksResult>,
 }
 
 #[derive(Clone)]
@@ -510,6 +530,7 @@ impl Default for BrowserPanel {
     fn default() -> Self {
         let (file_thumb_tx, file_thumb_rx) = crossbeam_channel::unbounded();
         let (file_skim_tx, file_skim_rx) = crossbeam_channel::unbounded();
+        let (file_audio_tx, file_audio_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
@@ -551,6 +572,11 @@ impl Default for BrowserPanel {
             file_skim_queued: None,
             file_skim_tx,
             file_skim_rx,
+            file_audio_peaks: HashMap::new(),
+            file_audio_pending: HashSet::new(),
+            file_audio_failed: HashSet::new(),
+            file_audio_tx,
+            file_audio_rx,
         }
     }
 }
@@ -991,6 +1017,9 @@ impl BrowserPanel {
         self.file_thumb_textures.clear();
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
+        self.file_audio_peaks.clear();
+        self.file_audio_pending.clear();
+        self.file_audio_failed.clear();
         // Selection doesn't carry across folders.
         self.files_selected.clear();
         self.files_selection_anchor = None;
@@ -1008,6 +1037,9 @@ impl BrowserPanel {
         self.file_thumb_textures.clear();
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
+        self.file_audio_peaks.clear();
+        self.file_audio_pending.clear();
+        self.file_audio_failed.clear();
     }
 
     /// Drain pending file-thumbnail results and upload textures to egui.
@@ -1150,6 +1182,79 @@ impl BrowserPanel {
             .ok();
     }
 
+    /// Drain audio-peaks results from the worker channel into the in-memory
+    /// cache. Called at the top of `show_files_tab` each frame.
+    fn drain_file_audio_peaks(&mut self) {
+        while let Ok(result) = self.file_audio_rx.try_recv() {
+            self.file_audio_pending.remove(&result.path);
+            if result.peaks.is_empty() {
+                // Decode failed — mark as failed so we don't retry every frame.
+                self.file_audio_failed.insert(result.path);
+            } else if self.files_entries.iter().any(|e| e.path == result.path) {
+                // Drop results from a previous directory.
+                self.file_audio_peaks.insert(result.path, result.peaks);
+            }
+        }
+    }
+
+    /// Spawn a background worker to generate (or load from disk) the audio
+    /// peaks summary for a single audio file. No-op if already cached, in
+    /// flight, failed, or if the worker pool is full.
+    fn spawn_file_audio_peaks(&mut self, path: std::path::PathBuf) {
+        if self.file_audio_peaks.contains_key(&path) { return; }
+        if self.file_audio_pending.contains(&path) { return; }
+        if self.file_audio_failed.contains(&path) { return; }
+        // Reuse the existing thumb worker pool counter so audio + thumbs
+        // share the same 4-worker budget (no CPU starvation).
+        if self.file_thumb_inflight.load(Ordering::Relaxed) >= FILE_THUMB_MAX_INFLIGHT {
+            return;
+        }
+
+        self.file_audio_pending.insert(path.clone());
+        self.file_thumb_inflight.fetch_add(1, Ordering::Relaxed);
+
+        let tx = self.file_audio_tx.clone();
+        let inflight = self.file_thumb_inflight.clone();
+
+        std::thread::Builder::new()
+            .name("file-audio-peaks-worker".into())
+            .spawn(move || {
+                struct InflightGuard(Arc<AtomicUsize>);
+                impl Drop for InflightGuard {
+                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::Relaxed); }
+                }
+                let _guard = InflightGuard(inflight);
+
+                // Try the disk cache first (shared key with the rest of the
+                // klipp file caches: path + size + mtime).
+                let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+                if let Some(ref key) = cache_key {
+                    if klipp_media::disk_cache::audio_peaks_cache_exists(key) {
+                        if let Ok(peaks) = klipp_media::disk_cache::load_audio_peaks_cache(key) {
+                            let _ = tx.send(FileAudioPeaksResult { path, peaks });
+                            return;
+                        }
+                    }
+                }
+
+                // Generate from source (decodes the entire file to a 4 kHz
+                // mono f32 stream then buckets it into 144 (min, max) pairs).
+                match klipp_engine::generate_audio_peaks(&path, FILE_AUDIO_PEAKS_BUCKETS) {
+                    Ok(peaks) => {
+                        if let Some(ref key) = cache_key {
+                            let _ = klipp_media::disk_cache::write_audio_peaks_cache(key, &peaks);
+                        }
+                        let _ = tx.send(FileAudioPeaksResult { path, peaks });
+                    }
+                    Err(e) => {
+                        tracing::debug!("audio peaks gen failed for {:?}: {}", path, e);
+                        let _ = tx.send(FileAudioPeaksResult { path, peaks: Vec::new() });
+                    }
+                }
+            })
+            .ok();
+    }
+
     /// Lazily probe a video file's duration via ffmpeg's format header.
     /// Cached in `file_durations` so subsequent hovers are free.
     /// Returns None if the file isn't probable (audio, broken, etc.).
@@ -1181,6 +1286,8 @@ impl BrowserPanel {
         self.drain_file_thumbs(ui.ctx());
         // Drain any completed skim-frame results into the live skim texture.
         self.drain_file_skims(ui.ctx());
+        // Drain any completed audio peaks results into the in-memory cache.
+        self.drain_file_audio_peaks();
 
         // Check for async directory read result
         if let Some(ref rx) = self.files_receiver {
@@ -1488,6 +1595,7 @@ impl BrowserPanel {
         let mut go_home_clicked = false;
         let mut pending_navigate: Option<std::path::PathBuf> = None;
         let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
+        let mut audio_peaks_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut pending_select: Option<FileSelectAction> = None;
         // Right-click → "Add to media pool" / "Add to bin" request.
         // Tuple: (paths to import, optional bin name).
@@ -1843,6 +1951,61 @@ impl BrowserPanel {
                     }
                 }
 
+                // ── Audio waveform thumbnails ──
+                // For audio files, draw a tiny waveform inside the same
+                // thumb_box that videos use for posters. Lazy-loaded from
+                // the shared disk cache (~/.cache/klipp/audio-peaks/).
+                if !painted_thumb && !entry.is_dir {
+                    let ext = entry.path.extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let is_audio = AUDIO_EXTENSIONS.contains(&ext.as_str());
+                    if is_audio {
+                        if let Some(peaks) = self.file_audio_peaks.get(&entry.path) {
+                            // Draw the waveform: vertical line per bucket from
+                            // (x, center - max*half_h) to (x, center - min*half_h).
+                            // The peaks are normalized to roughly [-1, 1] f32.
+                            ui.painter().rect_filled(
+                                thumb_box,
+                                2.0,
+                                egui::Color32::from_rgb(18, 18, 18),
+                            );
+                            let center_y = thumb_box.center().y;
+                            let half_h = thumb_box.height() * 0.45; // 90% range, 5% margin top/bottom
+                            let bucket_count = peaks.len();
+                            if bucket_count > 0 {
+                                let bucket_w = thumb_box.width() / bucket_count as f32;
+                                let stroke = egui::Stroke::new(
+                                    bucket_w.max(1.0),
+                                    theme.text_secondary,
+                                );
+                                for (i, (min, max)) in peaks.iter().enumerate() {
+                                    // Clamp to keep insanely loud peaks in-bounds.
+                                    let lo = min.clamp(-1.0, 1.0);
+                                    let hi = max.clamp(-1.0, 1.0);
+                                    let x = thumb_box.min.x + (i as f32 + 0.5) * bucket_w;
+                                    let y_top = center_y - hi * half_h;
+                                    let y_bot = center_y - lo * half_h;
+                                    // Always draw at least 1px so silent passages are visible.
+                                    let y_top = y_top.min(center_y - 0.5);
+                                    let y_bot = y_bot.max(center_y + 0.5);
+                                    ui.painter().line_segment(
+                                        [egui::pos2(x, y_top), egui::pos2(x, y_bot)],
+                                        stroke,
+                                    );
+                                }
+                            }
+                            painted_thumb = true;
+                        } else if !self.file_audio_failed.contains(&entry.path)
+                            && ui.is_rect_visible(rect)
+                        {
+                            // Visible row that wants audio peaks but doesn't
+                            // have them — queue a generation request.
+                            audio_peaks_spawn_requests.push(entry.path.clone());
+                        }
+                    }
+                }
+
                 if !painted_thumb {
                     // Folders and non-thumb-eligible files: draw the glyph centered
                     // within the thumb_box so the layout is consistent regardless
@@ -1852,7 +2015,21 @@ impl BrowserPanel {
                         thumb_box.center(),
                         egui::vec2(glyph_sz, glyph_sz),
                     );
-                    let icon = if entry.is_dir { Icon::Folder } else { Icon::FilmStrip };
+                    let icon = if entry.is_dir {
+                        Icon::Folder
+                    } else {
+                        let ext = entry.path.extension()
+                            .map(|e| e.to_string_lossy().to_lowercase())
+                            .unwrap_or_default();
+                        if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                            // Audio file with peaks not yet loaded → music note
+                            // glyph as the placeholder, replaced by the waveform
+                            // once the worker finishes.
+                            Icon::MusicNote
+                        } else {
+                            Icon::FilmStrip
+                        }
+                    };
                     icon.image(glyph_sz).tint(icon_color).paint_at(ui, icon_rect);
                 }
 
@@ -2160,6 +2337,11 @@ impl BrowserPanel {
                 self.spawn_file_thumb(path, &ctx);
             }
         }
+        if !audio_peaks_spawn_requests.is_empty() {
+            for path in audio_peaks_spawn_requests {
+                self.spawn_file_audio_peaks(path);
+            }
+        }
 
         // Apply selection changes captured during the row loop.
         match pending_select {
@@ -2335,11 +2517,18 @@ impl BrowserPanel {
     }
 }
 
-pub(super) const MEDIA_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
-    "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
-];
+// Computed once at startup from the canonical klipp_core constants. The old
+// `pub(super) const MEDIA_EXTENSIONS: &[&str] = &[...]` was a hardcoded
+// duplicate of the union of the three category constants — it's now a
+// `OnceLock<Vec<&'static str>>` so the lists stay in sync automatically.
+//
+// Callers that previously did `MEDIA_EXTENSIONS.contains(&ext.as_str())`
+// continue to work because we expose it as a function returning `&[&str]`.
+pub(super) fn media_extensions() -> &'static [&'static str] {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Vec<&'static str>> = OnceLock::new();
+    CACHE.get_or_init(klipp_core::media_extensions::all_media_extensions).as_slice()
+}
 
 /// Read a directory with a timeout to protect against hung network mounts.
 fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>, String> {
@@ -2376,7 +2565,7 @@ fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>,
         let ext = entry.path().extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let is_media = !is_dir && MEDIA_EXTENSIONS.contains(&ext.as_str());
+        let is_media = !is_dir && klipp_core::media_extensions::is_media(&ext);
 
         entries.push(FileEntry {
             name,
@@ -2408,7 +2597,7 @@ fn format_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MEDIA_EXTENSIONS, FILE_THUMB_MAX_WIDTH};
+    use super::FILE_THUMB_MAX_WIDTH;
 
     /// Helper: walk a directory and collect media file paths, mirroring the
     /// ImportMediaFolder handler logic in app.rs.
@@ -2419,10 +2608,8 @@ mod tests {
             .filter_map(|e| e.ok())
         {
             if entry.file_type().is_file() {
-                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                    if MEDIA_EXTENSIONS.iter().any(|me| me.eq_ignore_ascii_case(ext)) {
-                        files.push(entry.path().to_path_buf());
-                    }
+                if klipp_core::media_extensions::path_is_media(entry.path()) {
+                    files.push(entry.path().to_path_buf());
                 }
             }
         }

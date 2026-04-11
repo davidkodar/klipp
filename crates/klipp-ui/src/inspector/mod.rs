@@ -1065,7 +1065,16 @@ fn show_title_editor(
         }
         if ui.button("Browse...").clicked() {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tga"])
+                // Texture-fill picker accepts the standard image set PLUS
+                // Targa (.tga) which is uniquely supported here for legacy
+                // texture workflows. Built dynamically from the canonical
+                // klipp_core list so adding any future image format
+                // automatically appears here.
+                .add_filter("Images", &{
+                    let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
+                    exts.push("tga");
+                    exts
+                })
                 .pick_file()
             {
                 cmds.push(AppCommand::SetTitleTextureFill {

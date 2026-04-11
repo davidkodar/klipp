@@ -279,9 +279,13 @@ impl LaunchScreen {
             theme.text_primary,
         );
         if import_resp.clicked() {
+            // Use the canonical media extension list — previously this was a
+            // hand-curated subset that was missing tif/bmp/webp/m4v/mts/ts/m4a/aiff
+            // among others, so users couldn't pick those files via this dialog.
+            let all_media = klipp_core::media_extensions::all_media_extensions();
             if let Some(p) = rfd::FileDialog::new()
                 .set_title("Import Media")
-                .add_filter("Media Files", &["mp4", "mkv", "mov", "avi", "webm", "mp3", "wav", "flac", "aac", "ogg", "png", "jpg", "jpeg", "tiff", "exr"])
+                .add_filter("Media Files", &all_media)
                 .pick_file()
             {
                 cmds.push(AppCommand::ImportMedia { path: p });

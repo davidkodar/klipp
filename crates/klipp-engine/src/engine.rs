@@ -5196,13 +5196,9 @@ fn parse_iso8601_timestamp(s: &str) -> Option<u64> {
 }
 
 fn is_image_extension(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_lowercase())
-            .as_deref(),
-        Some("png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp")
-    )
+    // Delegates to the canonical klipp_core list — adding a new image format
+    // is one edit there, not here.
+    klipp_core::media_extensions::path_is_image(path)
 }
 
 fn fps_from_float(fps: f64) -> Fps {

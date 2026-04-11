@@ -6,6 +6,7 @@ pub mod generator;
 pub mod keyframe;
 pub mod export_preset;
 pub mod id;
+pub mod media_extensions;
 pub mod modifier;
 pub mod modifier_math;
 pub mod ofx_value;

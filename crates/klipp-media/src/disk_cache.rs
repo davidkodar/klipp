@@ -266,6 +266,96 @@ pub fn load_thumbnail_cache(cache_key: &str) -> std::io::Result<(Vec<u8>, u32, u
     Ok((rgba, width, height))
 }
 
+// ── Audio peaks cache (lightweight waveform summary for thumbnails) ──
+//
+// Format:
+//   magic:  [u8; 4] = b"KAPK"
+//   version: u32
+//   count:  u32                    (number of (min, max) buckets)
+//   data:   (f32, f32) × count     (little-endian, packed)
+//
+// Distinct from the heavy `audio_conform_cache` which writes full PCM —
+// this is just the visual waveform summary used for file-browser audio
+// thumbnails. Typical size: ~1.7 KB for 144 buckets.
+
+const AUDIO_PEAKS_MAGIC: [u8; 4] = *b"KAPK";
+const AUDIO_PEAKS_VERSION: u32 = 1;
+
+fn audio_peaks_dir() -> PathBuf {
+    cache_base_dir().join("audio-peaks")
+}
+
+fn audio_peaks_path(cache_key: &str) -> PathBuf {
+    audio_peaks_dir().join(format!("{cache_key}.peaks"))
+}
+
+pub fn audio_peaks_cache_exists(cache_key: &str) -> bool {
+    audio_peaks_path(cache_key).exists()
+}
+
+pub fn write_audio_peaks_cache(
+    cache_key: &str,
+    peaks: &[(f32, f32)],
+) -> std::io::Result<()> {
+    let dir = audio_peaks_dir();
+    ensure_dir(&dir)?;
+
+    let final_path = audio_peaks_path(cache_key);
+    let tmp_path = dir.join(format!("{cache_key}.peaks.tmp"));
+
+    let file = std::fs::File::create(&tmp_path)?;
+    let mut w = BufWriter::new(file);
+    w.write_all(&AUDIO_PEAKS_MAGIC)?;
+    w.write_all(&AUDIO_PEAKS_VERSION.to_le_bytes())?;
+    w.write_all(&(peaks.len() as u32).to_le_bytes())?;
+    for (min, max) in peaks {
+        w.write_all(&min.to_le_bytes())?;
+        w.write_all(&max.to_le_bytes())?;
+    }
+    w.flush()?;
+    drop(w);
+    std::fs::rename(&tmp_path, &final_path)?;
+    Ok(())
+}
+
+pub fn load_audio_peaks_cache(cache_key: &str) -> std::io::Result<Vec<(f32, f32)>> {
+    let path = audio_peaks_path(cache_key);
+    let file = std::fs::File::open(&path)?;
+    let mut r = BufReader::new(file);
+
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)?;
+    if magic != AUDIO_PEAKS_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bad audio peaks magic",
+        ));
+    }
+
+    let mut buf4 = [0u8; 4];
+    r.read_exact(&mut buf4)?;
+    let version = u32::from_le_bytes(buf4);
+    if version != AUDIO_PEAKS_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unsupported audio peaks version",
+        ));
+    }
+
+    r.read_exact(&mut buf4)?;
+    let count = u32::from_le_bytes(buf4) as usize;
+
+    let mut peaks = Vec::with_capacity(count);
+    for _ in 0..count {
+        r.read_exact(&mut buf4)?;
+        let min = f32::from_le_bytes(buf4);
+        r.read_exact(&mut buf4)?;
+        let max = f32::from_le_bytes(buf4);
+        peaks.push((min, max));
+    }
+    Ok(peaks)
+}
+
 // ── Audio conform cache (content-based keys) ──
 
 fn audio_cache_dir() -> PathBuf {

@@ -183,7 +183,7 @@ pub fn show(
 
             if ui.button("Import Media\u{2026}").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Media", super::MEDIA_EXTENSIONS)
+                    .add_filter("Media", super::media_extensions())
                     .pick_file()
                 {
                     cmds.push(AppCommand::ImportMedia { path });

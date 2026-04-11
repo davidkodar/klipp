@@ -111,13 +111,8 @@ pub fn show_file_info(
             }
 
             // ── Media metadata (only attempted for known video/image extensions) ──
-            let ext = path.extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts"];
-            const STILL_EXTS: &[&str] = &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr"];
-            let is_video = VIDEO_EXTS.contains(&ext.as_str());
-            let is_still = STILL_EXTS.contains(&ext.as_str());
+            let is_video = klipp_core::media_extensions::path_is_video(path);
+            let is_still = klipp_core::media_extensions::path_is_image(path);
 
             if is_video || is_still {
                 ui.separator();
