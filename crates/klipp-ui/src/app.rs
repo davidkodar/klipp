@@ -15509,6 +15509,32 @@ impl KlippApp {
         browser_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // ── Prefs → browser sync (BEFORE show) ──
+        // Pull any preferences-panel changes into the live browser state
+        // before rendering. The browser owns its own copy of these fields
+        // (so its toolbar widgets — thumbnail size buttons, sort dropdown,
+        // type filter pill, etc. — can mutate them with normal egui state)
+        // but the preferences panel is also allowed to write to the prefs
+        // copy. This sync makes the prefs panel "win" any frame where it
+        // changed a value, since the browser → prefs sync at the bottom
+        // of this method runs AFTER show() and would otherwise overwrite
+        // the prefs change with the stale browser value.
+        if self.browser.file_thumb_size != self.prefs.file_browser.file_thumb_size {
+            self.browser.file_thumb_size = self.prefs.file_browser.file_thumb_size;
+        }
+        if self.browser.files_sort_by != self.prefs.file_browser.file_sort_by {
+            self.browser.files_sort_by = self.prefs.file_browser.file_sort_by;
+        }
+        if self.browser.files_sort_ascending != self.prefs.file_browser.file_sort_ascending {
+            self.browser.files_sort_ascending = self.prefs.file_browser.file_sort_ascending;
+        }
+        if self.browser.files_type_filter != self.prefs.file_browser.file_type_filter {
+            self.browser.files_type_filter = self.prefs.file_browser.file_type_filter;
+        }
+        if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
+            self.browser.pinned_folders = self.prefs.file_browser.pinned_folders.clone();
+        }
+
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
             ui.set_min_size(browser_rect.size());
@@ -15522,6 +15548,13 @@ impl KlippApp {
                 &mut self.layout.files_split_ratio,
             );
             all_cmds.extend(panel_cmds);
+
+            // ── Browser → prefs sync (AFTER show) ──
+            // Capture any toolbar-driven changes the user made inside the
+            // browser this frame and persist them to disk. This direction
+            // only fires when the browser modified its local state during
+            // show(); the prefs → browser sync above already handled the
+            // opposite direction, so the two can't fight each other.
             if self.browser.browser_view_mode != self.prefs.editing.media_browser_view_mode {
                 self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
                 let _ = self.prefs.save();
