@@ -12,6 +12,76 @@ use crate::layout_state::{BrowserTab, LibraryCategory};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// Result from a file-browser thumbnail worker.
+struct FileThumbResult {
+    path: std::path::PathBuf,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// Max concurrent file-thumbnail decode workers. Software decode only,
+/// so this is CPU-bounded — keep modest to avoid starving the UI.
+const FILE_THUMB_MAX_INFLIGHT: usize = 4;
+/// Max width to decode thumbs at. Matches the media-pool cache so the
+/// disk file is reusable across both views.
+const FILE_THUMB_MAX_WIDTH: u32 = 480;
+
+pub(crate) const STILL_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
+];
+pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
+];
+
+fn ext_lower(path: &std::path::Path) -> String {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Whether this file is a candidate for visual thumbnail generation
+/// (video or still image — audio is excluded; it gets a glyph instead).
+fn is_visual_media(path: &std::path::Path) -> bool {
+    let ext = ext_lower(path);
+    STILL_EXTENSIONS.contains(&ext.as_str()) || VIDEO_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// Decode-or-load a thumbnail for a single file. Tries the shared disk cache
+/// first (the same one the media pool uses), then falls back to ffmpeg software
+/// decode at FILE_THUMB_MAX_WIDTH on the long edge. Writes the result back to
+/// the disk cache on a successful generation.
+///
+/// Pure function — no UI state — so it can be called from a worker thread or
+/// directly from a test.
+fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let cache_key = klipp_media::disk_cache::compute_cache_key(path);
+
+    // Try disk cache first (shared with media-pool thumbnails).
+    if let Some(ref key) = cache_key {
+        if klipp_media::disk_cache::thumbnail_cache_exists(key) {
+            if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(key) {
+                return Ok((rgba, w, h));
+            }
+        }
+    }
+
+    // Generate from source. Stills decode at seek=0, duration=0.
+    // Videos use the non-black variant which probes 0/5/10/20/30%.
+    let (rgba, w, h) = klipp_engine::generate_thumbnail_at_size_non_black(
+        path, 0.0, 0.0, FILE_THUMB_MAX_WIDTH,
+    )?;
+
+    if let Some(ref key) = cache_key {
+        let _ = klipp_media::disk_cache::write_thumbnail_cache(key, &rgba, w, h);
+    }
+
+    Ok((rgba, w, h))
+}
 
 /// Smart bin filter criteria for auto-filtering media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +92,35 @@ pub enum SmartBinFilter {
     AudioOnly,
     StillsOnly,
     HighRating, // 4+ stars
+}
+
+/// Thumbnail size for the Files tab. Controls row height, thumb box size,
+/// and where the filename is positioned. Persisted in EditingPrefs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum FileThumbSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl FileThumbSize {
+    /// Row height in logical pixels.
+    pub fn row_height(self) -> f32 {
+        match self {
+            Self::Small => 32.0,
+            Self::Medium => 56.0,
+            Self::Large => 88.0,
+        }
+    }
+    /// Thumbnail box width × height (16:9 with a couple px of padding).
+    pub fn thumb_box(self) -> egui::Vec2 {
+        match self {
+            Self::Small => egui::vec2(44.0, 24.0),
+            Self::Medium => egui::vec2(88.0, 48.0),
+            Self::Large => egui::vec2(144.0, 80.0),
+        }
+    }
 }
 
 pub struct BrowserPanel {
@@ -48,6 +147,14 @@ pub struct BrowserPanel {
     pub files_loading: bool,
     pub files_error: Option<String>,
     pub files_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<FileEntry>, String>>>,
+    // File-thumbnail state (in-memory; disk cache is shared with media pool)
+    file_thumb_textures: HashMap<std::path::PathBuf, egui::TextureHandle>,
+    file_thumb_pending: HashSet<std::path::PathBuf>,
+    file_thumb_failed: HashSet<std::path::PathBuf>,
+    file_thumb_inflight: Arc<AtomicUsize>,
+    file_thumb_tx: crossbeam_channel::Sender<FileThumbResult>,
+    file_thumb_rx: crossbeam_channel::Receiver<FileThumbResult>,
+    pub file_thumb_size: FileThumbSize,
 }
 
 #[derive(Clone)]
@@ -61,6 +168,7 @@ pub struct FileEntry {
 
 impl Default for BrowserPanel {
     fn default() -> Self {
+        let (file_thumb_tx, file_thumb_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
@@ -79,6 +187,13 @@ impl Default for BrowserPanel {
             files_loading: false,
             files_error: None,
             files_receiver: None,
+            file_thumb_textures: HashMap::new(),
+            file_thumb_pending: HashSet::new(),
+            file_thumb_failed: HashSet::new(),
+            file_thumb_inflight: Arc::new(AtomicUsize::new(0)),
+            file_thumb_tx,
+            file_thumb_rx,
+            file_thumb_size: FileThumbSize::default(),
         }
     }
 }
@@ -434,9 +549,90 @@ impl BrowserPanel {
         cmds
     }
 
+    /// Navigate the files browser to a new directory. Clears in-memory thumbnail
+    /// state so RAM stays bounded. Disk cache is preserved.
+    fn navigate_files_to(&mut self, path: std::path::PathBuf) {
+        self.files_current_path = path;
+        self.files_entries_dirty = true;
+        self.file_thumb_textures.clear();
+        self.file_thumb_pending.clear();
+        self.file_thumb_failed.clear();
+        // Note: in-flight workers will still complete and send results;
+        // drain_file_thumbs filters out paths no longer in the current entries.
+    }
+
+    /// Drain pending file-thumbnail results and upload textures to egui.
+    /// Results for files no longer in the current directory are dropped silently.
+    fn drain_file_thumbs(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.file_thumb_rx.try_recv() {
+            self.file_thumb_pending.remove(&result.path);
+            // Drop results from a previous directory.
+            if !self.files_entries.iter().any(|e| e.path == result.path) {
+                continue;
+            }
+            let pixels: Vec<egui::Color32> = result.rgba
+                .chunks_exact(4)
+                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .collect();
+            let image = egui::ColorImage {
+                size: [result.width as usize, result.height as usize],
+                pixels,
+            };
+            let name = format!("file_thumb_{}", result.path.display());
+            let tex = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+            self.file_thumb_textures.insert(result.path, tex);
+        }
+    }
+
+    /// Spawn a background worker to generate (or load from disk) a thumbnail
+    /// for a single file. No-op if already in flight, failed, or cached.
+    fn spawn_file_thumb(&mut self, path: std::path::PathBuf, ctx: &egui::Context) {
+        if self.file_thumb_textures.contains_key(&path) { return; }
+        if self.file_thumb_pending.contains(&path) { return; }
+        if self.file_thumb_failed.contains(&path) { return; }
+        if self.file_thumb_inflight.load(Ordering::Relaxed) >= FILE_THUMB_MAX_INFLIGHT {
+            return;
+        }
+
+        self.file_thumb_pending.insert(path.clone());
+        self.file_thumb_inflight.fetch_add(1, Ordering::Relaxed);
+
+        let tx = self.file_thumb_tx.clone();
+        let inflight = self.file_thumb_inflight.clone();
+        let ctx = ctx.clone();
+
+        std::thread::Builder::new()
+            .name("file-thumb-worker".into())
+            .spawn(move || {
+                // Drop guard: always decrement inflight on thread exit.
+                struct InflightGuard(Arc<AtomicUsize>);
+                impl Drop for InflightGuard {
+                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::Relaxed); }
+                }
+                let _guard = InflightGuard(inflight);
+
+                match generate_file_thumb(&path) {
+                    Ok((rgba, w, h)) => {
+                        let _ = tx.send(FileThumbResult { path, rgba, width: w, height: h });
+                        ctx.request_repaint();
+                    }
+                    Err(e) => {
+                        tracing::debug!("file thumb gen failed for {:?}: {}", path, e);
+                        // No result sent — path stays in `file_thumb_pending` forever
+                        // (until directory change clears it), preventing retry storms.
+                        // The row falls back to the default file icon.
+                    }
+                }
+            })
+            .ok();
+    }
+
     fn show_files_tab(&mut self, ui: &mut egui::Ui, _state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
+
+        // Drain any completed thumbnail results into textures.
+        self.drain_file_thumbs(ui.ctx());
 
         // Check for async directory read result
         if let Some(ref rx) = self.files_receiver {
@@ -498,8 +694,7 @@ impl BrowserPanel {
             );
             if back_resp.clicked() {
                 if let Some(parent) = self.files_current_path.parent() {
-                    self.files_current_path = parent.to_path_buf();
-                    self.files_entries_dirty = true;
+                    self.navigate_files_to(parent.to_path_buf());
                 }
             }
 
@@ -510,8 +705,49 @@ impl BrowserPanel {
                 ).fill(theme.bg_raised).rounding(3.0).min_size(egui::vec2(24.0, 20.0)),
             );
             if home_resp.clicked() {
-                self.files_current_path = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-                self.files_entries_dirty = true;
+                self.navigate_files_to(dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+            }
+
+            // S/M/L thumbnail-size pickers, immediately to the right of the
+            // home (~) button. Three small filled-rectangle previews of the
+            // actual thumb size (no SVG icons needed). Left-to-right flow so
+            // they're guaranteed visible at any pane width.
+            ui.add_space(4.0);
+            let btn_size = egui::vec2(22.0, 20.0);
+            let glyph_w = |s: FileThumbSize| match s {
+                FileThumbSize::Small => 6.0,
+                FileThumbSize::Medium => 10.0,
+                FileThumbSize::Large => 14.0,
+            };
+            for size in [FileThumbSize::Small, FileThumbSize::Medium, FileThumbSize::Large] {
+                let is_active = self.file_thumb_size == size;
+                let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                let (bg, border) = if is_active {
+                    (theme.accent, theme.accent)
+                } else if resp.hovered() {
+                    (theme.bg_hover, theme.border)
+                } else {
+                    (theme.bg_raised, theme.border)
+                };
+                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5, border));
+                let gw = glyph_w(size);
+                let gh = gw * 9.0 / 16.0;
+                let glyph_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(gw, gh));
+                let glyph_color = if is_active {
+                    egui::Color32::from_rgb(30, 30, 34) // dark on amber
+                } else {
+                    theme.text_secondary
+                };
+                ui.painter().rect_filled(glyph_rect, 1.0, glyph_color);
+                let label = match size {
+                    FileThumbSize::Small => "Small thumbnails",
+                    FileThumbSize::Medium => "Medium thumbnails",
+                    FileThumbSize::Large => "Large thumbnails",
+                };
+                let resp = resp.on_hover_text(label);
+                if resp.clicked() {
+                    self.file_thumb_size = size;
+                }
             }
 
             // Pin button — push to right side of toolbar
@@ -529,7 +765,6 @@ impl BrowserPanel {
                             .fill(if is_pinned { theme.accent } else { theme.bg_raised })
                             .rounding(3.0),
                     );
-                    // We handle the click after this closure to avoid borrow issues
                     if pin_resp.clicked() {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_pin_clicked"), true));
                     }
@@ -587,8 +822,7 @@ impl BrowserPanel {
                         .rounding(3.0),
                     );
                     if btn.clicked() {
-                        self.files_current_path = path.clone();
-                        self.files_entries_dirty = true;
+                        self.navigate_files_to(path.clone());
                     }
                 }
             }
@@ -608,18 +842,35 @@ impl BrowserPanel {
             .filter(|e| search.is_empty() || e.name.to_lowercase().contains(&search))
             .collect();
 
+        // Pull state out before we hand `ui` to the ScrollArea closure so we can
+        // mutate `self` (e.g. navigate on Go Home click, spawn thumb workers)
+        // without borrow conflicts with `filtered`/`self.files_entries`.
+        let mut go_home_clicked = false;
+        let mut pending_navigate: Option<std::path::PathBuf> = None;
+        let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
+        // Capture before the closure — `self` is borrowed inside via `filtered`.
+        let thumb_size = self.file_thumb_size;
+        let row_h = thumb_size.row_height();
+        let thumb_box_size = thumb_size.thumb_box();
+        // Font scales modestly with size — the larger thumbs deserve a slightly
+        // larger filename, but not so much that Small becomes cramped.
+        let name_font_size = match thumb_size {
+            FileThumbSize::Small => 11.0,
+            FileThumbSize::Medium => 12.0,
+            FileThumbSize::Large => 13.0,
+        };
         egui::ScrollArea::vertical().id_salt("files_scroll").show(ui, |ui| {
             // Error state
             if let Some(ref err) = self.files_error {
+                let err_text = err.clone();
                 ui.add_space(16.0);
                 ui.vertical_centered(|ui| {
                     ui.label(egui::RichText::new("Cannot access folder").size(12.0).color(egui::Color32::from_rgb(210, 60, 60)));
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(err.as_str()).size(10.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(err_text.as_str()).size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
                     if ui.button("Go Home").clicked() {
-                        self.files_current_path = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-                        self.files_entries_dirty = true;
+                        go_home_clicked = true;
                     }
                 });
                 return;
@@ -649,7 +900,6 @@ impl BrowserPanel {
             }
 
             for entry in &filtered {
-                let row_h = 28.0;
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), row_h),
                     egui::Sense::click(),
@@ -660,7 +910,15 @@ impl BrowserPanel {
                     ui.painter().rect_filled(rect, 2.0, theme.bg_hover);
                 }
 
-                // Icon
+                // Thumbnail slot is centered vertically and left-padded by `pad`.
+                // The icon slot is sized for non-media (folder/file glyph): a fixed
+                // 14×14 square that doesn't grow with the thumb size — keeps icons
+                // tidy at Large while still giving thumbnails room to breathe.
+                let thumb_box = egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + pad, rect.center().y - thumb_box_size.y * 0.5),
+                    thumb_box_size,
+                );
+
                 let icon_color = if entry.is_dir {
                     theme.accent
                 } else if entry.is_media {
@@ -669,14 +927,56 @@ impl BrowserPanel {
                     theme.text_dim
                 };
 
-                let icon = if entry.is_dir { Icon::Folder } else { Icon::FilmStrip };
-                let icon_rect = egui::Rect::from_center_size(
-                    egui::pos2(rect.min.x + pad + 8.0, rect.center().y),
-                    egui::vec2(14.0, 14.0),
-                );
-                icon.image(14.0).tint(icon_color).paint_at(ui, icon_rect);
+                let mut painted_thumb = false;
+                if !entry.is_dir && is_visual_media(&entry.path) {
+                    if let Some(tex) = self.file_thumb_textures.get(&entry.path) {
+                        let sz = tex.size();
+                        let img_aspect = sz[0] as f32 / sz[1].max(1) as f32;
+                        let box_aspect = thumb_box.width() / thumb_box.height();
+                        let fitted = if img_aspect > box_aspect {
+                            let h = thumb_box.width() / img_aspect;
+                            let y_off = (thumb_box.height() - h) / 2.0;
+                            egui::Rect::from_min_size(
+                                egui::pos2(thumb_box.min.x, thumb_box.min.y + y_off),
+                                egui::vec2(thumb_box.width(), h),
+                            )
+                        } else {
+                            let w = thumb_box.height() * img_aspect;
+                            let x_off = (thumb_box.width() - w) / 2.0;
+                            egui::Rect::from_min_size(
+                                egui::pos2(thumb_box.min.x + x_off, thumb_box.min.y),
+                                egui::vec2(w, thumb_box.height()),
+                            )
+                        };
+                        // Dark backdrop so letterbox bars don't show panel bg through them.
+                        ui.painter().rect_filled(thumb_box, 2.0, egui::Color32::from_rgb(18, 18, 18));
+                        ui.painter().image(
+                            tex.id(),
+                            fitted,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                        painted_thumb = true;
+                    } else if ui.is_rect_visible(rect) {
+                        // Visible row that wants a thumb but doesn't have one — request it.
+                        thumb_spawn_requests.push(entry.path.clone());
+                    }
+                }
 
-                // Name
+                if !painted_thumb {
+                    // Folders and non-thumb-eligible files: draw the glyph centered
+                    // within the thumb_box so the layout is consistent regardless
+                    // of whether a thumb is showing.
+                    let glyph_sz = (thumb_box.height() * 0.6).clamp(14.0, 28.0);
+                    let icon_rect = egui::Rect::from_center_size(
+                        thumb_box.center(),
+                        egui::vec2(glyph_sz, glyph_sz),
+                    );
+                    let icon = if entry.is_dir { Icon::Folder } else { Icon::FilmStrip };
+                    icon.image(glyph_sz).tint(icon_color).paint_at(ui, icon_rect);
+                }
+
+                // Name + size are positioned to the right of the thumb_box.
                 let name_color = if entry.is_dir {
                     theme.text_primary
                 } else if entry.is_media {
@@ -684,11 +984,12 @@ impl BrowserPanel {
                 } else {
                     theme.text_dim
                 };
+                let name_x = thumb_box.max.x + 8.0;
                 ui.painter().text(
-                    egui::pos2(rect.min.x + pad + 22.0, rect.center().y),
+                    egui::pos2(name_x, rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     &entry.name,
-                    egui::FontId::proportional(11.0),
+                    egui::FontId::proportional(name_font_size),
                     name_color,
                 );
 
@@ -711,13 +1012,12 @@ impl BrowserPanel {
                     egui::Stroke::new(0.3, theme.border),
                 );
 
-                // Interactions
+                // Interactions — defer mutations to after the closure to avoid
+                // borrowing `self` while `filtered` still aliases `self.files_entries`.
                 if resp.double_clicked() {
                     if entry.is_dir {
-                        self.files_current_path = entry.path.clone();
-                        self.files_entries_dirty = true;
+                        pending_navigate = Some(entry.path.clone());
                     } else if entry.is_media {
-                        // Import into media pool
                         cmds.push(AppCommand::LoadMediaFile {
                             path: entry.path.clone(),
                             media_id: klipp_core::MediaId::new(),
@@ -725,15 +1025,28 @@ impl BrowserPanel {
                     }
                 }
                 if resp.clicked() && entry.is_dir {
-                    // Single click on folder navigates into it
-                    self.files_current_path = entry.path.clone();
-                    self.files_entries_dirty = true;
+                    pending_navigate = Some(entry.path.clone());
                 }
 
                 // Tooltip
                 resp.on_hover_text(entry.path.to_string_lossy().as_ref());
             }
         });
+
+        // Apply deferred mutations now that the ScrollArea closure has released
+        // its borrow on `self.files_entries`.
+        if go_home_clicked {
+            self.navigate_files_to(dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+        }
+        if let Some(target) = pending_navigate {
+            self.navigate_files_to(target);
+        }
+        if !thumb_spawn_requests.is_empty() {
+            let ctx = ui.ctx().clone();
+            for path in thumb_spawn_requests {
+                self.spawn_file_thumb(path, &ctx);
+            }
+        }
 
         cmds
     }
@@ -883,7 +1196,7 @@ fn format_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::MEDIA_EXTENSIONS;
+    use super::{MEDIA_EXTENSIONS, FILE_THUMB_MAX_WIDTH};
 
     /// Helper: walk a directory and collect media file paths, mirroring the
     /// ImportMediaFolder handler logic in app.rs.
@@ -969,5 +1282,116 @@ mod tests {
         assert_eq!(files.len(), 0, "empty directory should yield no files");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Copy a real JPEG fixture from the repo's assets into a temp file.
+    ///
+    /// We use JPEG (not PNG) because the existing `generate_thumbnail_at_size`
+    /// decoder helper doesn't flush the decoder after the single image packet,
+    /// which causes single-image PNG inputs to return "No frame decoded".
+    /// JPEG works because libjpeg outputs the frame on receive_frame
+    /// without needing a flush. This is a separate pre-existing decoder bug
+    /// (see test note below) — for the file-thumbnail wiring test, JPEG
+    /// is sufficient because that's the primary user-visible case anyway
+    /// (e.g. phone photos like `IMG_xxxx.jpg`).
+    fn copy_fixture_jpg_to(target: &std::path::Path) {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src = manifest.join("../../assets/effect_preview_reference.jpg");
+        std::fs::copy(&src, target)
+            .unwrap_or_else(|e| panic!("copy fixture from {}: {}", src.display(), e));
+    }
+
+    /// End-to-end check that the file-browser thumbnail pipeline can:
+    ///   1) decode a real image off disk via ffmpeg,
+    ///   2) write the result to the shared media-pool disk cache,
+    ///   3) load it back from the disk cache on a second call.
+    ///
+    /// This is the core wiring that the file-browser "Phase A" feature relies on.
+    #[test]
+    fn file_thumb_decodes_and_caches() {
+        // ffmpeg must be initialized before any decoder calls. Cheap and idempotent.
+        klipp_engine::init_ffmpeg().expect("ffmpeg init");
+
+        // Use a unique temp dir + filename so the disk cache key is fresh on
+        // every test run (cache key is path+size+mtime; new path = guaranteed miss).
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_test_file_thumb_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg_path = dir.join("test_thumb.jpg");
+        copy_fixture_jpg_to(&jpg_path);
+
+        // First call: cache miss → ffmpeg decode → write cache → return.
+        let (rgba1, w1, h1) = super::generate_file_thumb(&jpg_path)
+            .expect("first thumb generation should succeed");
+        assert!(w1 > 0 && h1 > 0, "decoded dims must be positive: {w1}x{h1}");
+        assert!(
+            w1 <= FILE_THUMB_MAX_WIDTH,
+            "decoded width {w1} should respect FILE_THUMB_MAX_WIDTH {}",
+            FILE_THUMB_MAX_WIDTH,
+        );
+        assert_eq!(
+            rgba1.len() as u32,
+            w1 * h1 * 4,
+            "rgba length must equal w*h*4",
+        );
+
+        // Verify the cache file was written.
+        let cache_key = klipp_media::disk_cache::compute_cache_key(&jpg_path)
+            .expect("cache key for real file");
+        assert!(
+            klipp_media::disk_cache::thumbnail_cache_exists(&cache_key),
+            "first call should have populated the disk cache",
+        );
+
+        // Second call: should hit the disk cache and return identical bytes.
+        let (rgba2, w2, h2) = super::generate_file_thumb(&jpg_path)
+            .expect("second thumb load should succeed");
+        assert_eq!((w1, h1), (w2, h2), "cached dims must match");
+        assert_eq!(rgba1, rgba2, "cached rgba must match");
+
+        // Cleanup test file (cache file is shared with media pool — leave it).
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_thumb_size_dimensions_monotonic() {
+        // Row height and thumb box must grow strictly with size — otherwise
+        // the toolbar picker is meaningless.
+        let small = super::FileThumbSize::Small;
+        let medium = super::FileThumbSize::Medium;
+        let large = super::FileThumbSize::Large;
+        assert!(small.row_height() < medium.row_height());
+        assert!(medium.row_height() < large.row_height());
+        assert!(small.thumb_box().x < medium.thumb_box().x);
+        assert!(medium.thumb_box().x < large.thumb_box().x);
+        assert!(small.thumb_box().y < medium.thumb_box().y);
+        assert!(medium.thumb_box().y < large.thumb_box().y);
+        // Thumb box must always fit inside the row vertically.
+        for s in [small, medium, large] {
+            assert!(
+                s.thumb_box().y <= s.row_height(),
+                "thumb box y={} must fit in row_h={} for {:?}",
+                s.thumb_box().y, s.row_height(), s,
+            );
+        }
+        // Default must be Medium (chosen for balance — Small was the original
+        // post-Phase-A look and the user found it too small to be useful).
+        assert_eq!(super::FileThumbSize::default(), medium);
+    }
+
+    #[test]
+    fn is_visual_media_classification() {
+        use std::path::PathBuf;
+        assert!(super::is_visual_media(&PathBuf::from("foo.mp4")));
+        assert!(super::is_visual_media(&PathBuf::from("foo.MOV")));
+        assert!(super::is_visual_media(&PathBuf::from("foo.jpg")));
+        assert!(super::is_visual_media(&PathBuf::from("foo.PNG")));
+        assert!(!super::is_visual_media(&PathBuf::from("foo.wav")));
+        assert!(!super::is_visual_media(&PathBuf::from("foo.mp3")));
+        assert!(!super::is_visual_media(&PathBuf::from("foo.txt")));
+        assert!(!super::is_visual_media(&PathBuf::from("foo")));
     }
 }

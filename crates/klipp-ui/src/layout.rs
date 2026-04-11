@@ -107,8 +107,8 @@ pub(crate) fn compute_layout(
     let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
     let flexible_h = (center_total - fixed_h).max(200.0);
     let bottom_panel_h: f32 = if has_bottom_panels {
-        let viewer_ratio = layout.color_viewer_height_ratio.clamp(0.3, 0.75);
-        (flexible_h * (1.0 - viewer_ratio)).clamp(80.0, flexible_h * 0.6)
+        let viewer_ratio = layout.color_viewer_height_ratio.clamp(0.15, 0.90);
+        (flexible_h * (1.0 - viewer_ratio)).clamp(60.0, flexible_h * 0.85)
     } else {
         0.0
     };

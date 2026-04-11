@@ -400,6 +400,7 @@ impl KlippApp {
         };
         app.state.peak_hold_time_secs = app.prefs.audio.peak_hold_time_secs;
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
+        app.browser.file_thumb_size = app.prefs.editing.file_thumb_size;
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -15384,6 +15385,10 @@ impl KlippApp {
                 self.prefs.editing.media_browser_view_mode = self.browser.browser_view_mode;
                 let _ = self.prefs.save();
             }
+            if self.browser.file_thumb_size != self.prefs.editing.file_thumb_size {
+                self.prefs.editing.file_thumb_size = self.browser.file_thumb_size;
+                let _ = self.prefs.save();
+            }
         });
     }
 
@@ -15436,7 +15441,7 @@ impl KlippApp {
             let delta = resizer::horizontal_resizer(ui, resizer_rect, &theme);
             if delta != 0.0 {
                 let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
-                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.3, 0.75);
+                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.15, 0.90);
                 self.layout_dirty = true;
             }
         }
@@ -15635,9 +15640,9 @@ impl KlippApp {
         theme: &KlippTheme,
     ) {
         let tools_h = if scopes_h > 0.0 { scopes_h } else {
-            let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+            let ratio = self.layout.color_viewer_height_ratio.clamp(0.15, 0.90);
             let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
-            (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6)
+            (flex * (1.0 - ratio)).clamp(60.0, flex * 0.85)
         };
         let tools_rect = egui::Rect::from_min_size(
             egui::pos2(center_left, toggle_bar_rect.max.y),
@@ -15687,9 +15692,9 @@ impl KlippApp {
         theme: &KlippTheme,
     ) {
         let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
-            let ratio = self.layout.color_viewer_height_ratio.clamp(0.3, 0.75);
+            let ratio = self.layout.color_viewer_height_ratio.clamp(0.15, 0.90);
             let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
-            let total_bottom = (flex * (1.0 - ratio)).clamp(80.0, flex * 0.6);
+            let total_bottom = (flex * (1.0 - ratio)).clamp(60.0, flex * 0.85);
             if show_nodes_bar { total_bottom * 0.6 } else { total_bottom }
         };
         let live_scopes_rect = egui::Rect::from_min_size(

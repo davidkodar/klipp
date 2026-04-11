@@ -231,15 +231,15 @@ impl KlippTheme {
 
 pub const TOOLBAR_HEIGHT: f32 = 44.0;
 pub const STATUSBAR_HEIGHT: f32 = 26.0;
-pub const TIMELINE_MIN_H: f32 = 80.0;
+pub const TIMELINE_MIN_H: f32 = 60.0;
 pub const TIMELINE_DEFAULT_H: f32 = 210.0;
-pub const TIMELINE_MAX_H_PCT: f32 = 0.60;
+pub const TIMELINE_MAX_H_PCT: f32 = 0.85;
 pub const BROWSER_DEFAULT_W: f32 = 270.0;
-pub const BROWSER_MIN_W: f32 = 160.0;
-pub const BROWSER_MAX_W: f32 = 480.0;
+pub const BROWSER_MIN_W: f32 = 120.0;
+pub const BROWSER_MAX_W: f32 = 900.0;
 pub const INSPECTOR_DEFAULT_W: f32 = 230.0;
-pub const INSPECTOR_MIN_W: f32 = 150.0;
-pub const INSPECTOR_MAX_W: f32 = 400.0;
+pub const INSPECTOR_MIN_W: f32 = 120.0;
+pub const INSPECTOR_MAX_W: f32 = 800.0;
 pub const RESIZER_THICKNESS: f32 = 5.0;
 pub const TRACK_VIDEO_H: f32 = 50.0;
 pub const TRACK_AUDIO_H: f32 = 48.0;
