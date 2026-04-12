@@ -1203,6 +1203,12 @@ pub struct ViewerPrefs {
     /// Fullscreen overlay auto-hide timeout in seconds.
     #[serde(default = "default_fullscreen_timeout")]
     pub fullscreen_overlay_timeout_secs: f32,
+    /// Zebra high threshold (overexposure warning). Per-channel, 0–255.
+    #[serde(default = "default_zebra_high")]
+    pub zebra_high_threshold: u8,
+    /// Zebra low threshold (underexposure warning). Per-channel, 0–255.
+    #[serde(default = "default_zebra_low")]
+    pub zebra_low_threshold: u8,
 }
 fn default_action_safe() -> f32 { 0.9 }
 fn default_title_safe() -> f32 { 0.8 }
@@ -1210,12 +1216,15 @@ fn default_grid_color() -> [u8; 4] { [200, 200, 200, 80] }
 fn default_checker_tile() -> f32 { 12.0 }
 fn default_handle_size() -> f32 { 8.0 }
 fn default_fullscreen_timeout() -> f32 { 3.0 }
+fn default_zebra_high() -> u8 { 235 }
+fn default_zebra_low() -> u8 { 16 }
 impl Default for ViewerPrefs {
     fn default() -> Self {
         Self {
             action_safe_pct: default_action_safe(), title_safe_pct: default_title_safe(),
             grid_color: default_grid_color(), checkerboard_tile_size: default_checker_tile(),
             transform_handle_size: default_handle_size(), fullscreen_overlay_timeout_secs: default_fullscreen_timeout(),
+            zebra_high_threshold: default_zebra_high(), zebra_low_threshold: default_zebra_low(),
         }
     }
 }

@@ -680,6 +680,17 @@ impl ToolbarPanel {
                 }
             });
             ui.separator();
+            let zebra_check = if state.viewer_overlays.zebras { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{zebra_check}Zebras")).shortcut_text("Z")).clicked() {
+                state.viewer_overlays.zebras = !state.viewer_overlays.zebras;
+                ui.close_menu();
+            }
+            let fc_check = if state.viewer_overlays.false_color { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{fc_check}False Color")).shortcut_text("Alt+F")).clicked() {
+                state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
+                ui.close_menu();
+            }
+            ui.separator();
             let safe_check = if state.viewer_overlays.safe_areas { "\u{2713} " } else { "  " };
             if ui.button(format!("{safe_check}Safe Areas")).clicked() {
                 state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;

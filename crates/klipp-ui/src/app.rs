@@ -1613,6 +1613,8 @@ impl KlippApp {
             }
         }
         if self.state.viewer_overlays.zebras {
+            let hi = self.prefs.viewer.zebra_high_threshold;
+            let lo = self.prefs.viewer.zebra_low_threshold;
             let fc = self.state.frame_count as usize;
             for y in 0..h {
                 for x in 0..w {
@@ -1620,13 +1622,12 @@ impl KlippApp {
                     let r = rgba_bytes[idx];
                     let g = rgba_bytes[idx + 1];
                     let b = rgba_bytes[idx + 2];
-                    // Check for clipping (near black or near white)
-                    let clipped = r > 235 || g > 235 || b > 235 || r < 16 || g < 16 || b < 16;
-                    if clipped {
+                    let is_over = r > hi || g > hi || b > hi;
+                    let is_under = r < lo || g < lo || b < lo;
+                    if is_over || is_under {
                         // Animated diagonal stripes
                         let stripe = (x + y + fc * 2) % 8 < 4;
                         if stripe {
-                            let is_over = r > 235 || g > 235 || b > 235;
                             if is_over {
                                 rgba_bytes[idx] = 255;
                                 rgba_bytes[idx + 1] = 0;

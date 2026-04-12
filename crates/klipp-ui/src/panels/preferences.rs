@@ -2496,6 +2496,24 @@ impl PreferencesPanel {
         });
 
         ui.add_space(12.0);
+        ui.label(egui::RichText::new("Zebras").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("High threshold (clipping):");
+            let mut v = prefs.viewer.zebra_high_threshold;
+            if ui.add(egui::DragValue::new(&mut v).range(128..=255).speed(1.0)).changed() {
+                prefs.viewer.zebra_high_threshold = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Low threshold (underexposure):");
+            let mut v = prefs.viewer.zebra_low_threshold;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=128).speed(1.0)).changed() {
+                prefs.viewer.zebra_low_threshold = v; *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
         ui.label(egui::RichText::new("Overlays").strong().size(12.0));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
