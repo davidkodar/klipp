@@ -1643,6 +1643,49 @@ impl KlippApp {
             }
             self.state.frame_count = self.state.frame_count.wrapping_add(1);
         }
+        // Focus peaking last — edge highlights on top of everything else.
+        // Adapts the Sobel algorithm from apply_edge_detect() in klipp-effects/src/lib.rs:581-621.
+        if self.state.viewer_overlays.focus_peaking {
+            let sensitivity = self.prefs.viewer.focus_peaking_sensitivity;
+            let [pr, pg, pb] = self.prefs.viewer.focus_peaking_color;
+            // Threshold: sensitivity 0.0 → show all edges (threshold=0), 1.0 → only strongest (threshold≈255)
+            let threshold = sensitivity * 255.0;
+            // Compute luma into scratch buffer (Sobel needs neighbor access, can't modify in-place)
+            // TODO: rayon parallelize y-loop if profiling shows stalls at 4K
+            let mut luma = vec![0u8; w * h];
+            for i in 0..w * h {
+                let idx = i * 4;
+                let r = rgba_bytes[idx] as f32;
+                let g = rgba_bytes[idx + 1] as f32;
+                let b = rgba_bytes[idx + 2] as f32;
+                luma[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 255.0) as u8;
+            }
+            // Sobel edge detection on luma, overlay peaking color where magnitude exceeds threshold
+            let sobel_x: [[f32; 3]; 3] = [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]];
+            let sobel_y: [[f32; 3]; 3] = [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut gx = 0.0f32;
+                    let mut gy = 0.0f32;
+                    for ky in 0..3i32 {
+                        for kx in 0..3i32 {
+                            let sx = (x as i32 + kx - 1).clamp(0, w as i32 - 1) as usize;
+                            let sy = (y as i32 + ky - 1).clamp(0, h as i32 - 1) as usize;
+                            let l = luma[sy * w + sx] as f32;
+                            gx += l * sobel_x[ky as usize][kx as usize];
+                            gy += l * sobel_y[ky as usize][kx as usize];
+                        }
+                    }
+                    let mag = (gx * gx + gy * gy).sqrt();
+                    if mag > threshold {
+                        let idx = (y * w + x) * 4;
+                        rgba_bytes[idx] = pr;
+                        rgba_bytes[idx + 1] = pg;
+                        rgba_bytes[idx + 2] = pb;
+                    }
+                }
+            }
+        }
 
         let t_convert = std::time::Instant::now();
         // Safety: Color32 is repr(C) [u8; 4], same as our RGBA layout.
@@ -11813,6 +11856,12 @@ impl KlippApp {
                 && i.key_pressed(egui::Key::F)
             {
                 self.state.viewer_overlays.false_color = !self.state.viewer_overlays.false_color;
+            }
+            // Ctrl+P — toggle focus peaking overlay
+            if i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
+                && i.key_pressed(egui::Key::P)
+            {
+                self.state.viewer_overlays.focus_peaking = !self.state.viewer_overlays.focus_peaking;
             }
             // V key (bare) — toggle scopes
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift

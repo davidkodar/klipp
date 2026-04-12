@@ -854,6 +854,7 @@ pub enum EyedropperMode {
 pub struct ViewerOverlays {
     pub zebras: bool,
     pub false_color: bool,
+    pub focus_peaking: bool,
     pub safe_areas: bool,
     pub grid: bool,
     pub checkerboard: bool,

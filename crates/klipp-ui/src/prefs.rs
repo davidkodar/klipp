@@ -1209,6 +1209,12 @@ pub struct ViewerPrefs {
     /// Zebra low threshold (underexposure warning). Per-channel, 0–255.
     #[serde(default = "default_zebra_low")]
     pub zebra_low_threshold: u8,
+    /// Focus peaking sensitivity (0.0 = show all edges, 1.0 = only strongest).
+    #[serde(default = "default_peaking_sensitivity")]
+    pub focus_peaking_sensitivity: f32,
+    /// Focus peaking overlay color [R, G, B].
+    #[serde(default = "default_peaking_color")]
+    pub focus_peaking_color: [u8; 3],
 }
 fn default_action_safe() -> f32 { 0.9 }
 fn default_title_safe() -> f32 { 0.8 }
@@ -1218,6 +1224,8 @@ fn default_handle_size() -> f32 { 8.0 }
 fn default_fullscreen_timeout() -> f32 { 3.0 }
 fn default_zebra_high() -> u8 { 235 }
 fn default_zebra_low() -> u8 { 16 }
+fn default_peaking_sensitivity() -> f32 { 0.5 }
+fn default_peaking_color() -> [u8; 3] { [255, 0, 255] } // magenta
 impl Default for ViewerPrefs {
     fn default() -> Self {
         Self {
@@ -1225,6 +1233,7 @@ impl Default for ViewerPrefs {
             grid_color: default_grid_color(), checkerboard_tile_size: default_checker_tile(),
             transform_handle_size: default_handle_size(), fullscreen_overlay_timeout_secs: default_fullscreen_timeout(),
             zebra_high_threshold: default_zebra_high(), zebra_low_threshold: default_zebra_low(),
+            focus_peaking_sensitivity: default_peaking_sensitivity(), focus_peaking_color: default_peaking_color(),
         }
     }
 }

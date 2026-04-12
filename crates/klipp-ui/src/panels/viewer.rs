@@ -542,6 +542,7 @@ impl ViewerPanel {
         let ov = &state.viewer_overlays;
         if ov.zebras { labels.push("ZEBRA"); }
         if ov.false_color { labels.push("FALSE COLOR"); }
+        if ov.focus_peaking { labels.push("FOCUS PEAKING"); }
         if ov.safe_areas { labels.push("SAFE AREAS"); }
         if ov.grid { labels.push("GRID"); }
         // no badge for checkerboard

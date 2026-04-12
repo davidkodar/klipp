@@ -2514,6 +2514,26 @@ impl PreferencesPanel {
         });
 
         ui.add_space(12.0);
+        ui.label(egui::RichText::new("Focus Peaking").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Sensitivity:");
+            let mut v = prefs.viewer.focus_peaking_sensitivity;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=1.0)).changed() {
+                prefs.viewer.focus_peaking_sensitivity = v; *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Color:");
+            let pc = &mut prefs.viewer.focus_peaking_color;
+            let mut c = egui::Color32::from_rgb(pc[0], pc[1], pc[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                *pc = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
+
+        ui.add_space(12.0);
         ui.label(egui::RichText::new("Overlays").strong().size(12.0));
         ui.add_space(4.0);
         ui.horizontal(|ui| {

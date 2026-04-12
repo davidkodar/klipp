@@ -690,6 +690,11 @@ impl ToolbarPanel {
                 state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
                 ui.close_menu();
             }
+            let peak_check = if state.viewer_overlays.focus_peaking { "\u{2713} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{peak_check}Focus Peaking")).shortcut_text("Ctrl+P")).clicked() {
+                state.viewer_overlays.focus_peaking = !state.viewer_overlays.focus_peaking;
+                ui.close_menu();
+            }
             ui.separator();
             let safe_check = if state.viewer_overlays.safe_areas { "\u{2713} " } else { "  " };
             if ui.button(format!("{safe_check}Safe Areas")).clicked() {
