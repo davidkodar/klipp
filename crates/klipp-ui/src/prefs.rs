@@ -306,6 +306,13 @@ pub struct FileBrowserPrefs {
     /// UI element is gone.
     #[serde(default = "default_true")]
     pub show_recent_files: bool,
+    /// Automatically refresh the file list when files are added, removed,
+    /// or renamed externally (e.g. by the OS file manager, a render job,
+    /// or a camera card sync). Uses inotify on Linux / FSEvents on macOS.
+    /// Users on slow or network-mounted drives may want to disable this
+    /// and rely on the manual "Refresh Folder" right-click action instead.
+    #[serde(default = "default_true")]
+    pub auto_refresh: bool,
     /// Most recently imported file paths, most-recent-first. Updated
     /// whenever `AppCommand::LoadMediaFile` completes successfully.
     /// Cross-project: survives project close/switch because it lives
@@ -329,6 +336,7 @@ impl Default for FileBrowserPrefs {
             file_browser_video_skim: true,
             file_browser_audio_skim: true,
             show_recent_files: true,
+            auto_refresh: true,
             recent_files: Vec::new(),
         }
     }

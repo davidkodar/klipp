@@ -353,6 +353,7 @@ impl KlippApp {
         app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
         app.state.file_browser_audio_skim_enabled = app.prefs.file_browser.file_browser_audio_skim;
         app.state.show_recent_files = app.prefs.file_browser.show_recent_files;
+        app.state.file_browser_auto_refresh = app.prefs.file_browser.auto_refresh;
         app.state.recent_files_snapshot = app.prefs.file_browser.recent_files.clone();
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         // Playhead follow: if pref is off, start with follow disabled
@@ -14935,6 +14936,9 @@ impl KlippApp {
             }
             if self.state.show_recent_files != self.prefs.file_browser.show_recent_files {
                 self.state.show_recent_files = self.prefs.file_browser.show_recent_files;
+            }
+            if self.state.file_browser_auto_refresh != self.prefs.file_browser.auto_refresh {
+                self.state.file_browser_auto_refresh = self.prefs.file_browser.auto_refresh;
             }
             if !still_open {
                 self.state.show_preferences = false;

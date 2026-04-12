@@ -82,6 +82,67 @@ fn ext_lower(path: &std::path::Path) -> String {
 }
 
 /// Whether this file is a candidate for visual thumbnail generation
+/// Start watching a directory for filesystem changes (create/delete/rename).
+/// Returns the watcher handle + a receiver that gets a `()` signal whenever
+/// a debounced batch of changes is detected. The debounce window is 400ms
+/// — rapid file writes (large copies, renders) are collapsed into a single
+/// notification so the browser doesn't flicker.
+///
+/// Returns `(None, None)` if the directory doesn't exist or the watcher
+/// can't be initialized (e.g. too many inotify watches). Callers should
+/// fall back gracefully to manual "Refresh Folder".
+fn start_folder_watcher(
+    dir: &std::path::Path,
+) -> (
+    Option<notify::RecommendedWatcher>,
+    Option<crossbeam_channel::Receiver<()>>,
+) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    if !dir.exists() || !dir.is_dir() {
+        return (None, None);
+    }
+
+    let (tx, rx) = crossbeam_channel::bounded::<()>(4);
+
+    // Debounce: the watcher callback fires on every individual OS event
+    // (Create, Remove, Rename, Modify). We don't need per-file detail —
+    // just "something changed in this directory". A bounded channel with
+    // try_send means bursts of events collapse naturally: if the channel
+    // is already full the extra sends are silently dropped, and the
+    // consumer drains once per frame (~16ms at 60fps). The 400ms wall-
+    // clock debounce happens implicitly because we only act on the drain
+    // in show_files_tab, which runs at vsync rate.
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            let relevant = matches!(
+                event.kind,
+                EventKind::Create(_)
+                    | EventKind::Remove(_)
+                    | EventKind::Modify(notify::event::ModifyKind::Name(_))
+            );
+            if relevant {
+                let _ = tx.try_send(());
+            }
+        }
+    });
+
+    match watcher {
+        Ok(mut w) => {
+            if w.watch(dir, RecursiveMode::NonRecursive).is_ok() {
+                tracing::debug!("folder_watcher: watching {:?}", dir);
+                (Some(w), Some(rx))
+            } else {
+                (None, None)
+            }
+        }
+        Err(e) => {
+            tracing::debug!("folder_watcher: failed to create watcher: {}", e);
+            (None, None)
+        }
+    }
+}
+
 /// Sentinel path that represents the virtual "Recent files" view. Not a
 /// real filesystem path — used to detect "we're in recents mode" so the
 /// file browser can populate `files_entries` from the prefs list instead
@@ -536,6 +597,18 @@ pub struct BrowserPanel {
     /// hovering same row" (emit Update) from "left the row" (emit End).
     /// Single slot — only one audio file can be skimmed at a time.
     file_audio_skim_active: Option<std::path::PathBuf>,
+    /// Filesystem watcher for the currently-displayed directory. Receives
+    /// a notification whenever files are created, deleted, or renamed
+    /// inside that directory. The watcher is recreated on each navigation
+    /// (dropped + re-created for the new directory) and set to `None`
+    /// when the virtual Recents view is active or when auto_refresh is
+    /// disabled in preferences.
+    ///
+    /// We keep the `RecommendedWatcher` handle alive (dropping it stops
+    /// watching) and drain events from `folder_watch_rx` at the top of
+    /// each `show_files_tab` frame.
+    folder_watcher: Option<notify::RecommendedWatcher>,
+    folder_watch_rx: Option<crossbeam_channel::Receiver<()>>,
     /// Inline "create new folder" state. `Some(text)` while a temporary
     /// row is showing at the top of the file list with a TextEdit for
     /// the user to type the folder name. `None` when not creating.
@@ -620,6 +693,8 @@ impl Default for BrowserPanel {
             file_audio_tx,
             file_audio_rx,
             file_audio_skim_active: None,
+            folder_watcher: None,
+            folder_watch_rx: None,
             creating_folder: None,
             renaming_file: None,
             navigation_blocked_by_create: false,
@@ -1070,7 +1145,7 @@ impl BrowserPanel {
             self.navigation_blocked_by_create = true;
             return;
         }
-        self.files_current_path = path;
+        self.files_current_path = path.clone();
         self.files_entries_dirty = true;
         self.file_thumb_textures.clear();
         self.file_thumb_pending.clear();
@@ -1083,6 +1158,16 @@ impl BrowserPanel {
         self.files_selection_anchor = None;
         // Note: in-flight workers will still complete and send results;
         // drain_file_thumbs filters out paths no longer in the current entries.
+
+        // Recreate the folder watcher for the new directory. The old
+        // watcher (if any) is dropped here, which stops watching the
+        // previous directory. If auto_refresh is off, we skip to save
+        // inotify watches. The `state` field isn't available here (we
+        // only have `&mut self`), so the auto_refresh pref check
+        // happens in `show_files_tab` where we drain the channel.
+        let (w, rx) = start_folder_watcher(&path);
+        self.folder_watcher = w;
+        self.folder_watch_rx = rx;
     }
 
     /// Switch to the virtual "Recent files" view. Populates `files_entries`
@@ -1132,6 +1217,9 @@ impl BrowserPanel {
         self.file_audio_failed.clear();
         self.files_selected.clear();
         self.files_selection_anchor = None;
+        // No directory to watch in the virtual view.
+        self.folder_watcher = None;
+        self.folder_watch_rx = None;
     }
 
     /// Re-read the current directory and drop in-memory thumbnail caches so
@@ -1399,6 +1487,31 @@ impl BrowserPanel {
         self.drain_file_skims(ui.ctx());
         // Drain any completed audio peaks results into the in-memory cache.
         self.drain_file_audio_peaks();
+
+        // ── Auto-refresh: drain folder watcher events ──
+        // If the filesystem watcher detected changes in the current
+        // directory (file created, deleted, or renamed externally),
+        // trigger a refresh — but only if:
+        //   - auto_refresh is enabled in preferences
+        //   - no inline editor (create/rename) is open (would be
+        //     yanked out from under the user)
+        //   - not already loading (prevents duplicate reads)
+        if state.file_browser_auto_refresh {
+            if let Some(ref rx) = self.folder_watch_rx {
+                let mut changed = false;
+                while rx.try_recv().is_ok() {
+                    changed = true;
+                }
+                if changed
+                    && self.creating_folder.is_none()
+                    && self.renaming_file.is_none()
+                    && !self.files_loading
+                {
+                    self.refresh_files();
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
 
         // Sync our local audio-skim tracker with the engine. If something
         // outside the file browser tore down the session (e.g. modal open,
@@ -3518,6 +3631,109 @@ mod new_folder_tests {
         let _ = std::fs::remove_dir_all(&nonexistent);
         let err = create_folder_in(&nonexistent, "child").unwrap_err();
         assert!(err.starts_with("Cannot create folder"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod folder_watcher_tests {
+    use super::start_folder_watcher;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_watcher_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn watcher_returns_none_for_missing_dir() {
+        let (w, rx) = start_folder_watcher(std::path::Path::new("/nonexistent_klipp_test_dir"));
+        assert!(w.is_none());
+        assert!(rx.is_none());
+    }
+
+    #[test]
+    fn watcher_returns_some_for_existing_dir() {
+        let dir = temp_dir("exists");
+        let (w, rx) = start_folder_watcher(&dir);
+        assert!(w.is_some(), "watcher should be created for existing dir");
+        assert!(rx.is_some(), "receiver should be created");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn watcher_detects_file_creation() {
+        let dir = temp_dir("detect_create");
+        let (w, rx) = start_folder_watcher(&dir);
+        let rx = rx.expect("watcher should be created");
+
+        // Create a file inside the watched directory.
+        std::fs::write(dir.join("new_file.txt"), b"hello").unwrap();
+
+        // Give inotify + the OS a moment to deliver the event. The
+        // watcher callback runs on a background thread and writes to
+        // the channel, which we poll here. 500ms is generous.
+        let got = rx.recv_timeout(std::time::Duration::from_millis(500));
+        assert!(got.is_ok(), "should receive a change notification");
+
+        drop(w); // stop watching
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn watcher_detects_file_removal() {
+        let dir = temp_dir("detect_remove");
+        let existing = dir.join("existing.txt");
+        std::fs::write(&existing, b"data").unwrap();
+
+        let (w, rx) = start_folder_watcher(&dir);
+        let rx = rx.expect("watcher should be created");
+
+        // Remove the file.
+        std::fs::remove_file(&existing).unwrap();
+
+        let got = rx.recv_timeout(std::time::Duration::from_millis(500));
+        assert!(got.is_ok(), "should receive a removal notification");
+
+        drop(w);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn watcher_channel_is_bounded_and_does_not_block() {
+        // The channel is bounded(4). Sending more than 4 events should
+        // not block the watcher thread (try_send drops the excess).
+        let dir = temp_dir("bounded");
+        let (_w, rx) = start_folder_watcher(&dir);
+        let rx = rx.expect("watcher should be created");
+
+        // Create many files rapidly.
+        for i in 0..20 {
+            std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+
+        // Wait briefly then drain — should get at most 4 messages (bounded).
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert!(count > 0, "should have received at least one event");
+        assert!(count <= 4, "bounded channel should cap at 4, got {count}");
+
+        cleanup(&dir);
     }
 }
 

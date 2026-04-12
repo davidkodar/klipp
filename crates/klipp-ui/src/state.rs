@@ -387,6 +387,9 @@ pub struct AppState {
     /// Whether the Recents sidebar button is visible. Mirrored from
     /// `prefs.file_browser.show_recent_files`.
     pub show_recent_files: bool,
+    /// Whether the file browser auto-refreshes on external filesystem
+    /// changes. Mirrored from `prefs.file_browser.auto_refresh`.
+    pub file_browser_auto_refresh: bool,
     /// Snapshot of `prefs.file_browser.recent_files` synced into state so
     /// the browser panel can read it without borrowing `prefs`. Updated
     /// at startup and whenever the prefs change.
@@ -1410,6 +1413,7 @@ impl Default for AppState {
             skim_last_x: 0.0,
             skim_audio_session: None,
             show_recent_files: true,
+            file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
             stabilization_in_progress: std::collections::HashSet::new(),

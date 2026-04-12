@@ -848,6 +848,32 @@ impl PreferencesPanel {
             },
         );
 
+        Self::setting_row_with_subtitle(
+            ui,
+            "Auto-refresh folder",
+            "Refresh file list when files change externally (inotify)",
+            |ui| {
+                let mut val = prefs.file_browser.auto_refresh;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.auto_refresh = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Show recent files",
+            "Show the Recents button in the file browser sidebar",
+            |ui| {
+                let mut val = prefs.file_browser.show_recent_files;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.show_recent_files = val;
+                    *dirty = true;
+                }
+            },
+        );
+
         // ── DISPLAY section ──
         Self::section_header(ui, "DISPLAY");
 
