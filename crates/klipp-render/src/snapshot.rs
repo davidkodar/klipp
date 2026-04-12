@@ -444,6 +444,7 @@ fn flatten_compound_video_clips(
                 }
                 ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
                 ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
+                // TODO: implement adjustment layer compositing — apply effects to all clips below
                 ClipKind::Gap | ClipKind::AdjustmentLayer => continue,
                 ClipKind::Sequence { .. } => unreachable!(), // handled above
             };
