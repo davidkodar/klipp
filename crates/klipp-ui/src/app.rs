@@ -9711,8 +9711,9 @@ impl KlippApp {
                     }
                 }
                 subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
-                let srt = generate_srt(&subs);
-                match std::fs::write(&path, &srt) {
+                let is_vtt = path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("vtt"));
+                let content = if is_vtt { generate_vtt(&subs) } else { generate_srt(&subs) };
+                match std::fs::write(&path, &content) {
                     Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
                     Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
                 }
@@ -17109,6 +17110,25 @@ fn format_srt_time(secs: f64) -> String {
     let s = (secs % 60.0) as u32;
     let ms = ((secs % 1.0) * 1000.0) as u32;
     format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
+}
+
+/// Generate WebVTT format string from subtitle entries.
+fn generate_vtt(subs: &[SubtitleEntry]) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for sub in subs {
+        out.push_str(&format!("{} --> {}\n", format_vtt_time(sub.start_secs), format_vtt_time(sub.end_secs)));
+        out.push_str(&sub.text);
+        out.push_str("\n\n");
+    }
+    out
+}
+
+fn format_vtt_time(secs: f64) -> String {
+    let h = (secs / 3600.0) as u32;
+    let m = ((secs % 3600.0) / 60.0) as u32;
+    let s = (secs % 60.0) as u32;
+    let ms = ((secs % 1.0) * 1000.0) as u32;
+    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
 }
 
 #[cfg(test)]
