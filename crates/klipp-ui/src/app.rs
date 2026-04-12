@@ -64,7 +64,8 @@ struct ExportDialogState {
     audio_codec: ExportAudioCodec,
     audio_bitrate: u32,
     confirm_overwrite: bool,
-    marked_range: bool,
+    /// 0=Full timeline, 1=Marked in/out range, 2=Selected clips
+    range_mode: u8,
     selected_preset_id: Option<String>,
     save_preset_name: String,
     show_save_preset: bool,
@@ -89,7 +90,7 @@ impl Default for ExportDialogState {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate: 128,
             confirm_overwrite: false,
-            marked_range: false,
+            range_mode: 0,
             selected_preset_id: None,
             save_preset_name: String::new(),
             show_save_preset: false,
@@ -9583,14 +9584,22 @@ impl KlippApp {
                     return true;
                 }
                 // Route through RenderQueue — snapshot reads in/out from sequence directly
-                let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                let use_marked = self.export_dialog.range_mode == 1;
+                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                     &self.state.sequences[self.state.active_sequence_idx],
                     &self.state.sequences,
                     &self.state.media_pool,
                     settings,
                     self.state.global_lut_path.clone(),
-                    self.export_dialog.marked_range,
+                    use_marked,
                 );
+                // Override range for selected-clips mode
+                if self.export_dialog.range_mode == 2 {
+                    if let Ok(ref mut snap) = snapshot {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                    }
+                }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Render".into());
@@ -9608,14 +9617,21 @@ impl KlippApp {
             AppCommand::ForceExportSequence { settings } => {
                 // Same as ExportSequence but skips offline check (user confirmed)
                 self.state.export_offline_warning = None;
-                let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                let use_marked = self.export_dialog.range_mode == 1;
+                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                     &self.state.sequences[self.state.active_sequence_idx],
                     &self.state.sequences,
                     &self.state.media_pool,
                     settings,
                     None,
-                    self.export_dialog.marked_range,
+                    use_marked,
                 );
+                if self.export_dialog.range_mode == 2 {
+                    if let Ok(ref mut snap) = snapshot {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                    }
+                }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Render".into());
@@ -12544,6 +12560,37 @@ fn dialog_fps(dialog: &ExportDialogState) -> Option<klipp_core::Fps> {
     }
 }
 
+/// Compute the frame range covering all selected clips. Returns None if no clips selected.
+/// Note: this is a time range, not a clip filter — unselected clips that overlap the range
+/// will still render, matching how in-to-out export works.
+fn selected_clips_frame_range(
+    selected: &[klipp_core::ClipId],
+    seq: &klipp_timeline::Sequence,
+    fps: f64,
+) -> Option<(u64, u64)> {
+    if selected.is_empty() {
+        return None;
+    }
+    let mut min_in = f64::MAX;
+    let mut max_out = f64::MIN;
+    for track in &seq.tracks {
+        for clip in &track.clips {
+            if selected.contains(&clip.id) {
+                let t_in = clip.timeline_in.to_secs_f64();
+                let t_out = clip.timeline_out.to_secs_f64();
+                if t_in < min_in { min_in = t_in; }
+                if t_out > max_out { max_out = t_out; }
+            }
+        }
+    }
+    if min_in >= max_out {
+        return None;
+    }
+    let start = (min_in * fps).round() as u64;
+    let end = (max_out * fps).ceil() as u64;
+    Some((start, end))
+}
+
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     dialog.video_codec = settings.video_codec;
@@ -14249,14 +14296,33 @@ impl KlippApp {
                         ui.end_row();
                     });
 
-                // Export range checkbox
-                if let (Some(in_pt), Some(out_pt)) = (self.state.sequences[self.state.active_sequence_idx].in_point, self.state.sequences[self.state.active_sequence_idx].out_point) {
-                    let in_str = in_pt.to_timecode_string();
-                    let out_str = out_pt.to_timecode_string();
-                    ui.checkbox(
-                        &mut self.export_dialog.marked_range,
-                        format!("Export marked range only (In: {} \u{2192} Out: {})", in_str, out_str),
-                    );
+                // Export range — radio selection: Full / Marked range / Selected clips
+                ui.add_space(4.0);
+                ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
+                let has_range = self.state.sequences[self.state.active_sequence_idx].in_point.is_some()
+                    && self.state.sequences[self.state.active_sequence_idx].out_point.is_some();
+                if has_range {
+                    let in_pt = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap();
+                    let out_pt = self.state.sequences[self.state.active_sequence_idx].out_point.unwrap();
+                    ui.radio_value(&mut self.export_dialog.range_mode, 1,
+                        format!("In/Out range ({} \u{2192} {})", in_pt.to_timecode_string(), out_pt.to_timecode_string()));
+                }
+                let sel_count = self.state.selected_clips.len();
+                let sel_enabled = sel_count > 0;
+                ui.add_enabled_ui(sel_enabled, |ui| {
+                    let label = if sel_count > 0 {
+                        format!("Selected clips ({sel_count})")
+                    } else {
+                        "Selected clips (none)".to_string()
+                    };
+                    ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
+                });
+                // Reset to Full if the selected mode is no longer valid
+                if self.export_dialog.range_mode == 1 && !has_range {
+                    self.export_dialog.range_mode = 0;
+                }
+                if self.export_dialog.range_mode == 2 && !sel_enabled {
+                    self.export_dialog.range_mode = 0;
                 }
 
                 ui.add_space(12.0);
@@ -14279,14 +14345,21 @@ impl KlippApp {
                             video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                             rate_control: self.export_dialog.rate_control,
                         };
-                        let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                        let use_marked = self.export_dialog.range_mode == 1;
+                        let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                             &self.state.sequences[self.state.active_sequence_idx],
                             &self.state.sequences,
                             &self.state.media_pool,
                             &settings,
                             self.state.global_lut_path.clone(),
-                            self.export_dialog.marked_range,
+                            use_marked,
                         );
+                        if self.export_dialog.range_mode == 2 {
+                            if let Ok(ref mut snap) = snapshot {
+                                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                            }
+                        }
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "Render".into());
