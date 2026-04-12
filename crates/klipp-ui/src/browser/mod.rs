@@ -528,6 +528,17 @@ pub struct BrowserPanel {
     /// hovering same row" (emit Update) from "left the row" (emit End).
     /// Single slot — only one audio file can be skimmed at a time.
     file_audio_skim_active: Option<std::path::PathBuf>,
+    /// Inline "create new folder" state. `Some(text)` while a temporary
+    /// row is showing at the top of the file list with a TextEdit for
+    /// the user to type the folder name. `None` when not creating.
+    /// Modeled on `media_tab::creating_bin` — the same pattern but
+    /// committing to the real filesystem instead of the media pool.
+    creating_folder: Option<String>,
+    /// One-shot flag set by `navigate_files_to` when it had to refuse
+    /// a navigation request because `creating_folder` was open. Read
+    /// and reset by the show() deferred block, which then toasts a
+    /// message so the click doesn't feel inert.
+    navigation_blocked_by_create: bool,
 }
 
 #[derive(Clone)]
@@ -594,6 +605,8 @@ impl Default for BrowserPanel {
             file_audio_tx,
             file_audio_rx,
             file_audio_skim_active: None,
+            creating_folder: None,
+            navigation_blocked_by_create: false,
         }
     }
 }
@@ -1028,7 +1041,19 @@ impl BrowserPanel {
 
     /// Navigate the files browser to a new directory. Clears in-memory thumbnail
     /// state so RAM stays bounded. Disk cache is preserved.
+    ///
+    /// Refuses to navigate while an inline "create new folder" editor is
+    /// open: the user is in the middle of naming a folder anchored to a
+    /// specific parent directory, and silently swapping that parent out
+    /// from under them would be confusing. They must commit (Enter) or
+    /// cancel (Escape) before leaving the directory. Sets
+    /// `navigation_blocked_by_create` so the show() deferred block can
+    /// show a toast — without that signal, the click would feel inert.
     fn navigate_files_to(&mut self, path: std::path::PathBuf) {
+        if self.creating_folder.is_some() {
+            self.navigation_blocked_by_create = true;
+            return;
+        }
         self.files_current_path = path;
         self.files_entries_dirty = true;
         self.file_thumb_textures.clear();
@@ -1635,6 +1660,18 @@ impl BrowserPanel {
         let mut pending_refresh = false;
         // Right-click → "Pin / Unpin Favorites" — directory path to toggle.
         let mut pending_pin_toggle: Option<std::path::PathBuf> = None;
+        // Right-click → "New folder" — set after the loop to seed the
+        // inline TextEdit with a unique default name. Captured here so
+        // the deferred mutation block (which already has `&mut self`)
+        // can call `unique_untitled_folder_name` against the current
+        // directory without fighting the borrow checker.
+        let mut pending_new_folder = false;
+        // Inline rename committed → name to actually create on disk.
+        // Captured during the inline-create row's `lost_focus()` branch
+        // and resolved in the deferred mutation block, where we run the
+        // actual `create_folder_in` call, refresh the directory listing,
+        // select the new folder, and show a toast.
+        let mut pending_commit_folder: Option<String> = None;
         // Hover skim — latest skim decode request captured during the row loop.
         // Tuple: (path, time_secs). Applied after the loop to avoid borrow conflicts.
         let mut pending_skim_request: Option<(std::path::PathBuf, f64)> = None;
@@ -1825,7 +1862,80 @@ impl BrowserPanel {
                 return;
             }
 
-            if filtered.is_empty() {
+            // ── Inline "creating new folder" row ──
+            // Renders at the top of the list whenever `creating_folder` is
+            // Some, before any real entries. The row contains a folder
+            // icon and a TextEdit with the typed name. Enter / click-away
+            // commit; Escape cancels. The actual filesystem mutation
+            // happens in the deferred block below the for loop, where
+            // `&mut self` is unambiguously available — that's also where
+            // we wire selection of the new folder and the toast.
+            //
+            // While this row is showing, the empty-folder placeholder
+            // below is suppressed so the user isn't confused by an
+            // "Empty folder" hint sitting under their inline editor.
+            //
+            // Implementation note: this MUST use `ui.horizontal()` and
+            // let egui auto-size the TextEdit's parent layout, not
+            // `ui.new_child()` with a manually-positioned rect. The
+            // child-ui-with-fixed-rect approach gives the TextEdit an
+            // unstable parent ID that shifts between frames, which makes
+            // focus state evaporate and prevents the Enter key from
+            // ever reaching the `lost_focus()` check. The bin rename
+            // pattern in `media_tab::render_bin_header` uses the same
+            // `ui.horizontal()` shape and works correctly — copy it.
+            if self.creating_folder.is_some() {
+                // Pre-read Enter and Escape from this frame's input
+                // BEFORE the TextEdit consumes them. This is a
+                // belt-and-braces backup for `lost_focus()`: even if
+                // egui's focus tracking ever goes sideways, we'll still
+                // commit on Enter and cancel on Escape because we
+                // captured the key event explicitly. Both events are
+                // also seen by the TextEdit; consuming them via
+                // ui.input is non-destructive.
+                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                let edit_text = self.creating_folder.as_mut().unwrap();
+                let text_resp = ui
+                    .horizontal(|ui| {
+                        ui.add_space(pad);
+                        ui.label(
+                            egui::RichText::new("\u{1F4C1}")
+                                .size(13.0)
+                                .color(theme.accent),
+                        );
+                        ui.add_space(8.0);
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(edit_text)
+                                .desired_width(ui.available_width() - 14.0)
+                                .font(egui::FontId::proportional(11.0)),
+                        );
+                        // Take focus on every frame the editor is
+                        // showing. `request_focus` is idempotent and
+                        // egui handles the case where the widget is
+                        // already focused. Same pattern as the bin
+                        // rename in media_tab.
+                        resp.request_focus();
+                        resp
+                    })
+                    .inner;
+
+                if escape_pressed {
+                    // User cancelled — drop the in-progress name without
+                    // touching the filesystem.
+                    self.creating_folder = None;
+                } else if enter_pressed || text_resp.lost_focus() {
+                    // Enter or click-away → commit. The actual
+                    // create-and-refresh happens in the deferred block
+                    // below; we just stash the typed name in a local so
+                    // it survives until then.
+                    pending_commit_folder = Some(std::mem::take(edit_text));
+                    self.creating_folder = None;
+                }
+            }
+
+            if filtered.is_empty() && self.creating_folder.is_none() {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -2318,6 +2428,18 @@ impl BrowserPanel {
                         ui.close_menu();
                     }
 
+                    ui.separator();
+
+                    // ── New folder ──
+                    // Always creates inside the currently-displayed directory,
+                    // not inside a right-clicked subfolder. Matches Finder/
+                    // Files-app behavior: "the folder you're looking at is
+                    // the parent" regardless of which row you right-clicked.
+                    if ui.button("New Folder").clicked() {
+                        pending_new_folder = true;
+                        ui.close_menu();
+                    }
+
                     // ── Refresh folder ──
                     if ui.button("Refresh Folder").clicked() {
                         pending_refresh = true;
@@ -2327,6 +2449,37 @@ impl BrowserPanel {
 
                 // Tooltip on hover (path)
                 resp.on_hover_text(entry.path.to_string_lossy().as_ref());
+            }
+
+            // ── Empty-area right-click menu ──
+            // Allocates whatever vertical space is left below the last
+            // file row (or the entire scroll area if the directory is
+            // empty) and listens for secondary clicks. Lets users create
+            // a new folder or refresh without first having to right-click
+            // an existing row — important for empty directories where
+            // there's nothing to right-click in the first place.
+            //
+            // The rect uses `Sense::click()` so primary clicks fall
+            // through to the scroll area (don't accidentally deselect
+            // the current selection on every empty-area click), but
+            // egui's `context_menu()` listens for secondary_clicked
+            // automatically.
+            let remaining_h = ui.available_height();
+            if remaining_h > 0.0 {
+                let (_empty_rect, empty_resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), remaining_h),
+                    egui::Sense::click(),
+                );
+                empty_resp.context_menu(|ui| {
+                    if ui.button("New Folder").clicked() {
+                        pending_new_folder = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Refresh Folder").clicked() {
+                        pending_refresh = true;
+                        ui.close_menu();
+                    }
+                });
             }
         });
 
@@ -2491,6 +2644,65 @@ impl BrowserPanel {
                 self.pinned_folders.remove(idx);
             } else {
                 self.pinned_folders.push(target);
+            }
+        }
+
+        // Right-click → "New folder" — seed the inline editor with a
+        // collision-free default name. This only kicks the UI into edit
+        // mode; the actual filesystem mutation happens later when the
+        // user commits via Enter or click-away (see pending_commit_folder
+        // immediately below).
+        if pending_new_folder {
+            let default_name = unique_untitled_folder_name(&self.files_current_path);
+            self.creating_folder = Some(default_name);
+        }
+
+        // navigate_files_to refused a navigation request because the
+        // inline create-folder editor was open. Toast a hint so the
+        // click doesn't feel inert. The flag is reset every frame
+        // regardless of whether we toast (no risk of repeat toasts —
+        // each refused navigation sets the flag exactly once).
+        if self.navigation_blocked_by_create {
+            self.navigation_blocked_by_create = false;
+            state.toast.show(
+                "Press Enter to confirm or Escape to cancel the new folder".to_string(),
+            );
+        }
+
+        // Inline rename committed → actually create the folder, refresh
+        // the directory listing, select the new folder, and toast.
+        // On error we keep the editor open so the user can fix the name
+        // (e.g. typed a duplicate, or hit a permission error and wants
+        // to retry under a different name).
+        if let Some(name) = pending_commit_folder {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                // Empty name → silently cancel. Matches Finder: typing
+                // nothing and pressing Enter just dismisses the editor.
+                self.creating_folder = None;
+            } else {
+                let parent = self.files_current_path.clone();
+                match create_folder_in(&parent, trimmed) {
+                    Ok(new_path) => {
+                        state.toast.show(format!("Created \"{trimmed}\""));
+                        self.creating_folder = None;
+                        self.refresh_files();
+                        // Auto-select the new folder so the user's next
+                        // action (Enter to navigate into it, F2 to
+                        // rename, etc.) targets it without an extra
+                        // click. The selection survives the refresh
+                        // because `refresh_files` doesn't touch it.
+                        self.files_selected.clear();
+                        self.files_selected.insert(new_path.clone());
+                        self.files_selection_anchor = Some(new_path);
+                    }
+                    Err(msg) => {
+                        state.toast.show(msg);
+                        // Re-open the editor with the rejected name so
+                        // the user can edit it instead of starting over.
+                        self.creating_folder = Some(name);
+                    }
+                }
             }
         }
 
@@ -2704,6 +2916,274 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+/// Compute a non-colliding default name for a new folder inside `parent`,
+/// macOS Finder style: `untitled folder`, then `untitled folder 2`,
+/// `untitled folder 3`, ... up to 999. Returns the first name whose
+/// fully-qualified path doesn't already exist on disk.
+///
+/// Returns `untitled folder` if `parent` doesn't exist (caller will fail
+/// at the actual `create_dir` step with a clearer error than "name in use").
+fn unique_untitled_folder_name(parent: &std::path::Path) -> String {
+    const BASE: &str = "untitled folder";
+    if !parent.join(BASE).exists() {
+        return BASE.to_string();
+    }
+    for n in 2..=999 {
+        let candidate = format!("{BASE} {n}");
+        if !parent.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // Fallback: 999 untitled folders is well past "user is doing something
+    // weird" — ship the base name and let the OS error sort it out.
+    BASE.to_string()
+}
+
+/// Validate a user-typed folder name and create the directory inside
+/// `parent`. Returns the new directory's full path on success, or a
+/// human-readable error message on failure (suitable for a toast).
+///
+/// Validation rules — kept conservative so the same code works on every
+/// filesystem Klipp users care about (ext4, btrfs, xfs, fat32 on USB,
+/// ntfs on shared drives):
+/// - Empty / whitespace-only names are rejected.
+/// - Names containing path separators (`/` or `\`) are rejected so users
+///   can't accidentally drill into subdirectories during inline rename.
+/// - Reserved names `.` and `..` are rejected.
+/// - Pre-existing names (file OR directory) are rejected with a clear
+///   "already exists here" message instead of relying on the OS error.
+/// - Everything else is handed to `std::fs::create_dir`, whose error
+///   message (permission denied, read-only filesystem, etc.) is passed
+///   through verbatim.
+fn create_folder_in(parent: &std::path::Path, name: &str) -> Result<std::path::PathBuf, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Folder name cannot contain '/' or '\\'".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(format!("'{trimmed}' is a reserved name"));
+    }
+    let target = parent.join(trimmed);
+    if target.exists() {
+        return Err(format!("\"{trimmed}\" already exists here"));
+    }
+    std::fs::create_dir(&target).map_err(|e| format!("Cannot create folder: {e}"))?;
+    Ok(target)
+}
+
+#[cfg(test)]
+mod new_folder_tests {
+    //! Tests for the file-browser "New folder" feature (#11 in the
+    //! file browser feature queue). Covers the two pure helper
+    //! functions used by the inline-create flow:
+    //!
+    //!   - `unique_untitled_folder_name` — collision-free default name
+    //!   - `create_folder_in` — validation + actual mkdir
+    //!
+    //! Each test creates a fresh tempdir under the system temp area so
+    //! they can run in parallel without interfering with each other.
+    use super::{create_folder_in, unique_untitled_folder_name};
+    use std::path::PathBuf;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_new_folder_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            // Nanoseconds since epoch keeps each test isolated even when
+            // pid is reused (e.g. in parallel `cargo test` runs).
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── unique_untitled_folder_name ──────────────────────────────
+
+    #[test]
+    fn unique_name_returns_base_when_directory_is_empty() {
+        let dir = temp_dir("uniq_empty");
+        assert_eq!(unique_untitled_folder_name(&dir), "untitled folder");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unique_name_increments_on_first_collision() {
+        let dir = temp_dir("uniq_one");
+        std::fs::create_dir(dir.join("untitled folder")).unwrap();
+        assert_eq!(unique_untitled_folder_name(&dir), "untitled folder 2");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unique_name_increments_through_a_run_of_collisions() {
+        let dir = temp_dir("uniq_run");
+        std::fs::create_dir(dir.join("untitled folder")).unwrap();
+        std::fs::create_dir(dir.join("untitled folder 2")).unwrap();
+        std::fs::create_dir(dir.join("untitled folder 3")).unwrap();
+        std::fs::create_dir(dir.join("untitled folder 4")).unwrap();
+        assert_eq!(unique_untitled_folder_name(&dir), "untitled folder 5");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unique_name_treats_a_file_collision_the_same_as_a_folder_collision() {
+        // The check is `.exists()`, which catches files too. Otherwise we'd
+        // suggest a name that immediately fails on create_dir.
+        let dir = temp_dir("uniq_file");
+        std::fs::write(dir.join("untitled folder"), b"x").unwrap();
+        assert_eq!(unique_untitled_folder_name(&dir), "untitled folder 2");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unique_name_handles_gaps_in_the_sequence() {
+        // If the user manually deleted "untitled folder 2" we should pick
+        // 2 again instead of 5 — this isn't critical UX-wise but it
+        // documents the "first available" semantic explicitly.
+        let dir = temp_dir("uniq_gap");
+        std::fs::create_dir(dir.join("untitled folder")).unwrap();
+        std::fs::create_dir(dir.join("untitled folder 3")).unwrap();
+        std::fs::create_dir(dir.join("untitled folder 4")).unwrap();
+        assert_eq!(unique_untitled_folder_name(&dir), "untitled folder 2");
+        cleanup(&dir);
+    }
+
+    // ── create_folder_in: success path ───────────────────────────
+
+    #[test]
+    fn create_folder_creates_the_directory_on_disk() {
+        let dir = temp_dir("create_ok");
+        let result = create_folder_in(&dir, "Project Files");
+        let new_path = result.expect("create should succeed");
+        assert!(new_path.exists(), "new path should exist on disk");
+        assert!(new_path.is_dir(), "new path should be a directory");
+        assert_eq!(new_path, dir.join("Project Files"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_trims_leading_and_trailing_whitespace() {
+        let dir = temp_dir("create_trim");
+        let result = create_folder_in(&dir, "  spaced  ");
+        let new_path = result.expect("create should succeed");
+        // The on-disk name is the trimmed version, not the padded input.
+        assert_eq!(new_path, dir.join("spaced"));
+        assert!(new_path.exists());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_allows_unicode_names() {
+        let dir = temp_dir("create_unicode");
+        let result = create_folder_in(&dir, "B-roll \u{1F3AC}");
+        let new_path = result.expect("unicode should work");
+        assert!(new_path.exists());
+        cleanup(&dir);
+    }
+
+    // ── create_folder_in: validation rejection ───────────────────
+
+    #[test]
+    fn create_folder_rejects_empty_name() {
+        let dir = temp_dir("create_empty");
+        let err = create_folder_in(&dir, "").unwrap_err();
+        assert!(err.to_lowercase().contains("empty"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_whitespace_only_name() {
+        let dir = temp_dir("create_ws");
+        let err = create_folder_in(&dir, "   ").unwrap_err();
+        assert!(err.to_lowercase().contains("empty"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_forward_slash_in_name() {
+        let dir = temp_dir("create_slash");
+        let err = create_folder_in(&dir, "foo/bar").unwrap_err();
+        assert!(err.contains('/') || err.contains("'/'"), "got: {err}");
+        // Confirm nothing was actually created.
+        assert!(!dir.join("foo").exists());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_backslash_in_name() {
+        let dir = temp_dir("create_bslash");
+        let err = create_folder_in(&dir, "foo\\bar").unwrap_err();
+        assert!(err.contains('\\') || err.contains("'\\\\'"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_dot() {
+        let dir = temp_dir("create_dot");
+        let err = create_folder_in(&dir, ".").unwrap_err();
+        assert!(err.contains("reserved"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_double_dot() {
+        let dir = temp_dir("create_dotdot");
+        let err = create_folder_in(&dir, "..").unwrap_err();
+        assert!(err.contains("reserved"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    // ── create_folder_in: collision rejection ────────────────────
+
+    #[test]
+    fn create_folder_rejects_existing_directory_name() {
+        let dir = temp_dir("create_collide_dir");
+        std::fs::create_dir(dir.join("clash")).unwrap();
+        let err = create_folder_in(&dir, "clash").unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_rejects_existing_file_name() {
+        let dir = temp_dir("create_collide_file");
+        std::fs::write(dir.join("clash"), b"x").unwrap();
+        let err = create_folder_in(&dir, "clash").unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        // The file was not clobbered.
+        assert!(dir.join("clash").is_file());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn create_folder_returns_clear_error_for_missing_parent() {
+        // Parent doesn't exist → std::fs::create_dir errors out and we
+        // pass the OS message through. We just need to confirm we get
+        // a "Cannot create folder" prefix, not the helper's own
+        // collision/empty messages.
+        let nonexistent = std::env::temp_dir().join(format!(
+            "klipp_new_folder_test_missing_parent_{}",
+            std::process::id()
+        ));
+        // Make sure it really doesn't exist.
+        let _ = std::fs::remove_dir_all(&nonexistent);
+        let err = create_folder_in(&nonexistent, "child").unwrap_err();
+        assert!(err.starts_with("Cannot create folder"), "got: {err}");
     }
 }
 
