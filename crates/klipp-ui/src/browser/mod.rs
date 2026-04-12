@@ -82,6 +82,14 @@ fn ext_lower(path: &std::path::Path) -> String {
 }
 
 /// Whether this file is a candidate for visual thumbnail generation
+/// Sentinel path that represents the virtual "Recent files" view. Not a
+/// real filesystem path — used to detect "we're in recents mode" so the
+/// file browser can populate `files_entries` from the prefs list instead
+/// of reading a directory. Uses a URI-style scheme to avoid any possible
+/// collision with a real filesystem path.
+static RECENTS_SENTINEL: std::sync::LazyLock<std::path::PathBuf> =
+    std::sync::LazyLock::new(|| std::path::PathBuf::from("klipp://recents"));
+
 /// (video or still image — audio is excluded; it gets a glyph instead).
 fn is_visual_media(path: &std::path::Path) -> bool {
     let ext = ext_lower(path);
@@ -1077,6 +1085,55 @@ impl BrowserPanel {
         // drain_file_thumbs filters out paths no longer in the current entries.
     }
 
+    /// Switch to the virtual "Recent files" view. Populates `files_entries`
+    /// from the prefs `recent_files` list, filtering out paths that no longer
+    /// exist on disk. This view does NOT read a real directory — it sets
+    /// `files_current_path` to the sentinel so the breadcrumb/path bar
+    /// renders "Recent Files" instead of a filesystem path, and skips the
+    /// async directory-read pass.
+    fn navigate_to_recents(&mut self, state: &crate::state::AppState) {
+        if self.creating_folder.is_some() || self.renaming_file.is_some() {
+            self.navigation_blocked_by_create = true;
+            return;
+        }
+        self.files_current_path = RECENTS_SENTINEL.clone();
+        self.files_entries = state
+            .recent_files_snapshot
+            .iter()
+            .filter(|p| p.exists())
+            .map(|p| {
+                let meta = std::fs::metadata(p).ok();
+                let ext = p
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                FileEntry {
+                    name: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    path: p.clone(),
+                    is_dir: false,
+                    size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    is_media: klipp_core::media_extensions::is_media(&ext),
+                    mtime: meta.and_then(|m| m.modified().ok()),
+                }
+            })
+            .collect();
+        self.files_entries_dirty = false;
+        self.files_loading = false;
+        self.files_error = None;
+        self.files_receiver = None;
+        self.file_thumb_textures.clear();
+        self.file_thumb_pending.clear();
+        self.file_thumb_failed.clear();
+        self.file_audio_peaks.clear();
+        self.file_audio_pending.clear();
+        self.file_audio_failed.clear();
+        self.files_selected.clear();
+        self.files_selection_anchor = None;
+    }
+
     /// Re-read the current directory and drop in-memory thumbnail caches so
     /// any externally-modified files are picked up. Selection IS preserved
     /// (paths that no longer exist will simply disappear from the new
@@ -1331,6 +1388,10 @@ impl BrowserPanel {
     fn show_files_tab(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, mut files_pinned: Option<(&mut bool, &mut BrowserTab)>) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let pad = 10.0;
+        // Right-click Recents button → "Clear Recent Files". Declared
+        // early because the Recents button renders before the deferred-
+        // action vars block; the closure must capture this by &mut.
+        let mut pending_clear_recents = false;
 
         // Drain any completed thumbnail results into textures.
         self.drain_file_thumbs(ui.ctx());
@@ -1376,8 +1437,11 @@ impl BrowserPanel {
             }
         }
 
-        // Start async directory read if needed
-        if self.files_entries_dirty && !self.files_loading {
+        // Start async directory read if needed.
+        // Skip when in the virtual "Recents" view — that view populates
+        // files_entries directly from the prefs snapshot, not from disk.
+        let is_recents_view = self.files_current_path == RECENTS_SENTINEL.as_path();
+        if self.files_entries_dirty && !self.files_loading && !is_recents_view {
             self.files_entries_dirty = false;
             self.files_loading = true;
             self.files_error = None;
@@ -1493,15 +1557,20 @@ impl BrowserPanel {
                 });
             }
 
-            // Current path display
-            let path_str = self.files_current_path.to_string_lossy();
-            let short_path = if path_str.len() > 35 {
-                format!("...{}", &path_str[path_str.len()-32..])
+            // Current path display — show "Recent Files" for the virtual
+            // recents view, otherwise the real filesystem path.
+            let path_display = if self.files_current_path == RECENTS_SENTINEL.as_path() {
+                "\u{1F552} Recent Files".to_string()
             } else {
-                path_str.to_string()
+                let path_str = self.files_current_path.to_string_lossy();
+                if path_str.len() > 35 {
+                    format!("...{}", &path_str[path_str.len()-32..])
+                } else {
+                    path_str.to_string()
+                }
             };
             ui.label(
-                egui::RichText::new(&short_path)
+                egui::RichText::new(&path_display)
                     .size(10.0)
                     .color(theme.text_dim)
                     .monospace(),
@@ -1548,6 +1617,35 @@ impl BrowserPanel {
                         self.navigate_files_to(path.clone());
                     }
                 }
+            }
+
+            // ── Recents virtual folder ──
+            // Gated on `state.show_recent_files` (prefs toggle in the
+            // File Browser tab). Files are still tracked even when off,
+            // so turning it back on recovers the list.
+            if state.show_recent_files {
+                let is_current = self.files_current_path == RECENTS_SENTINEL.as_path();
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{1F552} Recents").size(9.0)
+                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                    )
+                    .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
+                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .rounding(3.0),
+                )
+                .on_hover_text("Recently imported files");
+                if btn.clicked() {
+                    self.navigate_to_recents(state);
+                }
+                btn.context_menu(|ui| {
+                    if ui.button("Clear Recent Files").clicked() {
+                        state.recent_files_snapshot.clear();
+                        self.files_entries.clear();
+                        pending_clear_recents = true;
+                        ui.close_menu();
+                    }
+                });
             }
 
             // ── User-pinned favorites ──
@@ -1835,7 +1933,8 @@ impl BrowserPanel {
             }
 
             // F2: rename the selected file/folder (single selection only).
-            if k_f2 && self.files_selected.len() == 1 && self.renaming_file.is_none() {
+            // Disabled in the virtual Recents view.
+            if k_f2 && self.files_selected.len() == 1 && self.renaming_file.is_none() && !is_recents_view {
                 let path = self.files_selected.iter().next().unwrap().clone();
                 pending_start_rename = Some(path);
             }
@@ -2486,7 +2585,7 @@ impl BrowserPanel {
                     // that shouldn't be renamed.
                     {
                         let single = menu_count <= 1;
-                        let renameable = single && !is_system_path(&menu_path);
+                        let renameable = single && !is_system_path(&menu_path) && !is_recents_view;
                         if renameable {
                             if ui.button("Rename").clicked() {
                                 pending_start_rename = Some(menu_path.clone());
@@ -2506,13 +2605,12 @@ impl BrowserPanel {
                     ui.separator();
 
                     // ── New folder ──
-                    // Always creates inside the currently-displayed directory,
-                    // not inside a right-clicked subfolder. Matches Finder/
-                    // Files-app behavior: "the folder you're looking at is
-                    // the parent" regardless of which row you right-clicked.
-                    if ui.button("New Folder").clicked() {
-                        pending_new_folder = true;
-                        ui.close_menu();
+                    // Not available in the virtual Recents view.
+                    if !is_recents_view {
+                        if ui.button("New Folder").clicked() {
+                            pending_new_folder = true;
+                            ui.close_menu();
+                        }
                     }
 
                     // ── Refresh folder ──
@@ -2546,9 +2644,11 @@ impl BrowserPanel {
                     egui::Sense::click(),
                 );
                 empty_resp.context_menu(|ui| {
-                    if ui.button("New Folder").clicked() {
-                        pending_new_folder = true;
-                        ui.close_menu();
+                    if !is_recents_view {
+                        if ui.button("New Folder").clicked() {
+                            pending_new_folder = true;
+                            ui.close_menu();
+                        }
                     }
                     if ui.button("Refresh Folder").clicked() {
                         pending_refresh = true;
@@ -2708,8 +2808,21 @@ impl BrowserPanel {
         }
 
         // Right-click → refresh current folder.
+        // For the Recents view, "refresh" repopulates from the snapshot.
         if pending_refresh {
-            self.refresh_files();
+            if is_recents_view {
+                self.navigate_to_recents(state);
+            } else {
+                self.refresh_files();
+            }
+        }
+
+        // Right-click Recents button → "Clear Recent Files".
+        if pending_clear_recents {
+            state.recent_files_snapshot.clear();
+            // The prefs-side list will be synced via render_browser_panel's
+            // usual prefs ↔ browser diff check. For now the snapshot and
+            // display are already empty.
         }
 
         // Right-click → toggle pin/unpin a directory in the favorites list.
@@ -3405,6 +3518,51 @@ mod new_folder_tests {
         let _ = std::fs::remove_dir_all(&nonexistent);
         let err = create_folder_in(&nonexistent, "child").unwrap_err();
         assert!(err.starts_with("Cannot create folder"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod recents_tests {
+    use super::RECENTS_SENTINEL;
+    use crate::prefs::FileBrowserPrefs;
+
+    #[test]
+    fn sentinel_is_not_a_real_path() {
+        let p = RECENTS_SENTINEL.as_path();
+        assert!(!p.exists(), "sentinel must not match a real filesystem path");
+        assert_eq!(p.to_string_lossy(), "klipp://recents");
+    }
+
+    #[test]
+    fn add_recent_file_inserts_at_front() {
+        let mut prefs = FileBrowserPrefs::default();
+        prefs.add_recent_file("/a.mp4".into());
+        prefs.add_recent_file("/b.mp4".into());
+        assert_eq!(prefs.recent_files[0].to_string_lossy(), "/b.mp4");
+        assert_eq!(prefs.recent_files[1].to_string_lossy(), "/a.mp4");
+    }
+
+    #[test]
+    fn add_recent_file_deduplicates() {
+        let mut prefs = FileBrowserPrefs::default();
+        prefs.add_recent_file("/a.mp4".into());
+        prefs.add_recent_file("/b.mp4".into());
+        prefs.add_recent_file("/a.mp4".into()); // bump to front
+        assert_eq!(prefs.recent_files.len(), 2);
+        assert_eq!(prefs.recent_files[0].to_string_lossy(), "/a.mp4");
+    }
+
+    #[test]
+    fn add_recent_file_truncates_at_max() {
+        let mut prefs = FileBrowserPrefs::default();
+        for i in 0..60 {
+            prefs.add_recent_file(format!("/file_{i}.mp4").into());
+        }
+        assert_eq!(prefs.recent_files.len(), 50);
+        // Most recent (i=59) should be first.
+        assert_eq!(prefs.recent_files[0].to_string_lossy(), "/file_59.mp4");
+        // Oldest surviving (i=10) should be last.
+        assert_eq!(prefs.recent_files[49].to_string_lossy(), "/file_10.mp4");
     }
 }
 

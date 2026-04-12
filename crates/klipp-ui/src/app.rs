@@ -352,6 +352,8 @@ impl KlippApp {
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
         app.state.file_browser_audio_skim_enabled = app.prefs.file_browser.file_browser_audio_skim;
+        app.state.show_recent_files = app.prefs.file_browser.show_recent_files;
+        app.state.recent_files_snapshot = app.prefs.file_browser.recent_files.clone();
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
         // Playhead follow: if pref is off, start with follow disabled
         if !app.prefs.editing.playhead_follows_playback {
@@ -715,6 +717,11 @@ impl KlippApp {
                     self.sync_media_pool_to_engine();
                     self.state.fps = fps;
                     self.state.playback = PlaybackState::Stopped;
+
+                    // Record as recently-used for the file browser Recents view.
+                    self.prefs.file_browser.add_recent_file(path.clone());
+                    self.state.recent_files_snapshot = self.prefs.file_browser.recent_files.clone();
+                    self.prefs_dirty = true;
 
                     // Clear pending path — media goes to pool only.
                     // User adds to timeline via double-click or drag-and-drop.
@@ -14926,6 +14933,9 @@ impl KlippApp {
                     cmds.push(AppCommand::BrowserSkimAudioEnd);
                 }
             }
+            if self.state.show_recent_files != self.prefs.file_browser.show_recent_files {
+                self.state.show_recent_files = self.prefs.file_browser.show_recent_files;
+            }
             if !still_open {
                 self.state.show_preferences = false;
             }
@@ -15576,6 +15586,11 @@ impl KlippApp {
             }
             if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
                 self.prefs.file_browser.pinned_folders = self.browser.pinned_folders.clone();
+                let _ = self.prefs.save();
+            }
+            // Sync recent_files_snapshot back to prefs (handles "Clear Recents").
+            if self.state.recent_files_snapshot != self.prefs.file_browser.recent_files {
+                self.prefs.file_browser.recent_files = self.state.recent_files_snapshot.clone();
                 let _ = self.prefs.save();
             }
         });

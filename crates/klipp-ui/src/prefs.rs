@@ -300,7 +300,23 @@ pub struct FileBrowserPrefs {
     /// shared/quiet environment.
     #[serde(default = "default_true")]
     pub file_browser_audio_skim: bool,
+    /// Show the "Recents" virtual folder in the file browser sidebar.
+    /// When off, the 🕐 Recents button is hidden and recent files are
+    /// still tracked (so turning it back on recovers the list) but the
+    /// UI element is gone.
+    #[serde(default = "default_true")]
+    pub show_recent_files: bool,
+    /// Most recently imported file paths, most-recent-first. Updated
+    /// whenever `AppCommand::LoadMediaFile` completes successfully.
+    /// Cross-project: survives project close/switch because it lives
+    /// in the user's global prefs, not in a project file. Stale paths
+    /// (files that have been moved/deleted) are pruned silently when
+    /// the Recents view is rendered. Max 50 entries.
+    #[serde(default)]
+    pub recent_files: Vec<std::path::PathBuf>,
 }
+
+const MAX_RECENT_FILES: usize = 50;
 
 impl Default for FileBrowserPrefs {
     fn default() -> Self {
@@ -312,7 +328,19 @@ impl Default for FileBrowserPrefs {
             pinned_folders: Vec::new(),
             file_browser_video_skim: true,
             file_browser_audio_skim: true,
+            show_recent_files: true,
+            recent_files: Vec::new(),
         }
+    }
+}
+
+impl FileBrowserPrefs {
+    /// Record a file path as recently used. Moves it to the front if
+    /// already present, then truncates to `MAX_RECENT_FILES`.
+    pub fn add_recent_file(&mut self, path: std::path::PathBuf) {
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(MAX_RECENT_FILES);
     }
 }
 

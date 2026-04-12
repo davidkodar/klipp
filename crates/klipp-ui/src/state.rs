@@ -384,6 +384,13 @@ pub struct AppState {
     pub skim_last_x: f32,
     /// The active skim audio session. Some() while hovering a skimmable clip.
     pub skim_audio_session: Option<klipp_engine::skim_audio::SkimAudioSession>,
+    /// Whether the Recents sidebar button is visible. Mirrored from
+    /// `prefs.file_browser.show_recent_files`.
+    pub show_recent_files: bool,
+    /// Snapshot of `prefs.file_browser.recent_files` synced into state so
+    /// the browser panel can read it without borrowing `prefs`. Updated
+    /// at startup and whenever the prefs change.
+    pub recent_files_snapshot: Vec<std::path::PathBuf>,
     /// Time of last audio skim decode dispatch (throttle to prevent starvation).
     pub skim_last_audio_dispatch: std::time::Instant,
 
@@ -1402,6 +1409,8 @@ impl Default for AppState {
             skim_last_update: std::time::Instant::now(),
             skim_last_x: 0.0,
             skim_audio_session: None,
+            show_recent_files: true,
+            recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
