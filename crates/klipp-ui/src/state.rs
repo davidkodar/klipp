@@ -384,6 +384,23 @@ pub struct AppState {
     pub skim_last_x: f32,
     /// The active skim audio session. Some() while hovering a skimmable clip.
     pub skim_audio_session: Option<klipp_engine::skim_audio::SkimAudioSession>,
+    /// True when the file browser panel has keyboard focus (user
+    /// clicked a row). Mirrored from `BrowserPanel::files_panel_focused`
+    /// so the transport handler knows to yield Spacebar to Quick Look
+    /// instead of triggering play/pause.
+    pub files_panel_focused: bool,
+    /// Quick Look preview: the file currently being previewed via
+    /// Spacebar in the file browser. `None` = Quick Look is closed.
+    /// The path is used to decode a preview frame (video/image) or
+    /// start an audio playback session.
+    pub quick_look_path: Option<std::path::PathBuf>,
+    /// Cached texture for the Quick Look preview (video poster frame
+    /// or decoded image). `None` = not yet decoded or audio file.
+    pub quick_look_texture: Option<egui::TextureHandle>,
+    /// Cached media header info for the Quick Look overlay text.
+    pub quick_look_info: Option<klipp_engine::MediaHeader>,
+    /// Audio session for Quick Look (audio files auto-play).
+    pub quick_look_audio: Option<klipp_engine::skim_audio::SkimAudioSession>,
     /// Whether the Recents sidebar button is visible. Mirrored from
     /// `prefs.file_browser.show_recent_files`.
     pub show_recent_files: bool,
@@ -1293,6 +1310,7 @@ impl AppState {
             || self.show_about_dialog
             || self.show_autosave_recovery
             || self.show_render_queue
+            || self.quick_look_path.is_some()
     }
 }
 
@@ -1412,6 +1430,11 @@ impl Default for AppState {
             skim_last_update: std::time::Instant::now(),
             skim_last_x: 0.0,
             skim_audio_session: None,
+            files_panel_focused: false,
+            quick_look_path: None,
+            quick_look_texture: None,
+            quick_look_info: None,
+            quick_look_audio: None,
             show_recent_files: true,
             file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),

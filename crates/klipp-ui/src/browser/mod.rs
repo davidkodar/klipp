@@ -1481,6 +1481,26 @@ impl BrowserPanel {
         // action vars block; the closure must capture this by &mut.
         let mut pending_clear_recents = false;
 
+        // Clear files_panel_focused if the user clicked anywhere outside
+        // the file browser panel this frame. This is the standard "panel
+        // defocus" pattern: clicking the timeline, viewer, or any other
+        // panel returns Spacebar ownership to the transport play/pause.
+        // Row clicks inside the browser re-set the flag during the row
+        // loop below, so keyboard navigation continues to work as long
+        // as the user is clicking within the browser.
+        if ui.input(|i| i.pointer.primary_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                if !ui.max_rect().contains(pos) {
+                    self.files_panel_focused = false;
+                }
+            }
+        }
+
+        // Mirror files_panel_focused to AppState so the transport handler
+        // (which runs in a different panel, before the browser) knows to
+        // yield Spacebar to Quick Look instead of triggering play/pause.
+        state.files_panel_focused = self.files_panel_focused;
+
         // Drain any completed thumbnail results into textures.
         self.drain_file_thumbs(ui.ctx());
         // Drain any completed skim-frame results into the live skim texture.
@@ -1941,7 +1961,7 @@ impl BrowserPanel {
         }
         let mut scroll_to_index: Option<usize> = None;
         if self.files_panel_focused && !text_edit_active && !filtered.is_empty() {
-            let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back, k_f2) = ui.input(|i| (
+            let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back, k_f2, k_space) = ui.input(|i| (
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::Home),
@@ -1951,6 +1971,7 @@ impl BrowserPanel {
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Backspace),
                 i.key_pressed(egui::Key::F2),
+                i.key_pressed(egui::Key::Space),
             ));
             // Find current anchor's index in `filtered`. If the anchor isn't
             // in the visible list (e.g. user just enabled a filter that hides
@@ -2050,6 +2071,35 @@ impl BrowserPanel {
             if k_f2 && self.files_selected.len() == 1 && self.renaming_file.is_none() && !is_recents_view {
                 let path = self.files_selected.iter().next().unwrap().clone();
                 pending_start_rename = Some(path);
+            }
+
+            // Spacebar: Quick Look preview (toggle on/off).
+            // Works on the selection anchor (the most recently clicked
+            // item). Directories are skipped — nothing to preview.
+            if k_space {
+                if state.quick_look_path.is_some() {
+                    // Already open → close.
+                    if let Some(ref session) = state.quick_look_audio {
+                        session.stop();
+                    }
+                    state.quick_look_path = None;
+                    state.quick_look_texture = None;
+                    state.quick_look_info = None;
+                    state.quick_look_audio = None;
+                } else if let Some(ref anchor) = self.files_selection_anchor {
+                    let is_dir = filtered.iter()
+                        .find(|e| &e.path == anchor)
+                        .map(|e| e.is_dir)
+                        .unwrap_or(true);
+                    if !is_dir {
+                        state.quick_look_path = Some(anchor.clone());
+                        // Texture + info are loaded lazily in the
+                        // Quick Look render pass in app.rs.
+                        state.quick_look_texture = None;
+                        state.quick_look_info = None;
+                        state.quick_look_audio = None;
+                    }
+                }
             }
         }
 

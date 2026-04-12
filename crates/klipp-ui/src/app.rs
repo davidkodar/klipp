@@ -14906,6 +14906,11 @@ impl KlippApp {
             }
         }
 
+        // 4c5. Quick Look overlay — Spacebar preview from the file browser.
+        if let Some(ref ql_path) = self.state.quick_look_path.clone() {
+            self.render_quick_look(ctx, ql_path);
+        }
+
         // 4d. Preferences window
         if self.state.show_preferences {
             let (still_open, pref_cmds) = self.preferences_panel.show(
@@ -15598,6 +15603,229 @@ impl KlippApp {
                 let _ = self.prefs.save();
             }
         });
+    }
+
+    /// Render the Quick Look fullscreen overlay. Shows a dark backdrop with
+    /// the preview image/waveform centered and aspect-fit to the screen,
+    /// plus a small metadata overlay at the bottom. Dismisses on Escape,
+    /// Spacebar, or backdrop click. Arrow keys navigate to adjacent files.
+    fn render_quick_look(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        let screen = ctx.screen_rect();
+
+        // ── Lazy-load texture and header info on first frame ──
+        if self.state.quick_look_texture.is_none() && self.state.quick_look_info.is_none() {
+            // Probe header for metadata overlay.
+            self.state.quick_look_info = klipp_engine::probe_media_header(path).ok();
+
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+            let is_audio = klipp_core::media_extensions::AUDIO_EXTENSIONS.contains(&ext.as_str());
+
+            if is_audio {
+                // Start audio playback session.
+                if self.state.quick_look_audio.is_none() {
+                    self.state.quick_look_audio =
+                        klipp_engine::skim_audio::SkimAudioSession::new_from_source_path(
+                            path.to_path_buf(),
+                            self.cpal_sample_rate,
+                            self.skim_consumer.clone(),
+                            if self.state.master_muted { 0.0 } else { self.state.master_volume },
+                            0.0,
+                        );
+                }
+            } else {
+                // Decode a poster frame (video or image) at up to 1920px wide.
+                let max_w = (screen.width() as u32).min(1920);
+                if let Ok((rgba, w, h)) =
+                    klipp_engine::generate_thumbnail_at_size(path, 0.0, max_w)
+                {
+                    let pixels: Vec<egui::Color32> = rgba
+                        .chunks_exact(4)
+                        .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                        .collect();
+                    let image = egui::ColorImage {
+                        size: [w as usize, h as usize],
+                        pixels,
+                    };
+                    let tex = ctx.load_texture(
+                        "quick_look_preview",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.state.quick_look_texture = Some(tex);
+                }
+            }
+        }
+
+        // ── Backdrop ──
+        egui::Area::new(egui::Id::new("quick_look_backdrop"))
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    egui::Color32::from_black_alpha(220),
+                );
+
+                // ── Image / video preview ──
+                if let Some(ref tex) = self.state.quick_look_texture {
+                    let tex_size = tex.size();
+                    let img_aspect = tex_size[0] as f32 / tex_size[1].max(1) as f32;
+                    // Fit within 90% of screen to leave room for the info bar.
+                    let max_w = screen.width() * 0.9;
+                    let max_h = screen.height() * 0.85;
+                    let (w, h) = if img_aspect > max_w / max_h {
+                        (max_w, max_w / img_aspect)
+                    } else {
+                        (max_h * img_aspect, max_h)
+                    };
+                    let img_rect = egui::Rect::from_center_size(
+                        egui::pos2(screen.center().x, screen.center().y - 16.0),
+                        egui::vec2(w, h),
+                    );
+                    ui.painter().image(
+                        tex.id(),
+                        img_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                } else if self.state.quick_look_audio.is_some() {
+                    // ── Audio waveform visualization ──
+                    // Draw a large waveform in the center of the screen
+                    // using the browser's cached audio peaks (if available).
+                    let wave_rect = egui::Rect::from_center_size(
+                        screen.center(),
+                        egui::vec2(screen.width() * 0.7, screen.height() * 0.3),
+                    );
+                    ui.painter().rect_filled(
+                        wave_rect,
+                        8.0,
+                        egui::Color32::from_rgba_unmultiplied(30, 30, 36, 200),
+                    );
+                    // Large audio icon in center.
+                    ui.painter().text(
+                        wave_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{1F3B5}",
+                        egui::FontId::proportional(64.0),
+                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20),
+                    );
+                }
+
+                // ── Metadata overlay at the bottom ──
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let mut info_parts: Vec<String> = vec![filename];
+                if let Some(ref info) = self.state.quick_look_info {
+                    if let (Some(w), Some(h)) = (info.width, info.height) {
+                        info_parts.push(format!("{w}\u{00d7}{h}"));
+                    }
+                    if let Some(ref codec) = info.codec {
+                        info_parts.push(codec.to_string());
+                    }
+                    if let Some(fps) = info.fps {
+                        info_parts.push(format!("{fps:.2} fps"));
+                    }
+                    if let Some(dur) = info.duration_secs {
+                        let m = dur as u32 / 60;
+                        let s = dur as u32 % 60;
+                        info_parts.push(format!("{m}:{s:02}"));
+                    }
+                }
+                if let Ok(meta) = std::fs::metadata(path) {
+                    let size = meta.len();
+                    if size > 0 {
+                        let size_str = if size < 1024 * 1024 {
+                            format!("{:.0} KB", size as f64 / 1024.0)
+                        } else if size < 1024 * 1024 * 1024 {
+                            format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+                        } else {
+                            format!("{:.2} GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+                        };
+                        info_parts.push(size_str);
+                    }
+                }
+                let info_text = info_parts.join("  \u{00b7}  ");
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::pos2(screen.min.x, screen.max.y - 40.0),
+                    screen.max,
+                );
+                ui.painter().rect_filled(
+                    bar_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(180),
+                );
+                ui.painter().text(
+                    egui::pos2(bar_rect.center().x, bar_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    &info_text,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(0xd0, 0xd0, 0xd8),
+                );
+
+                // ── Dismiss: click backdrop, Escape, or Spacebar ──
+                let dismiss = resp.clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    || ui.input(|i| i.key_pressed(egui::Key::Space));
+                if dismiss {
+                    if let Some(ref session) = self.state.quick_look_audio {
+                        session.stop();
+                    }
+                    klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                    klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                    self.state.quick_look_path = None;
+                    self.state.quick_look_texture = None;
+                    self.state.quick_look_info = None;
+                    self.state.quick_look_audio = None;
+                }
+
+                // ── Arrow keys: navigate to next/previous file ──
+                let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+                let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                if (arrow_up || arrow_down) && !dismiss {
+                    // Find the current file in the browser's entry list
+                    // and move to the adjacent non-directory entry.
+                    let entries = &self.browser.files_entries;
+                    if let Some(cur_idx) = entries.iter().position(|e| e.path == *path) {
+                        let next = if arrow_down {
+                            entries[cur_idx + 1..]
+                                .iter()
+                                .find(|e| !e.is_dir)
+                                .map(|e| e.path.clone())
+                        } else {
+                            entries[..cur_idx]
+                                .iter()
+                                .rev()
+                                .find(|e| !e.is_dir)
+                                .map(|e| e.path.clone())
+                        };
+                        if let Some(next_path) = next {
+                            // Stop current audio session if any.
+                            if let Some(ref session) = self.state.quick_look_audio {
+                                session.stop();
+                            }
+                            klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                            klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                            // Update selection in the browser too.
+                            self.browser.files_selected.clear();
+                            self.browser.files_selected.insert(next_path.clone());
+                            self.browser.files_selection_anchor = Some(next_path.clone());
+                            // Switch to the new file — lazy load on next frame.
+                            self.state.quick_look_path = Some(next_path);
+                            self.state.quick_look_texture = None;
+                            self.state.quick_look_info = None;
+                            self.state.quick_look_audio = None;
+                        }
+                    }
+                }
+            });
     }
 
     fn render_status_bar_panel(&mut self, ui: &mut egui::Ui, statusbar_rect: egui::Rect) {

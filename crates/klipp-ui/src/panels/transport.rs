@@ -342,8 +342,15 @@ impl TransportBar {
             return cmds;
         }
 
-        // Skip transport shortcuts when any text field has focus
-        if state.editing_timecode || ctx.wants_keyboard_input() {
+        // Skip transport shortcuts when any text field has focus, a
+        // modal overlay is open (Quick Look, preferences, dialogs), or
+        // the file browser panel has keyboard focus (Spacebar belongs to
+        // Quick Look in that context, not play/pause).
+        if state.editing_timecode
+            || ctx.wants_keyboard_input()
+            || state.has_modal_open()
+            || state.files_panel_focused
+        {
             return cmds;
         }
 
