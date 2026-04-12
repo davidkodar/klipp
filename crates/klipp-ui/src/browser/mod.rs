@@ -534,10 +534,17 @@ pub struct BrowserPanel {
     /// Modeled on `media_tab::creating_bin` — the same pattern but
     /// committing to the real filesystem instead of the media pool.
     creating_folder: Option<String>,
+    /// Inline rename state. `Some((original_path, current_edit_text))`
+    /// while a file/folder row is in edit mode. `None` when idle.
+    /// The row at `original_path` renders a TextEdit in place of the
+    /// normal filename label. Enter commits (via `rename_file_at`),
+    /// Escape cancels. Same navigation guard as `creating_folder` —
+    /// moving to another directory while renaming is blocked.
+    renaming_file: Option<(std::path::PathBuf, String)>,
     /// One-shot flag set by `navigate_files_to` when it had to refuse
-    /// a navigation request because `creating_folder` was open. Read
-    /// and reset by the show() deferred block, which then toasts a
-    /// message so the click doesn't feel inert.
+    /// a navigation request because an inline editor (create or rename)
+    /// was open. Read and reset by the show() deferred block, which
+    /// then toasts a message so the click doesn't feel inert.
     navigation_blocked_by_create: bool,
 }
 
@@ -606,6 +613,7 @@ impl Default for BrowserPanel {
             file_audio_rx,
             file_audio_skim_active: None,
             creating_folder: None,
+            renaming_file: None,
             navigation_blocked_by_create: false,
         }
     }
@@ -1050,7 +1058,7 @@ impl BrowserPanel {
     /// `navigation_blocked_by_create` so the show() deferred block can
     /// show a toast — without that signal, the click would feel inert.
     fn navigate_files_to(&mut self, path: std::path::PathBuf) {
-        if self.creating_folder.is_some() {
+        if self.creating_folder.is_some() || self.renaming_file.is_some() {
             self.navigation_blocked_by_create = true;
             return;
         }
@@ -1672,6 +1680,10 @@ impl BrowserPanel {
         // actual `create_folder_in` call, refresh the directory listing,
         // select the new folder, and show a toast.
         let mut pending_commit_folder: Option<String> = None;
+        // Right-click → "Rename" or F2 → (path_to_rename).
+        let mut pending_start_rename: Option<std::path::PathBuf> = None;
+        // Inline rename committed → (old_path, new_name).
+        let mut pending_commit_rename: Option<(std::path::PathBuf, String)> = None;
         // Hover skim — latest skim decode request captured during the row loop.
         // Tuple: (path, time_secs). Applied after the loop to avoid borrow conflicts.
         let mut pending_skim_request: Option<(std::path::PathBuf, f64)> = None;
@@ -1718,7 +1730,7 @@ impl BrowserPanel {
         }
         let mut scroll_to_index: Option<usize> = None;
         if self.files_panel_focused && !text_edit_active && !filtered.is_empty() {
-            let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back) = ui.input(|i| (
+            let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back, k_f2) = ui.input(|i| (
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::Home),
@@ -1727,6 +1739,7 @@ impl BrowserPanel {
                 i.key_pressed(egui::Key::PageUp),
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Backspace),
+                i.key_pressed(egui::Key::F2),
             ));
             // Find current anchor's index in `filtered`. If the anchor isn't
             // in the visible list (e.g. user just enabled a filter that hides
@@ -1819,6 +1832,12 @@ impl BrowserPanel {
                 if let Some(parent) = self.files_current_path.parent() {
                     pending_navigate = Some(parent.to_path_buf());
                 }
+            }
+
+            // F2: rename the selected file/folder (single selection only).
+            if k_f2 && self.files_selected.len() == 1 && self.renaming_file.is_none() {
+                let path = self.files_selected.iter().next().unwrap().clone();
+                pending_start_rename = Some(path);
             }
         }
 
@@ -2211,25 +2230,64 @@ impl BrowserPanel {
                 }
 
                 // Name + size are positioned to the right of the thumb_box.
-                // Selected rows use the accent text color for clear contrast on
-                // the accent_dim background.
-                let name_color = if is_selected {
-                    theme.text_accent
-                } else if entry.is_dir {
-                    theme.text_primary
-                } else if entry.is_media {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                };
+                // If this row is being renamed, show a TextEdit instead of
+                // the static label. The entry path is compared against
+                // `renaming_file` to determine which row is in edit mode.
+                let is_renaming = self.renaming_file.as_ref()
+                    .map(|(p, _)| p == &entry.path)
+                    .unwrap_or(false);
                 let name_x = thumb_box.max.x + 8.0;
-                ui.painter().text(
-                    egui::pos2(name_x, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &entry.name,
-                    egui::FontId::proportional(name_font_size),
-                    name_color,
-                );
+
+                if is_renaming {
+                    // Pre-read Enter/Escape before TextEdit consumes them.
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                    let (ref rename_path, ref mut edit_text) =
+                        self.renaming_file.as_mut().unwrap();
+                    let rename_path_clone = rename_path.clone();
+                    let text_rect = egui::Rect::from_min_max(
+                        egui::pos2(name_x, rect.top() + 2.0),
+                        egui::pos2(rect.right() - pad, rect.bottom() - 2.0),
+                    );
+                    let mut text_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(text_rect)
+                            .id_salt("file_browser_rename_edit"),
+                    );
+                    let text_resp = text_ui.add(
+                        egui::TextEdit::singleline(edit_text)
+                            .desired_width(text_rect.width())
+                            .font(egui::FontId::proportional(name_font_size)),
+                    );
+                    text_resp.request_focus();
+
+                    if escape_pressed {
+                        self.renaming_file = None;
+                    } else if enter_pressed || text_resp.lost_focus() {
+                        pending_commit_rename =
+                            Some((rename_path_clone, std::mem::take(edit_text)));
+                        self.renaming_file = None;
+                    }
+                } else {
+                    // Normal static filename label.
+                    let name_color = if is_selected {
+                        theme.text_accent
+                    } else if entry.is_dir {
+                        theme.text_primary
+                    } else if entry.is_media {
+                        theme.text_primary
+                    } else {
+                        theme.text_dim
+                    };
+                    ui.painter().text(
+                        egui::pos2(name_x, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        &entry.name,
+                        egui::FontId::proportional(name_font_size),
+                        name_color,
+                    );
+                }
 
                 // Size (for files)
                 if !entry.is_dir && entry.size > 0 {
@@ -2418,6 +2476,23 @@ impl BrowserPanel {
                     if ui.button("Copy File Path").clicked() {
                         ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
                         ui.close_menu();
+                    }
+
+                    // ── Rename ──
+                    // Only available when the right-clicked item is the
+                    // sole selection (or when right-clicking a single item
+                    // outside the current selection — single-item implicit).
+                    // Disabled for multi-selection and for system paths
+                    // that shouldn't be renamed.
+                    {
+                        let single = menu_count <= 1;
+                        let renameable = single && !is_system_path(&menu_path);
+                        if renameable {
+                            if ui.button("Rename").clicked() {
+                                pending_start_rename = Some(menu_path.clone());
+                                ui.close_menu();
+                            }
+                        }
                     }
 
                     ui.separator();
@@ -2706,6 +2781,72 @@ impl BrowserPanel {
             }
         }
 
+        // ── Rename: start editing ──
+        // Seed the inline editor with the entry's current filename.
+        // For files, pre-select just the stem (before the extension) so
+        // users don't accidentally strip the extension. For directories,
+        // select the full name.
+        if let Some(path) = pending_start_rename {
+            if !is_system_path(&path) {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.renaming_file = Some((path, name));
+            } else {
+                state.toast.show("Cannot rename system directories".to_string());
+            }
+        }
+
+        // ── Rename: commit ──
+        if let Some((old_path, new_name)) = pending_commit_rename {
+            let trimmed = new_name.trim();
+            if trimmed.is_empty() {
+                // Empty → silently cancel.
+                self.renaming_file = None;
+            } else {
+                match rename_file_at(&old_path, trimmed) {
+                    Ok(new_path) => {
+                        // Same-name no-op — don't toast, don't refresh.
+                        if new_path != old_path {
+                            state.toast.show(format!(
+                                "Renamed to \"{}\"",
+                                new_path.file_name().unwrap_or_default().to_string_lossy()
+                            ));
+
+                            // Update pinned folders if the renamed item was pinned.
+                            for p in &mut self.pinned_folders {
+                                if *p == old_path {
+                                    *p = new_path.clone();
+                                }
+                            }
+
+                            // Update media pool entries pointing to the old path.
+                            for item in state.media_pool.all_mut() {
+                                if item.path == old_path {
+                                    item.path = new_path.clone();
+                                }
+                            }
+
+                            self.refresh_files();
+
+                            // Select the newly-renamed entry.
+                            self.files_selected.clear();
+                            self.files_selected.insert(new_path.clone());
+                            self.files_selection_anchor = Some(new_path);
+                        }
+                        self.renaming_file = None;
+                    }
+                    Err(msg) => {
+                        state.toast.show(msg);
+                        // Re-open editor with the rejected name so the
+                        // user can fix it without starting over.
+                        self.renaming_file = Some((old_path, new_name));
+                    }
+                }
+            }
+        }
+
         // Hover skim — apply requests captured during the row loop.
         // 1. If a duration probe is needed (first hover), do it synchronously
         //    here. The next frame will pick up the cached duration and the
@@ -2917,6 +3058,86 @@ fn format_file_size(bytes: u64) -> String {
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
+}
+
+/// Check whether a path is a "system" location that users should never
+/// rename from inside an NLE. The check is intentionally conservative:
+/// better to err on the side of caution and have the user rename via
+/// their OS file manager than to let them brick their system.
+///
+/// We check the ITEM ITSELF (not its parent) — i.e., we block renaming
+/// `/usr` but not renaming a file inside `/usr/local/share/`.
+fn is_system_path(path: &std::path::Path) -> bool {
+    // Root is never renameable.
+    if path == std::path::Path::new("/") {
+        return true;
+    }
+    // User's home directory itself.
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return true;
+        }
+    }
+    // Top-level system directories. This list covers Linux FHS roots;
+    // on macOS/Windows the OS permissions already block these so we
+    // don't need to enumerate them.
+    const SYSTEM_ROOTS: &[&str] = &[
+        "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64",
+        "/lost+found", "/opt", "/proc", "/root", "/run", "/sbin",
+        "/srv", "/sys", "/tmp", "/usr", "/var",
+    ];
+    let s = path.to_string_lossy();
+    SYSTEM_ROOTS.iter().any(|r| s.as_ref() == *r)
+}
+
+/// Validate a user-typed new name and perform the rename via
+/// `std::fs::rename`. Returns the new full path on success, or a
+/// human-readable error message on failure (suitable for a toast).
+///
+/// Validation mirrors `create_folder_in` — empty, path separators,
+/// reserved names, collisions — plus a "same name" no-op short-circuit
+/// and a system-path guard.
+fn rename_file_at(
+    old_path: &std::path::Path,
+    new_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Name cannot contain '/' or '\\'".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(format!("'{trimmed}' is a reserved name"));
+    }
+
+    let old_name = old_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    // No-op: user committed the same name they started with.
+    if trimmed == old_name {
+        return Ok(old_path.to_path_buf());
+    }
+
+    if is_system_path(old_path) {
+        return Err("Cannot rename system directories".to_string());
+    }
+
+    let parent = old_path
+        .parent()
+        .ok_or_else(|| "Cannot determine parent directory".to_string())?;
+    let new_path = parent.join(trimmed);
+
+    if new_path.exists() {
+        return Err(format!("\"{trimmed}\" already exists here"));
+    }
+
+    std::fs::rename(old_path, &new_path)
+        .map_err(|e| format!("Cannot rename: {e}"))?;
+
+    Ok(new_path)
 }
 
 /// Compute a non-colliding default name for a new folder inside `parent`,
@@ -3184,6 +3405,179 @@ mod new_folder_tests {
         let _ = std::fs::remove_dir_all(&nonexistent);
         let err = create_folder_in(&nonexistent, "child").unwrap_err();
         assert!(err.starts_with("Cannot create folder"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::{is_system_path, rename_file_at};
+    use std::path::PathBuf;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_rename_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── is_system_path ──────────────────────────────────────────
+
+    #[test]
+    fn system_path_blocks_root() {
+        assert!(is_system_path(std::path::Path::new("/")));
+    }
+
+    #[test]
+    fn system_path_blocks_usr() {
+        assert!(is_system_path(std::path::Path::new("/usr")));
+    }
+
+    #[test]
+    fn system_path_blocks_etc() {
+        assert!(is_system_path(std::path::Path::new("/etc")));
+    }
+
+    #[test]
+    fn system_path_blocks_home_dir() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_system_path(&home));
+        }
+    }
+
+    #[test]
+    fn system_path_allows_user_subdirectory() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(!is_system_path(&home.join("Documents")));
+        }
+    }
+
+    #[test]
+    fn system_path_allows_file_inside_usr() {
+        // We block renaming /usr itself, not files inside it.
+        assert!(!is_system_path(std::path::Path::new("/usr/local/share/myfile")));
+    }
+
+    #[test]
+    fn system_path_allows_temp_dir() {
+        let dir = temp_dir("syspath");
+        assert!(!is_system_path(&dir));
+        cleanup(&dir);
+    }
+
+    // ── rename_file_at: success ─────────────────────────────────
+
+    #[test]
+    fn rename_file_succeeds() {
+        let dir = temp_dir("rename_ok");
+        let old = dir.join("original.txt");
+        std::fs::write(&old, b"data").unwrap();
+        let new = rename_file_at(&old, "renamed.txt").expect("rename should succeed");
+        assert_eq!(new, dir.join("renamed.txt"));
+        assert!(!old.exists());
+        assert!(new.exists());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_directory_succeeds() {
+        let dir = temp_dir("rename_dir");
+        let old = dir.join("old_dir");
+        std::fs::create_dir(&old).unwrap();
+        let new = rename_file_at(&old, "new_dir").expect("dir rename should succeed");
+        assert_eq!(new, dir.join("new_dir"));
+        assert!(!old.exists());
+        assert!(new.is_dir());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_trims_whitespace() {
+        let dir = temp_dir("rename_trim");
+        let old = dir.join("original.txt");
+        std::fs::write(&old, b"data").unwrap();
+        let new = rename_file_at(&old, "  trimmed.txt  ").unwrap();
+        assert_eq!(new, dir.join("trimmed.txt"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_same_name_is_noop() {
+        let dir = temp_dir("rename_same");
+        let file = dir.join("keep.txt");
+        std::fs::write(&file, b"data").unwrap();
+        let result = rename_file_at(&file, "keep.txt").unwrap();
+        // Same path returned, file untouched.
+        assert_eq!(result, file);
+        assert!(file.exists());
+        cleanup(&dir);
+    }
+
+    // ── rename_file_at: validation rejection ────────────────────
+
+    #[test]
+    fn rename_rejects_empty_name() {
+        let dir = temp_dir("rename_empty");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let err = rename_file_at(&f, "").unwrap_err();
+        assert!(err.to_lowercase().contains("empty"), "got: {err}");
+        assert!(f.exists(), "original must not be touched on error");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_rejects_slash() {
+        let dir = temp_dir("rename_slash");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let err = rename_file_at(&f, "a/b").unwrap_err();
+        assert!(err.contains('/'), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_rejects_reserved_dot() {
+        let dir = temp_dir("rename_dot");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let err = rename_file_at(&f, ".").unwrap_err();
+        assert!(err.contains("reserved"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_rejects_collision_with_existing_file() {
+        let dir = temp_dir("rename_collide");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let err = rename_file_at(&a, "b.txt").unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        // Both files still intact.
+        assert!(a.exists());
+        assert!(b.exists());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_rejects_system_path() {
+        // /usr is in the blocklist — attempting to rename it should fail
+        // with a clear message even though the OS would also deny it.
+        let err = rename_file_at(std::path::Path::new("/usr"), "usr2").unwrap_err();
+        assert!(err.contains("system"), "got: {err}");
     }
 }
 

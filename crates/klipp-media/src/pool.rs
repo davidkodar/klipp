@@ -34,6 +34,10 @@ impl MediaPool {
         self.items.values()
     }
 
+    pub fn all_mut(&mut self) -> impl Iterator<Item = &mut MediaItem> {
+        self.items.values_mut()
+    }
+
     pub fn remove(&mut self, id: &MediaId) -> Option<MediaItem> {
         self.items.remove(id)
     }
