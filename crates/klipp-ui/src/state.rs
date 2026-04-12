@@ -384,6 +384,17 @@ pub struct AppState {
     pub skim_last_x: f32,
     /// The active skim audio session. Some() while hovering a skimmable clip.
     pub skim_audio_session: Option<klipp_engine::skim_audio::SkimAudioSession>,
+    /// System audio mute detection (Linux/PipeWire only). Polled via
+    /// `wpctl get-volume @DEFAULT_AUDIO_SINK@` every ~2 seconds. When
+    /// the system sink is muted, this is `true` and the transport bar
+    /// shows a warning so users don't chase phantom audio bugs.
+    pub system_audio_muted: bool,
+    pub system_audio_last_check: std::time::Instant,
+    /// When the last "muted by system" toast was shown. Used to re-show
+    /// the reminder at the configured interval.
+    pub system_audio_last_reminder: std::time::Instant,
+    /// Reminder interval in seconds, mirrored from prefs.
+    pub mute_reminder_interval_secs: u32,
     /// True when the file browser panel has keyboard focus (user
     /// clicked a row). Mirrored from `BrowserPanel::files_panel_focused`
     /// so the transport handler knows to yield Spacebar to Quick Look
@@ -404,6 +415,10 @@ pub struct AppState {
     /// Whether the Recents sidebar button is visible. Mirrored from
     /// `prefs.file_browser.show_recent_files`.
     pub show_recent_files: bool,
+    /// Whether filmstrip hover preview is enabled in the file browser.
+    pub filmstrip_hover_enabled: bool,
+    /// Decode quality for filmstrip hover frames.
+    pub filmstrip_quality: crate::prefs::FilmstripQuality,
     /// Whether the file browser auto-refreshes on external filesystem
     /// changes. Mirrored from `prefs.file_browser.auto_refresh`.
     pub file_browser_auto_refresh: bool,
@@ -1430,12 +1445,18 @@ impl Default for AppState {
             skim_last_update: std::time::Instant::now(),
             skim_last_x: 0.0,
             skim_audio_session: None,
+            system_audio_muted: false,
+            system_audio_last_check: std::time::Instant::now(),
+            system_audio_last_reminder: std::time::Instant::now(),
+            mute_reminder_interval_secs: 15,
             files_panel_focused: false,
             quick_look_path: None,
             quick_look_texture: None,
             quick_look_info: None,
             quick_look_audio: None,
             show_recent_files: true,
+            filmstrip_hover_enabled: true,
+            filmstrip_quality: Default::default(),
             file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),

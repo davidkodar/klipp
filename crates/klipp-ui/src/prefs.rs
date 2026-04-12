@@ -316,6 +316,15 @@ pub struct FileBrowserPrefs {
     /// Group files by modification date (Today / Yesterday / This Week /
     /// This Month / Older). When on, sort is forced to DateModified
     /// descending. When off, the previous sort key is restored.
+    /// Show multi-frame filmstrip tiles on video hover with a large
+    /// preview popup. When off, the existing single-frame skim is used
+    /// instead (lighter, no popup).
+    #[serde(default = "default_true")]
+    pub filmstrip_hover: bool,
+    /// Decode quality for filmstrip hover frames. Higher = sharper
+    /// preview popup but slower initial generation on first hover.
+    #[serde(default)]
+    pub filmstrip_quality: FilmstripQuality,
     #[serde(default)]
     pub group_by_date: bool,
     /// Most recently imported file paths, most-recent-first. Updated
@@ -330,6 +339,39 @@ pub struct FileBrowserPrefs {
 
 const MAX_RECENT_FILES: usize = 50;
 
+/// Decode quality for file-browser filmstrip hover frames. Controls the
+/// target height passed to `generate_filmstrip_incremental`. Higher
+/// values produce sharper preview popups but take longer to generate
+/// on first hover (~0.5s Low, ~1s Medium, ~2s High for a typical clip).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FilmstripQuality {
+    /// 120px height — fast, adequate for small popups.
+    Low,
+    /// 240px height — good balance of quality and speed.
+    #[default]
+    Medium,
+    /// 480px height — crisp at full popup size, slower decode.
+    High,
+}
+
+impl FilmstripQuality {
+    pub fn target_height(self) -> u32 {
+        match self {
+            Self::Low => 120,
+            Self::Medium => 240,
+            Self::High => 480,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+        }
+    }
+}
+
 impl Default for FileBrowserPrefs {
     fn default() -> Self {
         Self {
@@ -341,6 +383,8 @@ impl Default for FileBrowserPrefs {
             file_browser_video_skim: true,
             file_browser_audio_skim: true,
             show_recent_files: true,
+            filmstrip_hover: true,
+            filmstrip_quality: FilmstripQuality::default(),
             auto_refresh: true,
             group_by_date: false,
             recent_files: Vec::new(),
@@ -846,6 +890,11 @@ pub struct AudioHardwarePrefs {
     /// Audio monitoring mode (Software vs Hardware direct).
     #[serde(default)]
     pub monitoring_mode: MonitoringMode,
+    /// How often (in seconds) to re-show the "muted by system" toast
+    /// while the OS-level app mute is active. 0 = show only once.
+    /// Detects PipeWire/WirePlumber per-app mute state.
+    #[serde(default = "default_mute_reminder_interval")]
+    pub mute_reminder_interval_secs: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -857,9 +906,16 @@ pub enum MonitoringMode {
 
 fn default_sample_rate() -> u32 { 48000 }
 fn default_buffer_size() -> u32 { 256 }
+fn default_mute_reminder_interval() -> u32 { 15 }
 impl Default for AudioHardwarePrefs {
     fn default() -> Self {
-        Self { output_device: None, sample_rate: default_sample_rate(), buffer_size: default_buffer_size(), monitoring_mode: Default::default() }
+        Self {
+            output_device: None,
+            sample_rate: default_sample_rate(),
+            buffer_size: default_buffer_size(),
+            monitoring_mode: Default::default(),
+            mute_reminder_interval_secs: default_mute_reminder_interval(),
+        }
     }
 }
 

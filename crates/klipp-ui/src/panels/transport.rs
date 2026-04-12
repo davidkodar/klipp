@@ -262,6 +262,25 @@ impl TransportBar {
             let vol_pct = (state.master_volume * 100.0) as u32;
             ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(egui::Color32::from_rgb(140, 140, 150)));
 
+            // ── System audio mute warning ──
+            // When the OS-level app stream is muted (e.g. user clicked
+            // the speaker icon on the taskbar), tint the mute button red
+            // and change the master label to warn them.
+            if state.system_audio_muted {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("\u{26a0} MUTED BY SYSTEM")
+                        .size(9.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 60, 60))
+                        .background_color(egui::Color32::from_rgba_unmultiplied(255, 60, 60, 30)),
+                )
+                .on_hover_text(
+                    "Klipp's audio is muted at the OS level.\n\
+                     Click the speaker icon in your system taskbar to unmute.",
+                );
+            }
+
             // Master VU bars (compact)
             let vu_w = 60.0;
             let vu_h = 4.0;
@@ -342,14 +361,11 @@ impl TransportBar {
             return cmds;
         }
 
-        // Skip transport shortcuts when any text field has focus, a
-        // modal overlay is open (Quick Look, preferences, dialogs), or
-        // the file browser panel has keyboard focus (Spacebar belongs to
-        // Quick Look in that context, not play/pause).
+        // Skip transport shortcuts when any text field has focus or a
+        // modal overlay is open (Quick Look, preferences, dialogs).
         if state.editing_timecode
             || ctx.wants_keyboard_input()
             || state.has_modal_open()
-            || state.files_panel_focused
         {
             return cmds;
         }
@@ -357,7 +373,12 @@ impl TransportBar {
         let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
         let fps_rate = state.fps.rate() as i64;
         ctx.input(|i| {
-            if !text_editing && i.key_pressed(egui::Key::Space) {
+            // Spacebar: play/pause — UNLESS the file browser has keyboard
+            // focus, in which case Spacebar belongs to Quick Look. Only
+            // Spacebar is gated on this flag; J/K/L, arrows, and other
+            // transport keys work regardless of browser focus so the user
+            // doesn't lose audio during file browsing.
+            if !text_editing && !state.files_panel_focused && i.key_pressed(egui::Key::Space) {
                 if state.playback == PlaybackState::Playing {
                     cmds.push(AppCommand::Pause);
                 } else {

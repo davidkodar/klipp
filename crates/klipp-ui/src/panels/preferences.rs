@@ -850,6 +850,36 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(
             ui,
+            "Filmstrip hover preview",
+            "Show multi-frame filmstrip with large popup on video hover",
+            |ui| {
+                let mut val = prefs.file_browser.filmstrip_hover;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.filmstrip_hover = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Filmstrip quality",
+            "Higher = sharper preview, slower first-hover decode",
+            |ui| {
+                use crate::prefs::FilmstripQuality;
+                egui::ComboBox::from_id_salt("filmstrip_q")
+                    .selected_text(prefs.file_browser.filmstrip_quality.label())
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_value(&mut prefs.file_browser.filmstrip_quality, FilmstripQuality::Low, "Low").changed() { *dirty = true; }
+                        if ui.selectable_value(&mut prefs.file_browser.filmstrip_quality, FilmstripQuality::Medium, "Medium").changed() { *dirty = true; }
+                        if ui.selectable_value(&mut prefs.file_browser.filmstrip_quality, FilmstripQuality::High, "High").changed() { *dirty = true; }
+                    });
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
             "Group files by date",
             "Show Today / Yesterday / This Week / This Month / Older headers",
             |ui| {
@@ -1830,6 +1860,39 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Hardware, "Hardware (direct)").changed() { *dirty = true; }
                 });
         });
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "System mute reminder",
+            "Repeat notification when app audio is muted by the OS",
+            |ui| {
+                let intervals: &[(u32, &str)] = &[
+                    (0, "Once"),
+                    (10, "10s"),
+                    (15, "15s"),
+                    (30, "30s"),
+                    (60, "60s"),
+                ];
+                let current_label = intervals.iter()
+                    .find(|(v, _)| *v == prefs.audio_hardware.mute_reminder_interval_secs)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("15s");
+                egui::ComboBox::from_id_salt("mute_reminder")
+                    .selected_text(current_label)
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        for (val, label) in intervals {
+                            if ui.selectable_value(
+                                &mut prefs.audio_hardware.mute_reminder_interval_secs,
+                                *val,
+                                *label,
+                            ).changed() {
+                                *dirty = true;
+                            }
+                        }
+                    });
+            },
+        );
 
         // ── DETECTED HARDWARE section ──
         // Read-only diagnostics — what cpal actually sees on this system.

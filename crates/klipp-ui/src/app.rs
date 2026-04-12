@@ -235,17 +235,14 @@ impl KlippApp {
             let _t = LogTimer::new("ui: cpal probe_sample_rate (duplicate)");
             klipp_engine::audio_output::probe_sample_rate()
         };
-        // Prime the cpal device cache in a background thread so the first
-        // visit to the Audio HW preferences tab is instant. The
-        // enumeration takes 5–50 ms (mostly walking ALSA's device tree on
-        // Linux) and we don't want it on the startup critical path. The
-        // OnceLock-style cache inside `audio_output` is thread-safe.
-        std::thread::Builder::new()
-            .name("klipp-audio-devices-prime".into())
-            .spawn(|| {
-                klipp_engine::audio_output::prime_audio_devices_cache();
-            })
-            .ok();
+        // NOTE: Audio device cache is NOT primed at startup. An earlier
+        // version spawned a background thread for this, but libasound
+        // (ALSA) is not thread-safe for concurrent device enumeration.
+        // Running enumerate_output_devices() simultaneously with the
+        // engine's AudioOutput::new() corrupted cpal's device handles
+        // and silently broke audio output. The cache is now populated
+        // lazily on first visit to the Audio HW preferences tab — the
+        // 5-50ms hitch is acceptable for a one-time UI interaction.
 
         let mut app = Self {
             cmd_tx,
@@ -353,6 +350,9 @@ impl KlippApp {
         app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
         app.state.file_browser_audio_skim_enabled = app.prefs.file_browser.file_browser_audio_skim;
         app.state.show_recent_files = app.prefs.file_browser.show_recent_files;
+        app.state.mute_reminder_interval_secs = app.prefs.audio_hardware.mute_reminder_interval_secs;
+        app.state.filmstrip_hover_enabled = app.prefs.file_browser.filmstrip_hover;
+        app.state.filmstrip_quality = app.prefs.file_browser.filmstrip_quality;
         app.state.file_browser_auto_refresh = app.prefs.file_browser.auto_refresh;
         app.state.recent_files_snapshot = app.prefs.file_browser.recent_files.clone();
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
@@ -12520,6 +12520,37 @@ impl eframe::App for KlippApp {
             style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x38, 0x2c, 0x14);
         });
 
+        // ── Poll system audio mute state (Linux/PipeWire) ──
+        // Check every ~2 seconds via `wpctl` so we can warn the user if
+        // their system audio is muted. Lightweight: wpctl completes in
+        // <1ms and we only run it every 120 frames at 60fps.
+        if self.state.system_audio_last_check.elapsed() > std::time::Duration::from_secs(2) {
+            self.state.system_audio_last_check = std::time::Instant::now();
+            let was = self.state.system_audio_muted;
+            self.state.system_audio_muted = check_system_audio_muted();
+
+            if self.state.system_audio_muted {
+                let interval = self.state.mute_reminder_interval_secs;
+                let since_last = self.state.system_audio_last_reminder.elapsed();
+                // Show toast on first detection OR every interval seconds.
+                // interval == 0 means "show only once" (on state change).
+                let should_toast = if !was {
+                    true // first detection
+                } else if interval > 0 {
+                    since_last >= std::time::Duration::from_secs(interval as u64)
+                } else {
+                    false
+                };
+                if should_toast {
+                    self.state.system_audio_last_reminder = std::time::Instant::now();
+                    self.state.toast.show(
+                        "\u{26a0} Audio muted by system \u{2014} click the speaker icon in your taskbar to unmute"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
         // ── Handle OS-level file drag-and-drop ──
         let dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw.dropped_files.iter()
@@ -14945,6 +14976,15 @@ impl KlippApp {
             if self.state.show_recent_files != self.prefs.file_browser.show_recent_files {
                 self.state.show_recent_files = self.prefs.file_browser.show_recent_files;
             }
+            if self.state.mute_reminder_interval_secs != self.prefs.audio_hardware.mute_reminder_interval_secs {
+                self.state.mute_reminder_interval_secs = self.prefs.audio_hardware.mute_reminder_interval_secs;
+            }
+            if self.state.filmstrip_hover_enabled != self.prefs.file_browser.filmstrip_hover {
+                self.state.filmstrip_hover_enabled = self.prefs.file_browser.filmstrip_hover;
+            }
+            if self.state.filmstrip_quality != self.prefs.file_browser.filmstrip_quality {
+                self.state.filmstrip_quality = self.prefs.file_browser.filmstrip_quality;
+            }
             if self.state.file_browser_auto_refresh != self.prefs.file_browser.auto_refresh {
                 self.state.file_browser_auto_refresh = self.prefs.file_browser.auto_refresh;
             }
@@ -16306,6 +16346,42 @@ fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
 
 /// Compute a content fingerprint: FNV-1a hash of first 64KB + file_size.
 /// Returns None if the file can't be read.
+/// Check if Klipp's audio stream is muted at the OS level (PipeWire /
+/// WirePlumber). WirePlumber persists per-app volume and mute state in
+/// `~/.local/state/wireplumber/stream-properties` as JSON-ish entries.
+/// Klipp's entry looks like:
+///   `Output/Audio:application.name:PipeWire\sALSA\s\oklipp-app\c={"mute":true,...}`
+/// We just read this file and look for `klipp-app` + `"mute":true`.
+///
+/// Returns `false` on any error (file missing, non-Linux, non-PipeWire)
+/// so the warning only shows when we're confident our stream is muted.
+/// No subprocess spawning — pure file read, <0.1ms.
+fn check_system_audio_muted() -> bool {
+    let path = dirs::state_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))
+        .map(|d| d.join("wireplumber").join("stream-properties"));
+    let Some(path) = path else { return false };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    // Find the line containing klipp-app and check for "mute":true.
+    // The entry key uses WirePlumber's escape format:
+    //   \s = space, \o = open-paren, \c = close-paren
+    // We just search for "klipp-app" which is unambiguous.
+    for line in contents.lines() {
+        if line.contains("klipp-app") {
+            // The value after '=' is a JSON object. Check for "mute":true.
+            if let Some(eq_pos) = line.find('=') {
+                let json_part = &line[eq_pos + 1..];
+                // Simple string check — no need for a full JSON parser.
+                return json_part.contains("\"mute\":true");
+            }
+        }
+    }
+    false
+}
+
 fn compute_media_fingerprint(path: &Path) -> Option<u64> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).ok()?;

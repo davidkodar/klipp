@@ -55,6 +55,17 @@ struct FileAudioPeaksResult {
     peaks: Vec<(f32, f32)>,
 }
 
+/// Result from a filmstrip generation worker — one complete set of frames
+/// for a single video file.
+struct FileFilmstripResult {
+    path: std::path::PathBuf,
+    /// Frames in time order. Each tuple is (rgba, width, height).
+    frames: Vec<(Vec<u8>, u32, u32)>,
+}
+
+/// Number of frames in a file-browser filmstrip hover strip.
+const FILE_FILMSTRIP_FRAME_COUNT: usize = 8;
+
 /// Number of waveform buckets to compute for audio thumbnails. Matches
 /// roughly the pixel width of the Large thumb so even at the biggest size
 /// we have one bucket per pixel column.
@@ -589,6 +600,13 @@ pub struct BrowserPanel {
     file_skim_queued: Option<(std::path::PathBuf, f64)>,
     file_skim_tx: crossbeam_channel::Sender<FileSkimResult>,
     file_skim_rx: crossbeam_channel::Receiver<FileSkimResult>,
+    /// Cached filmstrip tiles (multiple frames per video row). Populated
+    /// on first hover via a background thread that calls
+    /// `generate_filmstrip_incremental`. Keyed by file path.
+    file_filmstrip_textures: HashMap<std::path::PathBuf, Vec<egui::TextureHandle>>,
+    file_filmstrip_pending: HashSet<std::path::PathBuf>,
+    file_filmstrip_tx: crossbeam_channel::Sender<FileFilmstripResult>,
+    file_filmstrip_rx: crossbeam_channel::Receiver<FileFilmstripResult>,
     /// Lightweight waveform peaks for audio files in the current directory.
     /// Loaded lazily on first viewport visibility, cached on disk via
     /// `klipp_media::disk_cache::write_audio_peaks_cache` so subsequent
@@ -663,6 +681,7 @@ impl Default for BrowserPanel {
     fn default() -> Self {
         let (file_thumb_tx, file_thumb_rx) = crossbeam_channel::unbounded();
         let (file_skim_tx, file_skim_rx) = crossbeam_channel::unbounded();
+        let (file_filmstrip_tx, file_filmstrip_rx) = crossbeam_channel::unbounded();
         let (file_audio_tx, file_audio_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
@@ -706,6 +725,10 @@ impl Default for BrowserPanel {
             file_skim_queued: None,
             file_skim_tx,
             file_skim_rx,
+            file_filmstrip_textures: HashMap::new(),
+            file_filmstrip_pending: HashSet::new(),
+            file_filmstrip_tx,
+            file_filmstrip_rx,
             file_audio_peaks: HashMap::new(),
             file_audio_pending: HashSet::new(),
             file_audio_failed: HashSet::new(),
@@ -734,6 +757,13 @@ impl BrowserPanel {
         files_split_ratio: &mut f32,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+
+        // Clear files_panel_focused on state every frame. The Files tab's
+        // show_files_tab re-sets it if the tab is active and a row was
+        // clicked. This prevents the flag from staying stuck true when
+        // the user switches away from the Files tab (e.g. to Media),
+        // which would permanently block the transport's Spacebar handling.
+        state.files_panel_focused = false;
 
         // Transfer reveal_in_browser request from AppState to browser scroll
         if let Some(mid) = state.reveal_in_browser.take() {
@@ -1175,6 +1205,8 @@ impl BrowserPanel {
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
+        self.file_filmstrip_textures.clear();
+        self.file_filmstrip_pending.clear();
         // Selection doesn't carry across folders.
         self.files_selected.clear();
         self.files_selection_anchor = None;
@@ -1238,6 +1270,8 @@ impl BrowserPanel {
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
+        self.file_filmstrip_textures.clear();
+        self.file_filmstrip_pending.clear();
         self.files_selected.clear();
         self.files_selection_anchor = None;
         // No directory to watch in the virtual view.
@@ -1258,6 +1292,8 @@ impl BrowserPanel {
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
+        self.file_filmstrip_textures.clear();
+        self.file_filmstrip_pending.clear();
     }
 
     /// Drain pending file-thumbnail results and upload textures to egui.
@@ -1400,6 +1436,82 @@ impl BrowserPanel {
             .ok();
     }
 
+    /// Drain filmstrip generation results and upload textures to egui.
+    fn drain_file_filmstrips(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.file_filmstrip_rx.try_recv() {
+            self.file_filmstrip_pending.remove(&result.path);
+            if !result.frames.is_empty()
+                && self.files_entries.iter().any(|e| e.path == result.path)
+            {
+                let textures: Vec<egui::TextureHandle> = result
+                    .frames
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (rgba, w, h))| {
+                        let pixels: Vec<egui::Color32> = rgba
+                            .chunks_exact(4)
+                            .map(|c| {
+                                egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+                            })
+                            .collect();
+                        let image = egui::ColorImage {
+                            size: [w as usize, h as usize],
+                            pixels,
+                        };
+                        ctx.load_texture(
+                            format!("filmstrip_{}_{}", result.path.display(), i),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        )
+                    })
+                    .collect();
+                self.file_filmstrip_textures
+                    .insert(result.path, textures);
+            }
+        }
+    }
+
+    /// Spawn a background thread to generate a filmstrip for the given
+    /// video file. The thread calls `generate_filmstrip_incremental` with
+    /// 8 frames at the given target height, then sends the result via the
+    /// filmstrip channel.
+    fn spawn_file_filmstrip(
+        &mut self,
+        path: std::path::PathBuf,
+        duration: f64,
+        target_height: u32,
+        ctx: &egui::Context,
+    ) {
+        if self.file_filmstrip_pending.contains(&path) {
+            return; // already in-flight
+        }
+        self.file_filmstrip_pending.insert(path.clone());
+        let tx = self.file_filmstrip_tx.clone();
+        let ctx = ctx.clone();
+        let n = FILE_FILMSTRIP_FRAME_COUNT;
+        std::thread::Builder::new()
+            .name("file-filmstrip-worker".into())
+            .spawn(move || {
+                let interval = duration / n as f64;
+                let mut frames: Vec<(Vec<u8>, u32, u32)> = Vec::with_capacity(n);
+                let _ = klipp_engine::generate_filmstrip_incremental(
+                    &path,
+                    duration,
+                    interval,
+                    target_height,
+                    |_time, rgba, w, h| {
+                        frames.push((rgba, w, h));
+                    },
+                );
+                let _ = tx.send(FileFilmstripResult {
+                    path,
+                    frames,
+                });
+                ctx.request_repaint();
+            })
+            .ok();
+    }
+
     /// Drain audio-peaks results from the worker channel into the in-memory
     /// cache. Called at the top of `show_files_tab` each frame.
     fn drain_file_audio_peaks(&mut self) {
@@ -1530,6 +1642,8 @@ impl BrowserPanel {
         self.drain_file_skims(ui.ctx());
         // Drain any completed audio peaks results into the in-memory cache.
         self.drain_file_audio_peaks();
+        // Drain any completed filmstrip generation results.
+        self.drain_file_filmstrips(ui.ctx());
 
         // ── Auto-refresh: drain folder watcher events ──
         // If the filesystem watcher detected changes in the current
@@ -1958,6 +2072,7 @@ impl BrowserPanel {
         let mut pending_navigate: Option<std::path::PathBuf> = None;
         let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut audio_peaks_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
+        let mut filmstrip_spawn_requests: Vec<(std::path::PathBuf, f64, u32)> = Vec::new();
         let mut pending_select: Option<FileSelectAction> = None;
         // Right-click → "Add to media pool" / "Add to bin" request.
         // Tuple: (paths to import, optional bin name).
@@ -2435,46 +2550,161 @@ impl BrowserPanel {
 
                 let mut painted_thumb = false;
                 if !entry.is_dir && is_visual_media(&entry.path) {
-                    // Texture priority: live skim frame for THIS path > cached
-                    // poster thumbnail. The skim texture is single-slot, so at
-                    // most one row at a time can show a live frame.
-                    let tex_to_use: Option<&egui::TextureHandle> = self.file_skim_texture
-                        .as_ref()
-                        .filter(|(p, _)| *p == entry.path)
-                        .map(|(_, t)| t)
-                        .or_else(|| self.file_thumb_textures.get(&entry.path));
+                    // ── Filmstrip strip (multi-frame) ──
+                    // If a filmstrip is cached for this file, render its
+                    // tiles across the thumb_box. The cursor X highlights
+                    // the active tile. Falls back to single skim frame or
+                    // poster thumbnail while the filmstrip is loading.
+                    let filmstrip = if state.filmstrip_hover_enabled {
+                        self.file_filmstrip_textures.get(&entry.path)
+                    } else {
+                        None
+                    };
+                    let cursor_in_box = ui.input(|i| i.pointer.hover_pos())
+                        .filter(|p| thumb_box.contains(*p));
 
-                    if let Some(tex) = tex_to_use {
-                        let sz = tex.size();
-                        let img_aspect = sz[0] as f32 / sz[1].max(1) as f32;
-                        let box_aspect = thumb_box.width() / thumb_box.height();
-                        let fitted = if img_aspect > box_aspect {
-                            let h = thumb_box.width() / img_aspect;
-                            let y_off = (thumb_box.height() - h) / 2.0;
-                            egui::Rect::from_min_size(
-                                egui::pos2(thumb_box.min.x, thumb_box.min.y + y_off),
-                                egui::vec2(thumb_box.width(), h),
-                            )
-                        } else {
-                            let w = thumb_box.height() * img_aspect;
-                            let x_off = (thumb_box.width() - w) / 2.0;
-                            egui::Rect::from_min_size(
-                                egui::pos2(thumb_box.min.x + x_off, thumb_box.min.y),
-                                egui::vec2(w, thumb_box.height()),
-                            )
-                        };
-                        // Dark backdrop so letterbox bars don't show panel bg through them.
+                    if let Some(tiles) = filmstrip.filter(|t| !t.is_empty()) {
+                        let n = tiles.len() as f32;
+                        let tile_w = thumb_box.width() / n;
+                        let active_idx = cursor_in_box
+                            .map(|p| ((p.x - thumb_box.min.x) / tile_w).floor() as usize)
+                            .map(|i| i.min(tiles.len() - 1));
+
                         ui.painter().rect_filled(thumb_box, 2.0, egui::Color32::from_rgb(18, 18, 18));
-                        ui.painter().image(
-                            tex.id(),
-                            fitted,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+                        for (i, tex) in tiles.iter().enumerate() {
+                            let tile_rect = egui::Rect::from_min_size(
+                                egui::pos2(thumb_box.min.x + i as f32 * tile_w, thumb_box.min.y),
+                                egui::vec2(tile_w, thumb_box.height()),
+                            );
+                            let tint = if active_idx == Some(i) {
+                                egui::Color32::WHITE
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(180, 180, 180, 255)
+                            };
+                            ui.painter().image(
+                                tex.id(),
+                                tile_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                tint,
+                            );
+                            // Thin separator between tiles.
+                            if i > 0 {
+                                ui.painter().vline(
+                                    tile_rect.min.x,
+                                    tile_rect.y_range(),
+                                    egui::Stroke::new(0.5, egui::Color32::from_rgb(10, 10, 10)),
+                                );
+                            }
+                        }
+                        // Active tile highlight border + large hover preview.
+                        if let Some(idx) = active_idx {
+                            let active_rect = egui::Rect::from_min_size(
+                                egui::pos2(thumb_box.min.x + idx as f32 * tile_w, thumb_box.min.y),
+                                egui::vec2(tile_w, thumb_box.height()),
+                            );
+                            ui.painter().rect_stroke(
+                                active_rect,
+                                0.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                            );
+
+                            // Large preview popup — shows the active tile
+                            // at a readable size above the row. Uses
+                            // egui::Area at Tooltip order so it floats
+                            // above everything without stealing focus.
+                            let tex = &tiles[idx];
+                            let tex_size = tex.size();
+                            let preview_w = 320.0_f32;
+                            let preview_h = preview_w * tex_size[1] as f32 / tex_size[0].max(1) as f32;
+                            let preview_pos = egui::pos2(
+                                active_rect.center().x - preview_w * 0.5,
+                                rect.min.y - preview_h - 8.0, // above the row
+                            );
+                            // Clamp to screen bounds so the popup doesn't
+                            // go off-screen at the top or sides.
+                            let screen = ui.ctx().screen_rect();
+                            let clamped_x = preview_pos.x
+                                .max(screen.min.x + 4.0)
+                                .min(screen.max.x - preview_w - 4.0);
+                            let clamped_y = if preview_pos.y < screen.min.y + 4.0 {
+                                // Not enough room above — show below.
+                                rect.max.y + 8.0
+                            } else {
+                                preview_pos.y
+                            };
+                            egui::Area::new(egui::Id::new("filmstrip_preview_popup"))
+                                .fixed_pos(egui::pos2(clamped_x, clamped_y))
+                                .order(egui::Order::Tooltip)
+                                .show(ui.ctx(), |ui| {
+                                    let preview_rect = ui.allocate_exact_size(
+                                        egui::vec2(preview_w, preview_h),
+                                        egui::Sense::hover(),
+                                    ).0;
+                                    // Dark background with border.
+                                    ui.painter().rect(
+                                        preview_rect,
+                                        4.0,
+                                        egui::Color32::from_rgb(18, 18, 18),
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                                    );
+                                    ui.painter().image(
+                                        tex.id(),
+                                        preview_rect.shrink(2.0),
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                    // Frame number label.
+                                    ui.painter().text(
+                                        egui::pos2(preview_rect.right() - 6.0, preview_rect.bottom() - 6.0),
+                                        egui::Align2::RIGHT_BOTTOM,
+                                        format!("{}/{}", idx + 1, tiles.len()),
+                                        egui::FontId::proportional(10.0),
+                                        egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200),
+                                    );
+                                });
+                        }
                         painted_thumb = true;
-                    } else if ui.is_rect_visible(rect) {
-                        // Visible row that wants a thumb but doesn't have one — request it.
-                        thumb_spawn_requests.push(entry.path.clone());
+                    } else {
+                        // Fallback: single skim frame or poster thumbnail.
+                        let tex_to_use: Option<&egui::TextureHandle> = self.file_skim_texture
+                            .as_ref()
+                            .filter(|(p, _)| *p == entry.path)
+                            .map(|(_, t)| t)
+                            .or_else(|| self.file_thumb_textures.get(&entry.path));
+
+                        if let Some(tex) = tex_to_use {
+                            let sz = tex.size();
+                            let img_aspect = sz[0] as f32 / sz[1].max(1) as f32;
+                            let box_aspect = thumb_box.width() / thumb_box.height();
+                            let fitted = if img_aspect > box_aspect {
+                                let h = thumb_box.width() / img_aspect;
+                                let y_off = (thumb_box.height() - h) / 2.0;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(thumb_box.min.x, thumb_box.min.y + y_off),
+                                    egui::vec2(thumb_box.width(), h),
+                                )
+                            } else {
+                                let w = thumb_box.height() * img_aspect;
+                                let x_off = (thumb_box.width() - w) / 2.0;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(thumb_box.min.x + x_off, thumb_box.min.y),
+                                    egui::vec2(w, thumb_box.height()),
+                                )
+                            };
+                            ui.painter().rect_filled(thumb_box, 2.0, egui::Color32::from_rgb(18, 18, 18));
+                            ui.painter().image(
+                                tex.id(),
+                                fitted,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                            painted_thumb = true;
+                        } else if ui.is_rect_visible(rect) {
+                            thumb_spawn_requests.push(entry.path.clone());
+                        }
                     }
 
                     // ── Hover skimming ──
@@ -2493,15 +2723,24 @@ impl BrowserPanel {
                         if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                             if thumb_box.contains(pos) {
                                 any_video_row_hovered = true;
-                                // Need duration to map cursor X → time. Cached.
                                 if let Some(dur) = self.file_durations.get(&entry.path).copied() {
+                                    // Request filmstrip generation if
+                                    // enabled, not cached, not pending.
+                                    if state.filmstrip_hover_enabled
+                                        && !self.file_filmstrip_textures.contains_key(&entry.path)
+                                        && !self.file_filmstrip_pending.contains(&entry.path)
+                                    {
+                                        filmstrip_spawn_requests.push((
+                                            entry.path.clone(),
+                                            dur,
+                                            state.filmstrip_quality.target_height(),
+                                        ));
+                                    }
                                     let frac = ((pos.x - thumb_box.min.x) / thumb_box.width())
                                         .clamp(0.0, 1.0);
                                     let t = dur * frac as f64;
                                     pending_skim_request = Some((entry.path.clone(), t));
                                 } else if pending_duration_probe.is_none() {
-                                    // First hover — defer the probe to after the
-                                    // loop so we can call self.ensure_file_duration.
                                     pending_duration_probe = Some(entry.path.clone());
                                 }
                             }
@@ -3061,6 +3300,12 @@ impl BrowserPanel {
         if !audio_peaks_spawn_requests.is_empty() {
             for path in audio_peaks_spawn_requests {
                 self.spawn_file_audio_peaks(path);
+            }
+        }
+        if !filmstrip_spawn_requests.is_empty() {
+            let ctx = ui.ctx().clone();
+            for (path, dur, target_h) in filmstrip_spawn_requests {
+                self.spawn_file_filmstrip(path, dur, target_h, &ctx);
             }
         }
 
