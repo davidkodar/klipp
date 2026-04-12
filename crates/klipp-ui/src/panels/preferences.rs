@@ -941,6 +941,7 @@ impl PreferencesPanel {
                     FileSortBy::DateModified => "Date modified",
                     FileSortBy::Size => "Size",
                     FileSortBy::Type => "Type",
+                    FileSortBy::Rating => "Rating",
                 })
                 .width(140.0)
                 .show_ui(ui, |ui| {
@@ -958,6 +959,10 @@ impl PreferencesPanel {
                     { *dirty = true; }
                     if ui
                         .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::Type, "Type")
+                        .changed()
+                    { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.file_browser.file_sort_by, FileSortBy::Rating, "Rating")
                         .changed()
                     { *dirty = true; }
                 });

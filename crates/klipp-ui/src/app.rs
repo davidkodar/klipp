@@ -667,7 +667,9 @@ impl KlippApp {
                         proxy_ready: false,
                         default_source_in: None,
                         default_source_out: None,
-                        rating: 0,
+                        // Copy star rating from file browser cache (if the user
+                        // rated this file before importing it to the pool).
+                        rating: self.browser.file_ratings.get(&path).copied().unwrap_or(0),
                         tags: Vec::new(),
                         user_notes: String::new(),
                         bin: None,
@@ -15604,6 +15606,11 @@ impl KlippApp {
             if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
                 self.prefs.file_browser.pinned_folders = self.browser.pinned_folders.clone();
                 let _ = self.prefs.save();
+            }
+            // Save file-ratings cache to disk if changed.
+            if self.browser.file_ratings_dirty {
+                self.browser.file_ratings_dirty = false;
+                crate::browser::save_file_ratings_cache(&self.browser.file_ratings);
             }
             // Sync recent_files_snapshot back to prefs (handles "Clear Recents").
             if self.state.recent_files_snapshot != self.prefs.file_browser.recent_files {

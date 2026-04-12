@@ -416,6 +416,7 @@ pub enum FileSortBy {
     DateModified,
     Size,
     Type,
+    Rating,
 }
 
 impl FileSortBy {
@@ -425,6 +426,7 @@ impl FileSortBy {
             Self::DateModified => "Date",
             Self::Size => "Size",
             Self::Type => "Type",
+            Self::Rating => "Rating",
         }
     }
 }
@@ -455,6 +457,7 @@ fn sort_file_entries(entries: &mut [FileEntry], by: FileSortBy, ascending: bool)
                 ext_a.cmp(&ext_b)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             }
+            FileSortBy::Rating => a.rating.cmp(&b.rating),
         };
         if ascending { ord } else { ord.reverse() }
     });
@@ -601,6 +604,13 @@ pub struct BrowserPanel {
     /// hovering same row" (emit Update) from "left the row" (emit End).
     /// Single slot — only one audio file can be skimmed at a time.
     file_audio_skim_active: Option<std::path::PathBuf>,
+    /// Per-file star ratings cache. Loaded from
+    /// `~/.cache/klipp/file-ratings.json` at startup, written on change.
+    /// Keyed by absolute path, value 1-5. Entries with rating 0 are
+    /// removed (no need to persist "unrated"). Modified flag tracks
+    /// whether the cache has been changed since last save.
+    pub file_ratings: HashMap<std::path::PathBuf, u8>,
+    pub file_ratings_dirty: bool,
     /// Filesystem watcher for the currently-displayed directory. Receives
     /// a notification whenever files are created, deleted, or renamed
     /// inside that directory. The watcher is recreated on each navigation
@@ -643,6 +653,10 @@ pub struct FileEntry {
     /// Last-modified time, populated from `metadata().modified()`. May be
     /// `None` on filesystems that don't track mtime (rare).
     pub mtime: Option<std::time::SystemTime>,
+    /// User-assigned star rating (0 = unrated, 1-5 = rated). Loaded from
+    /// the global ratings cache (`~/.cache/klipp/file-ratings.json`) and
+    /// written back on change.
+    pub rating: u8,
 }
 
 impl Default for BrowserPanel {
@@ -698,6 +712,8 @@ impl Default for BrowserPanel {
             file_audio_tx,
             file_audio_rx,
             file_audio_skim_active: None,
+            file_ratings: load_file_ratings_cache(),
+            file_ratings_dirty: false,
             folder_watcher: None,
             folder_watch_rx: None,
             creating_folder: None,
@@ -939,6 +955,7 @@ impl BrowserPanel {
                         ui.selectable_value(&mut self.files_sort_by, FileSortBy::DateModified, "Date modified");
                         ui.selectable_value(&mut self.files_sort_by, FileSortBy::Size, "Size");
                         ui.selectable_value(&mut self.files_sort_by, FileSortBy::Type, "Type");
+                        ui.selectable_value(&mut self.files_sort_by, FileSortBy::Rating, "Rating");
                     });
 
                 let sort_icon = if self.files_sort_ascending {
@@ -1202,6 +1219,7 @@ impl BrowserPanel {
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default(),
+                    rating: self.file_ratings.get(p).copied().unwrap_or(0),
                     path: p.clone(),
                     is_dir: false,
                     size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
@@ -1551,6 +1569,11 @@ impl BrowserPanel {
         if let Some(ref rx) = self.files_receiver {
             match rx.try_recv() {
                 Ok(Ok(mut entries)) => {
+                    // Populate ratings from the cache (background reader
+                    // doesn't have access to it).
+                    for e in &mut entries {
+                        e.rating = self.file_ratings.get(&e.path).copied().unwrap_or(0);
+                    }
                     sort_file_entries(&mut entries, self.files_sort_by, self.files_sort_ascending);
                     self.files_entries = entries;
                     self.files_loading = false;
@@ -1964,6 +1987,8 @@ impl BrowserPanel {
         let mut pending_start_rename: Option<std::path::PathBuf> = None;
         // Inline rename committed → (old_path, new_name).
         let mut pending_commit_rename: Option<(std::path::PathBuf, String)> = None;
+        // Set rating on file(s) → (paths, rating 0-5).
+        let mut pending_set_rating: Option<(Vec<std::path::PathBuf>, u8)> = None;
         // Hover skim — latest skim decode request captured during the row loop.
         // Tuple: (path, time_secs). Applied after the loop to avoid borrow conflicts.
         let mut pending_skim_request: Option<(std::path::PathBuf, f64)> = None;
@@ -2120,6 +2145,22 @@ impl BrowserPanel {
             if k_f2 && self.files_selected.len() == 1 && self.renaming_file.is_none() && !is_recents_view {
                 let path = self.files_selected.iter().next().unwrap().clone();
                 pending_start_rename = Some(path);
+            }
+
+            // 0-5: quick-rate the selected file.
+            for (key, rating) in [
+                (egui::Key::Num0, 0u8),
+                (egui::Key::Num1, 1),
+                (egui::Key::Num2, 2),
+                (egui::Key::Num3, 3),
+                (egui::Key::Num4, 4),
+                (egui::Key::Num5, 5),
+            ] {
+                if ui.input(|i| i.key_pressed(key)) && !self.files_selected.is_empty() {
+                    let paths: Vec<_> = self.files_selected.iter().cloned().collect();
+                    pending_set_rating = Some((paths, rating));
+                    break;
+                }
             }
 
             // Spacebar: Quick Look preview (toggle on/off).
@@ -2640,6 +2681,20 @@ impl BrowserPanel {
                     );
                 }
 
+                // Star rating (for rated files) — small amber stars right-aligned
+                // before the file size. Only shown if rating > 0.
+                if entry.rating > 0 && !entry.is_dir {
+                    let stars = "\u{2605}".repeat(entry.rating as usize);
+                    // Position to the left of the file size area.
+                    ui.painter().text(
+                        egui::pos2(rect.max.x - 80.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        &stars,
+                        egui::FontId::proportional(9.0),
+                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20), // amber accent
+                    );
+                }
+
                 // Size (for files)
                 if !entry.is_dir && entry.size > 0 {
                     let size_str = format_file_size(entry.size);
@@ -2821,6 +2876,25 @@ impl BrowserPanel {
                             pending_pin_toggle = Some(menu_path.clone());
                             ui.close_menu();
                         }
+                    }
+
+                    // ── Set Rating ──
+                    // Available on any file (not directories). Mirrors
+                    // the media pool "Set Rating" submenu pattern.
+                    if !menu_is_dir {
+                        ui.menu_button("Set Rating", |ui| {
+                            for r in (0..=5).rev() {
+                                let label = if r == 0 {
+                                    "No Rating".to_string()
+                                } else {
+                                    "\u{2605}".repeat(r as usize)
+                                };
+                                if ui.button(label).clicked() {
+                                    pending_set_rating = Some((vec![menu_path.clone()], r));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                     }
 
                     // ── Copy file path ──
@@ -3146,6 +3220,41 @@ impl BrowserPanel {
             }
         }
 
+        // ── Set rating ──
+        if let Some((paths, rating)) = pending_set_rating {
+            for path in &paths {
+                // Update the in-memory cache.
+                if rating == 0 {
+                    self.file_ratings.remove(path);
+                } else {
+                    self.file_ratings.insert(path.clone(), rating);
+                }
+                // Update the entry in files_entries so the stars render
+                // immediately (no refresh needed).
+                for e in &mut self.files_entries {
+                    if e.path == *path {
+                        e.rating = rating;
+                    }
+                }
+                // Sync to media pool if the file is already imported.
+                if let Some(item) = state.media_pool.find_by_path(path) {
+                    let mid = item.id;
+                    if let Some(item) = state.media_pool.get_mut(&mid) {
+                        item.rating = rating;
+                    }
+                }
+            }
+            self.file_ratings_dirty = true;
+            // Re-sort if currently sorting by rating.
+            if self.files_sort_by == FileSortBy::Rating {
+                sort_file_entries(
+                    &mut self.files_entries,
+                    self.files_sort_by,
+                    self.files_sort_ascending,
+                );
+            }
+        }
+
         // ── Rename: start editing ──
         // Seed the inline editor with the entry's current filename.
         // For files, pre-select just the stem (before the extension) so
@@ -3404,6 +3513,7 @@ fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>,
             size: if is_dir { 0 } else { meta.len() },
             is_media,
             mtime: meta.modified().ok(),
+            rating: 0, // Populated from the ratings cache after async read completes.
         });
     }
 
@@ -3422,6 +3532,35 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+/// Path to the global file-ratings cache.
+fn file_ratings_cache_path() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("klipp").join("file-ratings.json"))
+}
+
+/// Load the file-ratings cache from disk. Returns an empty map on any
+/// error (missing file, malformed JSON, permission denied).
+fn load_file_ratings_cache() -> HashMap<std::path::PathBuf, u8> {
+    let Some(path) = file_ratings_cache_path() else {
+        return HashMap::new();
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Save the file-ratings cache to disk. Silently ignores errors (cache
+/// is convenience data — losing it is annoying but not destructive).
+pub fn save_file_ratings_cache(ratings: &HashMap<std::path::PathBuf, u8>) {
+    let Some(path) = file_ratings_cache_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(ratings) {
+        let _ = std::fs::write(&path, json);
     }
 }
 
@@ -3841,6 +3980,99 @@ mod new_folder_tests {
 }
 
 #[cfg(test)]
+mod file_rating_tests {
+    use super::{file_ratings_cache_path, load_file_ratings_cache, save_file_ratings_cache};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cache_path_is_under_klipp_cache_dir() {
+        if let Some(path) = file_ratings_cache_path() {
+            let s = path.to_string_lossy();
+            assert!(s.contains("klipp"), "cache path should be under klipp dir: {s}");
+            assert!(s.ends_with("file-ratings.json"), "should end with file-ratings.json: {s}");
+        }
+    }
+
+    #[test]
+    fn load_returns_empty_for_missing_file() {
+        // load_file_ratings_cache reads from the real cache path, which
+        // may or may not exist. If it doesn't exist, it returns empty.
+        // If it does, it returns whatever's in there. Either way, no panic.
+        let _ = load_file_ratings_cache();
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let Some(path) = file_ratings_cache_path() else { return };
+        // Back up existing cache if present.
+        let backup = path.with_extension("json.bak.test");
+        let had_existing = path.exists();
+        if had_existing {
+            let _ = std::fs::copy(&path, &backup);
+        }
+
+        let mut ratings = HashMap::new();
+        ratings.insert(PathBuf::from("/tmp/test_a.mp4"), 5u8);
+        ratings.insert(PathBuf::from("/tmp/test_b.wav"), 3u8);
+        save_file_ratings_cache(&ratings);
+
+        let loaded = load_file_ratings_cache();
+        assert_eq!(loaded.get(&PathBuf::from("/tmp/test_a.mp4")), Some(&5));
+        assert_eq!(loaded.get(&PathBuf::from("/tmp/test_b.wav")), Some(&3));
+
+        // Restore original cache.
+        if had_existing {
+            let _ = std::fs::copy(&backup, &path);
+            let _ = std::fs::remove_file(&backup);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn sort_by_rating_puts_highest_first_descending() {
+        use super::{sort_file_entries, FileEntry, FileSortBy};
+        let mut entries = vec![
+            FileEntry {
+                name: "low.mp4".into(), path: "low.mp4".into(),
+                is_dir: false, size: 100, is_media: true, mtime: None, rating: 1,
+            },
+            FileEntry {
+                name: "high.mp4".into(), path: "high.mp4".into(),
+                is_dir: false, size: 100, is_media: true, mtime: None, rating: 5,
+            },
+            FileEntry {
+                name: "mid.mp4".into(), path: "mid.mp4".into(),
+                is_dir: false, size: 100, is_media: true, mtime: None, rating: 3,
+            },
+        ];
+        sort_file_entries(&mut entries, FileSortBy::Rating, false); // descending
+        assert_eq!(entries[0].name, "high.mp4");
+        assert_eq!(entries[1].name, "mid.mp4");
+        assert_eq!(entries[2].name, "low.mp4");
+    }
+
+    #[test]
+    fn sort_by_rating_ascending() {
+        use super::{sort_file_entries, FileEntry, FileSortBy};
+        let mut entries = vec![
+            FileEntry {
+                name: "high.mp4".into(), path: "high.mp4".into(),
+                is_dir: false, size: 100, is_media: true, mtime: None, rating: 5,
+            },
+            FileEntry {
+                name: "low.mp4".into(), path: "low.mp4".into(),
+                is_dir: false, size: 100, is_media: true, mtime: None, rating: 1,
+            },
+        ];
+        sort_file_entries(&mut entries, FileSortBy::Rating, true); // ascending
+        assert_eq!(entries[0].name, "low.mp4");
+        assert_eq!(entries[1].name, "high.mp4");
+    }
+}
+
+#[cfg(test)]
 mod date_group_tests {
     use super::{compute_date_groups, DateGroup, FileEntry};
     use std::time::{Duration, SystemTime};
@@ -3853,6 +4085,7 @@ mod date_group_tests {
             size: 100,
             is_media: true,
             mtime: Some(SystemTime::now() - Duration::from_secs(age_secs)),
+            rating: 0,
         }
     }
 
@@ -3864,6 +4097,7 @@ mod date_group_tests {
             size: 100,
             is_media: true,
             mtime: None,
+            rating: 0,
         }
     }
 
@@ -4574,6 +4808,7 @@ mod tests {
             size: 0,
             is_media: false,
             mtime: None,
+            rating: 0,
         };
 
         let dir = mk("subfolder", true);
@@ -4626,6 +4861,7 @@ mod tests {
             size,
             is_media: false,
             mtime: Some(UNIX_EPOCH + Duration::from_secs(mtime_secs)),
+            rating: 0,
         };
 
         // Mixed dirs + files in random order.
