@@ -364,7 +364,7 @@ impl CommandHistory {
         Self {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            max_size: 100,
+            max_size: 1000,
             pending_coalesce_key: None,
             pending_old_entry: None,
         }

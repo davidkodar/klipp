@@ -480,7 +480,7 @@ pub struct EditingPrefs {
 }
 
 fn default_undo_limit() -> usize {
-    100
+    1000
 }
 
 fn default_transition_frames() -> u32 {
@@ -1290,7 +1290,7 @@ mod tests {
         assert!(rt.editing.auto_generate_filmstrips);
         assert!(rt.editing.auto_generate_skim);
         assert_eq!(rt.editing.default_still_duration_secs, 5.0);
-        assert_eq!(rt.editing.undo_limit, 100);
+        assert_eq!(rt.editing.undo_limit, 1000);
         assert_eq!(rt.editing.default_transition_frames, 24);
         assert_eq!(rt.editing.default_video_track_height, 50.0);
         assert_eq!(rt.editing.default_audio_track_height, 48.0);
