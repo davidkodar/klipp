@@ -313,6 +313,11 @@ pub struct FileBrowserPrefs {
     /// and rely on the manual "Refresh Folder" right-click action instead.
     #[serde(default = "default_true")]
     pub auto_refresh: bool,
+    /// Group files by modification date (Today / Yesterday / This Week /
+    /// This Month / Older). When on, sort is forced to DateModified
+    /// descending. When off, the previous sort key is restored.
+    #[serde(default)]
+    pub group_by_date: bool,
     /// Most recently imported file paths, most-recent-first. Updated
     /// whenever `AppCommand::LoadMediaFile` completes successfully.
     /// Cross-project: survives project close/switch because it lives
@@ -337,6 +342,7 @@ impl Default for FileBrowserPrefs {
             file_browser_audio_skim: true,
             show_recent_files: true,
             auto_refresh: true,
+            group_by_date: false,
             recent_files: Vec::new(),
         }
     }

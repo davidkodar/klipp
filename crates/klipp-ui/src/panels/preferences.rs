@@ -850,6 +850,19 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(
             ui,
+            "Group files by date",
+            "Show Today / Yesterday / This Week / This Month / Older headers",
+            |ui| {
+                let mut val = prefs.file_browser.group_by_date;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.group_by_date = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
             "Auto-refresh folder",
             "Refresh file list when files change externally (inotify)",
             |ui| {

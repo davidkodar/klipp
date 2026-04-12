@@ -544,6 +544,10 @@ pub struct BrowserPanel {
     pub files_sort_by: FileSortBy,
     /// Files-tab sort direction (true = ascending).
     pub files_sort_ascending: bool,
+    /// Group files by modification date. When on, sort is forced to
+    /// DateModified descending and section headers (Today / Yesterday /
+    /// This Week / This Month / Older) are rendered between rows.
+    pub group_by_date: bool,
     /// Files-tab quick type filter (All / Video / Audio / Images).
     pub files_type_filter: FileTypeFilter,
     /// User-pinned favorite folders, rendered after the XDG bookmarks bar.
@@ -675,6 +679,7 @@ impl Default for BrowserPanel {
             file_thumb_size: FileThumbSize::default(),
             files_sort_by: FileSortBy::default(),
             files_sort_ascending: true,
+            group_by_date: false,
             files_type_filter: FileTypeFilter::default(),
             pinned_folders: Vec::new(),
             system_bookmarks: read_system_bookmarks(),
@@ -955,7 +960,7 @@ impl BrowserPanel {
                     self.files_sort_ascending = !self.files_sort_ascending;
                 }
 
-                // Re-sort the existing entries in place if either changed.
+                // Re-sort the existing entries in place if sort changed.
                 if self.files_sort_by != prev_sort || self.files_sort_ascending != prev_asc {
                     sort_file_entries(
                         &mut self.files_entries,
@@ -1664,6 +1669,50 @@ impl BrowserPanel {
                 }
             }
 
+            // Group-by-date toggle — calendar icon, same visual pattern as
+            // the S/M/L pickers. When active, forces DateModified descending
+            // sort and renders section headers between file rows.
+            ui.add_space(4.0);
+            {
+                let is_active = self.group_by_date;
+                let (bg, border_color) = if is_active {
+                    (theme.accent, theme.accent)
+                } else {
+                    (theme.bg_raised, theme.border)
+                };
+                let text_color = if is_active {
+                    egui::Color32::from_rgb(30, 30, 34) // dark on amber
+                } else {
+                    theme.text_dim
+                };
+                let group_resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("G").size(11.0).strong().color(text_color),
+                    )
+                    .fill(bg)
+                    .stroke(egui::Stroke::new(0.5, border_color))
+                    .rounding(3.0)
+                    .min_size(egui::vec2(22.0, 20.0)),
+                )
+                .on_hover_text(if is_active {
+                    "Grouped by date \u{2014} click to show flat list"
+                } else {
+                    "Group by date"
+                });
+                if group_resp.clicked() {
+                    self.group_by_date = !self.group_by_date;
+                    if self.group_by_date {
+                        self.files_sort_by = FileSortBy::DateModified;
+                        self.files_sort_ascending = false;
+                        sort_file_entries(
+                            &mut self.files_entries,
+                            self.files_sort_by,
+                            self.files_sort_ascending,
+                        );
+                    }
+                }
+            }
+
             // Pin button — push to right side of toolbar
             if let Some((ref pinned, _)) = files_pinned {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2227,7 +2276,47 @@ impl BrowserPanel {
                 });
             }
 
+            // Pre-compute date group boundaries so we can render section
+            // headers inline between file rows without modifying `filtered`.
+            // The groups Vec is empty when grouping is off — zero overhead.
+            let date_groups = if self.group_by_date && !is_recents_view {
+                compute_date_groups(&filtered)
+            } else {
+                Vec::new()
+            };
+            let mut next_group_idx = 0;
+            let group_header_h = 24.0_f32;
+
             for (row_idx, entry) in filtered.iter().enumerate() {
+                // ── Date group header ──
+                // If this row is the first entry in a new date group,
+                // render a thin section header before the file row. The
+                // header is pure paint — not selectable, not draggable,
+                // invisible to keyboard navigation and index arithmetic.
+                if next_group_idx < date_groups.len() && date_groups[next_group_idx].0 == row_idx {
+                    let label = date_groups[next_group_idx].1.label();
+                    next_group_idx += 1;
+
+                    let (hdr_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), group_header_h),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(hdr_rect, 0.0, theme.bg_deep);
+                    ui.painter().text(
+                        egui::pos2(hdr_rect.left() + pad, hdr_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(10.0),
+                        theme.text_secondary,
+                    );
+                    // Subtle separator at the bottom of the header.
+                    ui.painter().hline(
+                        hdr_rect.min.x + pad..=hdr_rect.max.x - pad,
+                        hdr_rect.max.y,
+                        egui::Stroke::new(0.5, theme.border),
+                    );
+                }
+
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), row_h),
                     // click_and_drag sense captures click (single + double),
@@ -3336,6 +3425,73 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
+/// Date group labels for the "group by date" view. Each entry maps to
+/// a human-readable section header rendered between file rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DateGroup {
+    Today,
+    Yesterday,
+    ThisWeek,
+    ThisMonth,
+    Older,
+}
+
+impl DateGroup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Today => "Today",
+            Self::Yesterday => "Yesterday",
+            Self::ThisWeek => "This Week",
+            Self::ThisMonth => "This Month",
+            Self::Older => "Older",
+        }
+    }
+
+    /// Classify a file's mtime into a date group relative to `now`.
+    fn from_mtime(mtime: Option<std::time::SystemTime>, now: std::time::SystemTime) -> Self {
+        let Some(mt) = mtime else { return Self::Older };
+        let elapsed = now.duration_since(mt).unwrap_or_default();
+        let secs = elapsed.as_secs();
+        const DAY: u64 = 86_400;
+        if secs < DAY {
+            Self::Today
+        } else if secs < 2 * DAY {
+            Self::Yesterday
+        } else if secs < 7 * DAY {
+            Self::ThisWeek
+        } else if secs < 30 * DAY {
+            Self::ThisMonth
+        } else {
+            Self::Older
+        }
+    }
+}
+
+/// Compute date-group section boundaries for the given filtered list.
+/// Returns a list of `(first_row_index, DateGroup)` pairs. Only groups
+/// that actually contain files are included (empty groups are hidden).
+///
+/// The input MUST already be sorted by mtime descending (newest first)
+/// for the boundaries to make visual sense. The caller is responsible
+/// for enforcing that sort order when group mode is active.
+fn compute_date_groups(entries: &[&FileEntry]) -> Vec<(usize, DateGroup)> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let now = std::time::SystemTime::now();
+    let mut groups: Vec<(usize, DateGroup)> = Vec::new();
+    let mut current_group: Option<DateGroup> = None;
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let group = DateGroup::from_mtime(entry.mtime, now);
+        if current_group != Some(group) {
+            groups.push((idx, group));
+            current_group = Some(group);
+        }
+    }
+    groups
+}
+
 /// Check whether a path is a "system" location that users should never
 /// rename from inside an NLE. The check is intentionally conservative:
 /// better to err on the side of caution and have the user rename via
@@ -3681,6 +3837,107 @@ mod new_folder_tests {
         let _ = std::fs::remove_dir_all(&nonexistent);
         let err = create_folder_in(&nonexistent, "child").unwrap_err();
         assert!(err.starts_with("Cannot create folder"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod date_group_tests {
+    use super::{compute_date_groups, DateGroup, FileEntry};
+    use std::time::{Duration, SystemTime};
+
+    fn entry_with_mtime(name: &str, age_secs: u64) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            is_dir: false,
+            size: 100,
+            is_media: true,
+            mtime: Some(SystemTime::now() - Duration::from_secs(age_secs)),
+        }
+    }
+
+    fn entry_no_mtime(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            is_dir: false,
+            size: 100,
+            is_media: true,
+            mtime: None,
+        }
+    }
+
+    #[test]
+    fn empty_list_returns_no_groups() {
+        let entries: Vec<&FileEntry> = vec![];
+        let groups = compute_date_groups(&entries);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn single_today_file() {
+        let e = entry_with_mtime("a.mp4", 3600); // 1 hour ago
+        let entries = vec![&e];
+        let groups = compute_date_groups(&entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0], (0, DateGroup::Today));
+    }
+
+    #[test]
+    fn today_and_yesterday() {
+        let a = entry_with_mtime("a.mp4", 3600);     // 1 hour ago = Today
+        let b = entry_with_mtime("b.mp4", 100_000);   // ~27 hours ago = Yesterday
+        let entries = vec![&a, &b];
+        let groups = compute_date_groups(&entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], (0, DateGroup::Today));
+        assert_eq!(groups[1], (1, DateGroup::Yesterday));
+    }
+
+    #[test]
+    fn all_five_groups() {
+        let today = entry_with_mtime("today.mp4", 100);
+        let yesterday = entry_with_mtime("yesterday.mp4", 100_000);
+        let this_week = entry_with_mtime("week.mp4", 400_000);   // ~4.6 days
+        let this_month = entry_with_mtime("month.mp4", 1_500_000); // ~17 days
+        let older = entry_with_mtime("older.mp4", 5_000_000);     // ~58 days
+        let entries = vec![&today, &yesterday, &this_week, &this_month, &older];
+        let groups = compute_date_groups(&entries);
+        assert_eq!(groups.len(), 5);
+        assert_eq!(groups[0].1, DateGroup::Today);
+        assert_eq!(groups[1].1, DateGroup::Yesterday);
+        assert_eq!(groups[2].1, DateGroup::ThisWeek);
+        assert_eq!(groups[3].1, DateGroup::ThisMonth);
+        assert_eq!(groups[4].1, DateGroup::Older);
+    }
+
+    #[test]
+    fn multiple_files_in_same_group_produce_one_header() {
+        let a = entry_with_mtime("a.mp4", 100);
+        let b = entry_with_mtime("b.mp4", 200);
+        let c = entry_with_mtime("c.mp4", 300);
+        let entries = vec![&a, &b, &c]; // all Today
+        let groups = compute_date_groups(&entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0], (0, DateGroup::Today));
+    }
+
+    #[test]
+    fn none_mtime_goes_to_older() {
+        let e = entry_no_mtime("unknown.mp4");
+        let entries = vec![&e];
+        let groups = compute_date_groups(&entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, DateGroup::Older);
+    }
+
+    #[test]
+    fn group_labels_are_human_readable() {
+        assert_eq!(DateGroup::Today.label(), "Today");
+        assert_eq!(DateGroup::Yesterday.label(), "Yesterday");
+        assert_eq!(DateGroup::ThisWeek.label(), "This Week");
+        assert_eq!(DateGroup::ThisMonth.label(), "This Month");
+        assert_eq!(DateGroup::Older.label(), "Older");
     }
 }
 
