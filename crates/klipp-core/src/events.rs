@@ -36,6 +36,9 @@ pub struct ExportSettings {
     pub audio_bitrate_kbps: Option<u32>,
     pub video_bitrate_kbps: Option<u32>,
     pub rate_control: RateControl,
+    /// Burn subtitle/text track content into the video. Default true to preserve
+    /// existing behavior (subtitle clips have always been composited as overlays).
+    pub burn_in_subtitles: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

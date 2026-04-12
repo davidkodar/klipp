@@ -125,11 +125,11 @@ impl SequenceSnapshot {
     pub fn from_sequence(
         seq: &Sequence,
         media_pool: &MediaPool,
-        _settings: &ExportSettings,
+        settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
     ) -> Result<Self, RenderError> {
-        Self::from_sequence_with_all(seq, &[], media_pool, _settings, global_lut_path, use_marked_range)
+        Self::from_sequence_with_all(seq, &[], media_pool, settings, global_lut_path, use_marked_range)
     }
 
     /// Freeze the sequence, resolving compound clips (nested sequences) by
@@ -140,11 +140,12 @@ impl SequenceSnapshot {
         seq: &Sequence,
         all_sequences: &[Sequence],
         media_pool: &MediaPool,
-        _settings: &ExportSettings,
+        settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
     ) -> Result<Self, RenderError> {
         let fps = seq.fps.as_f64();
+        let burn_in = settings.burn_in_subtitles;
 
         let export_range = if use_marked_range {
             match (&seq.in_point, &seq.out_point) {
@@ -169,9 +170,16 @@ impl SequenceSnapshot {
         // (V1 = index 0, composited first).
         for track in seq.tracks.iter().rev() {
             match track.kind {
-                TrackKind::Video | TrackKind::Text | TrackKind::Subtitle => {
+                TrackKind::Video => {
                     video_tracks.push(snapshot_video_track(track, all_sequences, media_pool, fps, 0)?);
                 }
+                // Subtitle and Text tracks are composited as video overlays.
+                // When burn_in_subtitles is false, skip them so they don't render
+                // into the video (the user can still export sidecar SRT/VTT).
+                TrackKind::Text | TrackKind::Subtitle if burn_in => {
+                    video_tracks.push(snapshot_video_track(track, all_sequences, media_pool, fps, 0)?);
+                }
+                TrackKind::Text | TrackKind::Subtitle => {} // skip — no burn-in
                 TrackKind::Audio => {
                     audio_tracks.push(snapshot_audio_track(track, all_sequences, media_pool, fps, 0)?);
                 }

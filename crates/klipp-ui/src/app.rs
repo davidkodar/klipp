@@ -77,6 +77,7 @@ struct ExportDialogState {
     fps_override: u8, // 0=Sequence, 1=24, 2=25, 3=29.97, 4=30, 5=60
     rate_control: klipp_core::RateControl,
     video_bitrate_kbps: u32,
+    burn_in_subtitles: bool,
 }
 
 impl Default for ExportDialogState {
@@ -100,6 +101,7 @@ impl Default for ExportDialogState {
             fps_override: 0,
             rate_control: klipp_core::RateControl::default(),
             video_bitrate_kbps: 10000,
+            burn_in_subtitles: true,
         }
     }
 }
@@ -14325,6 +14327,13 @@ impl KlippApp {
                     self.export_dialog.range_mode = 0;
                 }
 
+                // Subtitles
+                ui.add_space(8.0);
+                ui.checkbox(
+                    &mut self.export_dialog.burn_in_subtitles,
+                    "Burn subtitles into video",
+                );
+
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -14344,6 +14353,7 @@ impl KlippApp {
                             audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                             video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                             rate_control: self.export_dialog.rate_control,
+                            burn_in_subtitles: self.export_dialog.burn_in_subtitles,
                         };
                         let use_marked = self.export_dialog.range_mode == 1;
                         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
@@ -14397,6 +14407,7 @@ impl KlippApp {
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
+                                    burn_in_subtitles: self.export_dialog.burn_in_subtitles,
                                 },
                             });
                         }
@@ -14443,6 +14454,7 @@ impl KlippApp {
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
+                                    burn_in_subtitles: self.export_dialog.burn_in_subtitles,
                                 },
                             });
                         }
