@@ -82,9 +82,6 @@ bytemuck = { version = "1.14", features = ["derive"] }
 # Note: requires system libOpenColorIO - bindings via C FFI
 # opencolorio = { version = "0.2" }  # Phase 2+
 
-# Whisper (speech to text / captions)
-whisper-rs = "0.11"
-
 # Filesystem / paths
 walkdir = "2"
 dirs = "5"
