@@ -680,19 +680,19 @@ impl ToolbarPanel {
                 }
             });
             ui.separator();
-            let safe_check = match state.viewer_overlay { crate::state::ViewerOverlay::SafeAreas => "\u{2713} ", _ => "  " };
+            let safe_check = if state.viewer_overlays.safe_areas { "\u{2713} " } else { "  " };
             if ui.button(format!("{safe_check}Safe Areas")).clicked() {
-                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::SafeAreas => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::SafeAreas };
+                state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;
                 ui.close_menu();
             }
-            let grid_check = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => "\u{2713} ", _ => "  " };
+            let grid_check = if state.viewer_overlays.grid { "\u{2713} " } else { "  " };
             if ui.button(format!("{grid_check}Grid Overlay")).clicked() {
-                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::Grid => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::Grid };
+                state.viewer_overlays.grid = !state.viewer_overlays.grid;
                 ui.close_menu();
             }
-            let checker_check = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => "\u{2713} ", _ => "  " };
+            let checker_check = if state.viewer_overlays.checkerboard { "\u{2713} " } else { "  " };
             if ui.button(format!("{checker_check}Transparency")).clicked() {
-                state.viewer_overlay = match state.viewer_overlay { crate::state::ViewerOverlay::Checkerboard => crate::state::ViewerOverlay::None, _ => crate::state::ViewerOverlay::Checkerboard };
+                state.viewer_overlays.checkerboard = !state.viewer_overlays.checkerboard;
                 ui.close_menu();
             }
             ui.separator();

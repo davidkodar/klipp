@@ -1585,65 +1585,62 @@ impl KlippApp {
             }
         }
 
-        // Apply viewer overlay (zebra / false color)
-        match self.state.viewer_overlay {
-            crate::state::ViewerOverlay::Zebra => {
-                let fc = self.state.frame_count as usize;
-                for y in 0..h {
-                    for x in 0..w {
-                        let idx = (y * w + x) * 4;
-                        let r = rgba_bytes[idx];
-                        let g = rgba_bytes[idx + 1];
-                        let b = rgba_bytes[idx + 2];
-                        // Check for clipping (near black or near white)
-                        let clipped = r > 235 || g > 235 || b > 235 || r < 16 || g < 16 || b < 16;
-                        if clipped {
-                            // Animated diagonal stripes
-                            let stripe = (x + y + fc * 2) % 8 < 4;
-                            if stripe {
-                                // Red/yellow stripe on clipped areas
-                                let is_over = r > 235 || g > 235 || b > 235;
-                                if is_over {
-                                    rgba_bytes[idx] = 255;
-                                    rgba_bytes[idx + 1] = 0;
-                                    rgba_bytes[idx + 2] = 0;
-                                } else {
-                                    rgba_bytes[idx] = 0;
-                                    rgba_bytes[idx + 1] = 0;
-                                    rgba_bytes[idx + 2] = 255;
-                                }
+        // Apply viewer overlays (multiple can be active simultaneously).
+        // Order: false color first (replaces image), then zebras on top (stripes
+        // over the color-mapped image give useful combined feedback).
+        if self.state.viewer_overlays.false_color {
+            for pixel in rgba_bytes.chunks_exact_mut(4) {
+                let luma = (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32) as u8;
+                // Standard broadcast false color palette
+                let (r, g, b) = match luma {
+                    0..=10    => (0x40, 0x00, 0x80), // deep purple — black crush
+                    11..=20   => (0x80, 0x00, 0xc0), // purple — very underexposed
+                    21..=35   => (0x00, 0x00, 0xff), // blue — underexposed
+                    36..=55   => (0x00, 0x80, 0xc0), // cyan — dark
+                    56..=75   => (0x00, 0x90, 0x40), // dark green — below mid
+                    76..=95   => (0x00, 0xb0, 0x00), // green — proper skin shadow
+                    96..=115  => (0x40, 0xc0, 0x00), // lime — mid grey
+                    116..=135 => (0x80, 0xc0, 0x00), // yellow-green — proper exposure
+                    136..=165 => (0xc0, 0xc0, 0x00), // yellow — bright
+                    166..=195 => (0xe0, 0x80, 0x00), // orange — highlight
+                    196..=220 => (0xff, 0x40, 0x00), // red-orange — hot
+                    221..=240 => (0xff, 0x00, 0x00), // red — near clip
+                    241..=255 => (0xff, 0x40, 0x80), // pink-white — clipped
+                };
+                pixel[0] = r;
+                pixel[1] = g;
+                pixel[2] = b;
+            }
+        }
+        if self.state.viewer_overlays.zebras {
+            let fc = self.state.frame_count as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * 4;
+                    let r = rgba_bytes[idx];
+                    let g = rgba_bytes[idx + 1];
+                    let b = rgba_bytes[idx + 2];
+                    // Check for clipping (near black or near white)
+                    let clipped = r > 235 || g > 235 || b > 235 || r < 16 || g < 16 || b < 16;
+                    if clipped {
+                        // Animated diagonal stripes
+                        let stripe = (x + y + fc * 2) % 8 < 4;
+                        if stripe {
+                            let is_over = r > 235 || g > 235 || b > 235;
+                            if is_over {
+                                rgba_bytes[idx] = 255;
+                                rgba_bytes[idx + 1] = 0;
+                                rgba_bytes[idx + 2] = 0;
+                            } else {
+                                rgba_bytes[idx] = 0;
+                                rgba_bytes[idx + 1] = 0;
+                                rgba_bytes[idx + 2] = 255;
                             }
                         }
                     }
                 }
-                self.state.frame_count = self.state.frame_count.wrapping_add(1);
             }
-            crate::state::ViewerOverlay::FalseColor => {
-                for pixel in rgba_bytes.chunks_exact_mut(4) {
-                    let luma = (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32) as u8;
-                    // Standard broadcast false color palette
-                    let (r, g, b) = match luma {
-                        0..=10    => (0x40, 0x00, 0x80), // deep purple — black crush
-                        11..=20   => (0x80, 0x00, 0xc0), // purple — very underexposed
-                        21..=35   => (0x00, 0x00, 0xff), // blue — underexposed
-                        36..=55   => (0x00, 0x80, 0xc0), // cyan — dark
-                        56..=75   => (0x00, 0x90, 0x40), // dark green — below mid
-                        76..=95   => (0x00, 0xb0, 0x00), // green — proper skin shadow
-                        96..=115  => (0x40, 0xc0, 0x00), // lime — mid grey
-                        116..=135 => (0x80, 0xc0, 0x00), // yellow-green — proper exposure
-                        136..=165 => (0xc0, 0xc0, 0x00), // yellow — bright
-                        166..=195 => (0xe0, 0x80, 0x00), // orange — highlight
-                        196..=220 => (0xff, 0x40, 0x00), // red-orange — hot
-                        221..=240 => (0xff, 0x00, 0x00), // red — near clip
-                        241..=255 => (0xff, 0x40, 0x80), // pink-white — clipped
-                    };
-                    pixel[0] = r;
-                    pixel[1] = g;
-                    pixel[2] = b;
-                }
-            }
-            crate::state::ViewerOverlay::None | crate::state::ViewerOverlay::SafeAreas
-            | crate::state::ViewerOverlay::Grid | crate::state::ViewerOverlay::Checkerboard => {}
+            self.state.frame_count = self.state.frame_count.wrapping_add(1);
         }
 
         let t_convert = std::time::Instant::now();
@@ -11808,21 +11805,13 @@ impl KlippApp {
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::Z)
             {
-                use crate::state::ViewerOverlay;
-                self.state.viewer_overlay = match self.state.viewer_overlay {
-                    ViewerOverlay::Zebra => ViewerOverlay::None,
-                    _ => ViewerOverlay::Zebra,
-                };
+                self.state.viewer_overlays.zebras = !self.state.viewer_overlays.zebras;
             }
             // Alt+F — toggle false color overlay
             if !i.modifiers.ctrl && i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::F)
             {
-                use crate::state::ViewerOverlay;
-                self.state.viewer_overlay = match self.state.viewer_overlay {
-                    ViewerOverlay::FalseColor => ViewerOverlay::None,
-                    _ => ViewerOverlay::FalseColor,
-                };
+                self.state.viewer_overlays.false_color = !self.state.viewer_overlays.false_color;
             }
             // V key (bare) — toggle scopes
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift

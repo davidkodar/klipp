@@ -574,7 +574,7 @@ pub struct AppState {
     pub grade_still_compare: bool,
 
     // Viewer overlay (zebra / false color)
-    pub viewer_overlay: ViewerOverlay,
+    pub viewer_overlays: ViewerOverlays,
     pub frame_count: u64, // for zebra animation
 
     // OFX plugins
@@ -849,15 +849,14 @@ pub enum EyedropperMode {
     Qualifier,
 }
 
+/// Independent viewer overlay toggles — multiple can be active simultaneously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewerOverlay {
-    #[default]
-    None,
-    Zebra,
-    FalseColor,
-    SafeAreas,
-    Grid,
-    Checkerboard,
+pub struct ViewerOverlays {
+    pub zebras: bool,
+    pub false_color: bool,
+    pub safe_areas: bool,
+    pub grid: bool,
+    pub checkerboard: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1535,7 +1534,7 @@ impl Default for AppState {
             grade_stills: Vec::new(),
             active_grade_still: None,
             grade_still_compare: false,
-            viewer_overlay: ViewerOverlay::None,
+            viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),

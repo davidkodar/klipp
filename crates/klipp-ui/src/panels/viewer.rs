@@ -536,31 +536,31 @@ impl ViewerPanel {
         state: &AppState,
         frame: &ViewerFrameState,
     ) {
-        use crate::state::ViewerOverlay;
         let image_rect = frame.image_rect;
-        let overlay_label = match state.viewer_overlay {
-            ViewerOverlay::Zebra => Some("ZEBRA"),
-            ViewerOverlay::FalseColor => Some("FALSE COLOR"),
-            ViewerOverlay::SafeAreas => Some("SAFE AREAS"),
-            ViewerOverlay::Grid => Some("GRID"),
-            ViewerOverlay::Checkerboard => None, // no badge for checkerboard
-            ViewerOverlay::None => None,
-        };
-        if let Some(label) = overlay_label {
+        // Collect labels for all active overlays (multiple can be active)
+        let mut labels: Vec<&str> = Vec::new();
+        let ov = &state.viewer_overlays;
+        if ov.zebras { labels.push("ZEBRA"); }
+        if ov.false_color { labels.push("FALSE COLOR"); }
+        if ov.safe_areas { labels.push("SAFE AREAS"); }
+        if ov.grid { labels.push("GRID"); }
+        // no badge for checkerboard
+        if !labels.is_empty() {
+            let label = labels.join(" + ");
             let badge_pos = egui::pos2(image_rect.max.x - 8.0, image_rect.min.y + 12.0);
             let badge_color = egui::Color32::from_rgb(0xff, 0x40, 0x40);
             // Shadow
             painter.text(
                 egui::pos2(badge_pos.x + 0.5, badge_pos.y + 0.5),
                 egui::Align2::RIGHT_CENTER,
-                label,
+                &label,
                 egui::FontId::proportional(10.0),
                 egui::Color32::from_rgb(0x00, 0x00, 0x00),
             );
             painter.text(
                 badge_pos,
                 egui::Align2::RIGHT_CENTER,
-                label,
+                &label,
                 egui::FontId::proportional(10.0),
                 badge_color,
             );
@@ -1164,17 +1164,17 @@ impl ViewerPanel {
         self.draw_overlay_badges(ui.painter(), state, &frame);
 
         // Safe area overlay: title safe (80%) and action safe (90%)
-        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::SafeAreas) {
+        if state.viewer_overlays.safe_areas {
             self.draw_safe_area_overlay(ui.painter(), state, &frame);
         }
 
         // Grid overlay: rule of thirds + center crosshair
-        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Grid) {
+        if state.viewer_overlays.grid {
             self.draw_grid_overlay(ui.painter(), state, &frame);
         }
 
         // Checkerboard transparency overlay (drawn behind video, replaces black background)
-        if matches!(state.viewer_overlay, crate::state::ViewerOverlay::Checkerboard) {
+        if state.viewer_overlays.checkerboard {
             self.draw_checkerboard_overlay(ui.painter(), state, &frame);
         }
 
