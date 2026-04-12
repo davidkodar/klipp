@@ -880,6 +880,19 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(
             ui,
+            "Keep filmstrip visible",
+            "Show filmstrip tiles even after cursor leaves (popup still requires hover)",
+            |ui| {
+                let mut val = prefs.file_browser.filmstrip_persist;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.file_browser.filmstrip_persist = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
             "Group files by date",
             "Show Today / Yesterday / This Week / This Month / Older headers",
             |ui| {

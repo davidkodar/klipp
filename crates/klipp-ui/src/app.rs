@@ -353,6 +353,7 @@ impl KlippApp {
         app.state.mute_reminder_interval_secs = app.prefs.audio_hardware.mute_reminder_interval_secs;
         app.state.filmstrip_hover_enabled = app.prefs.file_browser.filmstrip_hover;
         app.state.filmstrip_quality = app.prefs.file_browser.filmstrip_quality;
+        app.state.filmstrip_persist = app.prefs.file_browser.filmstrip_persist;
         app.state.file_browser_auto_refresh = app.prefs.file_browser.auto_refresh;
         app.state.recent_files_snapshot = app.prefs.file_browser.recent_files.clone();
         app.state.loop_playback_enabled = app.prefs.playback.loop_playback;
@@ -14985,6 +14986,9 @@ impl KlippApp {
             }
             if self.state.filmstrip_quality != self.prefs.file_browser.filmstrip_quality {
                 self.state.filmstrip_quality = self.prefs.file_browser.filmstrip_quality;
+            }
+            if self.state.filmstrip_persist != self.prefs.file_browser.filmstrip_persist {
+                self.state.filmstrip_persist = self.prefs.file_browser.filmstrip_persist;
             }
             if self.state.file_browser_auto_refresh != self.prefs.file_browser.auto_refresh {
                 self.state.file_browser_auto_refresh = self.prefs.file_browser.auto_refresh;

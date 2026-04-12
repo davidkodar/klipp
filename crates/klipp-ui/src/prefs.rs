@@ -325,6 +325,11 @@ pub struct FileBrowserPrefs {
     /// preview popup but slower initial generation on first hover.
     #[serde(default)]
     pub filmstrip_quality: FilmstripQuality,
+    /// Keep filmstrip tiles visible after the cursor leaves (instead of
+    /// reverting to the poster thumbnail). The large preview popup
+    /// always disappears on leave regardless of this setting.
+    #[serde(default)]
+    pub filmstrip_persist: bool,
     /// Which columns are visible in the file browser list view.
     /// Name is always shown and not included here.
     #[serde(default = "default_visible_columns")]
@@ -390,6 +395,7 @@ impl Default for FileBrowserPrefs {
             visible_columns: default_visible_columns(),
             filmstrip_hover: true,
             filmstrip_quality: FilmstripQuality::default(),
+            filmstrip_persist: false,
             auto_refresh: true,
             group_by_date: false,
             recent_files: Vec::new(),

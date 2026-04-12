@@ -2351,12 +2351,11 @@ impl BrowserPanel {
         }
 
         // Reserve vertical space for the status bar at the bottom of the panel.
-        // The scroll area is capped to (available - status_h) and pinned to its
-        // max size via auto_shrink([false, false]), so the status bar always
-        // sits at the bottom regardless of how few/many file rows there are.
         let status_h = 22.0_f32;
         let scroll_h = (ui.available_height() - status_h).max(0.0);
 
+        // When the tree sidebar is active, wrap the file list in a child
+        // UI offset to the right so tree and list sit side-by-side.
         egui::ScrollArea::vertical()
             .id_salt("files_scroll")
             .max_height(scroll_h)
@@ -2597,13 +2596,18 @@ impl BrowserPanel {
                     // tiles across the thumb_box. The cursor X highlights
                     // the active tile. Falls back to single skim frame or
                     // poster thumbnail while the filmstrip is loading.
-                    let filmstrip = if state.filmstrip_hover_enabled {
+                    let cursor_in_box = ui.input(|i| i.pointer.hover_pos())
+                        .filter(|p| thumb_box.contains(*p));
+                    // Filmstrip shows while hovering, or always if
+                    // filmstrip_persist is on. The large preview popup
+                    // always requires hover regardless.
+                    let filmstrip = if state.filmstrip_hover_enabled
+                        && (cursor_in_box.is_some() || state.filmstrip_persist)
+                    {
                         self.file_filmstrip_textures.get(&entry.path)
                     } else {
                         None
                     };
-                    let cursor_in_box = ui.input(|i| i.pointer.hover_pos())
-                        .filter(|p| thumb_box.contains(*p));
 
                     if let Some(tiles) = filmstrip.filter(|t| !t.is_empty()) {
                         let n = tiles.len() as f32;

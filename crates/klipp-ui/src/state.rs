@@ -419,6 +419,8 @@ pub struct AppState {
     pub filmstrip_hover_enabled: bool,
     /// Decode quality for filmstrip hover frames.
     pub filmstrip_quality: crate::prefs::FilmstripQuality,
+    /// Keep filmstrip tiles visible after cursor leaves.
+    pub filmstrip_persist: bool,
     /// Whether the file browser auto-refreshes on external filesystem
     /// changes. Mirrored from `prefs.file_browser.auto_refresh`.
     pub file_browser_auto_refresh: bool,
@@ -1457,6 +1459,7 @@ impl Default for AppState {
             show_recent_files: true,
             filmstrip_hover_enabled: true,
             filmstrip_quality: Default::default(),
+            filmstrip_persist: false,
             file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
