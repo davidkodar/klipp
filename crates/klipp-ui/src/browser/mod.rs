@@ -378,6 +378,45 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
+/// Columns that can be shown in the file browser list view.
+/// Name is always visible and not toggleable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ColumnId {
+    Size,
+    Date,
+    Type,
+    Duration,
+    Rating,
+}
+
+impl ColumnId {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Size => "Size",
+            Self::Date => "Date",
+            Self::Type => "Type",
+            Self::Duration => "Duration",
+            Self::Rating => "Rating",
+        }
+    }
+
+    /// Fixed width in pixels for each column.
+    pub fn width(self) -> f32 {
+        match self {
+            Self::Size => 60.0,
+            Self::Date => 80.0,
+            Self::Type => 50.0,
+            Self::Duration => 55.0,
+            Self::Rating => 50.0,
+        }
+    }
+
+    /// All available column IDs in display order (left to right after Name).
+    pub fn all() -> &'static [ColumnId] {
+        &[Self::Size, Self::Date, Self::Type, Self::Duration, Self::Rating]
+    }
+}
+
 /// Quick type filter for the Files tab. Persisted in FileBrowserPrefs.
 /// Directories are always shown regardless of filter so the user can navigate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -562,6 +601,8 @@ pub struct BrowserPanel {
     /// DateModified descending and section headers (Today / Yesterday /
     /// This Week / This Month / Older) are rendered between rows.
     pub group_by_date: bool,
+    /// Which columns are visible (besides Name which is always shown).
+    pub visible_columns: Vec<ColumnId>,
     /// Files-tab quick type filter (All / Video / Audio / Images).
     pub files_type_filter: FileTypeFilter,
     /// User-pinned favorite folders, rendered after the XDG bookmarks bar.
@@ -713,6 +754,7 @@ impl Default for BrowserPanel {
             files_sort_by: FileSortBy::default(),
             files_sort_ascending: true,
             group_by_date: false,
+            visible_columns: vec![ColumnId::Size, ColumnId::Date],
             files_type_filter: FileTypeFilter::default(),
             pinned_folders: Vec::new(),
             system_bookmarks: read_system_bookmarks(),
@@ -2860,17 +2902,27 @@ impl BrowserPanel {
                     icon.image(glyph_sz).tint(icon_color).paint_at(ui, icon_rect);
                 }
 
-                // Name + size are positioned to the right of the thumb_box.
-                // If this row is being renamed, show a TextEdit instead of
-                // the static label. The entry path is compared against
-                // `renaming_file` to determine which row is in edit mode.
+                // ── Name + metadata rendering ──
+                // Name is on the first line; metadata (enabled columns)
+                // is on a second line below in a smaller, dimmer font.
+                // For Small rows (32px) there's only room for one line,
+                // so metadata is skipped. Medium (56px) and Large (88px)
+                // have enough vertical space for both lines.
                 let is_renaming = self.renaming_file.as_ref()
                     .map(|(p, _)| p == &entry.path)
                     .unwrap_or(false);
                 let name_x = thumb_box.max.x + 8.0;
+                let name_max_w = (rect.max.x - name_x - pad).max(20.0);
+                let has_metadata_line = row_h >= 48.0 && !self.visible_columns.is_empty();
+
+                // Vertical positioning: if two lines, shift name up.
+                let name_y = if has_metadata_line && !is_renaming {
+                    rect.center().y - name_font_size * 0.55
+                } else {
+                    rect.center().y
+                };
 
                 if is_renaming {
-                    // Pre-read Enter/Escape before TextEdit consumes them.
                     let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
 
@@ -2901,7 +2953,6 @@ impl BrowserPanel {
                         self.renaming_file = None;
                     }
                 } else {
-                    // Normal static filename label.
                     let name_color = if is_selected {
                         theme.text_accent
                     } else if entry.is_dir {
@@ -2911,39 +2962,81 @@ impl BrowserPanel {
                     } else {
                         theme.text_dim
                     };
+                    // Truncate name to available width (UTF-8 safe).
+                    let char_w = name_font_size * 0.55;
+                    let max_chars = (name_max_w / char_w) as usize;
+                    let truncated = if entry.name.chars().count() > max_chars && max_chars > 3 {
+                        let mut s: String = entry.name.chars().take(max_chars - 1).collect();
+                        s.push('\u{2026}');
+                        s
+                    } else {
+                        entry.name.clone()
+                    };
                     ui.painter().text(
-                        egui::pos2(name_x, rect.center().y),
+                        egui::pos2(name_x, name_y),
                         egui::Align2::LEFT_CENTER,
-                        &entry.name,
+                        &truncated,
                         egui::FontId::proportional(name_font_size),
                         name_color,
                     );
-                }
 
-                // Star rating (for rated files) — small amber stars right-aligned
-                // before the file size. Only shown if rating > 0.
-                if entry.rating > 0 && !entry.is_dir {
-                    let stars = "\u{2605}".repeat(entry.rating as usize);
-                    // Position to the left of the file size area.
-                    ui.painter().text(
-                        egui::pos2(rect.max.x - 80.0, rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        &stars,
-                        egui::FontId::proportional(9.0),
-                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20), // amber accent
-                    );
-                }
-
-                // Size (for files)
-                if !entry.is_dir && entry.size > 0 {
-                    let size_str = format_file_size(entry.size);
-                    ui.painter().text(
-                        egui::pos2(rect.max.x - pad, rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        &size_str,
-                        egui::FontId::proportional(9.0),
-                        theme.text_dim,
-                    );
+                    // Metadata line (second row, below name).
+                    // Builds a "1.2 MB · Apr 12 · MP4 · ★★★" string from
+                    // enabled columns. Only renders on Medium/Large rows.
+                    if has_metadata_line {
+                        let mut parts: Vec<String> = Vec::new();
+                        for col in &self.visible_columns {
+                            let text = match col {
+                                ColumnId::Size => {
+                                    if !entry.is_dir && entry.size > 0 {
+                                        format_file_size(entry.size)
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                                ColumnId::Date => {
+                                    entry.mtime.map(format_mtime_short).unwrap_or_default()
+                                }
+                                ColumnId::Type => {
+                                    if entry.is_dir {
+                                        "Folder".to_string()
+                                    } else {
+                                        entry.path.extension()
+                                            .map(|e| e.to_string_lossy().to_uppercase())
+                                            .unwrap_or_default()
+                                    }
+                                }
+                                ColumnId::Duration => {
+                                    self.file_durations.get(&entry.path).map(|dur| {
+                                        let m = *dur as u32 / 60;
+                                        let s = *dur as u32 % 60;
+                                        format!("{m}:{s:02}")
+                                    }).unwrap_or_default()
+                                }
+                                ColumnId::Rating => {
+                                    if entry.rating > 0 && !entry.is_dir {
+                                        "\u{2605}".repeat(entry.rating as usize)
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                            };
+                            if !text.is_empty() {
+                                parts.push(text);
+                            }
+                        }
+                        if !parts.is_empty() {
+                            let meta_text = parts.join("  \u{00b7}  ");
+                            let meta_y = name_y + name_font_size + 2.0;
+                            ui.painter().text(
+                                egui::pos2(name_x, meta_y),
+                                egui::Align2::LEFT_CENTER,
+                                &meta_text,
+                                egui::FontId::proportional(9.0),
+                                theme.text_dim,
+                            );
+                        }
+                    }
                 }
 
                 // Separator
@@ -3777,6 +3870,33 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+/// Format a SystemTime as a short date string for the Date column.
+/// Shows "HH:MM" for today, "Mon DD" for this year, "YYYY-MM-DD" for older.
+fn format_mtime_short(mtime: std::time::SystemTime) -> String {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
+    const HOUR: u64 = 3600;
+    const DAY: u64 = 86_400;
+
+    if secs < DAY {
+        // Today — show time
+        let total_secs_of_day = secs; // approximate
+        let h = 23 - (total_secs_of_day / HOUR).min(23);
+        let m = 59 - ((total_secs_of_day % HOUR) / 60).min(59);
+        format!("{h:02}:{m:02}")
+    } else if secs < 180 * DAY {
+        // This year — show month + day
+        let days_ago = secs / DAY;
+        format!("{days_ago}d ago")
+    } else {
+        // Older — show days ago
+        let days_ago = secs / DAY;
+        format!("{days_ago}d ago")
     }
 }
 

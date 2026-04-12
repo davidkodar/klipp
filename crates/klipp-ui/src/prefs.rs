@@ -325,6 +325,10 @@ pub struct FileBrowserPrefs {
     /// preview popup but slower initial generation on first hover.
     #[serde(default)]
     pub filmstrip_quality: FilmstripQuality,
+    /// Which columns are visible in the file browser list view.
+    /// Name is always shown and not included here.
+    #[serde(default = "default_visible_columns")]
+    pub visible_columns: Vec<crate::browser::ColumnId>,
     #[serde(default)]
     pub group_by_date: bool,
     /// Most recently imported file paths, most-recent-first. Updated
@@ -383,6 +387,7 @@ impl Default for FileBrowserPrefs {
             file_browser_video_skim: true,
             file_browser_audio_skim: true,
             show_recent_files: true,
+            visible_columns: default_visible_columns(),
             filmstrip_hover: true,
             filmstrip_quality: FilmstripQuality::default(),
             auto_refresh: true,
@@ -907,6 +912,10 @@ pub enum MonitoringMode {
 fn default_sample_rate() -> u32 { 48000 }
 fn default_buffer_size() -> u32 { 256 }
 fn default_mute_reminder_interval() -> u32 { 15 }
+fn default_visible_columns() -> Vec<crate::browser::ColumnId> {
+    use crate::browser::ColumnId;
+    vec![ColumnId::Size, ColumnId::Date]
+}
 impl Default for AudioHardwarePrefs {
     fn default() -> Self {
         Self {

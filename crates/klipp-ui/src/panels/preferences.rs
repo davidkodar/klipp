@@ -917,6 +917,31 @@ impl PreferencesPanel {
             },
         );
 
+        // ── COLUMNS section ──
+        Self::section_header(ui, "COLUMNS");
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Visible columns",
+            "Right-click the column header in the file browser to toggle",
+            |ui| {
+                use crate::browser::ColumnId;
+                for col in ColumnId::all() {
+                    let mut vis = prefs.file_browser.visible_columns.contains(col);
+                    if ui.checkbox(&mut vis, col.label()).changed() {
+                        if vis {
+                            if !prefs.file_browser.visible_columns.contains(col) {
+                                prefs.file_browser.visible_columns.push(*col);
+                            }
+                        } else {
+                            prefs.file_browser.visible_columns.retain(|c| c != col);
+                        }
+                        *dirty = true;
+                    }
+                }
+            },
+        );
+
         // ── DISPLAY section ──
         Self::section_header(ui, "DISPLAY");
 

@@ -420,6 +420,7 @@ impl KlippApp {
         app.browser.files_sort_by = app.prefs.file_browser.file_sort_by;
         app.browser.files_sort_ascending = app.prefs.file_browser.file_sort_ascending;
         app.browser.group_by_date = app.prefs.file_browser.group_by_date;
+        app.browser.visible_columns = app.prefs.file_browser.visible_columns.clone();
         app.browser.files_type_filter = app.prefs.file_browser.file_type_filter;
         app.browser.pinned_folders = app.prefs.file_browser.pinned_folders.clone();
         // Sync loop state to engine (engine defaults to loop_enabled=false)
@@ -15593,6 +15594,9 @@ impl KlippApp {
         if self.browser.group_by_date != self.prefs.file_browser.group_by_date {
             self.browser.group_by_date = self.prefs.file_browser.group_by_date;
         }
+        if self.browser.visible_columns != self.prefs.file_browser.visible_columns {
+            self.browser.visible_columns = self.prefs.file_browser.visible_columns.clone();
+        }
         if self.browser.files_type_filter != self.prefs.file_browser.file_type_filter {
             self.browser.files_type_filter = self.prefs.file_browser.file_type_filter;
         }
@@ -15637,6 +15641,10 @@ impl KlippApp {
             }
             if self.browser.group_by_date != self.prefs.file_browser.group_by_date {
                 self.prefs.file_browser.group_by_date = self.browser.group_by_date;
+                let _ = self.prefs.save();
+            }
+            if self.browser.visible_columns != self.prefs.file_browser.visible_columns {
+                self.prefs.file_browser.visible_columns = self.browser.visible_columns.clone();
                 let _ = self.prefs.save();
             }
             if self.browser.files_type_filter != self.prefs.file_browser.file_type_filter {
