@@ -2504,6 +2504,9 @@ impl PreferencesPanel {
             if ui.add(egui::DragValue::new(&mut v).range(128..=255).speed(1.0)).changed() {
                 prefs.viewer.zebra_high_threshold = v; *dirty = true;
             }
+            // Show approximate IRE equivalent (BT.709 legal range: 16=0 IRE, 235=100 IRE)
+            let ire = (v as f32 - 16.0) / 2.19;
+            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).size(11.0));
         });
         ui.horizontal(|ui| {
             ui.label("Low threshold (underexposure):");
@@ -2511,6 +2514,8 @@ impl PreferencesPanel {
             if ui.add(egui::DragValue::new(&mut v).range(0..=128).speed(1.0)).changed() {
                 prefs.viewer.zebra_low_threshold = v; *dirty = true;
             }
+            let ire = (v as f32 - 16.0) / 2.19;
+            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).size(11.0));
         });
 
         ui.add_space(12.0);

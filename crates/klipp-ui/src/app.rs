@@ -1635,14 +1635,18 @@ impl KlippApp {
                     let is_over = r > hi || g > hi || b > hi;
                     let is_under = r < lo || g < lo || b < lo;
                     if is_over || is_under {
-                        // Animated diagonal stripes
-                        let stripe = (x + y + fc * 2) % 8 < 4;
-                        if stripe {
-                            if is_over {
+                        // Animated diagonal stripes — different angles so high/low are
+                        // visually distinct: high = 45° (x+y), low = 135° (x-y)
+                        if is_over {
+                            let stripe = (x + y + fc * 2) % 8 < 4;
+                            if stripe {
                                 rgba_bytes[idx] = 255;
                                 rgba_bytes[idx + 1] = 0;
                                 rgba_bytes[idx + 2] = 0;
-                            } else {
+                            }
+                        } else {
+                            let stripe = (x.wrapping_add(h).wrapping_sub(y) + fc * 2) % 8 < 4;
+                            if stripe {
                                 rgba_bytes[idx] = 0;
                                 rgba_bytes[idx + 1] = 0;
                                 rgba_bytes[idx + 2] = 255;
