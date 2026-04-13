@@ -707,7 +707,7 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             let checker_check = if state.viewer_overlays.checkerboard { "\u{2713} " } else { "  " };
-            if ui.button(format!("{checker_check}Transparency")).clicked() {
+            if ui.button(format!("{checker_check}Checkerboard")).clicked() {
                 state.viewer_overlays.checkerboard = !state.viewer_overlays.checkerboard;
                 ui.close_menu();
             }
