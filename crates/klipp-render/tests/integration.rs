@@ -131,6 +131,7 @@ fn export_job_empty_sequence() {
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 5,
     };
 
@@ -180,6 +181,7 @@ fn export_job_cancellation_immediate() {
         progress,
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 100,
     };
 
@@ -223,6 +225,7 @@ fn export_job_cancellation_midway() {
         progress: progress_clone,
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 1000,
     };
 
@@ -288,6 +291,7 @@ fn export_job_progress_advances() {
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: total,
     };
 
@@ -375,6 +379,7 @@ fn export_real_media_h264() {
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 30,
     };
 
@@ -471,6 +476,7 @@ fn export_real_media_with_color_grade() {
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 15,
     };
 
@@ -555,6 +561,7 @@ fn export_with_title_and_gap() {
         progress: progress.clone(),
         hw_info: Arc::new(std::sync::Mutex::new(String::new())),
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 48,
     };
 

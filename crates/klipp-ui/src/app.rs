@@ -12612,6 +12612,31 @@ fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
     Some(lufs)
 }
 
+/// Build ExportSettings from the current dialog state. Single source of truth
+/// for all export buttons (Add to Queue, Export, Overwrite) — eliminates the
+/// bug where Export/Overwrite previously hardcoded resolution/fps to None.
+fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
+    ExportSettings {
+        output_path: PathBuf::from(&dialog.output_path),
+        format: dialog.format,
+        video_codec: dialog.video_codec,
+        resolution: dialog_resolution(dialog),
+        fps: dialog_fps(dialog),
+        crf: dialog.crf,
+        preset: dialog.preset,
+        audio_codec: dialog.audio_codec,
+        audio_bitrate_kbps: Some(dialog.audio_bitrate),
+        video_bitrate_kbps: if dialog.rate_control != klipp_core::RateControl::Crf {
+            Some(dialog.video_bitrate_kbps)
+        } else {
+            None
+        },
+        rate_control: dialog.rate_control,
+        burn_in_subtitles: dialog.burn_in_subtitles,
+        target_lufs: dialog_target_lufs(dialog),
+    }
+}
+
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     dialog.video_codec = settings.video_codec;
@@ -12619,10 +12644,29 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
     dialog.audio_codec = settings.audio_codec;
     dialog.preset = settings.preset;
     dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
+    dialog.rate_control = settings.rate_control;
+    dialog.video_bitrate_kbps = settings.video_bitrate_kbps.unwrap_or(10000);
+    // Map resolution preset to override enum
+    dialog.resolution_override = match settings.resolution {
+        Some(klipp_core::Resolution { width: 1280, height: 720 }) => 1,
+        Some(klipp_core::Resolution { width: 1920, height: 1080 }) => 2,
+        Some(klipp_core::Resolution { width: 3840, height: 2160 }) => 3,
+        Some(r) => { dialog.custom_width = r.width; dialog.custom_height = r.height; 4 }
+        None => 0,
+    };
+    // Map fps preset to override enum
+    dialog.fps_override = match settings.fps {
+        Some(f) if (f.as_f64() - 24.0).abs() < 0.01 => 1,
+        Some(f) if (f.as_f64() - 25.0).abs() < 0.01 => 2,
+        Some(f) if (f.as_f64() - 29.97).abs() < 0.02 => 3,
+        Some(f) if (f.as_f64() - 30.0).abs() < 0.01 => 4,
+        Some(f) if (f.as_f64() - 60.0).abs() < 0.01 => 5,
+        Some(_) => 0, // Unknown fps — fall back to Sequence
+        None => 0,
+    };
     match settings.target_lufs {
         Some(lufs) => {
             dialog.normalize_loudness = true;
-            // Map known presets, otherwise Custom
             dialog.loudness_preset = match lufs as i32 {
                 -14 => 0,
                 -16 => 1,
@@ -14259,6 +14303,19 @@ impl KlippApp {
                             }
                         }
 
+                        // Encoder speed (only for codecs that support presets)
+                        if self.export_dialog.video_codec.supports_preset() {
+                            ui.label("Encoder speed:");
+                            egui::ComboBox::from_id_salt("export_enc_speed")
+                                .selected_text(self.export_dialog.preset.label())
+                                .show_ui(ui, |ui| {
+                                    for p in klipp_core::EncoderPreset::all() {
+                                        ui.selectable_value(&mut self.export_dialog.preset, *p, p.label());
+                                    }
+                                });
+                            ui.end_row();
+                        }
+
                         ui.label("Audio codec:");
                         egui::ComboBox::from_id_salt("export_acodec")
                             .selected_text(self.export_dialog.audio_codec.label())
@@ -14397,21 +14454,7 @@ impl KlippApp {
                     }
                     if ui.button("Add to Queue").clicked() {
                         let path = PathBuf::from(&self.export_dialog.output_path);
-                        let settings = ExportSettings {
-                            output_path: path.clone(),
-                            format: self.export_dialog.format,
-                            video_codec: self.export_dialog.video_codec,
-                            resolution: dialog_resolution(&self.export_dialog),
-                            fps: dialog_fps(&self.export_dialog),
-                            crf: self.export_dialog.crf,
-                            preset: self.export_dialog.preset,
-                            audio_codec: self.export_dialog.audio_codec,
-                            audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
-                            video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
-                            rate_control: self.export_dialog.rate_control,
-                            burn_in_subtitles: self.export_dialog.burn_in_subtitles,
-                            target_lufs: dialog_target_lufs(&self.export_dialog),
-                        };
+                        let settings = build_export_settings(&self.export_dialog);
                         let use_marked = self.export_dialog.range_mode == 1;
                         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                             &self.state.sequences[self.state.active_sequence_idx],
@@ -14452,21 +14495,7 @@ impl KlippApp {
                             self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                             self.prefs_dirty = true;
                             cmds.push(AppCommand::ExportSequence {
-                                settings: ExportSettings {
-                                    output_path: path,
-                                    format: self.export_dialog.format,
-                                    video_codec: self.export_dialog.video_codec,
-                                    resolution: None,
-                                    fps: None,
-                                    crf: self.export_dialog.crf,
-                                    preset: self.export_dialog.preset,
-                                    audio_codec: self.export_dialog.audio_codec,
-                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
-                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
-                                    rate_control: self.export_dialog.rate_control,
-                                    burn_in_subtitles: self.export_dialog.burn_in_subtitles,
-                                    target_lufs: dialog_target_lufs(&self.export_dialog),
-                                },
+                                settings: build_export_settings(&self.export_dialog),
                             });
                         }
                     }
@@ -14500,21 +14529,7 @@ impl KlippApp {
                             self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                             self.prefs_dirty = true;
                             cmds.push(AppCommand::ExportSequence {
-                                settings: ExportSettings {
-                                    output_path: PathBuf::from(&self.export_dialog.output_path),
-                                    format: self.export_dialog.format,
-                                    video_codec: self.export_dialog.video_codec,
-                                    resolution: None,
-                                    fps: None,
-                                    crf: self.export_dialog.crf,
-                                    preset: self.export_dialog.preset,
-                                    audio_codec: self.export_dialog.audio_codec,
-                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
-                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
-                                    rate_control: self.export_dialog.rate_control,
-                                    burn_in_subtitles: self.export_dialog.burn_in_subtitles,
-                                    target_lufs: dialog_target_lufs(&self.export_dialog),
-                                },
+                                settings: build_export_settings(&self.export_dialog),
                             });
                         }
                     });
