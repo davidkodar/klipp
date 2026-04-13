@@ -25,7 +25,9 @@ pub fn composite_layers(layers: &[CompositeLayer], out_width: u32, out_height: u
 }
 
 /// Blend a source layer onto the destination using the specified blend mode.
-fn blend_layer(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
+/// Public to support incremental compositing in the viewer's adjustment layer
+/// loop, which needs to intercept at adjustment layer boundaries.
+pub fn blend_layer(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
     if src.len() != dst.len() {
         return;
     }

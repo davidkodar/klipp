@@ -2062,8 +2062,8 @@ impl PlaybackEngine {
         // Composite V1 (graded) + overlay tracks (each graded via apply_clip_effects)
         let t_composite = std::time::Instant::now();
         let final_rgba = {
-            use crate::composite::{composite_layers, CompositeLayer};
-            let mut layers = vec![
+            use crate::composite::CompositeLayer;
+            let layers = vec![
                 CompositeLayer {
                     rgba: v1_graded,
                     width: final_w,
@@ -2095,37 +2095,60 @@ impl PlaybackEngine {
                 }).collect()
             };
 
+            // Build the composite incrementally so adjustment layers can intercept
+            // and apply their effects to the accumulated result between layers.
+            // V1 is always the first layer (already in `layers`).
+            let pixel_count = (final_w * final_h) as usize;
+            let mut accumulated = vec![0u8; pixel_count * 4];
+
+            // Blend V1 (the first layer) onto the empty canvas
+            if let Some(v1_layer) = layers.first() {
+                crate::composite::blend_layer(
+                    &mut accumulated, &v1_layer.rgba, v1_layer.opacity, v1_layer.blend_mode,
+                );
+            }
+
             // Each overlay clip's effects are applied before compositing so every
             // clip renders with its own color grade, OFX chain, and builtin effects.
+            // Adjustment layers transform the accumulated composite in-place instead
+            // of blending a new layer on top.
             for (track_idx, effective, clip) in &overlay_clip_data {
-                if *effective > 0.001 {
-                    if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                        let mut ov_rgba = ov_frame.to_rgba();
-                        let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-                        if let Some(clip) = clip {
-                            let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                            ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
-                        }
-                        layers.push(CompositeLayer {
-                            rgba: ov_rgba,
-                            width: ov_w,
-                            height: ov_h,
-                            opacity: *effective,
-                            blend_mode: klipp_core::BlendMode::Normal,
-                        });
+                if *effective <= 0.001 { continue; }
+
+                // Adjustment layer: apply its effects to the accumulated composite
+                if let Some(clip) = clip {
+                    if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                        let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                        accumulated = self.apply_clip_effects(accumulated, final_w, final_h, clip, clip_time);
+                        continue;
                     }
+                }
+
+                // Regular clip: grade its frame and blend onto accumulated composite
+                if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
+                    let mut ov_rgba = ov_frame.to_rgba();
+                    let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+                    if let Some(clip) = clip {
+                        let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                        ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
+                    }
+                    // Scale if dimensions differ
+                    let src = if ov_w == final_w && ov_h == final_h {
+                        ov_rgba
+                    } else {
+                        use image::{ImageBuffer, Rgba};
+                        let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
+                            .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
+                        let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
+                        scaled.into_raw()
+                    };
+                    crate::composite::blend_layer(
+                        &mut accumulated, &src, *effective, klipp_core::BlendMode::Normal,
+                    );
                 }
             }
 
-            debug!("COMPOSITE layers={} sizes={:?} opacities={:?}",
-                layers.len(),
-                layers.iter().map(|l| format!("{}x{}", l.width, l.height)).collect::<Vec<_>>(),
-                layers.iter().map(|l| format!("{:.2}", l.opacity)).collect::<Vec<_>>());
-            if layers.len() == 1 {
-                layers.into_iter().next().unwrap().rgba
-            } else {
-                composite_layers(&layers, final_w, final_h)
-            }
+            accumulated
         };
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
