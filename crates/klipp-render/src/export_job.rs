@@ -146,6 +146,49 @@ impl ExportJob {
         let start_frame = self.snapshot.start_frame();
         let end_frame = self.snapshot.end_frame();
 
+        // ─── Pass 1: Loudness measurement (if normalization enabled) ──
+        let loudness_gain_linear = if let Some(target_lufs) = self.settings.target_lufs {
+            Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
+            let mut measure_mixdown = AudioMixdown::new(&self.snapshot)?;
+            let mut meter = klipp_audio::LufsMeter::new(self.snapshot.sample_rate as f32);
+            let mut peak: f32 = 0.0;
+            let measure_total = end_frame - start_frame;
+            for (i, frame_num) in (start_frame..end_frame).enumerate() {
+                if self.cancel.load(Ordering::Relaxed) {
+                    return Err(RenderError::Cancelled);
+                }
+                let audio = measure_mixdown.get_frame_audio(frame_num);
+                for &s in &audio {
+                    let abs = s.abs();
+                    if abs > peak { peak = abs; }
+                }
+                meter.process(&audio);
+                // Report measurement progress (roughly first ~10-15% of total work)
+                if i % 100 == 0 && measure_total > 0 {
+                    self.progress.store((i as u64 * self.total_frames) / (measure_total * 10), Ordering::Relaxed);
+                }
+            }
+            let readings = meter.readings();
+            let analysis = LoudnessAnalysis::compute(target_lufs, readings.integrated, peak);
+            info!(
+                "ExportJob {}: loudness measurement complete — integrated={:.1} LUFS, peak={:.3}, \
+                 requested_gain={:.1} dB, applied_gain={:.1} dB, achieved={:.1} LUFS, peak_limited={}",
+                self.id, analysis.integrated_lufs, analysis.peak_sample,
+                analysis.requested_gain_db, analysis.applied_gain_db,
+                analysis.achieved_lufs, analysis.peak_limited,
+            );
+            if analysis.peak_limited {
+                info!(
+                    "ExportJob {}: peak fallback engaged — requested {:.1} LUFS but achieved {:.1} LUFS \
+                     to stay within -1 dBFS ceiling",
+                    self.id, target_lufs, analysis.achieved_lufs,
+                );
+            }
+            db_to_linear(analysis.applied_gain_db)
+        } else {
+            1.0 // No normalization — unity gain
+        };
+
         // Per-track current clip tracking (Gap 11)
         let mut current_clips: Vec<Option<ClipId>> =
             vec![None; self.snapshot.video_tracks.len()];
@@ -244,8 +287,11 @@ impl ExportJob {
                 self.snapshot.height,
             )?;
 
-            // ─── Encode audio ─────────────────────────────────────
-            let audio = audio_mixdown.get_frame_audio(frame_num);
+            // ─── Encode audio (with loudness normalization gain if enabled) ──
+            let mut audio = audio_mixdown.get_frame_audio(frame_num);
+            if loudness_gain_linear != 1.0 {
+                for s in &mut audio { *s *= loudness_gain_linear; }
+            }
             encoder.encode_audio_samples(&audio)?;
 
             // ─── Update progress ──────────────────────────────────
@@ -294,6 +340,74 @@ fn find_topmost_active_clip(
         }
     }
     (None, None)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EBU R128 loudness normalization — two-pass measurement + static gain
+// ═══════════════════════════════════════════════════════════════════
+
+/// -1 dBFS as a linear amplitude value. Used as the peak ceiling for
+/// the honest-fallback approach: if gain-adjusted audio would exceed
+/// this level, the gain is reduced so the loudest sample lands here.
+const PEAK_CEILING_LINEAR: f32 = 0.891; // 10^(-1.0/20.0) ≈ 0.891
+
+/// Convert a gain in decibels to a linear amplitude multiplier.
+/// Shared with klipp-audio's normalize DSP — same formula as
+/// klipp-audio/src/dsp/normalize.rs:81.
+fn db_to_linear(db: f32) -> f32 {
+    10.0_f32.powf(db / 20.0)
+}
+
+/// Convert a linear amplitude to decibels.
+fn linear_to_db(linear: f32) -> f32 {
+    if linear <= 0.0 { f32::NEG_INFINITY } else { 20.0 * linear.log10() }
+}
+
+/// Result of the loudness measurement pass.
+#[derive(Debug, Clone)]
+pub struct LoudnessAnalysis {
+    pub integrated_lufs: f32,
+    pub peak_sample: f32,
+    pub requested_gain_db: f32,
+    pub applied_gain_db: f32,
+    pub achieved_lufs: f32,
+    pub peak_limited: bool,
+}
+
+impl LoudnessAnalysis {
+    /// Compute the normalization gain from measured loudness and peak.
+    /// `target_lufs`: the desired integrated loudness.
+    /// `integrated_lufs`: the measured integrated loudness of the mix.
+    /// `peak_sample`: the absolute value of the loudest sample (0.0–1.0+).
+    pub fn compute(target_lufs: f32, integrated_lufs: f32, peak_sample: f32) -> Self {
+        let requested_gain_db = target_lufs - integrated_lufs;
+        let requested_gain_linear = db_to_linear(requested_gain_db);
+        let peak_after_gain = peak_sample * requested_gain_linear;
+
+        if peak_after_gain <= PEAK_CEILING_LINEAR {
+            // Normal case — requested gain fits within headroom
+            Self {
+                integrated_lufs,
+                peak_sample,
+                requested_gain_db,
+                applied_gain_db: requested_gain_db,
+                achieved_lufs: target_lufs,
+                peak_limited: false,
+            }
+        } else {
+            // Peak fallback — reduce gain so loudest sample lands at -1 dBFS
+            let safe_gain_linear = PEAK_CEILING_LINEAR / peak_sample;
+            let safe_gain_db = linear_to_db(safe_gain_linear);
+            Self {
+                integrated_lufs,
+                peak_sample,
+                requested_gain_db,
+                applied_gain_db: safe_gain_db,
+                achieved_lufs: integrated_lufs + safe_gain_db,
+                peak_limited: true,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,5 +542,75 @@ mod tests {
         // Frame 40: only track 0 → returns track 0
         let (idx, _) = find_topmost_active_clip(&snapshot, 40);
         assert_eq!(idx, Some(0));
+    }
+
+    // ── LoudnessAnalysis math tests ─────────────────────────────────
+
+    #[test]
+    fn loudness_normal_case_no_peak_limiting() {
+        // Quiet mix at -20 LUFS, peak at 0.5 (-6 dBFS). Target -14.
+        // Requested gain: +6 dB. Peak after gain: 0.5 * 2.0 = 1.0 > 0.891? Yes!
+        // Actually that's peak-limited. Use lower peak instead.
+        let a = LoudnessAnalysis::compute(-14.0, -20.0, 0.3);
+        // gain = +6 dB, peak after gain = 0.3 * ~2.0 = ~0.6 < 0.891
+        assert!(!a.peak_limited);
+        assert!((a.requested_gain_db - 6.0).abs() < 0.01);
+        assert!((a.applied_gain_db - 6.0).abs() < 0.01);
+        assert!((a.achieved_lufs - (-14.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn loudness_peak_fallback_engaged() {
+        // Mix at -20 LUFS, peak at 0.9 (-0.9 dBFS). Target -14.
+        // Requested gain: +6 dB → peak after gain: 0.9 * 2.0 = 1.8 > 0.891 → limited
+        let a = LoudnessAnalysis::compute(-14.0, -20.0, 0.9);
+        assert!(a.peak_limited);
+        assert!((a.requested_gain_db - 6.0).abs() < 0.01);
+        // Safe gain: 0.891 / 0.9 ≈ 0.99 → ~-0.08 dB
+        assert!(a.applied_gain_db < a.requested_gain_db);
+        assert!(a.achieved_lufs < -14.0); // Couldn't reach target — achieved is quieter
+        // Peak after applied gain should be at ceiling
+        let peak_after = a.peak_sample * db_to_linear(a.applied_gain_db);
+        assert!((peak_after - PEAK_CEILING_LINEAR).abs() < 0.001);
+    }
+
+    #[test]
+    fn loudness_mix_already_too_loud_negative_gain() {
+        // Mix at -10 LUFS, peak at 0.8. Target -14.
+        // Requested gain: -4 dB (reduce volume). No peak concern.
+        let a = LoudnessAnalysis::compute(-14.0, -10.0, 0.8);
+        assert!(!a.peak_limited);
+        assert!((a.requested_gain_db - (-4.0)).abs() < 0.01);
+        assert!((a.applied_gain_db - (-4.0)).abs() < 0.01);
+        assert!((a.achieved_lufs - (-14.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn loudness_edge_case_peak_exactly_at_ceiling() {
+        // After gain, peak lands exactly at -1 dBFS (0.891)
+        // Mix at -20 LUFS, target -14, need peak such that 0.891 / gain = peak
+        let gain_linear = db_to_linear(6.0); // ~2.0
+        let peak = PEAK_CEILING_LINEAR / gain_linear; // ~0.4455
+        let a = LoudnessAnalysis::compute(-14.0, -20.0, peak);
+        assert!(!a.peak_limited); // Exactly at ceiling, not over
+        assert!((a.achieved_lufs - (-14.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn loudness_zero_gain_when_already_at_target() {
+        let a = LoudnessAnalysis::compute(-14.0, -14.0, 0.5);
+        assert!(!a.peak_limited);
+        assert!(a.requested_gain_db.abs() < 0.01);
+        assert!(a.applied_gain_db.abs() < 0.01);
+        assert!((a.achieved_lufs - (-14.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn db_linear_roundtrip() {
+        for db in [-20.0, -6.0, 0.0, 3.0, 6.0, 12.0] {
+            let linear = db_to_linear(db);
+            let back = linear_to_db(linear);
+            assert!((back - db).abs() < 0.001, "roundtrip failed for {db} dB");
+        }
     }
 }
