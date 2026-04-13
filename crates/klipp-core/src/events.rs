@@ -39,6 +39,9 @@ pub struct ExportSettings {
     /// Burn subtitle/text track content into the video. Default true to preserve
     /// existing behavior (subtitle clips have always been composited as overlays).
     pub burn_in_subtitles: bool,
+    /// Embed subtitles as a soft track in the output container.
+    /// Uses format-appropriate codec: mov_text (MP4/MOV), subrip (MKV), webvtt (WebM).
+    pub embed_subtitles: bool,
     /// Target integrated loudness in LUFS for EBU R128 normalization.
     /// None = no normalization (pass audio through unchanged).
     pub target_lufs: Option<f32>,

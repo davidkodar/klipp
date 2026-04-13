@@ -19,7 +19,8 @@ pub use error::RenderError;
 pub use pipeline::RenderPipeline;
 pub use snapshot::{
     AudioClipSnapshot, AudioTrackSnapshot, ClipKindSnapshot, ClipSnapshot,
-    SequenceSnapshot, TransitionSnapshot, VideoTrackSnapshot,
+    SequenceSnapshot, SubtitleClipSnapshot, SubtitleTrackSnapshot,
+    TransitionSnapshot, VideoTrackSnapshot,
 };
 pub use stage::{ClipContext, FrameContext, ProcessingStage};
 pub use stages::{BuiltinEffectsStage, ColorGradeStage, OFXEffectsStage};

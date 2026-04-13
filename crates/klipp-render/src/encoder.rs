@@ -47,6 +47,8 @@ pub struct Encoder {
     audio_resampler: Option<ffmpeg_next::software::resampling::Context>,
     /// The encoder's actual sample format.
     audio_sample_format: Option<ffmpeg_next::format::Sample>,
+    /// Subtitle stream index (if soft subtitle embedding is enabled).
+    pub subtitle_stream_idx: Option<usize>,
 }
 
 /// Pick the best available video encoder for the given codec.
@@ -485,6 +487,88 @@ impl Encoder {
         }
 
         // ═══════════════════════════════════════════════════════════
+        // SUBTITLE STREAM (optional — soft-embedded text subtitles)
+        // ═══════════════════════════════════════════════════════════
+
+        let mut subtitle_stream_idx = None;
+
+        if settings.embed_subtitles && !snapshot.subtitle_tracks.is_empty() {
+            let sub_codec_id = match settings.format {
+                klipp_core::ExportFormat::Mp4 | klipp_core::ExportFormat::Mov => ffmpeg_next::codec::Id::MOV_TEXT,
+                klipp_core::ExportFormat::Mkv => ffmpeg_next::codec::Id::SUBRIP,
+                klipp_core::ExportFormat::WebM => ffmpeg_next::codec::Id::WEBVTT,
+            };
+
+            let sub_codec = ffmpeg_next::encoder::find(sub_codec_id)
+                .ok_or_else(|| RenderError::Encode(format!(
+                    "subtitle codec {:?} not found in FFmpeg build", sub_codec_id
+                )))?;
+
+            let sub_tb = match settings.format {
+                klipp_core::ExportFormat::Mp4 | klipp_core::ExportFormat::Mov =>
+                    ffmpeg_next::Rational::new(1, 1_000_000),
+                _ => ffmpeg_next::Rational::new(1, 1_000),
+            };
+
+            let mut sub_ctx = ffmpeg_next::codec::context::Context::new_with_codec(sub_codec)
+                .encoder()
+                .subtitle()
+                .map_err(|e| RenderError::Encode(format!("subtitle encoder context: {e}")))?;
+
+            // Set time_base, width, and height on the encoder context before opening.
+            // mov_text requires width/height (display region for rendered text).
+            let global_header = output_ctx
+                .format()
+                .flags()
+                .contains(ffmpeg_next::format::flag::Flags::GLOBAL_HEADER);
+            // FFmpeg subtitle encoders (mov_text, subrip, webvtt) all require a valid
+            // ASS subtitle_header on the codec context — normally provided by a decoder,
+            // but for programmatic encoding from text we must set it manually.
+            const ASS_HEADER: &[u8] = b"[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 288\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,16,&Hffffff,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,0\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+
+            unsafe {
+                let p = sub_ctx.as_mut_ptr();
+                (*p).time_base = sub_tb.into();
+                (*p).width = snapshot.width as i32;
+                (*p).height = snapshot.height as i32;
+                if global_header {
+                    (*p).flags |= ffmpeg_next::ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                }
+                // Allocate and copy ASS header (FFmpeg owns this memory after open)
+                let header_buf = ffmpeg_next::ffi::av_mallocz(ASS_HEADER.len() + 1) as *mut u8;
+                if header_buf.is_null() {
+                    return Err(RenderError::Encode("av_mallocz failed for subtitle header".into()));
+                }
+                std::ptr::copy_nonoverlapping(ASS_HEADER.as_ptr(), header_buf, ASS_HEADER.len());
+                (*p).subtitle_header = header_buf;
+                (*p).subtitle_header_size = ASS_HEADER.len() as i32;
+            }
+
+            let sub_encoder = sub_ctx
+                .open_as(sub_codec)
+                .map_err(|e| RenderError::Encode(format!("open subtitle encoder: {e:?}")))?;
+
+            let s_idx = unsafe {
+                let stream_ptr = ffmpeg_next::ffi::avformat_new_stream(
+                    output_ctx.as_mut_ptr(),
+                    std::ptr::null(),
+                );
+                if stream_ptr.is_null() {
+                    return Err(RenderError::Encode("failed to add subtitle stream".into()));
+                }
+                ffmpeg_next::ffi::avcodec_parameters_from_context(
+                    (*stream_ptr).codecpar,
+                    sub_encoder.as_ptr(),
+                );
+                (*stream_ptr).time_base = sub_tb.into();
+                ((*output_ctx.as_ptr()).nb_streams - 1) as usize
+            };
+
+            subtitle_stream_idx = Some(s_idx);
+            info!("Encoder: subtitle stream {} ({:?})", s_idx, sub_codec_id);
+        }
+
+        // ═══════════════════════════════════════════════════════════
         // WRITE HEADER
         // ═══════════════════════════════════════════════════════════
 
@@ -531,6 +615,7 @@ impl Encoder {
                 None
             },
             video_codec_name,
+            subtitle_stream_idx,
         })
     }
 
@@ -687,6 +772,17 @@ impl Encoder {
         Ok(())
     }
 
+    /// Write a pre-built subtitle packet to the output.
+    /// The packet must have stream_index, pts, dts, and duration already set
+    /// in the subtitle stream's time_base.
+    #[allow(unused_mut)]
+    pub fn write_subtitle_packet(&mut self, mut packet: ffmpeg_next::Packet) -> Result<(), RenderError> {
+        packet
+            .write_interleaved(&mut self.output_ctx)
+            .map_err(|e| RenderError::Encode(format!("write subtitle packet: {e}")))?;
+        Ok(())
+    }
+
     /// Finalise the output file. Must be called after all frames are encoded.
     pub fn finalise(mut self) -> Result<(), RenderError> {
         // Flush video encoder
@@ -820,7 +916,7 @@ mod tests {
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, target_lufs: None }
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
     }
 
     fn make_snapshot() -> SequenceSnapshot {
@@ -836,6 +932,7 @@ mod tests {
             video_tracks: vec![],
             audio_tracks: vec![],
             global_lut_path: None,
+            subtitle_tracks: vec![],
         }
     }
 

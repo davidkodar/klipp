@@ -36,6 +36,8 @@ pub struct SequenceSnapshot {
     pub audio_tracks: Vec<AudioTrackSnapshot>,
     /// Global 3D LUT path if loaded.
     pub global_lut_path: Option<PathBuf>,
+    /// Subtitle tracks (text content + timing, independent of burn-in).
+    pub subtitle_tracks: Vec<SubtitleTrackSnapshot>,
 }
 
 #[derive(Clone)]
@@ -113,6 +115,18 @@ pub struct AudioClipSnapshot {
     pub path: PathBuf,
     /// Per-clip audio DSP effects (EQ, compressor, reverb, etc.)
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleClipSnapshot {
+    pub timeline_start_frame: u64,
+    pub timeline_end_frame: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleTrackSnapshot {
+    pub clips: Vec<SubtitleClipSnapshot>,
 }
 
 #[derive(Clone)]
@@ -201,6 +215,28 @@ impl SequenceSnapshot {
             }
         }
 
+        // Collect subtitle tracks regardless of burn_in setting.
+        // Subtitle text + timing is always available for soft embedding.
+        let mut subtitle_tracks = Vec::new();
+        for track in seq.tracks.iter() {
+            if !matches!(track.kind, TrackKind::Subtitle | TrackKind::Text) {
+                continue;
+            }
+            let mut clips = Vec::new();
+            for clip in &track.clips {
+                if let ClipKind::Title(data) = &clip.kind {
+                    clips.push(SubtitleClipSnapshot {
+                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
+                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
+                        text: data.text.clone(),
+                    });
+                }
+            }
+            if !clips.is_empty() {
+                subtitle_tracks.push(SubtitleTrackSnapshot { clips });
+            }
+        }
+
         Ok(Self {
             fps,
             fps_num: seq.fps.num,
@@ -213,6 +249,7 @@ impl SequenceSnapshot {
             video_tracks,
             audio_tracks,
             global_lut_path,
+            subtitle_tracks,
         })
     }
 
@@ -863,7 +900,7 @@ mod tests {
             preset: EncoderPreset::Medium,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, target_lufs: None }
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
     }
 
     #[test]
@@ -1206,5 +1243,114 @@ mod tests {
         assert!(sc.transform_pos_x_keyframes.is_empty());
         assert!(sc.transform_pos_y_keyframes.is_empty());
         assert!(sc.transform_rotation_keyframes.is_empty());
+    }
+
+    #[test]
+    fn snapshot_collects_subtitle_tracks() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+
+        let mut seq = make_sequence();
+        // Add a video clip so duration is non-zero
+        seq.tracks[0].clips.push(Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in: make_rational(0, 24),
+            timeline_out: make_rational(120, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(120, 24),
+            ..Clip::gap(make_rational(0, 24), make_rational(120, 24))
+        });
+
+        // Add a subtitle track with two clips
+        let mut sub_track = klipp_timeline::Track::new("Subtitles", TrackKind::Subtitle);
+        sub_track.clips.push(Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Title(klipp_timeline::TitleData {
+                text: "Hello World".to_string(),
+                ..klipp_timeline::TitleData::default()
+            }),
+            timeline_in: make_rational(24, 24),
+            timeline_out: make_rational(72, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(48, 24),
+            ..Clip::gap(make_rational(24, 24), make_rational(72, 24))
+        });
+        sub_track.clips.push(Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Title(klipp_timeline::TitleData {
+                text: "Second subtitle".to_string(),
+                ..klipp_timeline::TitleData::default()
+            }),
+            timeline_in: make_rational(96, 24),
+            timeline_out: make_rational(120, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(24, 24),
+            ..Clip::gap(make_rational(96, 24), make_rational(120, 24))
+        });
+        seq.tracks.push(sub_track);
+
+        let settings = make_settings();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert_eq!(snap.subtitle_tracks.len(), 1);
+        assert_eq!(snap.subtitle_tracks[0].clips.len(), 2);
+        assert_eq!(snap.subtitle_tracks[0].clips[0].text, "Hello World");
+        assert_eq!(snap.subtitle_tracks[0].clips[0].timeline_start_frame, 24);
+        assert_eq!(snap.subtitle_tracks[0].clips[0].timeline_end_frame, 72);
+        assert_eq!(snap.subtitle_tracks[0].clips[1].text, "Second subtitle");
+        assert_eq!(snap.subtitle_tracks[0].clips[1].timeline_start_frame, 96);
+        assert_eq!(snap.subtitle_tracks[0].clips[1].timeline_end_frame, 120);
+    }
+
+    #[test]
+    fn snapshot_subtitle_tracks_present_even_without_burn_in() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+
+        let mut seq = make_sequence();
+        seq.tracks[0].clips.push(Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in: make_rational(0, 24),
+            timeline_out: make_rational(48, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(48, 24),
+            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
+        });
+
+        let mut sub_track = klipp_timeline::Track::new("Subs", TrackKind::Subtitle);
+        sub_track.clips.push(Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Title(klipp_timeline::TitleData {
+                text: "Test".to_string(),
+                ..klipp_timeline::TitleData::default()
+            }),
+            timeline_in: make_rational(0, 24),
+            timeline_out: make_rational(24, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(24, 24),
+            ..Clip::gap(make_rational(0, 24), make_rational(24, 24))
+        });
+        seq.tracks.push(sub_track);
+
+        // burn_in OFF — subtitle data should still be in subtitle_tracks
+        let mut settings = make_settings();
+        settings.burn_in_subtitles = false;
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert_eq!(snap.subtitle_tracks.len(), 1, "subtitle_tracks should be populated even without burn-in");
+        assert_eq!(snap.subtitle_tracks[0].clips[0].text, "Test");
+    }
+
+    #[test]
+    fn snapshot_no_subtitle_tracks_when_none_exist() {
+        let pool = MediaPool::new();
+        let seq = make_sequence();
+        let settings = make_settings();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        assert!(snap.subtitle_tracks.is_empty());
     }
 }

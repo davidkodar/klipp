@@ -4,7 +4,7 @@ use crate::compositor::FrameCompositor;
 use crate::encoder::Encoder;
 use crate::error::RenderError;
 use crate::pipeline::RenderPipeline;
-use crate::snapshot::{ClipKindSnapshot, SequenceSnapshot};
+use crate::snapshot::{ClipKindSnapshot, SequenceSnapshot, SubtitleClipSnapshot};
 use crate::stage::ClipContext;
 use klipp_core::{ClipId, ExportSettings};
 use std::collections::HashMap;
@@ -306,6 +306,16 @@ impl ExportJob {
             pipeline.end_export();
         }
 
+        // ─── Subtitle embedding ───────────────────────────────────
+        if let Some(sub_stream_idx) = encoder.subtitle_stream_idx {
+            Self::encode_subtitles(
+                &mut encoder,
+                sub_stream_idx,
+                &self.snapshot,
+                &self.settings,
+            )?;
+        }
+
         encoder.finalise()?;
 
         info!(
@@ -314,6 +324,138 @@ impl ExportJob {
         );
 
         Ok(())
+    }
+
+    /// Encode all subtitle clips as packets and write them to the output.
+    /// For MP4/MOV, inserts empty gap packets between subtitles.
+    fn encode_subtitles(
+        encoder: &mut Encoder,
+        sub_stream_idx: usize,
+        snapshot: &SequenceSnapshot,
+        settings: &ExportSettings,
+    ) -> Result<(), RenderError> {
+        // Flatten all subtitle clips, sorted by start frame
+        let mut all_clips: Vec<&SubtitleClipSnapshot> = snapshot
+            .subtitle_tracks
+            .iter()
+            .flat_map(|t| &t.clips)
+            .collect();
+        all_clips.sort_by_key(|c| c.timeline_start_frame);
+
+        let needs_gaps = matches!(
+            settings.format,
+            klipp_core::ExportFormat::Mp4 | klipp_core::ExportFormat::Mov
+        );
+        let is_micro = needs_gaps; // mov_text uses 1/1000000, others use 1/1000
+
+        // Gap from frame 0 to first subtitle (MP4 only)
+        if needs_gaps {
+            if let Some(first) = all_clips.first() {
+                if first.timeline_start_frame > 0 {
+                    let pkt = Self::build_gap_packet(
+                        sub_stream_idx, 0, first.timeline_start_frame,
+                        snapshot.fps, is_micro,
+                    );
+                    encoder.write_subtitle_packet(pkt)?;
+                }
+            }
+        }
+
+        for (i, clip) in all_clips.iter().enumerate() {
+            let pkt = Self::build_text_packet(
+                sub_stream_idx, clip, snapshot.fps, is_micro,
+            );
+            encoder.write_subtitle_packet(pkt)?;
+
+            // Gap to next subtitle (MP4 only)
+            if needs_gaps {
+                if let Some(next) = all_clips.get(i + 1) {
+                    if next.timeline_start_frame > clip.timeline_end_frame {
+                        let pkt = Self::build_gap_packet(
+                            sub_stream_idx,
+                            clip.timeline_end_frame,
+                            next.timeline_start_frame,
+                            snapshot.fps,
+                            is_micro,
+                        );
+                        encoder.write_subtitle_packet(pkt)?;
+                    }
+                }
+            }
+        }
+
+        info!("Encoded {} subtitle clips", all_clips.len());
+        Ok(())
+    }
+
+    /// Build a subtitle packet containing text content.
+    /// `microseconds=true` for mov_text (1/1_000_000 timebase + 2-byte length prefix);
+    /// `microseconds=false` for subrip/webvtt (1/1000 timebase + raw UTF-8).
+    fn build_text_packet(
+        stream_idx: usize,
+        clip: &SubtitleClipSnapshot,
+        fps: f64,
+        microseconds: bool,
+    ) -> ffmpeg_next::Packet {
+        let start_secs = clip.timeline_start_frame as f64 / fps;
+        let end_secs = clip.timeline_end_frame as f64 / fps;
+        let duration_secs = end_secs - start_secs;
+
+        let text_bytes = clip.text.as_bytes();
+        let data: Vec<u8> = if microseconds {
+            // mov_text binary format: 2-byte big-endian length prefix + UTF-8 text
+            let len = text_bytes.len().min(u16::MAX as usize);
+            let mut d = Vec::with_capacity(2 + len);
+            d.extend_from_slice(&(len as u16).to_be_bytes());
+            d.extend_from_slice(&text_bytes[..len]);
+            d
+        } else {
+            // subrip/webvtt: raw UTF-8 text
+            text_bytes.to_vec()
+        };
+
+        let mut packet = ffmpeg_next::Packet::copy(&data);
+        packet.set_stream(stream_idx);
+
+        if microseconds {
+            packet.set_pts(Some((start_secs * 1_000_000.0) as i64));
+            packet.set_dts(Some((start_secs * 1_000_000.0) as i64));
+            packet.set_duration((duration_secs * 1_000_000.0) as i64);
+        } else {
+            packet.set_pts(Some((start_secs * 1_000.0) as i64));
+            packet.set_dts(Some((start_secs * 1_000.0) as i64));
+            packet.set_duration((duration_secs * 1_000.0) as i64);
+        }
+
+        packet
+    }
+
+    /// Build an empty gap packet (MP4/MOV mov_text only).
+    fn build_gap_packet(
+        stream_idx: usize,
+        start_frame: u64,
+        end_frame: u64,
+        fps: f64,
+        microseconds: bool,
+    ) -> ffmpeg_next::Packet {
+        let start_secs = start_frame as f64 / fps;
+        let duration_secs = (end_frame - start_frame) as f64 / fps;
+
+        // Empty mov_text: 2-byte zero length prefix
+        let mut packet = ffmpeg_next::Packet::copy(&[0u8, 0u8]);
+        packet.set_stream(stream_idx);
+
+        if microseconds {
+            packet.set_pts(Some((start_secs * 1_000_000.0) as i64));
+            packet.set_dts(Some((start_secs * 1_000_000.0) as i64));
+            packet.set_duration((duration_secs * 1_000_000.0) as i64);
+        } else {
+            packet.set_pts(Some((start_secs * 1_000.0) as i64));
+            packet.set_dts(Some((start_secs * 1_000.0) as i64));
+            packet.set_duration((duration_secs * 1_000.0) as i64);
+        }
+
+        packet
     }
 }
 
@@ -510,6 +652,7 @@ mod tests {
             video_tracks: vec![],
             audio_tracks: vec![],
             global_lut_path: None,
+            subtitle_tracks: vec![],
         }
     }
 
@@ -535,7 +678,7 @@ mod tests {
                 preset: klipp_core::EncoderPreset::Fast,
                 audio_codec: klipp_core::ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-                burn_in_subtitles: true, target_lufs: None },
+                burn_in_subtitles: true, embed_subtitles: false, target_lufs: None },
             snapshot: make_test_snapshot(),
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),

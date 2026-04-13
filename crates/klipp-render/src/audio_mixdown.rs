@@ -372,6 +372,7 @@ mod tests {
             video_tracks: vec![],
             audio_tracks,
             global_lut_path: None,
+            subtitle_tracks: vec![],
         }
     }
 

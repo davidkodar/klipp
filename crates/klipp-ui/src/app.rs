@@ -78,6 +78,7 @@ struct ExportDialogState {
     rate_control: klipp_core::RateControl,
     video_bitrate_kbps: u32,
     burn_in_subtitles: bool,
+    embed_subtitles: bool,
     normalize_loudness: bool,
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     loudness_preset: u8,
@@ -106,6 +107,7 @@ impl Default for ExportDialogState {
             rate_control: klipp_core::RateControl::default(),
             video_bitrate_kbps: 10000,
             burn_in_subtitles: true,
+            embed_subtitles: false,
             normalize_loudness: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
@@ -12633,6 +12635,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         },
         rate_control: dialog.rate_control,
         burn_in_subtitles: dialog.burn_in_subtitles,
+        embed_subtitles: dialog.embed_subtitles,
         target_lufs: dialog_target_lufs(dialog),
     }
 }
@@ -14449,12 +14452,34 @@ impl KlippApp {
                     self.export_dialog.range_mode = 0;
                 }
 
-                // Subtitles
-                ui.add_space(8.0);
-                ui.checkbox(
-                    &mut self.export_dialog.burn_in_subtitles,
-                    "Burn subtitles into video",
-                );
+                // Subtitles — only show options if the active sequence has subtitle/text tracks
+                let has_subtitle_tracks = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    seq.tracks.iter().any(|t| {
+                        matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text)
+                            && !t.clips.is_empty()
+                    })
+                };
+                if has_subtitle_tracks {
+                    ui.add_space(8.0);
+                    ui.checkbox(
+                        &mut self.export_dialog.burn_in_subtitles,
+                        "Burn subtitles into video",
+                    );
+                    ui.checkbox(
+                        &mut self.export_dialog.embed_subtitles,
+                        "Embed subtitles as soft track",
+                    );
+                    if self.export_dialog.embed_subtitles
+                        && matches!(self.export_dialog.format, klipp_core::ExportFormat::WebM)
+                    {
+                        ui.label(
+                            egui::RichText::new("\u{26A0} WebM subtitle support varies by player")
+                                .color(egui::Color32::from_rgb(0xc0, 0x90, 0x30))
+                                .size(11.0),
+                        );
+                    }
+                }
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {

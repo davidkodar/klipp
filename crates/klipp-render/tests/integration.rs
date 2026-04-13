@@ -25,7 +25,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         preset: EncoderPreset::Fast,
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-        burn_in_subtitles: true, target_lufs: None }
+        burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -47,6 +47,7 @@ fn snapshot_to_pipeline_roundtrip() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let mut pipeline = RenderPipeline::default_stages(None);
@@ -83,6 +84,7 @@ fn compositor_with_gap_produces_none() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let mut compositor = FrameCompositor::new();
@@ -118,6 +120,7 @@ fn export_job_empty_sequence() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -168,6 +171,7 @@ fn export_job_cancellation_immediate() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(true)); // Cancel before start
@@ -209,6 +213,7 @@ fn export_job_cancellation_midway() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -278,6 +283,7 @@ fn export_job_progress_advances() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -372,6 +378,7 @@ fn export_real_media_h264() {
             }],
         }],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -475,6 +482,7 @@ fn export_real_media_with_color_grade() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -572,6 +580,7 @@ fn export_with_title_and_gap() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -663,6 +672,7 @@ fn export_with_keyframed_opacity() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
+        subtitle_tracks: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -688,6 +698,196 @@ fn export_with_keyframed_opacity() {
 
     let meta = std::fs::metadata(&output_path).unwrap();
     assert!(meta.len() > 100, "output should be non-trivial");
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn export_mp4_with_embedded_subtitle_stream() {
+    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let output_path = dir.join("embedded_subs.mp4");
+
+    let title_data = klipp_timeline::TitleData::default();
+
+    let mut settings = make_export_settings(&output_path);
+    settings.embed_subtitles = true;
+
+    let snapshot = SequenceSnapshot {
+        fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
+        width: 320,
+        height: 240,
+        sample_rate: 48000,
+        duration_frames: 48,
+        export_range: None,
+        video_tracks: vec![snapshot::VideoTrackSnapshot {
+            opacity: 1.0,
+            visible: true,
+            clips: vec![snapshot::ClipSnapshot {
+                id: ClipId::new(),
+                kind: snapshot::ClipKindSnapshot::Title(title_data),
+                timeline_start_frame: 0,
+                timeline_end_frame: 48,
+                source_start_secs: 0.0,
+                source_end_secs: 2.0,
+                speed: 1.0,
+                node_graph: klipp_nodes::NodeGraph::default(),
+                effects: vec![],
+                builtin_effects: vec![],
+                source_rotation: 0,
+                stabilization_data: None,
+                smoothed_trajectory: None,
+                effect_keyframes: std::collections::HashMap::new(),
+                opacity_keyframes: vec![],
+                transform_pos_x_keyframes: vec![],
+                transform_pos_y_keyframes: vec![],
+                transform_scale_keyframes: vec![],
+                transform_rotation_keyframes: vec![],
+            }],
+            transitions: vec![],
+        }],
+        audio_tracks: vec![],
+        global_lut_path: None,
+        subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
+            clips: vec![
+                snapshot::SubtitleClipSnapshot {
+                    timeline_start_frame: 0,
+                    timeline_end_frame: 24,
+                    text: "Hello World".to_string(),
+                },
+                snapshot::SubtitleClipSnapshot {
+                    timeline_start_frame: 30,
+                    timeline_end_frame: 48,
+                    text: "Second subtitle".to_string(),
+                },
+            ],
+        }],
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let progress = Arc::new(AtomicU64::new(0));
+
+    let job = ExportJob {
+        id: Uuid::new_v4(),
+        output_path: output_path.clone(),
+        settings,
+        snapshot,
+        cancel,
+        progress: progress.clone(),
+        hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
+        total_frames: 48,
+    };
+
+    job.run().unwrap();
+
+    assert!(output_path.exists());
+    assert_eq!(progress.load(Ordering::Relaxed), 48);
+
+    // Verify subtitle stream via ffprobe
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_streams", "-select_streams", "s"])
+        .arg(&output_path)
+        .output();
+
+    if let Ok(output) = probe {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("codec_name=mov_text"), "expected mov_text subtitle stream: {stdout}");
+    }
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn export_without_embed_has_no_subtitle_stream() {
+    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let output_path = dir.join("no_subs.mp4");
+
+    let title_data = klipp_timeline::TitleData::default();
+    let mut settings = make_export_settings(&output_path);
+    settings.embed_subtitles = false;
+
+    let snapshot = SequenceSnapshot {
+        fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
+        width: 320,
+        height: 240,
+        sample_rate: 48000,
+        duration_frames: 24,
+        export_range: None,
+        video_tracks: vec![snapshot::VideoTrackSnapshot {
+            opacity: 1.0,
+            visible: true,
+            clips: vec![snapshot::ClipSnapshot {
+                id: ClipId::new(),
+                kind: snapshot::ClipKindSnapshot::Title(title_data),
+                timeline_start_frame: 0,
+                timeline_end_frame: 24,
+                source_start_secs: 0.0,
+                source_end_secs: 1.0,
+                speed: 1.0,
+                node_graph: klipp_nodes::NodeGraph::default(),
+                effects: vec![],
+                builtin_effects: vec![],
+                source_rotation: 0,
+                stabilization_data: None,
+                smoothed_trajectory: None,
+                effect_keyframes: std::collections::HashMap::new(),
+                opacity_keyframes: vec![],
+                transform_pos_x_keyframes: vec![],
+                transform_pos_y_keyframes: vec![],
+                transform_scale_keyframes: vec![],
+                transform_rotation_keyframes: vec![],
+            }],
+            transitions: vec![],
+        }],
+        audio_tracks: vec![],
+        global_lut_path: None,
+        subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
+            clips: vec![snapshot::SubtitleClipSnapshot {
+                timeline_start_frame: 0,
+                timeline_end_frame: 24,
+                text: "Should not be embedded".to_string(),
+            }],
+        }],
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let progress = Arc::new(AtomicU64::new(0));
+
+    let job = ExportJob {
+        id: Uuid::new_v4(),
+        output_path: output_path.clone(),
+        settings,
+        snapshot,
+        cancel,
+        progress: progress.clone(),
+        hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
+        total_frames: 24,
+    };
+
+    job.run().unwrap();
+
+    assert!(output_path.exists());
+
+    // Verify NO subtitle stream
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_streams", "-select_streams", "s"])
+        .arg(&output_path)
+        .output();
+
+    if let Ok(output) = probe {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.is_empty() || !stdout.contains("codec_name"),
+            "expected no subtitle stream: {stdout}");
+    }
 
     let _ = std::fs::remove_file(&output_path);
 }

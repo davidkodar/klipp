@@ -598,6 +598,7 @@ mod tests {
             video_tracks: tracks,
             audio_tracks: vec![],
             global_lut_path: None,
+            subtitle_tracks: vec![],
         }
     }
 
@@ -623,7 +624,7 @@ mod tests {
             audio_codec: klipp_core::ExportAudioCodec::Aac,
             audio_bitrate_kbps: None, video_bitrate_kbps: None,
             rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, target_lufs: None,
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None,
         };
         p.begin_export(&settings);
         p.begin_clip(&ClipContext {
