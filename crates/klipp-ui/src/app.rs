@@ -308,6 +308,8 @@ impl KlippApp {
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
         };
+        // Build false color LUT from loaded preferences
+        app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
         app.state.audio_backend_ok = {
@@ -1599,27 +1601,17 @@ impl KlippApp {
         // Order: false color first (replaces image), then zebras on top (stripes
         // over the color-mapped image give useful combined feedback).
         if self.state.viewer_overlays.false_color {
+            let lut = &self.state.false_color_lut;
             for pixel in rgba_bytes.chunks_exact_mut(4) {
-                let luma = (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32) as u8;
-                // Standard broadcast false color palette
-                let (r, g, b) = match luma {
-                    0..=10    => (0x40, 0x00, 0x80), // deep purple — black crush
-                    11..=20   => (0x80, 0x00, 0xc0), // purple — very underexposed
-                    21..=35   => (0x00, 0x00, 0xff), // blue — underexposed
-                    36..=55   => (0x00, 0x80, 0xc0), // cyan — dark
-                    56..=75   => (0x00, 0x90, 0x40), // dark green — below mid
-                    76..=95   => (0x00, 0xb0, 0x00), // green — proper skin shadow
-                    96..=115  => (0x40, 0xc0, 0x00), // lime — mid grey
-                    116..=135 => (0x80, 0xc0, 0x00), // yellow-green — proper exposure
-                    136..=165 => (0xc0, 0xc0, 0x00), // yellow — bright
-                    166..=195 => (0xe0, 0x80, 0x00), // orange — highlight
-                    196..=220 => (0xff, 0x40, 0x00), // red-orange — hot
-                    221..=240 => (0xff, 0x00, 0x00), // red — near clip
-                    241..=255 => (0xff, 0x40, 0x80), // pink-white — clipped
-                };
-                pixel[0] = r;
-                pixel[1] = g;
-                pixel[2] = b;
+                let luma = (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32) as usize;
+                let idx = luma * 3;
+                let mapped = &lut[idx..idx + 3];
+                // Only replace if stop covers this luma (non-zero = covered)
+                if mapped != [0, 0, 0] {
+                    pixel[0] = mapped[0];
+                    pixel[1] = mapped[1];
+                    pixel[2] = mapped[2];
+                }
             }
         }
         if self.state.viewer_overlays.zebras {
@@ -12945,6 +12937,13 @@ impl eframe::App for KlippApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
+        // Apply pending false color palette switch from toolbar quick-switcher
+        if let Some(palette) = self.state.pending_false_color_palette.take() {
+            self.state.false_color_lut = palette.build_lut();
+            self.prefs.viewer.false_color_palette = palette;
+            self.prefs_dirty = true;
+        }
+
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
             // Sync prefs to state
@@ -12972,6 +12971,8 @@ impl eframe::App for KlippApp {
             let _ = self.cmd_tx.send(AppCommand::SetLutTetrahedral(
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));
+            // Rebuild false color LUT if palette changed
+            self.state.false_color_lut = self.prefs.viewer.false_color_palette.build_lut();
             // Sync collapsed inspector sections to prefs
             if self.state.remember_inspector_layout {
                 let collapsed_key = egui::Id::new("klipp_collapsed_sections");

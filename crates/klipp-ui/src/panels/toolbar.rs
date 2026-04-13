@@ -686,10 +686,32 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             let fc_check = if state.viewer_overlays.false_color { "\u{2713} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{fc_check}False Color")).shortcut_text("Alt+F")).clicked() {
-                state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
-                ui.close_menu();
-            }
+            // Main button toggles false color on/off
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(format!("{fc_check}False Color")).shortcut_text("Alt+F")).clicked() {
+                    state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
+                    ui.close_menu();
+                }
+                // Submenu arrow for preset quick-switcher
+                ui.menu_button("\u{25B8}", |ui| {
+                    let built_ins = crate::prefs::FalseColorPalette::built_ins();
+                    for preset in &built_ins {
+                        let is_current = state.pending_false_color_palette.is_none()
+                            && state.false_color_lut == preset.build_lut();
+                        let check = if is_current { "\u{2713} " } else { "  " };
+                        if ui.button(format!("{check}{}", preset.name)).clicked() {
+                            state.pending_false_color_palette = Some(preset.clone());
+                            state.viewer_overlays.false_color = true;
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Edit palette\u{2026}").clicked() {
+                        state.show_preferences = true;
+                        ui.close_menu();
+                    }
+                });
+            });
             let peak_check = if state.viewer_overlays.focus_peaking { "\u{2713} " } else { "  " };
             if ui.add(egui::Button::new(format!("{peak_check}Focus Peaking")).shortcut_text("Ctrl+P")).clicked() {
                 state.viewer_overlays.focus_peaking = !state.viewer_overlays.focus_peaking;

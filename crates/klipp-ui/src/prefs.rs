@@ -1215,6 +1215,9 @@ pub struct ViewerPrefs {
     /// Focus peaking overlay color [R, G, B].
     #[serde(default = "default_peaking_color")]
     pub focus_peaking_color: [u8; 3],
+    /// False color palette (customizable stops).
+    #[serde(default = "default_false_color_palette")]
+    pub false_color_palette: FalseColorPalette,
 }
 fn default_action_safe() -> f32 { 0.9 }
 fn default_title_safe() -> f32 { 0.8 }
@@ -1234,8 +1237,151 @@ impl Default for ViewerPrefs {
             transform_handle_size: default_handle_size(), fullscreen_overlay_timeout_secs: default_fullscreen_timeout(),
             zebra_high_threshold: default_zebra_high(), zebra_low_threshold: default_zebra_low(),
             focus_peaking_sensitivity: default_peaking_sensitivity(), focus_peaking_color: default_peaking_color(),
+            false_color_palette: default_false_color_palette(),
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// False Color palette
+// ═══════════════════════════════════════════════════════════════════
+
+/// A single color stop in a false color palette.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FalseColorStop {
+    pub luma_min: u8,
+    pub luma_max: u8,
+    pub color: [u8; 3],
+    pub label: String,
+}
+
+/// A named false color palette with an ordered set of luma→color stops.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FalseColorPalette {
+    pub name: String,
+    pub stops: Vec<FalseColorStop>,
+}
+
+impl FalseColorPalette {
+    /// Standard broadcast false color palette (13 stops, full 0–255 coverage).
+    pub fn broadcast() -> Self {
+        Self {
+            name: "Broadcast Standard".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0,   luma_max: 10,  color: [0x40, 0x00, 0x80], label: "Black crush".into() },
+                FalseColorStop { luma_min: 11,  luma_max: 20,  color: [0x80, 0x00, 0xc0], label: "Very underexposed".into() },
+                FalseColorStop { luma_min: 21,  luma_max: 35,  color: [0x00, 0x00, 0xff], label: "Underexposed".into() },
+                FalseColorStop { luma_min: 36,  luma_max: 55,  color: [0x00, 0x80, 0xc0], label: "Dark".into() },
+                FalseColorStop { luma_min: 56,  luma_max: 75,  color: [0x00, 0x90, 0x40], label: "Below mid".into() },
+                FalseColorStop { luma_min: 76,  luma_max: 95,  color: [0x00, 0xb0, 0x00], label: "Skin shadow".into() },
+                FalseColorStop { luma_min: 96,  luma_max: 115, color: [0x40, 0xc0, 0x00], label: "Mid grey".into() },
+                FalseColorStop { luma_min: 116, luma_max: 135, color: [0x80, 0xc0, 0x00], label: "Proper exposure".into() },
+                FalseColorStop { luma_min: 136, luma_max: 165, color: [0xc0, 0xc0, 0x00], label: "Bright".into() },
+                FalseColorStop { luma_min: 166, luma_max: 195, color: [0xe0, 0x80, 0x00], label: "Highlight".into() },
+                FalseColorStop { luma_min: 196, luma_max: 220, color: [0xff, 0x40, 0x00], label: "Hot".into() },
+                FalseColorStop { luma_min: 221, luma_max: 240, color: [0xff, 0x00, 0x00], label: "Near clip".into() },
+                FalseColorStop { luma_min: 241, luma_max: 255, color: [0xff, 0x40, 0x80], label: "Clipped".into() },
+            ],
+        }
+    }
+
+    /// ARRI LogC-style palette: blue shadows, green mids, pink highlights.
+    pub fn arri() -> Self {
+        Self {
+            name: "ARRI".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0,   luma_max: 5,   color: [0x10, 0x00, 0x20], label: "Black".into() },
+                FalseColorStop { luma_min: 6,   luma_max: 20,  color: [0x20, 0x00, 0x60], label: "Near black".into() },
+                FalseColorStop { luma_min: 21,  luma_max: 40,  color: [0x00, 0x20, 0xb0], label: "Shadows".into() },
+                FalseColorStop { luma_min: 41,  luma_max: 60,  color: [0x00, 0x60, 0xc0], label: "Dark tones".into() },
+                FalseColorStop { luma_min: 61,  luma_max: 80,  color: [0x00, 0x90, 0x80], label: "Lower mid".into() },
+                FalseColorStop { luma_min: 81,  luma_max: 100, color: [0x00, 0xa0, 0x00], label: "Middle grey".into() },
+                FalseColorStop { luma_min: 101, luma_max: 120, color: [0x50, 0xb0, 0x00], label: "Skin tone".into() },
+                FalseColorStop { luma_min: 121, luma_max: 150, color: [0xa0, 0xb0, 0x00], label: "Upper mid".into() },
+                FalseColorStop { luma_min: 151, luma_max: 180, color: [0xd0, 0x90, 0x00], label: "Highlight".into() },
+                FalseColorStop { luma_min: 181, luma_max: 210, color: [0xe0, 0x50, 0x20], label: "Bright".into() },
+                FalseColorStop { luma_min: 211, luma_max: 235, color: [0xff, 0x30, 0x60], label: "Very bright".into() },
+                FalseColorStop { luma_min: 236, luma_max: 250, color: [0xff, 0x60, 0xa0], label: "Near clip".into() },
+                FalseColorStop { luma_min: 251, luma_max: 255, color: [0xff, 0x90, 0xd0], label: "Clipped".into() },
+            ],
+        }
+    }
+
+    /// RED-style palette: teal shadows, green mids, orange-red highlights.
+    pub fn red() -> Self {
+        Self {
+            name: "RED".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0,   luma_max: 8,   color: [0x10, 0x10, 0x30], label: "Black".into() },
+                FalseColorStop { luma_min: 9,   luma_max: 25,  color: [0x00, 0x30, 0x60], label: "Deep shadow".into() },
+                FalseColorStop { luma_min: 26,  luma_max: 45,  color: [0x00, 0x60, 0x80], label: "Shadow".into() },
+                FalseColorStop { luma_min: 46,  luma_max: 65,  color: [0x00, 0x80, 0x70], label: "Dark mid".into() },
+                FalseColorStop { luma_min: 66,  luma_max: 85,  color: [0x00, 0x98, 0x40], label: "Lower mid".into() },
+                FalseColorStop { luma_min: 86,  luma_max: 105, color: [0x30, 0xa8, 0x00], label: "Middle grey".into() },
+                FalseColorStop { luma_min: 106, luma_max: 130, color: [0x70, 0xb0, 0x00], label: "Skin tone".into() },
+                FalseColorStop { luma_min: 131, luma_max: 155, color: [0xb0, 0xa0, 0x00], label: "Upper mid".into() },
+                FalseColorStop { luma_min: 156, luma_max: 180, color: [0xd0, 0x70, 0x00], label: "Bright".into() },
+                FalseColorStop { luma_min: 181, luma_max: 210, color: [0xe8, 0x40, 0x00], label: "Highlight".into() },
+                FalseColorStop { luma_min: 211, luma_max: 240, color: [0xff, 0x20, 0x00], label: "Hot".into() },
+                FalseColorStop { luma_min: 241, luma_max: 255, color: [0xff, 0x60, 0x60], label: "Clipped".into() },
+            ],
+        }
+    }
+
+    /// Pre-build a 256-entry LUT: luma index → [R, G, B].
+    /// Uncovered luma values map to [0, 0, 0] (passthrough sentinel).
+    pub fn build_lut(&self) -> [u8; 768] {
+        let mut lut = [0u8; 768];
+        for stop in &self.stops {
+            for luma in stop.luma_min..=stop.luma_max {
+                let idx = luma as usize * 3;
+                lut[idx]     = stop.color[0];
+                lut[idx + 1] = stop.color[1];
+                lut[idx + 2] = stop.color[2];
+            }
+        }
+        lut
+    }
+
+    /// Return all built-in presets.
+    pub fn built_ins() -> Vec<FalseColorPalette> {
+        vec![Self::broadcast(), Self::arri(), Self::red()]
+    }
+
+    /// Count of luma values (0–255) not covered by any stop.
+    pub fn unmapped_count(&self) -> u32 {
+        let mut covered = [false; 256];
+        for stop in &self.stops {
+            for luma in stop.luma_min..=stop.luma_max {
+                covered[luma as usize] = true;
+            }
+        }
+        covered.iter().filter(|&&c| !c).count() as u32
+    }
+
+    /// Check for overlapping stop ranges. Returns pairs of indices that overlap.
+    pub fn overlapping_stops(&self) -> Vec<(usize, usize)> {
+        let mut overlaps = Vec::new();
+        for i in 0..self.stops.len() {
+            for j in (i + 1)..self.stops.len() {
+                if self.stops[i].luma_min <= self.stops[j].luma_max
+                    && self.stops[j].luma_min <= self.stops[i].luma_max
+                {
+                    overlaps.push((i, j));
+                }
+            }
+        }
+        overlaps
+    }
+
+    /// Sort stops by luma_min.
+    pub fn sort_stops(&mut self) {
+        self.stops.sort_by_key(|s| s.luma_min);
+    }
+}
+
+fn default_false_color_palette() -> FalseColorPalette {
+    FalseColorPalette::broadcast()
 }
 
 /// Advanced / power-user preferences.
@@ -2068,5 +2214,100 @@ mod tests {
         assert_eq!(prefs.general.recent_projects[0].path, PathBuf::from("/projects/old1.klipp"));
         assert_eq!(prefs.general.recent_projects[0].name, "old1");
         assert!(prefs.general.recent_projects[0].duration_secs.is_none());
+    }
+
+    // ── False color palette tests ──
+
+    #[test]
+    fn broadcast_lut_maps_known_values() {
+        let lut = FalseColorPalette::broadcast().build_lut();
+        // luma 0 → deep purple #400080
+        assert_eq!(&lut[0..3], &[0x40, 0x00, 0x80]);
+        // luma 128 → yellow-green #80c000 (116–135 range)
+        assert_eq!(&lut[128 * 3..128 * 3 + 3], &[0x80, 0xc0, 0x00]);
+        // luma 255 → pink-white #ff4080
+        assert_eq!(&lut[255 * 3..255 * 3 + 3], &[0xff, 0x40, 0x80]);
+    }
+
+    #[test]
+    fn partial_palette_leaves_gaps_as_passthrough() {
+        let palette = FalseColorPalette {
+            name: "Partial".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0, luma_max: 127, color: [0xff, 0x00, 0x00], label: "Low".into() },
+            ],
+        };
+        let lut = palette.build_lut();
+        // Covered: luma 64 → red
+        assert_eq!(&lut[64 * 3..64 * 3 + 3], &[0xff, 0x00, 0x00]);
+        // Uncovered: luma 200 → passthrough sentinel [0, 0, 0]
+        assert_eq!(&lut[200 * 3..200 * 3 + 3], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn palette_round_trip_json() {
+        let palette = FalseColorPalette::broadcast();
+        let json = serde_json::to_string(&palette).expect("serialize");
+        let restored: FalseColorPalette = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(palette, restored);
+    }
+
+    #[test]
+    fn default_palette_has_13_stops() {
+        let palette = default_false_color_palette();
+        assert_eq!(palette.stops.len(), 13);
+    }
+
+    #[test]
+    fn overlapping_stops_detected() {
+        let palette = FalseColorPalette {
+            name: "Test".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0, luma_max: 50, color: [0xff, 0, 0], label: "A".into() },
+                FalseColorStop { luma_min: 40, luma_max: 100, color: [0, 0xff, 0], label: "B".into() },
+                FalseColorStop { luma_min: 101, luma_max: 200, color: [0, 0, 0xff], label: "C".into() },
+            ],
+        };
+        let overlaps = palette.overlapping_stops();
+        assert_eq!(overlaps.len(), 1);
+        assert_eq!(overlaps[0], (0, 1));
+    }
+
+    #[test]
+    fn unmapped_count_with_gap() {
+        let palette = FalseColorPalette {
+            name: "Test".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 0, luma_max: 99, color: [0xff, 0, 0], label: "A".into() },
+                FalseColorStop { luma_min: 111, luma_max: 255, color: [0, 0xff, 0], label: "B".into() },
+            ],
+        };
+        // Gap: 100–110 = 11 unmapped values
+        assert_eq!(palette.unmapped_count(), 11);
+    }
+
+    #[test]
+    fn sort_stops_by_luma() {
+        let mut palette = FalseColorPalette {
+            name: "Test".into(),
+            stops: vec![
+                FalseColorStop { luma_min: 100, luma_max: 200, color: [0, 0, 0xff], label: "C".into() },
+                FalseColorStop { luma_min: 5, luma_max: 50, color: [0xff, 0, 0], label: "A".into() },
+                FalseColorStop { luma_min: 51, luma_max: 99, color: [0, 0xff, 0], label: "B".into() },
+            ],
+        };
+        palette.sort_stops();
+        assert_eq!(palette.stops[0].label, "A");
+        assert_eq!(palette.stops[1].label, "B");
+        assert_eq!(palette.stops[2].label, "C");
+    }
+
+    #[test]
+    fn viewer_prefs_with_palette_round_trip() {
+        let mut prefs = Preferences::default();
+        prefs.viewer.false_color_palette = FalseColorPalette::arri();
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.viewer.false_color_palette.name, "ARRI");
+        assert_eq!(rt.viewer.false_color_palette.stops.len(), 13);
     }
 }

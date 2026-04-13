@@ -576,6 +576,10 @@ pub struct AppState {
     // Viewer overlay (zebra / false color)
     pub viewer_overlays: ViewerOverlays,
     pub frame_count: u64, // for zebra animation
+    /// Pre-built 256-entry LUT for false color: luma → [R, G, B]. Rebuilt when palette changes.
+    pub false_color_lut: [u8; 768],
+    /// Pending false color palette switch from toolbar quick-switcher (applied next frame).
+    pub pending_false_color_palette: Option<crate::prefs::FalseColorPalette>,
 
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
@@ -1537,6 +1541,8 @@ impl Default for AppState {
             grade_still_compare: false,
             viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
+            false_color_lut: crate::prefs::FalseColorPalette::broadcast().build_lut(),
+            pending_false_color_palette: None,
             available_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_filter_builtin: true,

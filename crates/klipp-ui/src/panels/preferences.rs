@@ -2539,6 +2539,11 @@ impl PreferencesPanel {
         });
 
         ui.add_space(12.0);
+        ui.label(egui::RichText::new("False Color").strong().size(12.0));
+        ui.add_space(4.0);
+        Self::show_false_color_editor(ui, prefs, dirty);
+
+        ui.add_space(12.0);
         ui.label(egui::RichText::new("Overlays").strong().size(12.0));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -2571,6 +2576,173 @@ impl PreferencesPanel {
                 prefs.viewer.fullscreen_overlay_timeout_secs = v; *dirty = true;
             }
         });
+    }
+
+    fn show_false_color_editor(ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+        use crate::prefs::{FalseColorPalette, FalseColorStop};
+
+        let built_ins = FalseColorPalette::built_ins();
+        let current_name = prefs.viewer.false_color_palette.name.clone();
+
+        // Determine if current palette matches a built-in
+        let is_built_in = built_ins.iter().any(|p| *p == prefs.viewer.false_color_palette);
+        let display_name = if is_built_in { current_name.as_str() } else { "Custom" };
+
+        // Preset dropdown
+        ui.horizontal(|ui| {
+            ui.label("Preset:");
+            egui::ComboBox::from_id_salt("fc_preset")
+                .selected_text(display_name)
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for preset in &built_ins {
+                        let selected = prefs.viewer.false_color_palette == *preset;
+                        if ui.selectable_label(selected, &preset.name).clicked() {
+                            prefs.viewer.false_color_palette = preset.clone();
+                            *dirty = true;
+                        }
+                    }
+                });
+
+            // Reset to preset button
+            if let Some(matching) = built_ins.iter().find(|p| p.name == current_name) {
+                let differs = *matching != prefs.viewer.false_color_palette;
+                if ui.add_enabled(differs, egui::Button::new("Reset to preset")).clicked() {
+                    prefs.viewer.false_color_palette = matching.clone();
+                    *dirty = true;
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Validation warnings
+        let overlaps = prefs.viewer.false_color_palette.overlapping_stops();
+        let unmapped = prefs.viewer.false_color_palette.unmapped_count();
+        if !overlaps.is_empty() {
+            ui.colored_label(egui::Color32::from_rgb(0xff, 0x40, 0x40),
+                format!("{} overlapping stop pair(s) — resolve manually", overlaps.len()));
+        }
+        if unmapped > 0 {
+            ui.colored_label(egui::Color32::from_rgb(0xc0, 0x90, 0x30),
+                format!("{unmapped} luma value(s) unmapped (will show source color)"));
+        }
+
+        ui.add_space(4.0);
+
+        // Column headers
+        let dim_text = egui::Color32::from_rgb(0x70, 0x70, 0x80);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("#").color(dim_text).size(10.0));
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Min").color(dim_text).size(10.0));
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new("Max").color(dim_text).size(10.0));
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Color").color(dim_text).size(10.0));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Label").color(dim_text).size(10.0));
+        });
+
+        // Determine which stops overlap (for red highlighting)
+        let overlap_set: std::collections::HashSet<usize> = overlaps.iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .collect();
+
+        // Stop rows
+        let mut remove_idx = None;
+        let stop_count = prefs.viewer.false_color_palette.stops.len();
+        let mut any_changed = false;
+        for i in 0..stop_count {
+            let stop = &mut prefs.viewer.false_color_palette.stops[i];
+            let is_overlap = overlap_set.contains(&i);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                let num_text = format!("{}", i + 1);
+                if is_overlap {
+                    ui.label(egui::RichText::new(&num_text).color(egui::Color32::from_rgb(0xff, 0x40, 0x40)).size(11.0));
+                } else {
+                    ui.label(egui::RichText::new(&num_text).color(dim_text).size(11.0));
+                }
+                ui.add_space(4.0);
+
+                // Luma min
+                let mut min_val = stop.luma_min;
+                if ui.add(egui::DragValue::new(&mut min_val).range(0..=254).speed(1.0)).changed() {
+                    stop.luma_min = min_val;
+                    any_changed = true;
+                }
+
+                // Luma max
+                let mut max_val = stop.luma_max;
+                let max_lower = stop.luma_min.saturating_add(1);
+                if ui.add(egui::DragValue::new(&mut max_val).range(max_lower..=255).speed(1.0)).changed() {
+                    stop.luma_max = max_val;
+                    any_changed = true;
+                }
+
+                // Color swatch
+                let mut c = egui::Color32::from_rgb(stop.color[0], stop.color[1], stop.color[2]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    stop.color = [c.r(), c.g(), c.b()];
+                    any_changed = true;
+                }
+
+                // Label
+                let mut label = stop.label.clone();
+                let resp = ui.add(egui::TextEdit::singleline(&mut label).desired_width(120.0).char_limit(24));
+                if resp.changed() {
+                    stop.label = label;
+                    any_changed = true;
+                }
+
+                // Delete button (disabled if only 1 stop)
+                if ui.add_enabled(stop_count > 1, egui::Button::new("\u{2212}").min_size(egui::vec2(20.0, 18.0))).clicked() {
+                    remove_idx = Some(i);
+                    any_changed = true;
+                }
+            });
+        }
+
+        // Handle removal
+        if let Some(idx) = remove_idx {
+            prefs.viewer.false_color_palette.stops.remove(idx);
+        }
+
+        // Add stop button
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            if ui.button("+ Add stop").clicked() {
+                // Find the first uncovered luma value, or append at 254–255
+                let mut covered = [false; 256];
+                for s in &prefs.viewer.false_color_palette.stops {
+                    for l in s.luma_min..=s.luma_max {
+                        covered[l as usize] = true;
+                    }
+                }
+                let gap_start = covered.iter().position(|&c| !c).unwrap_or(254);
+                let gap_end = covered[gap_start..].iter().position(|&c| c)
+                    .map(|p| gap_start + p - 1)
+                    .unwrap_or(255);
+                prefs.viewer.false_color_palette.stops.push(FalseColorStop {
+                    luma_min: gap_start as u8,
+                    luma_max: gap_end as u8,
+                    color: [0x80, 0x80, 0x80],
+                    label: "New stop".into(),
+                });
+                any_changed = true;
+            }
+        });
+
+        if any_changed {
+            // Sort stops and mark as custom if no longer matching a preset
+            prefs.viewer.false_color_palette.sort_stops();
+            if !FalseColorPalette::built_ins().iter().any(|p| *p == prefs.viewer.false_color_palette) {
+                prefs.viewer.false_color_palette.name = "Custom".into();
+            }
+            *dirty = true;
+        }
     }
 
     fn show_advanced(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
