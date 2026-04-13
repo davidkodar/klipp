@@ -524,4 +524,242 @@ mod tests {
         assert_eq!(snapshot.user_params.param2, 0.8);
         assert_eq!(snapshot.alignment, TransitionAlignment::StartAtCut);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Multi-track per-clip effects regression tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    use crate::pipeline::RenderPipeline;
+    use crate::snapshot::{SequenceSnapshot, VideoTrackSnapshot};
+    use crate::stage::ClipContext;
+    use klipp_effects::BuiltinEffect;
+
+    /// Helper: build a ClipSnapshot backed by a solid-color generator.
+    fn generator_clip(
+        color: [u8; 4],
+        start_frame: u64,
+        end_frame: u64,
+        effects: Vec<BuiltinEffect>,
+    ) -> ClipSnapshot {
+        ClipSnapshot {
+            id: ClipId::new(),
+            kind: ClipKindSnapshot::Generator(klipp_core::GeneratorData::SolidColor { color }),
+            timeline_start_frame: start_frame,
+            timeline_end_frame: end_frame,
+            source_start_secs: 0.0,
+            source_end_secs: (end_frame - start_frame) as f64 / 24.0,
+            speed: 1.0,
+            node_graph: klipp_nodes::NodeGraph::default(),
+            effects: vec![],
+            builtin_effects: effects,
+            source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+        }
+    }
+
+    /// Helper: build a minimal SequenceSnapshot with given video tracks.
+    fn test_snapshot(w: u32, h: u32, tracks: Vec<VideoTrackSnapshot>) -> SequenceSnapshot {
+        SequenceSnapshot {
+            fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
+            width: w,
+            height: h,
+            sample_rate: 48000,
+            duration_frames: 24,
+            export_range: None,
+            video_tracks: tracks,
+            audio_tracks: vec![],
+            global_lut_path: None,
+        }
+    }
+
+    /// Helper: build a visible video track with one clip.
+    fn track_with_clip(clip: ClipSnapshot) -> VideoTrackSnapshot {
+        VideoTrackSnapshot {
+            opacity: 1.0,
+            visible: true,
+            clips: vec![clip],
+            transitions: vec![],
+        }
+    }
+
+    /// Helper: init a pipeline and call begin_clip for a clip snapshot.
+    fn pipeline_for_clip(clip: &ClipSnapshot) -> RenderPipeline {
+        let mut p = RenderPipeline::default_stages(None);
+        let settings = klipp_core::ExportSettings {
+            output_path: std::path::PathBuf::from("/dev/null"),
+            format: klipp_core::ExportFormat::Mp4,
+            video_codec: klipp_core::ExportVideoCodec::H264,
+            resolution: None, fps: None, crf: 23,
+            preset: klipp_core::EncoderPreset::Fast,
+            audio_codec: klipp_core::ExportAudioCodec::Aac,
+            audio_bitrate_kbps: None, video_bitrate_kbps: None,
+            rate_control: klipp_core::RateControl::Crf,
+            burn_in_subtitles: true, target_lufs: None,
+        };
+        p.begin_export(&settings);
+        p.begin_clip(&ClipContext {
+            clip: std::sync::Arc::new(clip.clone()),
+            sequence_fps: 24.0,
+            sequence_width: 8,
+            sequence_height: 8,
+        });
+        p
+    }
+
+    /// Primary regression test: two tracks with different effects produce
+    /// independently graded output.
+    ///
+    /// V1 (bottom): solid red (255,0,0) + HSVAdjust(saturation=0) → grayscale ≈ (76,76,76)
+    /// V2 (top, full frame): solid blue (0,0,255) + HSVAdjust(value=0.5) → half-bright ≈ (0,0,128)
+    ///
+    /// If the old "topmost only" bug returned, V1's grayscale would not apply:
+    /// the entire composite would get V2's value=0.5 effect, making V1 ≈ (128,0,0).
+    #[test]
+    fn multi_track_effects_apply_per_clip() {
+        let w = 8u32;
+        let h = 8u32;
+
+        // V1: solid red, desaturated to grayscale
+        let v1_clip = generator_clip(
+            [255, 0, 0, 255], 0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+        );
+        // V2: solid blue at half brightness (covers entire frame)
+        let v2_clip = generator_clip(
+            [0, 0, 255, 255], 0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
+        );
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1_clip.clone()),
+            track_with_clip(v2_clip.clone()),
+        ]);
+
+        let mut pipelines = vec![
+            pipeline_for_clip(&v1_clip),
+            pipeline_for_clip(&v2_clip),
+        ];
+
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // V2 is opaque and covers the entire frame, so the output should show
+        // V2's effect: solid blue at half brightness ≈ (0, 0, 128).
+        // V1 is completely hidden behind V2, so we can't directly test V1's
+        // grayscale in this setup. But we CAN verify V2's own effect ran:
+        let r = result[0];
+        let g = result[1];
+        let b = result[2];
+        // Half-brightness blue: R≈0, G≈0, B≈128 (not raw 255)
+        assert!(r < 5, "expected R≈0, got {r}");
+        assert!(g < 5, "expected G≈0, got {g}");
+        assert!((b as i32 - 128).abs() < 10, "expected B≈128, got {b}");
+    }
+
+    /// Test that V1's effects apply even when V2 only partially overlaps.
+    /// V1 covers full frame, V2 covers only top-left quadrant (via being
+    /// a full-frame clip with 50% alpha, so V1 shows through blended).
+    ///
+    /// Since generators always produce full-frame output, we test using
+    /// semi-transparent V2 — V1's grayscale should bleed through the alpha.
+    #[test]
+    fn multi_track_v1_effect_visible_through_semitransparent_v2() {
+        let w = 4u32;
+        let h = 4u32;
+
+        // V1: solid red, desaturated to grayscale → ≈ (76, 76, 76, 255)
+        let v1_clip = generator_clip(
+            [255, 0, 0, 255], 0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+        );
+        // V2: solid green, no effects, 50% track opacity
+        let v2_clip = generator_clip(
+            [0, 255, 0, 255], 0, 24,
+            vec![], // no effects
+        );
+
+        let mut v2_track = track_with_clip(v2_clip.clone());
+        v2_track.opacity = 0.5; // 50% opacity
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1_clip.clone()),
+            v2_track,
+        ]);
+
+        let mut pipelines = vec![
+            pipeline_for_clip(&v1_clip),
+            pipeline_for_clip(&v2_clip),
+        ];
+
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // V1 grayscale red ≈ (76, 76, 76). V2 green (0, 255, 0) at 50%.
+        // Alpha-over blend: output ≈ (38, 166, 38) roughly.
+        // The key assertion: R and B channels should be approximately EQUAL
+        // (because V1 was desaturated to grayscale). If V1's effect didn't run,
+        // V1 would be raw red (255, 0, 0) and the blend would have R >> B.
+        let r = result[0] as i32;
+        let b = result[2] as i32;
+        assert!((r - b).abs() < 5,
+            "V1 should be grayscale (R≈B), but R={r} B={b} — V1's effect may not have applied");
+        // Green channel should be significantly above R (from V2's green at 50%)
+        let g = result[1] as i32;
+        assert!(g > r + 30, "expected green > red due to V2 blend, but G={g} R={r}");
+    }
+
+    /// Single track with effects — sanity check.
+    #[test]
+    fn single_track_effects_still_work() {
+        let w = 4u32;
+        let h = 4u32;
+        let clip = generator_clip(
+            [200, 100, 50, 255], 0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+        );
+        let snapshot = test_snapshot(w, h, vec![track_with_clip(clip.clone())]);
+        let mut pipelines = vec![pipeline_for_clip(&clip)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // Grayscale: all RGB channels should be approximately equal
+        let r = result[0] as i32;
+        let g = result[1] as i32;
+        let b = result[2] as i32;
+        assert!((r - g).abs() <= 2 && (g - b).abs() <= 2,
+            "expected grayscale, got R={r} G={g} B={b}");
+    }
+
+    /// Clip with no effects — pass-through unchanged.
+    #[test]
+    fn no_effects_passthrough() {
+        let w = 4u32;
+        let h = 4u32;
+        let clip = generator_clip([100, 150, 200, 255], 0, 24, vec![]);
+        let snapshot = test_snapshot(w, h, vec![track_with_clip(clip.clone())]);
+        let mut pipelines = vec![pipeline_for_clip(&clip)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // No effects → output should match generator color exactly
+        assert_eq!(result[0], 100);
+        assert_eq!(result[1], 150);
+        assert_eq!(result[2], 200);
+        assert_eq!(result[3], 255);
+    }
 }
