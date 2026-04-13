@@ -1,11 +1,14 @@
 use crate::clip_decoder::RenderDecoder;
 use crate::error::RenderError;
+use crate::pipeline::RenderPipeline;
 use crate::snapshot::{
     ClipKindSnapshot, ClipSnapshot, SequenceSnapshot, TransitionSnapshot, VideoTrackSnapshot,
 };
+use crate::stage::FrameContext;
 use klipp_core::ClipId;
 use klipp_title::TitleRenderer;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Composites all video tracks into a single RGBA frame for each timeline frame.
 ///
@@ -26,19 +29,24 @@ impl FrameCompositor {
     }
 
     /// Composite all video tracks at the given timeline frame into one RGBA frame.
+    /// Each clip's effects (color grade, OFX, builtins) are applied to its decoded
+    /// frame BEFORE compositing, so every clip renders with its own effects.
     /// Returns `None` if there is nothing to render (all tracks empty/invisible).
     pub fn composite_frame(
         &mut self,
         frame_num: u64,
+        export_frame: u64,
         snapshot: &SequenceSnapshot,
         decoders: &mut HashMap<ClipId, RenderDecoder>,
+        pipelines: &mut [RenderPipeline],
     ) -> Result<Option<Vec<u8>>, RenderError> {
         let w = snapshot.width;
         let h = snapshot.height;
         let mut base: Option<Vec<u8>> = None;
 
-        // Process tracks bottom to top (index 0 = bottom, composited first)
-        for track in &snapshot.video_tracks {
+        // Process tracks bottom to top (index 0 = bottom, composited first).
+        // Each clip's effects run on its own decoded frame before compositing.
+        for (track_idx, track) in snapshot.video_tracks.iter().enumerate() {
             if !track.visible {
                 continue;
             }
@@ -55,7 +63,7 @@ impl FrameCompositor {
                     let raw = self.decode_clip_frame(c, decoders, frame_num, snapshot.fps, w, h)?;
 
                     // Check for active transition on this track (Gap 6)
-                    if let Some(transitioned) =
+                    let decoded = if let Some(transitioned) =
                         self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, c, track, decoders, w, h)?
                     {
                         transitioned
@@ -64,7 +72,19 @@ impl FrameCompositor {
                             Some(f) => f,
                             None => continue, // Gap clip or exhausted decoder
                         }
-                    }
+                    };
+
+                    // Apply per-clip effects (color grade, OFX, builtins) before compositing
+                    let clip_frame = frame_num.saturating_sub(c.timeline_start_frame);
+                    let ctx = FrameContext {
+                        export_frame,
+                        clip_frame,
+                        clip_time_secs: clip_frame as f64 / snapshot.fps,
+                        clip: Some(Arc::new(c.clone())),
+                        fps: snapshot.fps,
+                        track_index: track_idx,
+                    };
+                    pipelines[track_idx].process_frame(decoded, w, h, &ctx)
                 }
             };
 

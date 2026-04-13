@@ -4,8 +4,8 @@ use crate::compositor::FrameCompositor;
 use crate::encoder::Encoder;
 use crate::error::RenderError;
 use crate::pipeline::RenderPipeline;
-use crate::snapshot::{ClipKindSnapshot, ClipSnapshot, SequenceSnapshot};
-use crate::stage::{ClipContext, FrameContext};
+use crate::snapshot::{ClipKindSnapshot, SequenceSnapshot};
+use crate::stage::ClipContext;
 use klipp_core::{ClipId, ExportSettings};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -255,51 +255,22 @@ impl ExportJob {
                 }
             }
 
-            // ─── Composite all video tracks ───────────────────────
+            // ─── Composite all video tracks with per-clip effects ──
+            // Each clip's effects (color grade, OFX, builtins) are applied to its
+            // decoded frame before compositing, so every clip renders with its own
+            // effects. This replaces the previous "topmost clip only" approach.
             let rgba = compositor.composite_frame(
                 frame_num,
+                export_frame_num,
                 &self.snapshot,
                 &mut decoders,
+                &mut pipelines,
             )?;
 
             // Black frame if nothing to composite
-            let rgba = rgba.unwrap_or_else(|| {
+            let processed = rgba.unwrap_or_else(|| {
                 vec![0u8; (self.snapshot.width * self.snapshot.height * 4) as usize]
             });
-
-            // ─── Run through per-track processing pipeline ────────
-            // For the composited frame, we apply the pipeline of the topmost
-            // visible track that has an active clip at this frame.
-            let (pipeline_idx, active_clip) = find_topmost_active_clip(
-                &self.snapshot,
-                frame_num,
-            );
-
-            let processed = if let Some(idx) = pipeline_idx {
-                let clip_frame = active_clip
-                    .as_ref()
-                    .map(|c| frame_num.saturating_sub(c.timeline_start_frame))
-                    .unwrap_or(0);
-                let clip_time_secs = clip_frame as f64 / self.snapshot.fps;
-
-                let ctx = FrameContext {
-                    export_frame: export_frame_num,
-                    clip_frame,
-                    clip_time_secs,
-                    clip: active_clip.map(|c| Arc::new(c.clone())),
-                    fps: self.snapshot.fps,
-                    track_index: idx,
-                };
-
-                pipelines[idx].process_frame(
-                    rgba,
-                    self.snapshot.width,
-                    self.snapshot.height,
-                    &ctx,
-                )
-            } else {
-                rgba
-            };
 
             // ─── Encode video frame (with aspect-preserving fit if needed) ──
             if needs_fit {
@@ -452,26 +423,6 @@ fn fit_and_pad_rgba(
     Ok(canvas)
 }
 
-/// Find the topmost visible track that has an active clip at this frame.
-/// Returns (track_index, clip) for the pipeline to use.
-fn find_topmost_active_clip(
-    snapshot: &SequenceSnapshot,
-    frame_num: u64,
-) -> (Option<usize>, Option<&ClipSnapshot>) {
-    // Iterate top-to-bottom (highest index = topmost track)
-    for (idx, track) in snapshot.video_tracks.iter().enumerate().rev() {
-        if !track.visible {
-            continue;
-        }
-        if let Some(clip) = track.clips.iter().find(|c| {
-            frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame
-        }) {
-            return (Some(idx), Some(clip));
-        }
-    }
-    (None, None)
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // EBU R128 loudness normalization — two-pass measurement + static gain
 // ═══════════════════════════════════════════════════════════════════
@@ -605,74 +556,6 @@ mod tests {
         // Just verify the progress counter mechanism
         progress.store(42, Ordering::Relaxed);
         assert_eq!(progress.load(Ordering::Relaxed), 42);
-    }
-
-    #[test]
-    fn find_topmost_active_clip_works() {
-        let snapshot = SequenceSnapshot {
-            fps: 24.0,
-            fps_num: 24,
-            fps_den: 1,
-            width: 64,
-            height: 64,
-            sample_rate: 48000,
-            duration_frames: 48,
-            export_range: None,
-            video_tracks: vec![
-                VideoTrackSnapshot {
-                    opacity: 1.0,
-                    visible: true,
-                    clips: vec![ClipSnapshot {
-                        id: ClipId::new(),
-                        kind: ClipKindSnapshot::Gap,
-                        timeline_start_frame: 0,
-                        timeline_end_frame: 48,
-                        source_start_secs: 0.0,
-                        source_end_secs: 2.0,
-                        speed: 1.0,
-                        node_graph: klipp_nodes::NodeGraph::default(),
-                        effects: vec![],
-                        builtin_effects: vec![],
-                        source_rotation: 0,
-                        stabilization_data: None,
-                        smoothed_trajectory: None, }],
-                    transitions: vec![],
-                },
-                VideoTrackSnapshot {
-                    opacity: 1.0,
-                    visible: true,
-                    clips: vec![ClipSnapshot {
-                        id: ClipId::new(),
-                        kind: ClipKindSnapshot::Gap,
-                        timeline_start_frame: 10,
-                        timeline_end_frame: 30,
-                        source_start_secs: 0.0,
-                        source_end_secs: 0.8,
-                        speed: 1.0,
-                        node_graph: klipp_nodes::NodeGraph::default(),
-                        effects: vec![],
-                        builtin_effects: vec![],
-                        source_rotation: 0,
-                        stabilization_data: None,
-                        smoothed_trajectory: None, }],
-                    transitions: vec![],
-                },
-            ],
-            audio_tracks: vec![],
-            global_lut_path: None,
-        };
-
-        // Frame 5: only track 0 has a clip → returns track 0
-        let (idx, _) = find_topmost_active_clip(&snapshot, 5);
-        assert_eq!(idx, Some(0));
-
-        // Frame 15: both tracks have clips → returns track 1 (topmost)
-        let (idx, _) = find_topmost_active_clip(&snapshot, 15);
-        assert_eq!(idx, Some(1));
-
-        // Frame 40: only track 0 → returns track 0
-        let (idx, _) = find_topmost_active_clip(&snapshot, 40);
-        assert_eq!(idx, Some(0));
     }
 
     // ── LoudnessAnalysis math tests ─────────────────────────────────

@@ -87,10 +87,11 @@ fn compositor_with_gap_produces_none() {
 
     let mut compositor = FrameCompositor::new();
     let mut decoders = std::collections::HashMap::new();
+    let mut pipelines: Vec<klipp_render::RenderPipeline> = Vec::new();
 
     // No tracks → None
     let result = compositor
-        .composite_frame(0, &snapshot, &mut decoders)
+        .composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
         .unwrap();
     assert!(result.is_none());
 }
