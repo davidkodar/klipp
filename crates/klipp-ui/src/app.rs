@@ -1692,10 +1692,14 @@ impl KlippApp {
                     }
                     let mag = (gx * gx + gy * gy).sqrt();
                     if mag > threshold {
+                        // Blend peaking color by edge strength — strong edges glow
+                        // brightly, weak edges fade to nothing
+                        let alpha = ((mag - threshold) / (255.0 - threshold)).min(1.0);
+                        let inv = 1.0 - alpha;
                         let idx = (y * w + x) * 4;
-                        rgba_bytes[idx] = pr;
-                        rgba_bytes[idx + 1] = pg;
-                        rgba_bytes[idx + 2] = pb;
+                        rgba_bytes[idx] = (rgba_bytes[idx] as f32 * inv + pr as f32 * alpha) as u8;
+                        rgba_bytes[idx + 1] = (rgba_bytes[idx + 1] as f32 * inv + pg as f32 * alpha) as u8;
+                        rgba_bytes[idx + 2] = (rgba_bytes[idx + 2] as f32 * inv + pb as f32 * alpha) as u8;
                     }
                 }
             }
