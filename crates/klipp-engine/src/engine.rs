@@ -2052,14 +2052,20 @@ impl PlaybackEngine {
             }
         }
 
-        // Composite V1 + all overlay tracks
-        let t_composite = std::time::Instant::now();
+        // Grade V1's frame through the full processing pipeline (scopes, stabilization,
+        // comparison mode, keyframes, global LUT) BEFORE compositing. V1 keeps its existing
+        // post_process_rgba() path unchanged — only the timing moves from post-composite
+        // to pre-composite so overlays don't get V1's grade applied to them.
         let (final_w, final_h) = (frame.width, frame.height);
+        let v1_graded = self.post_process_rgba(frame.into_rgba(), final_w, final_h);
+
+        // Composite V1 (graded) + overlay tracks (each graded via apply_clip_effects)
+        let t_composite = std::time::Instant::now();
         let final_rgba = {
             use crate::composite::{composite_layers, CompositeLayer};
             let mut layers = vec![
                 CompositeLayer {
-                    rgba: frame.into_rgba(),
+                    rgba: v1_graded,
                     width: final_w,
                     height: final_h,
                     opacity: {
@@ -2070,31 +2076,46 @@ impl PlaybackEngine {
                 },
             ];
 
-            // Add overlay frames in track order (bottom-to-top).
-            // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
-            // This is evaluated each frame so paused opacity drags update the visible composite.
-            let seq = self.sequence.read().unwrap();
-            let fps_f64 = self.fps.as_f64();
-            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
-            for (track_idx, track) in &overlay_tracks {
-                if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                    let clip_opacity = track
-                        .clip_at_timecode(self.playhead)
-                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                        .unwrap_or(1.0);
-                    let effective = track.opacity * clip_opacity;
-                    if effective > 0.001 {
+            // Gather overlay clip data while holding the sequence lock, then drop
+            // the lock before calling apply_clip_effects (which needs &mut self).
+            let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
+                let seq = self.sequence.read().unwrap();
+                let fps_f64 = self.fps.as_f64();
+                let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
+                overlay_tracks.iter().filter_map(|(track_idx, track)| {
+                    self.overlay_frames.get(track_idx).map(|_| {
+                        let clip_opacity = track
+                            .clip_at_timecode(self.playhead)
+                            .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                            .unwrap_or(1.0);
+                        let effective = track.opacity * clip_opacity;
+                        let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
+                        (*track_idx, effective, clip)
+                    })
+                }).collect()
+            };
+
+            // Each overlay clip's effects are applied before compositing so every
+            // clip renders with its own color grade, OFX chain, and builtin effects.
+            for (track_idx, effective, clip) in &overlay_clip_data {
+                if *effective > 0.001 {
+                    if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
+                        let mut ov_rgba = ov_frame.to_rgba();
+                        let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+                        if let Some(clip) = clip {
+                            let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                            ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
+                        }
                         layers.push(CompositeLayer {
-                            rgba: ov_frame.to_rgba(),
-                            width: ov_frame.width,
-                            height: ov_frame.height,
-                            opacity: effective,
+                            rgba: ov_rgba,
+                            width: ov_w,
+                            height: ov_h,
+                            opacity: *effective,
                             blend_mode: klipp_core::BlendMode::Normal,
                         });
                     }
                 }
             }
-            drop(seq);
 
             debug!("COMPOSITE layers={} sizes={:?} opacities={:?}",
                 layers.len(),
@@ -2114,9 +2135,6 @@ impl PlaybackEngine {
 
         // Check for active transition and blend if needed
         let final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
-
-        // Apply full post-processing pipeline (color grade → OFX → builtin FX → global LUT)
-        let final_rgba = self.post_process_rgba(final_rgba, final_w, final_h);
 
         // Write frame to the shared FrameBuffer
         let mut fb = self.frame_buffer.lock().unwrap();
@@ -4095,6 +4113,54 @@ impl PlaybackEngine {
         }
     }
 
+    /// Apply a clip's effects (node graph → builtin effects → OFX) to a decoded frame.
+    /// Simplified path for overlay clips — does NOT run scopes, stabilization, comparison
+    /// mode, or global LUT. V1 continues to use post_process_rgba_inner() for those.
+    fn apply_clip_effects(
+        &mut self,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        clip: &klipp_timeline::Clip,
+        clip_time_secs: f64,
+    ) -> Vec<u8> {
+        // 1. Node graph (color grade)
+        let rgba = if !clip.node_graph.is_identity() {
+            self.graph_executor.prepare_clip(&clip.node_graph);
+            let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
+            match self.graph_executor.execute(
+                &rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
+            ) {
+                Ok((result, _)) => result,
+                Err(e) => { tracing::error!("Overlay node graph failed: {e:?}"); rgba }
+            }
+        } else { rgba };
+
+        // 2. Builtin effects (GPU preferred, CPU fallback)
+        // TODO: evaluate keyframes for overlay clip effects — currently uses default values
+        let rgba = if !clip.builtin_effects.is_empty() {
+            let fx: Vec<_> = clip.builtin_effects.iter()
+                .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
+                .filter(|(_, enabled)| **enabled)
+                .map(|(e, _)| e.clone())
+                .collect();
+            if !fx.is_empty() {
+                if let Some(gpu) = &mut self.gpu_effects {
+                    gpu.apply_effects(&fx, rgba, width, height)
+                } else {
+                    klipp_effects::apply_effects(&fx, rgba, width, height)
+                }
+            } else { rgba }
+        } else { rgba };
+
+        // 3. OFX effects chain
+        if !clip.effects.is_empty() {
+            self.ofx_host.apply_effects_chain(&clip.effects, &rgba, width, height, clip_time_secs)
+        } else {
+            rgba
+        }
+    }
+
     fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         self.ensure_gpu_effects();
         let rgba_arc = Arc::new(rgba.clone());
@@ -4106,8 +4172,12 @@ impl PlaybackEngine {
         }
 
         // ── Smart render cache: check for cached graded frame ──
-        // Compute grade hash for current clip (recompute if clip changed)
-        let cache_key = {
+        // Skip render cache when overlays are present — cache keys don't represent
+        // multi-clip composite state. V1-only playback still benefits from the cache.
+        let has_overlays = !self.overlay_frames.is_empty();
+        let cache_key = if has_overlays {
+            None
+        } else {
             let seq = self.sequence.read().unwrap();
             let clip = seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -4127,7 +4197,7 @@ impl PlaybackEngine {
                         grade_hash: self.current_grade_hash,
                     })
                 } else {
-                    None // Identity grade — no need to cache
+                    None
                 }
             } else {
                 None

@@ -617,6 +617,127 @@ mod tests {
         assert_eq!(&dst[0..4], &[0, 0, 0, 255]);
         assert_eq!(&dst[4..8], &[255, 255, 255, 255]);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Viewer per-clip effects regression tests
+    //
+    // These exercise the same math the viewer uses: apply effects per-clip
+    // via klipp_effects::apply_effects(), then composite via composite_layers().
+    // They don't require the full engine — just the public effect and composite APIs.
+    // ═══════════════════════════════════════════════════════════════════
+
+    fn solid_frame(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
+        vec![r, g, b, a].repeat((w * h) as usize)
+    }
+
+    /// Viewer flow: V1 graded + V2 graded → composite.
+    /// V1 = solid red + grayscale, V2 = solid blue + half brightness.
+    /// Verifies each clip's effects run independently before compositing.
+    #[test]
+    fn viewer_per_clip_effects_two_tracks() {
+        let w = 4u32;
+        let h = 4u32;
+
+        // V1: solid red → grayscale via HSVAdjust(sat=0)
+        let v1_raw = solid_frame(255, 0, 0, 255, w, h);
+        let v1_graded = klipp_effects::apply_effects(
+            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            v1_raw, w, h,
+        );
+        // V1 should now be grayscale: R≈G≈B
+        assert!((v1_graded[0] as i32 - v1_graded[1] as i32).abs() <= 2,
+            "V1 not grayscale: R={} G={}", v1_graded[0], v1_graded[1]);
+
+        // V2: solid blue → half brightness via HSVAdjust(value=0.5)
+        let v2_raw = solid_frame(0, 0, 255, 255, w, h);
+        let v2_graded = klipp_effects::apply_effects(
+            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
+            v2_raw, w, h,
+        );
+        // V2 should be half-brightness blue: B≈128
+        assert!((v2_graded[2] as i32 - 128).abs() < 10,
+            "V2 not half-bright blue: B={}", v2_graded[2]);
+
+        // Composite: V2 opaque over V1 → should show V2's graded result
+        let result = composite_layers(&[
+            CompositeLayer { rgba: v1_graded, width: w, height: h, opacity: 1.0, blend_mode: BlendMode::Normal },
+            CompositeLayer { rgba: v2_graded, width: w, height: h, opacity: 1.0, blend_mode: BlendMode::Normal },
+        ], w, h);
+        // Topmost opaque layer wins: result ≈ half-bright blue
+        assert!(result[0] < 5, "R should be ≈0, got {}", result[0]);
+        assert!((result[2] as i32 - 128).abs() < 10, "B should be ≈128, got {}", result[2]);
+    }
+
+    /// Semitransparent V2 reveals V1's graded frame underneath.
+    /// V1 = red + grayscale → (76,76,76). V2 = green at 50% opacity.
+    /// If V1's effects didn't apply (the old bug), V1 would be raw red
+    /// and the blend would have R >> B. With the fix, R ≈ B (grayscale).
+    #[test]
+    fn viewer_v1_grayscale_visible_through_semitransparent_overlay() {
+        let w = 4u32;
+        let h = 4u32;
+
+        let v1_graded = klipp_effects::apply_effects(
+            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            solid_frame(255, 0, 0, 255, w, h), w, h,
+        );
+        let v2_raw = solid_frame(0, 255, 0, 255, w, h); // green, no effects
+
+        let result = composite_layers(&[
+            CompositeLayer { rgba: v1_graded, width: w, height: h, opacity: 1.0, blend_mode: BlendMode::Normal },
+            CompositeLayer { rgba: v2_raw, width: w, height: h, opacity: 0.5, blend_mode: BlendMode::Normal },
+        ], w, h);
+
+        // V1 grayscale ≈ (76,76,76) blended with 50% green → R ≈ B (grayscale property preserved)
+        let r = result[0] as i32;
+        let b = result[2] as i32;
+        assert!((r - b).abs() < 5,
+            "V1 should be grayscale (R≈B) through overlay, but R={r} B={b}");
+        let g = result[1] as i32;
+        assert!(g > r + 30, "Green overlay should contribute: G={g} R={r}");
+    }
+
+    /// Three tracks — each with its own effect applied before compositing.
+    #[test]
+    fn viewer_three_tracks_independent_effects() {
+        let w = 4u32;
+        let h = 4u32;
+
+        // V1: red → grayscale
+        let v1 = klipp_effects::apply_effects(
+            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            solid_frame(255, 0, 0, 255, w, h), w, h,
+        );
+        // V2: green → half brightness
+        let v2 = klipp_effects::apply_effects(
+            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
+            solid_frame(0, 255, 0, 255, w, h), w, h,
+        );
+        // V3: blue → no effect (passthrough)
+        let v3 = solid_frame(0, 0, 255, 255, w, h);
+
+        // Stack with 33% opacity each so all three contribute
+        let result = composite_layers(&[
+            CompositeLayer { rgba: v1, width: w, height: h, opacity: 0.5, blend_mode: BlendMode::Normal },
+            CompositeLayer { rgba: v2, width: w, height: h, opacity: 0.5, blend_mode: BlendMode::Normal },
+            CompositeLayer { rgba: v3, width: w, height: h, opacity: 0.5, blend_mode: BlendMode::Normal },
+        ], w, h);
+
+        // All three should contribute — result should have all three channels nonzero
+        assert!(result[0] > 5, "R should be nonzero from grayscale V1: {}", result[0]);
+        assert!(result[1] > 5, "G should be nonzero from V2 green: {}", result[1]);
+        assert!(result[2] > 5, "B should be nonzero from V3 blue: {}", result[2]);
+    }
+
+    /// No-effects passthrough: clip without effects produces raw output.
+    #[test]
+    fn viewer_no_effects_passthrough() {
+        let w = 4u32;
+        let h = 4u32;
+        let raw = solid_frame(100, 150, 200, 255, w, h);
+        let graded = klipp_effects::apply_effects(&[], raw.clone(), w, h);
+        assert_eq!(graded, raw, "empty effects should pass through unchanged");
+    }
 }
 
 fn scale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
