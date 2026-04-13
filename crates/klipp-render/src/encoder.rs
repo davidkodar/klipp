@@ -801,6 +801,7 @@ mod tests {
     use klipp_core::{
         EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec,
     };
+    use serial_test::serial;
 
     fn make_settings(codec: ExportVideoCodec, path: &str) -> ExportSettings {
         ExportSettings {
@@ -833,6 +834,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encode_h264_10_frames() {
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -879,6 +881,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encode_h264_with_aac_audio() {
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -908,6 +911,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encode_h265_video_only() {
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);

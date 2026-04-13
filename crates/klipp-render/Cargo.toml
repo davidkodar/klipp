@@ -26,3 +26,4 @@ klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media    = { workspace = true }
 klipp-nodes    = { workspace = true }
+serial_test    = "3"
