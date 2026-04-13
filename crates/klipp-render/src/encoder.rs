@@ -350,15 +350,21 @@ impl Encoder {
             ((*output_ctx.as_ptr()).nb_streams - 1) as usize
         };
 
-        // Create RGBA→YUV scaler. Input size = snapshot (source frames), output = encoder target.
+        // Create RGBA→YUV scaler.
+        // When a resolution override is set, the export job applies aspect-preserving
+        // fit-and-pad to produce RGBA at (out_w, out_h) before calling encode_video_frame.
+        // So the scaler input matches the output — it does format conversion only, no resize.
+        // When no override is set, input = output = snapshot dims (also format conversion only).
+        let scaler_in_w = out_w;
+        let scaler_in_h = out_h;
         let rgba_to_yuv = ffmpeg_next::software::scaling::Context::get(
             ffmpeg_next::format::Pixel::RGBA,
-            snapshot.width,  // input: composited frame size
-            snapshot.height,
+            scaler_in_w,
+            scaler_in_h,
             pix_fmt,
-            out_w,           // output: encoder target resolution (may differ from snapshot)
+            out_w,
             out_h,
-            ffmpeg_next::software::scaling::Flags::LANCZOS,  // Lanczos for quality on resize
+            ffmpeg_next::software::scaling::Flags::LANCZOS,
         )
         .map_err(|e| RenderError::Encode(format!("RGBA→YUV scaler: {e}")))?;
 

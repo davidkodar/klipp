@@ -204,6 +204,18 @@ impl ExportJob {
 
         let mut export_frame_num: u64 = 0;
 
+        // Determine if aspect-ratio-preserving fit-and-pad is needed.
+        // When the export resolution differs from the sequence AND aspect ratios
+        // don't match, we letterbox/pillarbox each frame before encoding.
+        let needs_fit = match &self.settings.resolution {
+            Some(res) => {
+                let (tw, th) = (res.width & !1, res.height & !1);
+                tw != self.snapshot.width || th != self.snapshot.height
+            }
+            None => false,
+        };
+        let fit_target = self.settings.resolution.as_ref().map(|r| (r.width & !1, r.height & !1));
+
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
 
@@ -289,12 +301,14 @@ impl ExportJob {
                 rgba
             };
 
-            // ─── Encode video frame ───────────────────────────────
-            encoder.encode_video_frame(
-                &processed,
-                self.snapshot.width,
-                self.snapshot.height,
-            )?;
+            // ─── Encode video frame (with aspect-preserving fit if needed) ──
+            if needs_fit {
+                let (tw, th) = fit_target.unwrap();
+                let padded = fit_and_pad_rgba(&processed, self.snapshot.width, self.snapshot.height, tw, th)?;
+                encoder.encode_video_frame(&padded, tw, th)?;
+            } else {
+                encoder.encode_video_frame(&processed, self.snapshot.width, self.snapshot.height)?;
+            }
 
             // ─── Encode audio (with loudness normalization gain if enabled) ──
             let mut audio = audio_mixdown.get_frame_audio(frame_num);
@@ -329,6 +343,113 @@ impl ExportJob {
 
         Ok(())
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Aspect-ratio-preserving fit for resolution overrides
+// ═══════════════════════════════════════════════════════════════════
+
+/// Compute fitted dimensions and centering offset to fit `(src_w, src_h)`
+/// into `(target_w, target_h)` while preserving aspect ratio.
+/// Returns (fitted_w, fitted_h, offset_x, offset_y).
+/// Fitted dimensions are forced even for YUV420p chroma subsampling compatibility.
+fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, u32, u32, u32) {
+    if src_w == 0 || src_h == 0 || target_w == 0 || target_h == 0 {
+        return (target_w & !1, target_h & !1, 0, 0);
+    }
+    let src_aspect = src_w as f64 / src_h as f64;
+    let target_aspect = target_w as f64 / target_h as f64;
+
+    let (fitted_w, fitted_h) = if src_aspect > target_aspect {
+        // Source wider than target — fit to target width, letterbox top/bottom
+        let fw = target_w;
+        let fh = ((target_w as f64 / src_aspect).round() as u32).min(target_h);
+        (fw & !1, fh & !1) // force even
+    } else {
+        // Source taller than target — fit to target height, pillarbox left/right
+        let fh = target_h;
+        let fw = ((target_h as f64 * src_aspect).round() as u32).min(target_w);
+        (fw & !1, fh & !1) // force even
+    };
+
+    let offset_x = (target_w - fitted_w) / 2;
+    let offset_y = (target_h - fitted_h) / 2;
+    (fitted_w, fitted_h, offset_x, offset_y)
+}
+
+/// Take an RGBA buffer at (src_w, src_h) and return a new RGBA buffer at
+/// (target_w, target_h) with the source content fitted in the center
+/// preserving aspect ratio, padded with opaque black on the unused area.
+/// Uses ffmpeg swscale (Lanczos) for the resize step.
+fn fit_and_pad_rgba(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    target_w: u32,
+    target_h: u32,
+) -> Result<Vec<u8>, RenderError> {
+    let (fitted_w, fitted_h, offset_x, offset_y) = fit_to_target(src_w, src_h, target_w, target_h);
+
+    // If fitted equals target, just resize directly (no padding needed)
+    if fitted_w == target_w && fitted_h == target_h {
+        let mut scaler = ffmpeg_next::software::scaling::Context::get(
+            ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
+            ffmpeg_next::format::Pixel::RGBA, target_w, target_h,
+            ffmpeg_next::software::scaling::Flags::LANCZOS,
+        ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?;
+        let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
+        let stride = src_frame.stride(0);
+        let row_bytes = src_w as usize * 4;
+        for (i, chunk) in src.chunks_exact(row_bytes).enumerate() {
+            src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
+        }
+        let mut dst_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, target_w, target_h);
+        scaler.run(&src_frame, &mut dst_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
+        let dst_stride = dst_frame.stride(0);
+        let dst_row = target_w as usize * 4;
+        let mut out = vec![0u8; target_w as usize * target_h as usize * 4];
+        for y in 0..target_h as usize {
+            out[y * dst_row..y * dst_row + dst_row].copy_from_slice(&dst_frame.data(0)[y * dst_stride..y * dst_stride + dst_row]);
+        }
+        return Ok(out);
+    }
+
+    // Resize source to fitted dimensions
+    let mut scaler = ffmpeg_next::software::scaling::Context::get(
+        ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
+        ffmpeg_next::format::Pixel::RGBA, fitted_w, fitted_h,
+        ffmpeg_next::software::scaling::Flags::LANCZOS,
+    ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?;
+    let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
+    let stride = src_frame.stride(0);
+    let row_bytes = src_w as usize * 4;
+    for (i, chunk) in src.chunks_exact(row_bytes).enumerate() {
+        src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
+    }
+    let mut fitted_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, fitted_w, fitted_h);
+    scaler.run(&src_frame, &mut fitted_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
+
+    // Create black canvas at target dims (opaque black: R=0 G=0 B=0 A=255)
+    let target_pixels = target_w as usize * target_h as usize;
+    let mut canvas = vec![0u8; target_pixels * 4];
+    // Set alpha to 255 for all pixels
+    for pixel in canvas.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+
+    // Blit fitted content onto canvas at offset
+    let fitted_stride = fitted_frame.stride(0);
+    let fitted_row_bytes = fitted_w as usize * 4;
+    let canvas_row_bytes = target_w as usize * 4;
+    for y in 0..fitted_h as usize {
+        let src_start = y * fitted_stride;
+        let dst_y = y + offset_y as usize;
+        let dst_start = dst_y * canvas_row_bytes + offset_x as usize * 4;
+        canvas[dst_start..dst_start + fitted_row_bytes]
+            .copy_from_slice(&fitted_frame.data(0)[src_start..src_start + fitted_row_bytes]);
+    }
+
+    Ok(canvas)
 }
 
 /// Find the topmost visible track that has an active clip at this frame.
@@ -622,5 +743,72 @@ mod tests {
             let back = linear_to_db(linear);
             assert!((back - db).abs() < 0.001, "roundtrip failed for {db} dB");
         }
+    }
+
+    // ── fit_to_target math tests ────────────────────────────────
+
+    #[test]
+    fn fit_equal_aspect_16_9() {
+        // 1920×1080 → 1280×720: same 16:9 ratio, no padding
+        let (fw, fh, ox, oy) = fit_to_target(1920, 1080, 1280, 720);
+        assert_eq!((fw, fh), (1280, 720));
+        assert_eq!((ox, oy), (0, 0));
+    }
+
+    #[test]
+    fn fit_portrait_into_landscape() {
+        // 2160×3840 (9:16 portrait) → 1280×720 (16:9 landscape): pillarbox
+        let (fw, fh, ox, oy) = fit_to_target(2160, 3840, 1280, 720);
+        // fitted_w = (720 * 2160/3840) = 405 → 404 (even)
+        assert_eq!(fh, 720);
+        assert_eq!(fw, 404);
+        assert!(fw % 2 == 0 && fh % 2 == 0, "dims must be even");
+        assert_eq!(ox, (1280 - 404) / 2); // 438
+        assert_eq!(oy, 0);
+    }
+
+    #[test]
+    fn fit_landscape_into_portrait() {
+        // 3840×2160 (16:9) → 720×1280 (9:16 portrait): letterbox
+        let (fw, fh, ox, oy) = fit_to_target(3840, 2160, 720, 1280);
+        // fitted_w = 720, fitted_h = 720 * 2160/3840 = 405 → 404 (even)
+        assert_eq!(fw, 720);
+        assert_eq!(fh, 404);
+        assert!(fw % 2 == 0 && fh % 2 == 0);
+        assert_eq!(ox, 0);
+        assert_eq!(oy, (1280 - 404) / 2); // 438
+    }
+
+    #[test]
+    fn fit_identity() {
+        let (fw, fh, ox, oy) = fit_to_target(2160, 3840, 2160, 3840);
+        assert_eq!((fw, fh), (2160, 3840));
+        assert_eq!((ox, oy), (0, 0));
+    }
+
+    #[test]
+    fn fit_dims_always_even() {
+        // Check a case that would produce odd fitted dims without the &!1 fix
+        let (fw, fh, _, _) = fit_to_target(1001, 1000, 500, 500);
+        assert!(fw % 2 == 0, "fitted_w must be even, got {fw}");
+        assert!(fh % 2 == 0, "fitted_h must be even, got {fh}");
+    }
+
+    #[test]
+    fn fit_small_into_large() {
+        // 100×100 → 1920×1080: pillarbox (source is square, target is wide)
+        let (fw, fh, ox, oy) = fit_to_target(100, 100, 1920, 1080);
+        assert_eq!(fh, 1080);
+        assert_eq!(fw, 1080); // square source fits to height
+        assert!(fw % 2 == 0 && fh % 2 == 0);
+        assert_eq!(ox, (1920 - 1080) / 2); // 420
+        assert_eq!(oy, 0);
+    }
+
+    #[test]
+    fn fit_tiny_target_no_panic() {
+        let (fw, fh, _, _) = fit_to_target(1920, 1080, 4, 4);
+        assert!(fw <= 4 && fh <= 4);
+        assert!(fw % 2 == 0 && fh % 2 == 0);
     }
 }
