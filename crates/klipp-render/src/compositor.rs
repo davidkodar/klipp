@@ -575,6 +575,12 @@ mod tests {
             source_rotation: 0,
             stabilization_data: None,
             smoothed_trajectory: None,
+            effect_keyframes: std::collections::HashMap::new(),
+            opacity_keyframes: vec![],
+            transform_pos_x_keyframes: vec![],
+            transform_pos_y_keyframes: vec![],
+            transform_scale_keyframes: vec![],
+            transform_rotation_keyframes: vec![],
         }
     }
 
@@ -807,6 +813,12 @@ mod tests {
             source_rotation: 0,
             stabilization_data: None,
             smoothed_trajectory: None,
+            effect_keyframes: std::collections::HashMap::new(),
+            opacity_keyframes: vec![],
+            transform_pos_x_keyframes: vec![],
+            transform_pos_y_keyframes: vec![],
+            transform_scale_keyframes: vec![],
+            transform_rotation_keyframes: vec![],
         }
     }
 

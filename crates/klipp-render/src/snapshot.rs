@@ -1,5 +1,5 @@
 use crate::error::RenderError;
-use klipp_core::{ClipId, ExportSettings, RationalTime, TransitionId};
+use klipp_core::{ClipId, ExportSettings, Keyframe, RationalTime, TransitionId};
 use klipp_effects::BuiltinEffect;
 use klipp_effects::stabilization::{SmoothedTrajectory, StabilizationData};
 use klipp_media::MediaPool;
@@ -8,6 +8,7 @@ use klipp_plugin::AppliedEffect;
 use klipp_timeline::{
     ClipKind, Sequence, TitleData, Track, TrackKind, Transition, TransitionKind,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -71,6 +72,18 @@ pub struct ClipSnapshot {
     pub stabilization_data: Option<StabilizationData>,
     /// Smoothed trajectory with per-frame correction homographies.
     pub smoothed_trajectory: Option<SmoothedTrajectory>,
+    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
+    /// Clip-level opacity keyframes.
+    pub opacity_keyframes: Vec<Keyframe>,
+    /// Transform position X keyframes.
+    pub transform_pos_x_keyframes: Vec<Keyframe>,
+    /// Transform position Y keyframes.
+    pub transform_pos_y_keyframes: Vec<Keyframe>,
+    /// Transform scale keyframes.
+    pub transform_scale_keyframes: Vec<Keyframe>,
+    /// Transform rotation keyframes.
+    pub transform_rotation_keyframes: Vec<Keyframe>,
 }
 
 #[derive(Clone)]
@@ -368,6 +381,12 @@ fn flatten_multicam_video_clips(
             source_rotation: angle_clip.source_rotation,
             stabilization_data: angle_clip.stabilization_data.clone(),
             smoothed_trajectory: angle_clip.smoothed_trajectory.clone(),
+            effect_keyframes: angle_clip.effect_keyframes.clone(),
+            opacity_keyframes: angle_clip.opacity_keyframes.clone(),
+            transform_pos_x_keyframes: angle_clip.transform_pos_x_keyframes.clone(),
+            transform_pos_y_keyframes: angle_clip.transform_pos_y_keyframes.clone(),
+            transform_scale_keyframes: angle_clip.transform_scale_keyframes.clone(),
+            transform_rotation_keyframes: angle_clip.transform_rotation_keyframes.clone(),
         });
     }
 
@@ -473,6 +492,12 @@ fn flatten_compound_video_clips(
                 source_rotation: inner_clip.source_rotation,
                 stabilization_data: inner_clip.stabilization_data.clone(),
                 smoothed_trajectory: inner_clip.smoothed_trajectory.clone(),
+                effect_keyframes: inner_clip.effect_keyframes.clone(),
+                opacity_keyframes: inner_clip.opacity_keyframes.clone(),
+                transform_pos_x_keyframes: inner_clip.transform_pos_x_keyframes.clone(),
+                transform_pos_y_keyframes: inner_clip.transform_pos_y_keyframes.clone(),
+                transform_scale_keyframes: inner_clip.transform_scale_keyframes.clone(),
+                transform_rotation_keyframes: inner_clip.transform_rotation_keyframes.clone(),
             });
         }
     }
@@ -714,6 +739,12 @@ fn snapshot_clip(
         source_rotation: clip.source_rotation,
         stabilization_data: clip.stabilization_data.clone(),
         smoothed_trajectory: clip.smoothed_trajectory.clone(),
+        effect_keyframes: clip.effect_keyframes.clone(),
+        opacity_keyframes: clip.opacity_keyframes.clone(),
+        transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+        transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+        transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+        transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
     })
 }
 
@@ -1115,5 +1146,65 @@ mod tests {
         assert_eq!(at.pan, -0.5);
         assert_eq!(at.clips.len(), 1);
         assert_eq!(at.clips[0].source_start_secs, 1.0);
+    }
+
+    #[test]
+    fn snapshot_carries_effect_keyframes() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+
+        let kf0 = klipp_core::Keyframe {
+            time_secs: 0.0,
+            value: 5.0,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        };
+        let kf1 = klipp_core::Keyframe {
+            time_secs: 1.0,
+            value: 50.0,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        };
+
+        let mut effect_keyframes = std::collections::HashMap::new();
+        effect_keyframes.insert("0:radius".to_string(), vec![kf0.clone(), kf1.clone()]);
+
+        let opacity_kf = klipp_core::Keyframe {
+            time_secs: 0.5,
+            value: 0.5,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        };
+
+        let mut clip = Clip::gap(make_rational(0, 24), make_rational(48, 24));
+        clip.kind = ClipKind::Media { media_id };
+        clip.source_in = make_rational(0, 24);
+        clip.source_out = make_rational(48, 24);
+        clip.effect_keyframes = effect_keyframes;
+        clip.opacity_keyframes = vec![opacity_kf];
+        clip.transform_scale_keyframes = vec![kf0.clone(), kf1.clone()];
+
+        let mut seq = make_sequence();
+        seq.tracks[0].clips.push(clip);
+
+        let settings = make_settings();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
+        let sc = &v1.clips[0];
+
+        assert_eq!(sc.effect_keyframes.len(), 1);
+        assert!(sc.effect_keyframes.contains_key("0:radius"));
+        assert_eq!(sc.effect_keyframes["0:radius"].len(), 2);
+        assert_eq!(sc.opacity_keyframes.len(), 1);
+        assert!((sc.opacity_keyframes[0].value - 0.5).abs() < 0.001);
+        assert_eq!(sc.transform_scale_keyframes.len(), 2);
+        assert!(sc.transform_pos_x_keyframes.is_empty());
+        assert!(sc.transform_pos_y_keyframes.is_empty());
+        assert!(sc.transform_rotation_keyframes.is_empty());
     }
 }

@@ -4159,15 +4159,152 @@ impl PlaybackEngine {
             }
         } else { rgba };
 
-        // 2. Builtin effects (GPU preferred, CPU fallback)
-        // TODO: evaluate keyframes for overlay clip effects — currently uses default values
+        // 2. Builtin effects (GPU preferred, CPU fallback) with keyframe evaluation
         let rgba = if !clip.builtin_effects.is_empty() {
-            let fx: Vec<_> = clip.builtin_effects.iter()
+            let mut fx: Vec<_> = clip.builtin_effects.iter()
                 .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
                 .filter(|(_, enabled)| **enabled)
                 .map(|(e, _)| e.clone())
                 .collect();
+
             if !fx.is_empty() {
+                // Build evaluation context for keyframes
+                let clip_duration_secs = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.001);
+                let eval_ctx = klipp_core::EvalContext {
+                    clip_time_secs,
+                    clip_duration_secs,
+                    timeline_time_secs: self.playhead.to_secs_f64(),
+                    fps: self.fps.as_f64(),
+                    seed: clip.id.0.as_u64_pair().0,
+                };
+
+                // Evaluate opacity keyframes
+                if !clip.opacity_keyframes.is_empty() {
+                    let opacity_default = fx.iter().find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+                        _ => None,
+                    }).unwrap_or(1.0);
+                    let opacity_val = eval_with_modifiers(
+                        &clip.opacity_keyframes,
+                        &clip.param_modifiers,
+                        &klipp_core::ParamId::Opacity,
+                        clip_time_secs,
+                        opacity_default,
+                        &eval_ctx,
+                    );
+                    let mut found = false;
+                    for effect in &mut fx {
+                        if let klipp_effects::BuiltinEffect::Opacity { value } = effect {
+                            *value = opacity_val;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found && (opacity_val - 1.0).abs() > 0.001 {
+                        fx.push(klipp_effects::BuiltinEffect::Opacity { value: opacity_val });
+                    }
+                }
+
+                // Evaluate transform keyframes
+                let has_transform_kf = !clip.transform_pos_x_keyframes.is_empty()
+                    || !clip.transform_pos_y_keyframes.is_empty()
+                    || !clip.transform_scale_keyframes.is_empty()
+                    || !clip.transform_rotation_keyframes.is_empty();
+
+                if has_transform_kf {
+                    let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
+                        fx.iter().find_map(|e| match e {
+                            klipp_effects::BuiltinEffect::Transform {
+                                position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
+                                rotation_x, rotation_y, perspective,
+                            } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
+                            _ => None,
+                        }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
+
+                    if !clip.transform_pos_x_keyframes.is_empty() {
+                        pos_x = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, pos_x, &eval_ctx);
+                    }
+                    if !clip.transform_pos_y_keyframes.is_empty() {
+                        pos_y = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, pos_y, &eval_ctx);
+                    }
+                    if !clip.transform_scale_keyframes.is_empty() {
+                        let s = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, scale_x, &eval_ctx);
+                        scale_x = s;
+                        scale_y = s;
+                    }
+                    if !clip.transform_rotation_keyframes.is_empty() {
+                        rotation = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, rotation, &eval_ctx);
+                    }
+
+                    let new_transform = klipp_effects::BuiltinEffect::Transform {
+                        position_x: pos_x, position_y: pos_y,
+                        scale_x, scale_y, rotation, anchor_x, anchor_y,
+                        rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
+                    };
+                    let mut found = false;
+                    for effect in &mut fx {
+                        if matches!(effect, klipp_effects::BuiltinEffect::Transform { .. }) {
+                            *effect = new_transform.clone();
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        fx.push(new_transform);
+                    }
+                }
+
+                // Evaluate effect parameter keyframes (blur, sharpen, crop, chroma key, opacity, etc.)
+                for (i, effect) in fx.iter_mut().enumerate() {
+                    match effect {
+                        klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
+                            let key = format!("{}:radius", i);
+                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *radius = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "radius", clip_time_secs, *radius, &eval_ctx);
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Sharpen { amount } => {
+                            let key = format!("{}:amount", i);
+                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *amount = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "amount", clip_time_secs, *amount, &eval_ctx);
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
+                            for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
+                                let key = format!("{}:{}", i, name);
+                                if let Some(kfs) = clip.effect_keyframes.get(&key) {
+                                    if !kfs.is_empty() {
+                                        *val = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, clip_time_secs, *val, &eval_ctx);
+                                    }
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
+                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                                let key = format!("{}:{}", i, name);
+                                if let Some(kfs) = clip.effect_keyframes.get(&key) {
+                                    if !kfs.is_empty() {
+                                        *val = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, clip_time_secs, *val, &eval_ctx);
+                                    }
+                                }
+                            }
+                        }
+                        klipp_effects::BuiltinEffect::Opacity { value } => {
+                            let key = format!("{}:value", i);
+                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
+                                if !kfs.is_empty() {
+                                    *value = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "value", clip_time_secs, *value, &eval_ctx);
+                                }
+                            }
+                        }
+                        _ => {} // Transform already handled by dedicated keyframes
+                    }
+                }
+
                 if let Some(gpu) = &mut self.gpu_effects {
                     gpu.apply_effects(&fx, rgba, width, height)
                 } else {

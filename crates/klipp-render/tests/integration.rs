@@ -349,7 +349,13 @@ fn export_real_media_h264() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None, }],
+                smoothed_trajectory: None,
+                effect_keyframes: std::collections::HashMap::new(),
+                opacity_keyframes: vec![],
+                transform_pos_x_keyframes: vec![],
+                transform_pos_y_keyframes: vec![],
+                transform_scale_keyframes: vec![],
+                transform_rotation_keyframes: vec![], }],
             transitions: vec![],
         }],
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
@@ -458,7 +464,13 @@ fn export_real_media_with_color_grade() {
                 builtin_effects: vec![],
                 source_rotation: 0,
                 stabilization_data: None,
-                smoothed_trajectory: None, }],
+                smoothed_trajectory: None,
+                effect_keyframes: std::collections::HashMap::new(),
+                opacity_keyframes: vec![],
+                transform_pos_x_keyframes: vec![],
+                transform_pos_y_keyframes: vec![],
+                transform_scale_keyframes: vec![],
+                transform_rotation_keyframes: vec![], }],
             transitions: vec![],
         }],
         audio_tracks: vec![],
@@ -527,7 +539,13 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None, },
+                    smoothed_trajectory: None,
+                    effect_keyframes: std::collections::HashMap::new(),
+                    opacity_keyframes: vec![],
+                    transform_pos_x_keyframes: vec![],
+                    transform_pos_y_keyframes: vec![],
+                    transform_scale_keyframes: vec![],
+                    transform_rotation_keyframes: vec![], },
                 // Title for second second
                 snapshot::ClipSnapshot {
                     id: ClipId::new(),
@@ -542,7 +560,13 @@ fn export_with_title_and_gap() {
                     builtin_effects: vec![],
                     source_rotation: 0,
                     stabilization_data: None,
-                    smoothed_trajectory: None, },
+                    smoothed_trajectory: None,
+                    effect_keyframes: std::collections::HashMap::new(),
+                    opacity_keyframes: vec![],
+                    transform_pos_x_keyframes: vec![],
+                    transform_pos_y_keyframes: vec![],
+                    transform_scale_keyframes: vec![],
+                    transform_rotation_keyframes: vec![], },
             ],
             transitions: vec![],
         }],
@@ -570,6 +594,100 @@ fn export_with_title_and_gap() {
 
     assert!(output_path.exists());
     assert_eq!(progress.load(Ordering::Relaxed), 48);
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn export_with_keyframed_opacity() {
+    // Verify that keyframed opacity is evaluated during export (not stuck at default).
+    // Uses a title clip with opacity keyframes: 1.0 at t=0, 0.0 at t=1.
+    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let output_path = dir.join("keyframed_opacity.mp4");
+
+    let title_data = klipp_timeline::TitleData::default();
+
+    let kf_start = klipp_core::Keyframe {
+        time_secs: 0.0,
+        value: 1.0,
+        interpolation: klipp_core::Interpolation::Linear,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    };
+    let kf_end = klipp_core::Keyframe {
+        time_secs: 1.0,
+        value: 0.0,
+        interpolation: klipp_core::Interpolation::Linear,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    };
+
+    let mut effect_keyframes = std::collections::HashMap::new();
+    effect_keyframes.insert("0:value".to_string(), vec![kf_start.clone(), kf_end.clone()]);
+
+    let snapshot = SequenceSnapshot {
+        fps: 24.0,
+        fps_num: 24,
+        fps_den: 1,
+        width: 320,
+        height: 240,
+        sample_rate: 48000,
+        duration_frames: 24,
+        export_range: None,
+        video_tracks: vec![snapshot::VideoTrackSnapshot {
+            opacity: 1.0,
+            visible: true,
+            clips: vec![snapshot::ClipSnapshot {
+                id: ClipId::new(),
+                kind: snapshot::ClipKindSnapshot::Title(title_data),
+                timeline_start_frame: 0,
+                timeline_end_frame: 24,
+                source_start_secs: 0.0,
+                source_end_secs: 1.0,
+                speed: 1.0,
+                node_graph: klipp_nodes::NodeGraph::default(),
+                effects: vec![],
+                builtin_effects: vec![klipp_effects::BuiltinEffect::Opacity { value: 1.0 }],
+                source_rotation: 0,
+                stabilization_data: None,
+                smoothed_trajectory: None,
+                effect_keyframes,
+                opacity_keyframes: vec![kf_start, kf_end],
+                transform_pos_x_keyframes: vec![],
+                transform_pos_y_keyframes: vec![],
+                transform_scale_keyframes: vec![],
+                transform_rotation_keyframes: vec![],
+            }],
+            transitions: vec![],
+        }],
+        audio_tracks: vec![],
+        global_lut_path: None,
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let progress = Arc::new(AtomicU64::new(0));
+
+    let job = ExportJob {
+        id: Uuid::new_v4(),
+        output_path: output_path.clone(),
+        settings: make_export_settings(&output_path),
+        snapshot,
+        cancel,
+        progress: progress.clone(),
+        hw_info: Arc::new(std::sync::Mutex::new(String::new())),
+        render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+        loudness_result: Arc::new(std::sync::Mutex::new(None)),
+        total_frames: 24,
+    };
+
+    job.run().unwrap();
+
+    assert!(output_path.exists());
+    assert_eq!(progress.load(Ordering::Relaxed), 24);
+
+    let meta = std::fs::metadata(&output_path).unwrap();
+    assert!(meta.len() > 100, "output should be non-trivial");
 
     let _ = std::fs::remove_file(&output_path);
 }
