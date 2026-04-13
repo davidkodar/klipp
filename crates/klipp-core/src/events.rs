@@ -39,6 +39,9 @@ pub struct ExportSettings {
     /// Burn subtitle/text track content into the video. Default true to preserve
     /// existing behavior (subtitle clips have always been composited as overlays).
     pub burn_in_subtitles: bool,
+    /// Target integrated loudness in LUFS for EBU R128 normalization.
+    /// None = no normalization (pass audio through unchanged).
+    pub target_lufs: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

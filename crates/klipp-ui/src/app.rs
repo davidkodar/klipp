@@ -78,6 +78,10 @@ struct ExportDialogState {
     rate_control: klipp_core::RateControl,
     video_bitrate_kbps: u32,
     burn_in_subtitles: bool,
+    normalize_loudness: bool,
+    /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
+    loudness_preset: u8,
+    custom_lufs: f32,
 }
 
 impl Default for ExportDialogState {
@@ -102,6 +106,9 @@ impl Default for ExportDialogState {
             rate_control: klipp_core::RateControl::default(),
             video_bitrate_kbps: 10000,
             burn_in_subtitles: true,
+            normalize_loudness: false,
+            loudness_preset: 0,
+            custom_lufs: -14.0,
         }
     }
 }
@@ -12593,6 +12600,18 @@ fn selected_clips_frame_range(
     Some((start, end))
 }
 
+fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
+    if !dialog.normalize_loudness { return None; }
+    let lufs = match dialog.loudness_preset {
+        0 => -14.0, // YouTube / Spotify
+        1 => -16.0, // Podcast
+        2 => -23.0, // EBU R128 broadcast
+        3 => -24.0, // ATSC A/85 broadcast
+        _ => dialog.custom_lufs,
+    };
+    Some(lufs)
+}
+
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     dialog.video_codec = settings.video_codec;
@@ -12600,6 +12619,20 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
     dialog.audio_codec = settings.audio_codec;
     dialog.preset = settings.preset;
     dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
+    match settings.target_lufs {
+        Some(lufs) => {
+            dialog.normalize_loudness = true;
+            // Map known presets, otherwise Custom
+            dialog.loudness_preset = match lufs as i32 {
+                -14 => 0,
+                -16 => 1,
+                -23 => 2,
+                -24 => 3,
+                _ => { dialog.custom_lufs = lufs; 4 }
+            };
+        }
+        None => { dialog.normalize_loudness = false; }
+    }
 }
 
 impl eframe::App for KlippApp {
@@ -14252,6 +14285,29 @@ impl KlippApp {
                             });
                         ui.end_row();
 
+                        // Loudness normalization
+                        ui.label("Loudness:");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.export_dialog.normalize_loudness, "Normalize");
+                            if self.export_dialog.normalize_loudness {
+                                let preset_labels = ["YouTube / Spotify (-14)", "Podcast (-16)", "EBU R128 (-23)", "ATSC A/85 (-24)", "Custom"];
+                                egui::ComboBox::from_id_salt("export_lufs_preset")
+                                    .selected_text(preset_labels[self.export_dialog.loudness_preset as usize])
+                                    .show_ui(ui, |ui| {
+                                        for (i, label) in preset_labels.iter().enumerate() {
+                                            ui.selectable_value(&mut self.export_dialog.loudness_preset, i as u8, *label);
+                                        }
+                                    });
+                                if self.export_dialog.loudness_preset == 4 {
+                                    let mut v = self.export_dialog.custom_lufs;
+                                    if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
+                                        self.export_dialog.custom_lufs = v;
+                                    }
+                                }
+                            }
+                        });
+                        ui.end_row();
+
                         // Resolution override
                         let seq_res = &self.state.sequences[self.state.active_sequence_idx].resolution;
                         let res_labels = [
@@ -14354,6 +14410,7 @@ impl KlippApp {
                             video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                             rate_control: self.export_dialog.rate_control,
                             burn_in_subtitles: self.export_dialog.burn_in_subtitles,
+                            target_lufs: dialog_target_lufs(&self.export_dialog),
                         };
                         let use_marked = self.export_dialog.range_mode == 1;
                         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
@@ -14408,6 +14465,7 @@ impl KlippApp {
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
                                     burn_in_subtitles: self.export_dialog.burn_in_subtitles,
+                                    target_lufs: dialog_target_lufs(&self.export_dialog),
                                 },
                             });
                         }
@@ -14455,6 +14513,7 @@ impl KlippApp {
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
                                     burn_in_subtitles: self.export_dialog.burn_in_subtitles,
+                                    target_lufs: dialog_target_lufs(&self.export_dialog),
                                 },
                             });
                         }
@@ -14496,6 +14555,7 @@ impl KlippApp {
                                     audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
+                                    target_lufs: dialog_target_lufs(&self.export_dialog),
                                 },
                             };
                             self.prefs.export.custom_presets.push(preset);

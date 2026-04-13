@@ -24,7 +24,8 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         crf: 28, // Fast quality for tests
         preset: EncoderPreset::Fast,
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
-        audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf }
+        audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
+        burn_in_subtitles: true, target_lufs: None }
 }
 
 // ═══════════════════════════════════════════════════════════════════

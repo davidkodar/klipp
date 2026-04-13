@@ -31,6 +31,9 @@ pub struct ExportPresetSettings {
     /// Rate control mode: CRF (default), CBR, or VBR.
     #[serde(default)]
     pub rate_control: RateControl,
+    /// Target integrated loudness in LUFS for EBU R128 normalization. None = disabled.
+    #[serde(default)]
+    pub target_lufs: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +83,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -97,6 +101,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -114,6 +119,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -131,6 +137,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(128),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -148,6 +155,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -165,6 +173,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -182,6 +191,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: None,
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -199,6 +209,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: None,
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -216,6 +227,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -233,6 +245,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
         ExportPreset {
@@ -250,6 +263,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(320),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
+                target_lufs: None,
             },
         },
     ]

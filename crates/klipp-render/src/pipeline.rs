@@ -178,7 +178,8 @@ mod tests {
             crf: 18,
             preset: klipp_core::EncoderPreset::Medium,
             audio_codec: klipp_core::ExportAudioCodec::Aac,
-            audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf };
+            audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
+            burn_in_subtitles: true, target_lufs: None };
         pipeline.begin_export(&settings);
 
         let ctx = make_frame_context();
