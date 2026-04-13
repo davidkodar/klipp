@@ -30,6 +30,8 @@ pub struct ExportJob {
     pub hw_info: Arc<std::sync::Mutex<String>>,
     /// Current render stage (e.g. "Encoding video", "Finalizing").
     pub render_stage: Arc<std::sync::Mutex<String>>,
+    /// Loudness normalization result (set during run() if normalization enabled).
+    pub loudness_result: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ExportJob {
@@ -184,6 +186,13 @@ impl ExportJob {
                     self.id, target_lufs, analysis.achieved_lufs,
                 );
             }
+            // Store result string for the render queue details panel
+            let result_str = if analysis.peak_limited {
+                format!("Loudness: {:.1} LUFS (requested {:.1}, peak limited)", analysis.achieved_lufs, target_lufs)
+            } else {
+                format!("Loudness: {:.1} LUFS", analysis.achieved_lufs)
+            };
+            if let Ok(mut r) = self.loudness_result.lock() { *r = Some(result_str); }
             db_to_linear(analysis.applied_gain_db)
         } else {
             1.0 // No normalization — unity gain
@@ -459,6 +468,7 @@ mod tests {
             progress: Arc::new(AtomicU64::new(0)),
             hw_info: Arc::new(std::sync::Mutex::new(String::new())),
             render_stage: Arc::new(std::sync::Mutex::new(String::new())),
+            loudness_result: Arc::new(std::sync::Mutex::new(None)),
             total_frames: 100,
         };
 

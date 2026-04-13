@@ -38,6 +38,8 @@ pub struct RenderJob {
     pub timeline_fps: f64,
     /// Current render stage (e.g. "Encoding video (H.265)…").
     pub render_stage: String,
+    /// Loudness normalization result (set on completion if normalization was enabled).
+    pub loudness_result: Option<String>,
 }
 
 pub enum RenderQueueEvent {
@@ -104,7 +106,7 @@ pub struct RenderQueue {
 
 enum RenderThreadEvent {
     Started { id: Uuid, hw_info: String },
-    Completed { id: Uuid },
+    Completed { id: Uuid, loudness_result: Option<String> },
     Failed { id: Uuid, error: String },
     Cancelled { id: Uuid },
 }
@@ -155,6 +157,7 @@ impl RenderQueue {
             hw_info: String::new(),
             timeline_fps,
             render_stage: String::new(),
+            loudness_result: None,
         });
         self.snapshots.push((id, snapshot));
         self.start_next_if_idle();
@@ -279,11 +282,12 @@ impl RenderQueue {
                         job.hw_info = info;
                     }
                 }
-                RenderThreadEvent::Completed { id } => {
+                RenderThreadEvent::Completed { id, loudness_result } => {
                     if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                         job.status = RenderJobStatus::Complete;
                         job.progress = 1.0;
                         job.completed_at = Some(std::time::Instant::now());
+                        job.loudness_result = loudness_result;
                         events.push(RenderQueueEvent::Complete {
                             id,
                             output_path: job.output_path.clone(),
@@ -387,8 +391,10 @@ impl RenderQueue {
         let cancel_clone = cancel.clone();
         let progress_clone = progress.clone();
         let render_stage = Arc::new(std::sync::Mutex::new(String::new()));
+        let loudness_result_shared = Arc::new(std::sync::Mutex::new(None::<String>));
         let hw_info_clone = hw_info.clone();
         let render_stage_clone = render_stage.clone();
+        let loudness_result_clone = loudness_result_shared.clone();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let handle = std::thread::Builder::new()
@@ -404,6 +410,7 @@ impl RenderQueue {
                     total_frames,
                     hw_info: hw_info_clone.clone(),
                     render_stage: render_stage_clone,
+                    loudness_result: loudness_result_clone,
                 };
 
                 // Send hw_info as soon as it's available (after decoder/encoder init)
@@ -425,9 +432,13 @@ impl RenderQueue {
                     }
                 });
 
+                let loudness_ref = export_job.loudness_result.clone();
                 let result = export_job.run();
                 let event = match result {
-                    Ok(()) => RenderThreadEvent::Completed { id },
+                    Ok(()) => {
+                        let lr = loudness_ref.lock().ok().and_then(|r| r.clone());
+                        RenderThreadEvent::Completed { id, loudness_result: lr }
+                    }
                     Err(klipp_render::RenderError::Cancelled) => {
                         RenderThreadEvent::Cancelled { id }
                     }

@@ -429,6 +429,13 @@ impl RenderQueuePanel {
                         .color(dim)
                         .size(11.0),
                 );
+                if let Some(ref lr) = job.loudness_result {
+                    ui.label(
+                        egui::RichText::new(lr)
+                            .color(dim)
+                            .size(11.0),
+                    );
+                }
                 ui.label(
                     egui::RichText::new(format!("Frames: {}", job.total_frames))
                         .color(dim)
