@@ -580,7 +580,7 @@ impl ToolbarPanel {
             if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }
             if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_menu(); }
             ui.separator();
-            // TODO: adjustment layer creation hidden until render pipeline composites them onto lower tracks
+            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.menu_button("Add Generator", |ui| {
                 if ui.button("Solid Color").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });

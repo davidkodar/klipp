@@ -78,6 +78,8 @@ pub enum ClipKindSnapshot {
     Media { path: PathBuf, has_audio: bool },
     Title(TitleData),
     Generator(klipp_core::GeneratorData),
+    /// Adjustment layer — applies its clip's effects to the accumulated composite below.
+    AdjustmentLayer,
     Gap,
 }
 
@@ -452,8 +454,8 @@ fn flatten_compound_video_clips(
                 }
                 ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
                 ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
-                // TODO: implement adjustment layer compositing — apply effects to all clips below
-                ClipKind::Gap | ClipKind::AdjustmentLayer => continue,
+                ClipKind::AdjustmentLayer => ClipKindSnapshot::AdjustmentLayer,
+                ClipKind::Gap => continue,
                 ClipKind::Sequence { .. } => unreachable!(), // handled above
             };
 
@@ -695,7 +697,7 @@ fn snapshot_clip(
         // is only reached if nesting depth exceeds MAX_COMPOUND_DEPTH.
         ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
         ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
-        ClipKind::AdjustmentLayer => ClipKindSnapshot::Gap,
+        ClipKind::AdjustmentLayer => ClipKindSnapshot::AdjustmentLayer,
     };
 
     Ok(ClipSnapshot {

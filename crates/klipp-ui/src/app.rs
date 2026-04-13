@@ -13199,7 +13199,7 @@ impl eframe::App for KlippApp {
                 ("Toggle Loop Playback", "Ctrl+L", Some(AppCommand::ToggleLoopPlayback)),
                 ("Frame Grab (Save PNG)", "", Some(AppCommand::FrameGrab)),
                 ("Add Marker", "M", Some(AppCommand::AddMarker { position: self.state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue })),
-                // TODO: adjustment layer hidden until render pipeline composites them onto lower tracks
+                ("Add Adjustment Layer", "", Some(AppCommand::CreateAdjustmentLayer)),
                 ("Create Multicam Clip", "", Some(AppCommand::CreateMulticamClip)),
                 ("Toggle Snap", "N", Some(AppCommand::SetSnapEnabled(!self.state.snap_enabled))),
                 ("Toggle Performance Overlay", "P", None),

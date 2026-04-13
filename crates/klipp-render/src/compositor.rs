@@ -57,36 +57,56 @@ impl FrameCompositor {
                 .iter()
                 .find(|c| frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame);
 
-            let layer_frame = match clip {
-                None => continue, // No clip at this frame on this track
-                Some(c) => {
-                    let raw = self.decode_clip_frame(c, decoders, frame_num, snapshot.fps, w, h)?;
+            let clip = match clip {
+                None => continue,
+                Some(c) => c,
+            };
 
-                    // Check for active transition on this track (Gap 6)
-                    let decoded = if let Some(transitioned) =
-                        self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, c, track, decoders, w, h)?
-                    {
-                        transitioned
-                    } else {
-                        match raw {
-                            Some(f) => f,
-                            None => continue, // Gap clip or exhausted decoder
-                        }
-                    };
-
-                    // Apply per-clip effects (color grade, OFX, builtins) before compositing
-                    let clip_frame = frame_num.saturating_sub(c.timeline_start_frame);
+            // Adjustment layers transform the accumulated composite in-place
+            // instead of decoding a source frame and blending on top.
+            if matches!(clip.kind, ClipKindSnapshot::AdjustmentLayer) {
+                // Adjustment layer with nothing below is a no-op
+                if let Some(base_frame) = base.take() {
+                    let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
                     let ctx = FrameContext {
                         export_frame,
                         clip_frame,
                         clip_time_secs: clip_frame as f64 / snapshot.fps,
-                        clip: Some(Arc::new(c.clone())),
+                        clip: Some(Arc::new(clip.clone())),
                         fps: snapshot.fps,
                         track_index: track_idx,
                     };
-                    pipelines[track_idx].process_frame(decoded, w, h, &ctx)
+                    base = Some(pipelines[track_idx].process_frame(base_frame, w, h, &ctx));
+                }
+                continue;
+            }
+
+            // Regular clips: decode, apply per-clip effects, composite onto base
+            let raw = self.decode_clip_frame(clip, decoders, frame_num, snapshot.fps, w, h)?;
+
+            // Check for active transition on this track (Gap 6)
+            let decoded = if let Some(transitioned) =
+                self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, clip, track, decoders, w, h)?
+            {
+                transitioned
+            } else {
+                match raw {
+                    Some(f) => f,
+                    None => continue, // Gap clip or exhausted decoder
                 }
             };
+
+            // Apply per-clip effects (color grade, OFX, builtins) before compositing
+            let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
+            let ctx = FrameContext {
+                export_frame,
+                clip_frame,
+                clip_time_secs: clip_frame as f64 / snapshot.fps,
+                clip: Some(Arc::new(clip.clone())),
+                fps: snapshot.fps,
+                track_index: track_idx,
+            };
+            let layer_frame = pipelines[track_idx].process_frame(decoded, w, h, &ctx);
 
             // Composite onto base using alpha-over blending with track opacity
             base = Some(match base {
@@ -115,7 +135,7 @@ impl FrameCompositor {
         height: u32,
     ) -> Result<Option<Vec<u8>>, RenderError> {
         match &clip.kind {
-            ClipKindSnapshot::Gap => Ok(None),
+            ClipKindSnapshot::Gap | ClipKindSnapshot::AdjustmentLayer => Ok(None),
             ClipKindSnapshot::Title(data) => {
                 Ok(Some(self.title_renderer.render(data, width, height)))
             }
@@ -761,5 +781,127 @@ mod tests {
         assert_eq!(result[1], 150);
         assert_eq!(result[2], 200);
         assert_eq!(result[3], 255);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Adjustment layer regression tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Helper: build an adjustment layer clip with effects.
+    fn adjustment_layer_clip(
+        start_frame: u64,
+        end_frame: u64,
+        effects: Vec<BuiltinEffect>,
+    ) -> ClipSnapshot {
+        ClipSnapshot {
+            id: ClipId::new(),
+            kind: ClipKindSnapshot::AdjustmentLayer,
+            timeline_start_frame: start_frame,
+            timeline_end_frame: end_frame,
+            source_start_secs: 0.0,
+            source_end_secs: (end_frame - start_frame) as f64 / 24.0,
+            speed: 1.0,
+            node_graph: klipp_nodes::NodeGraph::default(),
+            effects: vec![],
+            builtin_effects: effects,
+            source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+        }
+    }
+
+    /// Adjustment layer applies effects to clips below it.
+    /// V1: solid red. V2: adjustment layer with grayscale. V3: solid blue (above adj layer).
+    /// V1 should be grayscale, V3 should be unchanged blue.
+    #[test]
+    fn adjustment_layer_affects_clips_below() {
+        let w = 4u32;
+        let h = 4u32;
+
+        // V1: solid red (will be affected by adjustment layer)
+        let v1_clip = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        // V2: adjustment layer with grayscale effect
+        let adj_clip = adjustment_layer_clip(0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }]);
+        // V3: solid blue (above adjustment layer, should NOT be affected)
+        // Using 50% opacity so V1 (grayscaled) is visible underneath
+        let v3_clip = generator_clip([0, 0, 255, 255], 0, 24, vec![]);
+
+        let mut v3_track = track_with_clip(v3_clip.clone());
+        v3_track.opacity = 0.5;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1_clip.clone()),  // V1 bottom
+            track_with_clip(adj_clip.clone()), // V2 adjustment layer
+            v3_track,                           // V3 top, semi-transparent
+        ]);
+
+        let mut pipelines = vec![
+            pipeline_for_clip(&v1_clip),
+            pipeline_for_clip(&adj_clip),
+            pipeline_for_clip(&v3_clip),
+        ];
+
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // V1 red was grayscaled by the adjustment layer ≈ (76,76,76).
+        // V3 blue at 50% blended on top → R and G should be roughly equal
+        // (from the grayscale base). If adj layer didn't work, V1 would be
+        // raw red (255,0,0) and R >> G after blending with blue.
+        let r = result[0] as i32;
+        let g = result[1] as i32;
+        assert!((r - g).abs() < 5,
+            "V1 should be grayscale under adj layer (R≈G), but R={r} G={g}");
+        // Blue channel should be significant (from V3 blue at 50%)
+        let b = result[2] as i32;
+        assert!(b > g, "V3 blue should contribute: B={b} G={g}");
+    }
+
+    /// Stacked adjustment layers chain correctly.
+    /// V1: solid red. V2: adj layer (grayscale). V3: adj layer (half brightness).
+    /// Result: red → grayscale → half brightness ≈ (38, 38, 38).
+    #[test]
+    fn stacked_adjustment_layers_chain() {
+        let w = 4u32;
+        let h = 4u32;
+
+        let v1_clip = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let adj1 = adjustment_layer_clip(0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }]);
+        let adj2 = adjustment_layer_clip(0, 24,
+            vec![BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }]);
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1_clip.clone()),
+            track_with_clip(adj1.clone()),
+            track_with_clip(adj2.clone()),
+        ]);
+
+        let mut pipelines = vec![
+            pipeline_for_clip(&v1_clip),
+            pipeline_for_clip(&adj1),
+            pipeline_for_clip(&adj2),
+        ];
+
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap()
+            .expect("should produce a frame");
+
+        // Red (255,0,0) → HSV sat=0 → (255,255,255) → HSV value=0.5 → (127,127,127).
+        // HSV desaturation of pure red keeps V=1.0, producing white, then value=0.5
+        // halves all channels.
+        let r = result[0] as i32;
+        let g = result[1] as i32;
+        let b = result[2] as i32;
+        assert!((r - g).abs() <= 2 && (g - b).abs() <= 2,
+            "should be grayscale after chained adjustment layers: R={r} G={g} B={b}");
+        // Half-brightness white: ≈127
+        assert!((r - 127).abs() < 5, "should be ≈127 after chain, got R={r}");
     }
 }
